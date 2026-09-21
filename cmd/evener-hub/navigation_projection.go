@@ -164,7 +164,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 		p.pinSectionIDs[section.ID] = true
 	}
 
-	buckets := navigationUniqueProjectBuckets(navigationProjectBuckets(p.inputs.Tree))
+	buckets := navigationMergeProjectBuckets(navigationProjectBuckets(p.inputs.Tree))
 	if err := ctx.Err(); err != nil {
 		return navigationProjection{}, err
 	}
@@ -314,7 +314,7 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-// navigationUniqueProjectBuckets collapses tree projects that present the same
+// navigationMergeProjectBuckets collapses tree projects that present the same
 // wire Key onto the single catalog entry that Key can address.
 //
 // A project's Key is its address on the wire: the client reads the project
@@ -323,41 +323,157 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 // canonical identifier.Project.ID only when the working directory resolved;
 // sessions that resolve to no project all present the shared "no-project" key
 // while keeping their own grouping path, so one tree can hand the catalogs
-// several distinct projects that present one Key. Two catalog rows with one
-// Key collapse onto a single entity key, and hubapi.NavigationSnapshot.Validate
-// then rejects the graph with "duplicate navigation entity key" (the root
-// container's repeated child would read as multiple parents next), which
-// validateNavigationResourceSnapshot reports as the "graph" category. Live,
-// that is what one attached host triggered: the host's threads live in
-// directories the controller cannot resolve, each minting a "no-project" group,
-// so the manifest read succeeded while archived_projects answered an internal
-// error.
+// several distinct projects that present one Key.
 //
-// Only the buckets' derivation is wrong, not the tree: the tree keeps the
-// per-path groups for presentation, while a catalog row exists to be addressed
-// by exactly one Key. Every Key is therefore claimed once, in the tree's own
-// deterministic order (active, then archived, then test runs), so the project
-// map below describes the same entry the retained catalog row addresses. This
-// is the general "one addressable project per Key" rule, not a branch on how
+// The invariant is one entity key per catalog PAGE, not one per tree. Two rows
+// in one page with one Key collapse onto a single entity key, and
+// hubapi.NavigationSnapshot.Validate then rejects the graph with "duplicate
+// navigation entity key" (the root container's repeated child would read as
+// multiple parents next), which validateNavigationResourceSnapshot reports as
+// the "graph" category. Live, that is what one attached host triggered: the
+// host's threads live in directories the controller cannot resolve, each
+// minting a "no-project" group, so the manifest read succeeded while
+// archived_projects answered an internal error.
+//
+// The buckets are not merely a display list, and that is why the duplicate
+// groups must be MERGED rather than discarded: they are the sole source of the
+// catalog slices (:171-179) and manifest counts (:184-199), of the p.projects
+// map built from buckets.all() (:174-179), and of the location index that
+// indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
+// session (:1284-1313). Dropping a duplicate group therefore does not just trim
+// a row: its sessions vanish from the catalog and from their project entry, and
+// a location lookup for one of them answers "not found" - a silent session loss
+// that is worse than the visible error it replaces.
+//
+// Each Key is therefore merged within its own bucket, in the tree's own
+// deterministic order (active, then archived, then test runs): the first group
+// keeps the row's identity and position, and every later group with that Key is
+// folded into it, carrying every session from every group. Merging is per
+// bucket, never across them, because each catalog page is validated on its own:
+// a Key repeated in active and archived is two independent, individually valid
+// pages, and collapsing across buckets would empty an unrelated catalog. The
+// per-pair merge rule is documented on navigationMergeProject; this is the
+// general "one addressable project per Key per page" rule, not a branch on how
 // many sources exist.
-func navigationUniqueProjectBuckets(buckets navigationProjectBucket) navigationProjectBucket {
-	seen := make(map[string]bool, len(buckets.active)+len(buckets.archived)+len(buckets.testRuns))
-	unique := func(projects []hubcore.TreeProject) []hubcore.TreeProject {
-		out := make([]hubcore.TreeProject, 0, len(projects))
-		for _, project := range projects {
-			if seen[project.Key] {
+func navigationMergeProjectBuckets(buckets navigationProjectBucket) navigationProjectBucket {
+	return navigationProjectBucket{
+		active:   navigationMergeProjectGroups(buckets.active),
+		archived: navigationMergeProjectGroups(buckets.archived),
+		testRuns: navigationMergeProjectGroups(buckets.testRuns),
+	}
+}
+
+// navigationMergeProjectGroups merges the projects that share a Key inside one
+// bucket, keeping the position of each Key's first appearance. A project whose
+// Key is unique is returned unchanged, so the common case keeps the tree's own
+// value - including the private uncapped tier slices that the merge below
+// cannot carry across a rebuilt value.
+func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.TreeProject {
+	at := make(map[string]int, len(projects))
+	out := make([]hubcore.TreeProject, 0, len(projects))
+	for _, project := range projects {
+		if index, ok := at[project.Key]; ok {
+			out[index] = navigationMergeProject(out[index], project)
+			continue
+		}
+		at[project.Key] = len(out)
+		out = append(out, project)
+	}
+	return out
+}
+
+// navigationMergeProject folds next into first, both of which present first.Key.
+//
+// The first group owns the row's rendered identity - Name, WorkingDir, Key, and
+// the IsArchived / IsTestRun flags, which are uniform inside a bucket because
+// navigationProjectBuckets routes on them - so a merged row keeps one stable
+// label and address. Everything else is combined the way the projection's
+// consumers read the struct:
+//
+//   - Current / Recent / Archived concatenate in group order, and the per-tier
+//     overflow counts (MoreCurrent / MoreRecent / MoreArchived) add, so every
+//     group's sessions reach TierRows, TotalSessionCount, the project detail's
+//     tier paging, and the location index. Each tier is read through TierRows so
+//     a group whose private uncapped slice holds more than
+//     maxSidebarSessionsPerTier rows contributes all of them; the rebuilt value
+//     exposes them through the public tier, which is exactly what TierRows falls
+//     back to once the merge cannot carry the private slices forward.
+//   - LastActivity takes the later moment, and Age comes with it.
+//   - RollupState takes the higher hubapi.RollupRank, and RollupLive / RollupAttn
+//     add, so the merged header still counts every working and awaiting session.
+//   - Sources is the distinct union, sorted like hubcore's own
+//     sortedDecisionSources, because archive and favorite decisions are keyed by
+//     (source, Key) and the read path must consult every contributing source.
+//   - Expanded is the OR, matching its own "RollupLive > 0 || RollupAttn > 0"
+//     rule.
+//   - Worktrees adds: the delete confirmation's distinct-worktree count can only
+//     grow when more sessions join the project.
+func navigationMergeProject(first, next hubcore.TreeProject) hubcore.TreeProject {
+	lastActivity, age := first.LastActivity, first.Age
+	if next.LastActivity.After(lastActivity) {
+		lastActivity, age = next.LastActivity, next.Age
+	}
+	rollupState := first.RollupState
+	if hubapi.RollupRank(next.RollupState) > hubapi.RollupRank(rollupState) {
+		rollupState = next.RollupState
+	}
+	return hubcore.TreeProject{
+		Name:         first.Name,
+		Key:          first.Key,
+		WorkingDir:   first.WorkingDir,
+		Current:      navigationMergeProjectTier(first, next, "current"),
+		Recent:       navigationMergeProjectTier(first, next, "recent"),
+		Archived:     navigationMergeProjectTier(first, next, "archived"),
+		IsArchived:   first.IsArchived,
+		IsTestRun:    first.IsTestRun,
+		LastActivity: lastActivity,
+		RollupState:  rollupState,
+		RollupLive:   first.RollupLive + next.RollupLive,
+		RollupAttn:   first.RollupAttn + next.RollupAttn,
+		Sources:      navigationMergeProjectSources(first.Sources, next.Sources),
+		Expanded:     first.Expanded || next.Expanded,
+		MoreCurrent:  first.MoreCurrent + next.MoreCurrent,
+		MoreRecent:   first.MoreRecent + next.MoreRecent,
+		MoreArchived: first.MoreArchived + next.MoreArchived,
+		Age:          age,
+		Worktrees:    first.Worktrees + next.Worktrees,
+	}
+}
+
+// navigationMergeProjectTier returns one tier's authoritative rows across two
+// groups that share a Key, in group order. It reads TierRows rather than the
+// public slice because a tree-built project keeps its overflow in the private
+// uncapped tier, and the merged project must carry that overflow too.
+func navigationMergeProjectTier(first, next hubcore.TreeProject, tier string) []hubcore.TreeNode {
+	firstRows, _ := first.TierRows(tier)
+	nextRows, _ := next.TierRows(tier)
+	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
+	rows = append(rows, firstRows...)
+	rows = append(rows, nextRows...)
+	return rows
+}
+
+// navigationMergeProjectSources is the distinct, sorted union of two projects'
+// owning sources. The result is nil when neither group names a source, so a
+// controller-local project keeps the zero value that navigationProjectSources
+// spells as "no sources".
+func navigationMergeProjectSources(first, next []string) []string {
+	if len(first) == 0 && len(next) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(first)+len(next))
+	out := make([]string, 0, len(first)+len(next))
+	for _, sources := range [][]string{first, next} {
+		for _, source := range sources {
+			if seen[source] {
 				continue
 			}
-			seen[project.Key] = true
-			out = append(out, project)
+			seen[source] = true
+			out = append(out, source)
 		}
-		return out
 	}
-	return navigationProjectBucket{
-		active:   unique(buckets.active),
-		archived: unique(buckets.archived),
-		testRuns: unique(buckets.testRuns),
-	}
+	sort.Strings(out)
+	return out
 }
 
 func cloneNavigationNodesContext(ctx context.Context, nodes []hubcore.TreeNode) ([]hubcore.TreeNode, error) {

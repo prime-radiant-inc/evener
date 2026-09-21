@@ -133,6 +133,117 @@ func TestNavigationCatalogGraphCollapsesDuplicateProjectKeys(t *testing.T) {
 			if summary.Key != "no-project" {
 				t.Fatalf("entity key = %q, want the collapsed no-project address", summary.Key)
 			}
+			// The collapse must MERGE, not discard. The retained row addresses one
+			// project, and that project owns every session from every tree group
+			// that shared its Key: the buckets are the sole input to the project
+			// map, the manifest counts, and the location index, so a dropped group
+			// loses its sessions from the project entry and from a location lookup
+			// by ref.
+			project, ok := projection.Project("no-project")
+			if !ok {
+				t.Fatal("collapsed catalog row has no project entry")
+			}
+			ids := navigationProjectSessionIDs(t, project)
+			for _, want := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
+				if !ids[want] {
+					t.Errorf("merged project sessions = %v, missing %q: the collapse dropped a group's sessions", ids, want)
+				}
+			}
+			if summary.SessionCount != 2 {
+				t.Errorf("catalog row session count = %d, want 2 (both groups)", summary.SessionCount)
+			}
+			// A merged group's session must still resolve through the location
+			// index. Read it the way the live path does - projection.Resource on a
+			// location key - so a dropped session surfaces as the "not found" shape
+			// rather than as a silently empty location.
+			for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
+				ref := hubapi.LocalRef(id).String()
+				object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
+				if err != nil {
+					t.Errorf("location read for merged session %q: %v", id, err)
+					continue
+				}
+				location, ok := object.(hubapi.NavigationSessionLocation)
+				if !ok {
+					t.Errorf("location read for %q returned %T", id, object)
+					continue
+				}
+				if location.ProjectKey != "no-project" || location.Session == nil || location.Session.SessionID != id {
+					t.Fatalf("location for %q = %+v", id, location)
+				}
+			}
 		})
 	}
+}
+
+// A Key present in two different buckets keeps a row in each catalog. Each
+// catalog page is validated on its own, so a cross-bucket repeat cannot produce
+// the duplicate-entity-key error; collapsing across buckets would instead empty
+// an unrelated catalog. This test pins that each bucket keeps its own row and
+// that both rows' sessions stay indexed.
+func TestNavigationCatalogGraphKeepsDuplicateKeyPerBucket(t *testing.T) {
+	generation := "00112233445566778899aabbccddeeff"
+	active := hubcore.TreeProject{Key: "no-project", Name: "active", Current: []hubcore.TreeNode{
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Title: "one", Project: "one", Kind: "session", State: "idle"},
+	}}
+	archived := hubcore.TreeProject{Key: "no-project", Name: "archived", IsArchived: true, Current: []hubcore.TreeNode{
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", Title: "two", Project: "two", Kind: "session", State: "idle"},
+	}}
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: generation, Revision: 1,
+		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{active}, ArchivedProjects: []hubcore.TreeProject{archived}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects} {
+		resource, err := projection.CatalogPage(kind, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resource.Projects) != 1 {
+			t.Fatalf("%s rows = %d, want one row for the bucket's own group", kind, len(resource.Projects))
+		}
+		snapshot, err := normalizeNavigationResource(navigationResourceKey{Kind: kind, Limit: 100}, resource)
+		if err != nil {
+			t.Fatalf("%s snapshot failed schema validation: %v", kind, err)
+		}
+		if len(snapshot.Entities) != 1 || resource.Projects[0].Key != "no-project" {
+			t.Fatalf("%s shape = %d entities, row key %q", kind, len(snapshot.Entities), resource.Projects[0].Key)
+		}
+	}
+	// Both buckets' rows point at the shared Key, so the project map is
+	// last-write-wins; the location index must still carry every session of
+	// every catalog.
+	for _, id := range []string{"01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FAW"} {
+		ref := hubapi.LocalRef(id).String()
+		object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
+		if err != nil {
+			t.Errorf("location read for merged session %q: %v", id, err)
+			continue
+		}
+		location, ok := object.(hubapi.NavigationSessionLocation)
+		if !ok || location.Session == nil || location.Session.SessionID != id {
+			t.Fatalf("location for %q = %T %+v", id, object, location)
+		}
+	}
+}
+
+// navigationProjectSessionIDs collects the session ids a project resource
+// exposes across its tiers, so a merge assertion can name the sessions that
+// survived instead of merely counting them.
+func navigationProjectSessionIDs(t *testing.T, resource hubapi.NavigationProjectResource) map[string]bool {
+	t.Helper()
+	ids := make(map[string]bool)
+	tiers := []hubapi.NavigationArray[hubapi.NavigationSessionSummary]{
+		resource.Current.Sessions,
+		resource.Recent.Sessions,
+		resource.Archived.Sessions,
+	}
+	for _, tier := range tiers {
+		for _, session := range tier {
+			ids[session.SessionID] = true
+		}
+	}
+	return ids
 }
