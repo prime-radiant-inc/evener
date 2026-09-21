@@ -423,3 +423,158 @@ it("keeps the create form for a name-collision conflict", async () => {
 	// The form survives for the correction.
 	expect(text).toContain("Save instance");
 });
+
+// Keeping the screen mounted across a flap lets the row move under an open
+// editor - another client's change arrives with the recovery read - so the
+// save's assertion must be the endpoint this editor was OPENED on, not
+// whatever the row resolves to now. An assertion read from the live row
+// would match the moved destination, approving a save against a target the
+// user never saw.
+it("asserts the endpoint the editor was opened on across a flap's recovery", async () => {
+	const opened: InstanceListResponse = {
+		instances: [{ ...rows.instances[0]!, baseUrl: "https://work.example" }],
+		availableProviders: [],
+	};
+	const moved: InstanceListResponse = {
+		instances: [
+			{
+				...rows.instances[0]!,
+				baseUrl: "https://moved.example",
+				endpointFingerprint: "fp-moved",
+			},
+		],
+		availableProviders: [],
+	};
+	const hub = scriptedClient(opened, {
+		"evener/instance/list": [opened, moved],
+		"evener/instance/edit": [
+			new WireError(
+				"work no longer resolves to the endpoint this form was opened on",
+				-32013,
+				{ evenerErrorInfo: ErrorEndpointConflict },
+			),
+		],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit instance");
+	await act(async () => {});
+
+	// The flap: the editor and its draft survive behind the banner, and the
+	// recovery read republishes the row another client moved while this one
+	// was away.
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+	press(tree, (label) => label === "Save instance");
+	await act(async () => {});
+	await act(async () => {});
+
+	// The save asserts the endpoint this form was opened on, so the hub - not
+	// this client - adjudicates the moved destination.
+	const edit = hub.requests.find(
+		(request) => request.method === "evener/instance/edit",
+	);
+	expect(edit?.params).toMatchObject({
+		name: "work",
+		baseUrl: "https://work.example",
+		expectedEndpointFingerprint: "fp-work",
+	});
+	// The refusal reconciles exactly like the credential flow: the editor
+	// clears, the list re-reads, and the warning is this screen's own words.
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/list",
+		"evener/instance/edit",
+		"evener/instance/list",
+	]);
+	const text = renderedText(tree);
+	expect(text).toContain("changed to a different endpoint");
+	expect(text).not.toContain("Save instance");
+});
+
+// No over-fencing: a flap whose recovery finds the endpoint unchanged must
+// not turn the save into a warning - the open-time assertion still matches
+// the row the recovery re-read.
+it("saves without a warning when a flap's recovery finds the endpoint unchanged", async () => {
+	const opened: InstanceListResponse = {
+		instances: [{ ...rows.instances[0]!, baseUrl: "https://work.example" }],
+		availableProviders: [],
+	};
+	const hub = scriptedClient(opened, {
+		"evener/instance/list": [opened, opened],
+		"evener/instance/edit": [opened],
+	});
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit instance");
+	await act(async () => {});
+	const url = tree.root.find(
+		(node) => node.props.accessibilityLabel === "Base URL (optional)",
+	);
+	act(() => {
+		url.props.onChangeText("https://work2.example");
+	});
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+	press(tree, (label) => label === "Save instance");
+	await act(async () => {});
+	await act(async () => {});
+
+	const edit = hub.requests.find(
+		(request) => request.method === "evener/instance/edit",
+	);
+	expect(edit?.params).toMatchObject({
+		name: "work",
+		baseUrl: "https://work2.example",
+		expectedEndpointFingerprint: "fp-work",
+	});
+	// The save applied: no conflict warning, and the editor closed on the
+	// completed write.
+	expect(hub.methods).toEqual([
+		"evener/instance/list",
+		"evener/instance/list",
+		"evener/instance/edit",
+	]);
+	const text = renderedText(tree);
+	expect(text).not.toContain("changed to a different endpoint");
+	expect(text).not.toContain("Save instance");
+});
