@@ -59,6 +59,7 @@ type RetirementController struct {
 	changed       chan struct{}
 	clock         RetirementClock
 	timeout       time.Duration
+	timeoutWrites uint64
 	eligibleSince time.Time
 	failure       string
 	claim         *RetirementClaim
@@ -180,18 +181,53 @@ func (c *RetirementController) Changed() {
 // claim re-proves the deadline against the current timeout, so a stale tick
 // from the pre-Retarget timer can never claim before the new deadline.
 func (c *RetirementController) Retarget(timeout time.Duration) error {
+	_, _, err := c.RetargetStamped(timeout)
+	return err
+}
+
+// RetargetStamped is Retarget for a caller that may later have to undo its
+// write: it also reports the deadline the write replaced and mints a write
+// token — the count of timeout writes after this one. The undo, UndoRetarget,
+// needs both: the previous deadline as its restore target, and the token as
+// the exact identity of the write being undone, because two writers can
+// legitimately choose the same deadline and a value comparison cannot tell
+// them apart.
+func (c *RetirementController) RetargetStamped(timeout time.Duration) (previous time.Duration, token uint64, err error) {
 	if timeout < 0 {
-		return errRetirementTimeoutNegative
+		return 0, 0, errRetirementTimeoutNegative
 	}
 	c.mu.Lock()
 	if c.phase != "resident" {
 		c.mu.Unlock()
-		return ErrRetirementUnavailable
+		return 0, 0, ErrRetirementUnavailable
 	}
+	previous = c.timeout
 	c.timeout = timeout
+	c.timeoutWrites++
+	token = c.timeoutWrites
 	c.mu.Unlock()
 	c.Changed()
-	return nil
+	return previous, token, nil
+}
+
+// UndoRetarget restores the deadline to `to` only while `token` still names
+// the newest timeout write — a later Retarget, even one that chose the same
+// deadline, owns the controller's timeout now and must survive the caller's
+// undo. The token check and the restore share one critical section, so no
+// writer can slip between the guard and the undo. It reports whether the
+// restore ran; a controller that is no longer resident never restores, since
+// the process is preparing or retiring and the deadline no longer matters.
+func (c *RetirementController) UndoRetarget(token uint64, to time.Duration) bool {
+	c.mu.Lock()
+	if c.phase != "resident" || c.timeoutWrites != token {
+		c.mu.Unlock()
+		return false
+	}
+	c.timeout = to
+	c.timeoutWrites++
+	c.mu.Unlock()
+	c.Changed()
+	return true
 }
 
 // Borrow protects an in-flight read, not a subscription's lifetime. Reads may

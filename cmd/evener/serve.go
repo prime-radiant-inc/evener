@@ -1051,21 +1051,33 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// in production) so a test can interleave a thread/clear into exactly
 		// the window the revalidation below must still defend.
 		retirementObserve("idle_timeout_attempted", getSession().ID())
-		if err := retirement.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
+		prev, token, err := retirement.RetargetStamped(time.Duration(params.TimeoutMillis) * time.Millisecond)
+		if err != nil {
 			return appwire.DaemonIdleTimeoutSetResponse{}, err
 		}
+		// idle_timeout_written parks the handler immediately after the
+		// controller write and before the revalidation fence — the exact
+		// window in which a later legitimate writer's deadline must survive
+		// the stale request's revert. Same contract as idle_timeout_attempted:
+		// observability only, nil in production.
+		retirementObserve("idle_timeout_written", getSession().ID())
 		// The pre-retarget check and Retarget are not atomic: a thread/clear can
 		// run to completion between them (mutations do not serialize with each
 		// other), re-rooting the controller to the replacement — and the write
 		// above then moved the REPLACEMENT's deadline, so a bare conflict would
-		// leave the harm in place. Re-read ownership and, if it moved, restore
-		// the configured deadline this daemon was spawned with — the root swap
-		// never resets it (AttachRoot keeps the armed timeout), so the stale
-		// write must be undone here — then refuse like the retire path does
-		// after its claim. The restore is best-effort: a controller that refuses
-		// Retarget is preparing or retiring, and its deadline no longer matters.
+		// leave the harm in place. Re-read ownership and, if it moved, undo the
+		// write by its token: UndoRetarget restores the deadline the write
+		// replaced, but only while this request's write is still the newest — a
+		// later legitimate writer (the replacement's own archive decision) owns
+		// the deadline now and must survive the refusal, even when it chose the
+		// same value, which a value comparison could not tell apart. The root
+		// swap never resets the armed timeout (AttachRoot keeps it), so the
+		// stale write is undone here or nowhere. Refuse like the retire path
+		// does after its claim. The undo is best-effort: a controller that is no
+		// longer resident never restores (the process is preparing or retiring
+		// and the deadline no longer matters).
 		if err := requireExactOwnership(params.Identity.Generation); err != nil {
-			_ = retirement.Retarget(*daemonIdleTimeout)
+			retirement.UndoRetarget(token, prev)
 			return appwire.DaemonIdleTimeoutSetResponse{}, err
 		}
 		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil

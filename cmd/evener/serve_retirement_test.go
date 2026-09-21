@@ -294,6 +294,27 @@ func awaitRetirementSettled(t *testing.T, srv *clearIdentityServer) {
 	}
 }
 
+// clearDuringWindow runs a real thread/clear to completion while the named
+// session's daemon-side handler is parked mid-request: the clear rewrites the
+// rendezvous ownership to the replacement and re-roots the controller, and
+// the helper then waits for the replacement's startup leases to settle so the
+// parked handler's revalidation is decided on ownership, not on a busy fence.
+func clearDuringWindow(t *testing.T, srv *clearIdentityServer, sessionID, mutationID string) {
+	t.Helper()
+	clearErr := make(chan error, 1)
+	go func() {
+		clearErr <- srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                "local:" + sessionID,
+			ClientMutationID:   mutationID,
+			ExpectedInstanceID: sessionID,
+		})
+	}()
+	if err := <-clearErr; err != nil {
+		t.Fatalf("thread/clear during the %s window: %v", mutationID, err)
+	}
+	awaitRetirementSettled(t, srv)
+}
+
 func daemonIdentityFor(entry rendezvous.Entry) appwire.DaemonIdentity {
 	return appwire.DaemonIdentity{
 		Ref:        "local:" + entry.SessionID,
@@ -614,9 +635,10 @@ func TestServeIdleTimeoutSetRefusesBadIdentityAndNegativeDeadline(t *testing.T) 
 // setter revalidates ownership after the retarget: a thread/clear that
 // completes between the pre-retarget fence and the controller write re-roots
 // the controller to the replacement, and the stale write must not leave its
-// deadline there — the configured timeout is restored and the stale caller
-// gets the same conflict the retire path returns, while a current generation
-// can still move the deadline afterwards.
+// deadline there — the pre-write deadline is restored (here the configured
+// 1h, nothing had retargeted it yet) and the stale caller gets the same
+// conflict the retire path returns, while a current generation can still
+// move the deadline afterwards.
 func TestServeIdleTimeoutSetRevertsDeadlineWhenClearSwapsOwnership(t *testing.T) {
 	deps, state, args := newClearServeDeps(t)
 	deps.retirementClock = newServeRetireClock()
@@ -651,23 +673,11 @@ func TestServeIdleTimeoutSetRevertsDeadlineWhenClearSwapsOwnership(t *testing.T)
 
 	// A real thread/clear runs to completion in that window: it rewrites the
 	// rendezvous ownership to the replacement and re-roots the controller.
-	oldSessionID := entry.SessionID
-	clearErr := make(chan error, 1)
-	go func() {
-		clearErr <- state.srv.clear(context.Background(), appwire.ThreadClearParams{
-			Ref:                "local:" + oldSessionID,
-			ClientMutationID:   "clear-during-idle-timeout-set",
-			ExpectedInstanceID: oldSessionID,
-		})
-	}()
-	if err := <-clearErr; err != nil {
-		t.Fatalf("thread/clear during the idle-timeout set window: %v", err)
-	}
+	clearDuringWindow(t, state.srv, entry.SessionID, "clear-during-idle-timeout-set")
 	replacement := state.session(1)
 	if replacement == nil {
 		t.Fatal("thread/clear did not build a replacement session")
 	}
-	awaitRetirementSettled(t, state.srv)
 
 	releaseSet()
 	outcome := <-outcomeCh
@@ -708,6 +718,120 @@ func TestServeIdleTimeoutSetRevertsDeadlineWhenClearSwapsOwnership(t *testing.T)
 	if !ok || resp.Lifecycle.TimeoutMillis != 90000 {
 		t.Fatalf("current-generation set = %+v, want the 90000ms deadline applied", out)
 	}
+}
+
+// TestServeIdleTimeoutSetRevertsToPreWriteDeadline proves the revert is a pure
+// undo of the stale write, never a configured-deadline opinion: on drift the
+// setter restores the deadline that was in effect before the stale write, and
+// when a later legitimate writer has already replaced the stale value, that
+// writer's deadline survives the refusal.
+func TestServeIdleTimeoutSetRevertsToPreWriteDeadline(t *testing.T) {
+	// runParkedSetter serves one daemon, retargets it to a non-configured
+	// pre-write deadline, then dispatches a second set parked (via the
+	// idle_timeout_written gate) immediately after its controller write, and
+	// returns the release func plus the parked set's outcome channel.
+	runParkedSetter := func(t *testing.T, preMillis, parkedMillis int64) (release func(), outcome <-chan error, srv *clearIdentityServer, runDir string, entry rendezvous.Entry) {
+		t.Helper()
+		deps, st, args := newClearServeDeps(t)
+		deps.retirementClock = newServeRetireClock()
+		rec := newRetireEventRecorder()
+		deps.retirementObserve = rec.observe
+		args = append(args, "--daemon-idle-timeout", "1h")
+		rd := serveArgValue(args, "--run-dir")
+
+		runRetireServe(t, deps, st, args)
+		rec.await(t, "root_published")
+		e := awaitRendezvousEntry(t, rd)
+		awaitRetirementSettled(t, st.srv)
+
+		// A non-configured deadline is in effect before the parked write, so the
+		// revert's restore target differs from the configured 1h.
+		if _, err := dispatchDaemonRPC(st.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(e), TimeoutMillis: preMillis}); err != nil {
+			t.Fatalf("pre-write set: %v", err)
+		}
+
+		rel := rec.gateAt("idle_timeout_written")
+		deadlineErr := make(chan error, 1)
+		go func() {
+			_, err := dispatchDaemonRPC(st.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+				appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(e), TimeoutMillis: parkedMillis})
+			deadlineErr <- err
+		}()
+		rec.await(t, "idle_timeout_written")
+		return rel, deadlineErr, st.srv, rd, e
+	}
+
+	assertConflict := func(t *testing.T, err error) {
+		t.Helper()
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			t.Fatalf("stale idle-timeout set = %v, want CodeConflict", err)
+		}
+	}
+	controllerDeadline := func(t *testing.T, srv *clearIdentityServer) int64 {
+		t.Helper()
+		out, err := dispatchDaemonRPC(srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
+		if err != nil {
+			t.Fatalf("status: %v", err)
+		}
+		status, ok := out.(appwire.DaemonStatusResponse)
+		if !ok {
+			t.Fatalf("status result = %T, want DaemonStatusResponse", out)
+		}
+		return status.Lifecycle.TimeoutMillis
+	}
+	t.Run("revert restores the deadline in effect before the stale write", func(t *testing.T) {
+		release, outcome, srv, _, entry := runParkedSetter(t, 60000, 120000)
+		defer release()
+		clearDuringWindow(t, srv, entry.SessionID, "clear-during-parked-idle-timeout-set")
+
+		release()
+		assertConflict(t, <-outcome)
+		// The parked write put 120000 on the controller; the revert must restore
+		// the 60000 that preceded it, not the configured 3600000.
+		if got := controllerDeadline(t, srv); got != 60000 {
+			t.Fatalf("deadline after the refused stale set = %d ms, want the pre-write 60000 restored", got)
+		}
+	})
+	t.Run("a later writer's deadline survives the refused stale set", func(t *testing.T) {
+		release, outcome, srv, runDir, entry := runParkedSetter(t, 60000, 120000)
+		defer release()
+		clearDuringWindow(t, srv, entry.SessionID, "clear-during-parked-idle-timeout-set")
+		// The replacement's own archive decision lands between the stale write
+		// and its revalidation, and must not be clobbered by the revert.
+		current := awaitRendezvousEntry(t, runDir)
+		if _, err := dispatchDaemonRPC(srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(current), TimeoutMillis: 45000}); err != nil {
+			t.Fatalf("later-writer set: %v", err)
+		}
+
+		release()
+		assertConflict(t, <-outcome)
+		if got := controllerDeadline(t, srv); got != 45000 {
+			t.Fatalf("deadline after the refused stale set = %d ms, want the later writer's 45000 preserved", got)
+		}
+	})
+	t.Run("an aliased later write with the same value survives the refusal", func(t *testing.T) {
+		release, outcome, srv, runDir, entry := runParkedSetter(t, 30000, 60000)
+		defer release()
+		clearDuringWindow(t, srv, entry.SessionID, "clear-during-parked-idle-timeout-set")
+		// The replacement's archive decision chooses the same deadline the
+		// stale write pushed — the common case, both derive it from the same
+		// Hub configuration. Value equality cannot tell the two writes apart;
+		// the later writer's deadline must still survive.
+		current := awaitRendezvousEntry(t, runDir)
+		if _, err := dispatchDaemonRPC(srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(current), TimeoutMillis: 60000}); err != nil {
+			t.Fatalf("aliased later-writer set: %v", err)
+		}
+
+		release()
+		assertConflict(t, <-outcome)
+		if got := controllerDeadline(t, srv); got != 60000 {
+			t.Fatalf("deadline after the refused stale set = %d ms, want the aliased later writer's 60000 preserved", got)
+		}
+	})
 }
 
 // TestServeManualRetirementResponseSurvivesServeCancel proves the accepted
@@ -1443,25 +1567,11 @@ func TestServeRetirementClaimRevalidatesOwnershipAfterClear(t *testing.T) {
 
 	// A real thread/clear runs to completion in that window: it rewrites the
 	// rendezvous ownership to the replacement and re-roots the controller.
-	oldSessionID := entry.SessionID
-	clearErr := make(chan error, 1)
-	go func() {
-		clearErr <- state.srv.clear(context.Background(), appwire.ThreadClearParams{
-			Ref:                "local:" + oldSessionID,
-			ClientMutationID:   "clear-during-retire-claim",
-			ExpectedInstanceID: oldSessionID,
-		})
-	}()
-	if err := <-clearErr; err != nil {
-		t.Fatalf("thread/clear during the retire claim window: %v", err)
-	}
+	clearDuringWindow(t, state.srv, entry.SessionID, "clear-during-retire-claim")
 	replacement := state.session(1)
 	if replacement == nil {
 		t.Fatal("thread/clear did not build a replacement session")
 	}
-	// Ownership now names the replacement. Wait for its startup leases to
-	// settle so the claim below is decided on ownership, not on a busy fence.
-	awaitRetirementSettled(t, state.srv)
 
 	releaseRetire()
 

@@ -779,3 +779,106 @@ func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
 		t.Fatalf("snapshot timeout = %v, want 1m after abort", got)
 	}
 }
+
+// TestRetirementStampedRetargetUndo proves the write-token undo contract:
+// RetargetStamped reports the deadline it replaced and a token naming its own
+// write; UndoRetarget restores the replaced deadline only while that write is
+// still the newest — a later write, even one choosing the same deadline,
+// supersedes the token, because two writers can legitimately choose the same
+// value and identity, not equality, must decide which write the deadline
+// currently belongs to.
+func TestRetirementStampedRetargetUndo(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+
+	prev, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	if prev != time.Hour {
+		t.Fatalf("first stamped write reported prev = %v, want the constructed 1h", prev)
+	}
+	if token == 0 {
+		t.Fatal("first stamped write minted token 0, want a nonzero write token")
+	}
+	if !ctrl.UndoRetarget(token, prev) {
+		t.Fatal("UndoRetarget with the newest token = false, want true")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("timeout after undo = %v, want the restored 1h", got)
+	}
+
+	// An aliased second write chooses the deadline the first one set; the
+	// third write supersedes the second's token, and the second's undo must
+	// not reach past either.
+	prev2, token2, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("second stamped write: %v", err)
+	}
+	if prev2 != time.Hour {
+		t.Fatalf("second stamped write prev = %v, want 1h", prev2)
+	}
+	if token2 == token {
+		t.Fatalf("aliased second write minted the first write's token %d", token2)
+	}
+	_, token3, err := ctrl.RetargetStamped(2 * time.Minute)
+	if err != nil {
+		t.Fatalf("third stamped write: %v", err)
+	}
+	if ctrl.UndoRetarget(token2, prev2) {
+		t.Fatal("UndoRetarget with a superseded token = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != 2*time.Minute {
+		t.Fatalf("timeout after refused undo = %v, want the later write's 2m", got)
+	}
+	if !ctrl.UndoRetarget(token3, time.Minute) {
+		t.Fatal("UndoRetarget with the newest token = false, want true")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("timeout after undo = %v, want the restored 1m", got)
+	}
+}
+
+// TestRetirementUndoRetargetRefusesWhilePreparing proves the undo is fenced
+// by the admission phase like Retarget: a preparing controller never
+// restores, and the token survives the aborted claim so the same undo works
+// once the controller is resident again.
+func TestRetirementUndoRetargetRefusesWhilePreparing(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	_, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	claim, _, err := ctrl.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("TryClaim(true): claim=%v err=%v", claim, err)
+	}
+	if ctrl.UndoRetarget(token, time.Hour) {
+		t.Fatal("UndoRetarget while preparing = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("timeout after refused undo = %v, want the undo-untouched 1m", got)
+	}
+	if err := ctrl.Abort(claim, "test_done"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if !ctrl.UndoRetarget(token, time.Hour) {
+		t.Fatal("UndoRetarget after abort = false, want true")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("timeout after undo = %v, want the restored 1h", got)
+	}
+}
