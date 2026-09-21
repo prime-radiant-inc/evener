@@ -483,6 +483,25 @@ post-operation facts refresh is what makes "the host is running the build I
 deployed" a fact rather than a restatement of the controller's own version
 (§6.11).
 
+**Pinned: a generation-aware attached-client lookup.** `hostRow` snapshots a
+host entry and only then resolves the host's attached client and live facts, by
+name, and neither lookup compares the channel's registration with the entry the
+row is rendering. The update path's edits and this slice's fences close every
+window where that mismatch could *persist* — the channel is unmapped before the
+swap becomes visible, and a name with a mutation in flight folds no retained
+state — but one window remains: a row that snapshots the pre-swap entry can
+still resolve the channel a later attach published for the new generation, so
+that one render can pair the old configuration with the new channel's attached
+state and server facts. Nothing persists (the generation fence still refuses the
+retained-state write, and the next poll rebuilds the row), which is why the
+review that raised it — one of three reviewers, and it described the finding as
+a race window rather than a reproducible defect — did not hold this slice.
+Closing it properly means making the attached-client lookup generation-aware:
+return the client only while the channel's registration matches the entry being
+rendered, the same predicate `hostEntryCurrent` applies to the retained-state
+fold. That touches the hub/manager seam and its wiring rather than one function,
+so it is its own change rather than another round here.
+
 ## 9. Files touched
 
 - `appwire/types.go`, `appwire/protocol.go`, and the regenerated
