@@ -43,14 +43,16 @@ func TestProcessInput_NonRegularAttachmentEntry_NotFollowed(t *testing.T) {
 		_, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img})
 		done <- inputResult{err: err}
 	}()
+	// TRIPWIRE: bounds the missing-refusal case only — with the lstat gate the
+	// refusal is immediate and this case never selects; without it the open
+	// blocks, and the test must fail fast rather than hang.
+	timeout := time.After(10 * time.Second)
 	select {
 	case res := <-done:
 		if res.err != nil {
 			t.Fatalf("ProcessInput: %v", res.err)
 		}
-	case <-time.After(10 * time.Second):
-		// TRIPWIRE: bounds the missing-refusal case only; with the gate the
-		// refusal is immediate.
+	case <-timeout:
 		t.Fatal("ProcessInput did not refuse the non-regular entry promptly (it blocked opening it)")
 	}
 
