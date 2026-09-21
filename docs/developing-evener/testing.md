@@ -167,7 +167,7 @@ family, and [building.md](building.md), [linting.md](linting.md),
 tables are generated from the `##` annotations above each rule in `make/*.mk`,
 and `make lint` fails if a committed table has drifted from them.
 
-Five gates are written out here anyway. Three have no make target at all: they
+Six gates are written out here anyway. Four have no make target at all: they
 are environment opt-ins, or work this repository does not own. The other two do
 run through make. `scripts/web/web-preflight.sh` has both a target and a
 generated row in building.md, and is named here because it is a setup
@@ -249,6 +249,45 @@ the mechanism the kernel uses for a foreign user.
 
 ~~~sh
 EVENER_TMPDIR_PRIVDROP_E2E=1 go test ./agent/sandbox -run TestSessionTmpPrivilegeDropE2E -count=1 -v
+~~~
+
+### `EVENER_SSH_E2E=1` — the live multi-host attach check
+
+Component 08 slice 2's final criterion
+(`docs/superpowers/specs/2026-09-20-multi-host-host-edit-slice.md`): adding a
+host, attaching it, and making a spawn-form discovery call on it must go through
+`evener/host/request`, answerable only by the attached remote hub. The check
+drives the hub's own AppWire client over a throwaway hub's loopback endpoint:
+`evener/host/add`, `evener/host/attach`, then `evener/host/request` with
+`evener/harnesses/list`. It is the browser-path companion to `cmd/evener-hub`'s
+`internal/sshconn` live test, which pins the attach channel itself.
+
+It never runs in default CI: it is gated by **both** `EVENER_SSH_E2E=1` and
+`EVENER_SSH_E2E_HOST`, and skips under `-short`. `EVENER_SSH_E2E_HOST` is the
+host's ssh destination — an `ssh_config` alias or `user@host`;
+`EVENER_SSH_E2E_USER` optionally sets the entry's ssh user (omit it when the
+destination already names one), and `EVENER_SSH_E2E_EVENER_PATH` overrides the
+host's evener path (default `~/.local/bin/evener`).
+
+The host must be disposable and reachable over non-interactive ssh
+(`ssh -T -o BatchMode=yes`), and it must already carry a matching evener build
+at that path. The test hub is built with no `BuildSource`, so the version-match
+ladder cannot deploy: it refuses an on-disk version other than the controller's,
+and it restarts a hub already running on the host when that hub reports another
+version. Match the two by building the host binary the way the test's own
+harness builds its controller — a plain `go build` of `./cmd/evener/`, reporting
+`dev` — or by stamping both with the same `-ldflags`. The supported host targets
+are `linux/amd64` and `darwin/arm64`.
+
+~~~sh
+# Install the lane's build on the host (macOS needs an ad-hoc re-signature
+# after scp, or the loader kills the unsigned-arm64 copy).
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/evener-host ./cmd/evener/
+scp /tmp/evener-host paradise-park:~/.local/bin/evener
+ssh paradise-park 'chmod +x ~/.local/bin/evener && codesign --force --sign - ~/.local/bin/evener'
+
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
+  go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
 ~~~
 
 ### Live service coverage and host sandbox parity
