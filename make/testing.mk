@@ -126,6 +126,12 @@ test-api-package:
 # proved it faked `go` and `mktemp` on PATH, which docs/developing-evener/testing.md's
 # rule against faking the toolchain in a test bans outright, and was deleted.
 # The port that would pin this contract honestly is tracked as issue #293.
+#
+# Go's test cache is deliberately in play here: -count=1 (the documented way to
+# disable it) is absent, and run-module-tests.sh runs every stream under a
+# stable per-worktree root so the HOME/TMPDIR/XDG values its cache key includes
+# do not change between runs. Gates that measure durations or drive live/fuzz
+# probes still pass -count=1; see docs/developing-evener/testing.md.
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend
@@ -136,7 +142,7 @@ test-api-package:
 ##   stream.
 ## fails-when: Any module, frontend stream, or setup failure is nonzero.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short
 
 ## Alias for `make test`.
 test-short:
@@ -187,7 +193,7 @@ test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
 		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
-		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short -count=1
+			MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short
 
 ## go vet across every non-fuzz workspace module.
 ## proves: go vet diagnostics for every module, independent of the tagged

@@ -214,6 +214,14 @@ var recursiveDeleteAllowedLines = map[string]int{
 	// is the cleanup guard beside it, which refuses to run when the root
 	// variable is empty or unset.
 	"scripts/lib/live-eval-isolation.sh": 1,
+	// gate-roots.sh empties or reclaims the durable per-worktree root a Go test
+	// stream ran in, so the next run starts pristine. That path is composed by
+	// the library itself under a hashed evener-gate-roots-* directory, and
+	// evener_remove_gate_root refuses anything that is not an absolute path with
+	// that directory in it or that names a parent — the shapes kata 5hs2 reached
+	// (a caller's own working directory, an emptied variable) cannot pass that
+	// guard.
+	"scripts/lib/gate-roots.sh": 1,
 	// Per-scenario corpus scratch reclaimed inside the provider loop; the
 	// suite-level guard cannot express "remove this one, keep the rest".
 	"scripts/fuzz/fuzz-drive.sh": 2,

@@ -18,11 +18,19 @@
 # box: 64s Go-only -> 70s with the frontend included, i.e. full frontend
 # coverage for ~6s rather than ~40s. Set WEB=0 to skip it.
 #
+# Every Go stream runs under a durable per-worktree root (lib/gate-roots.sh)
+# instead of one minted per run. Go's test cache keys on the values of the
+# HOME/TMPDIR/XDG variables a test consults, so only stable paths let an
+# unchanged tree reuse it; the contents are still emptied on every claim, so
+# each run starts pristine. When another gate run in this worktree already
+# holds a root, that stream falls back to a per-run root and says so: correct
+# and isolated, just uncached.
+#
 # Usage:
 #   scripts/run-module-tests.sh <go-test-flags...>
-#     scripts/run-module-tests.sh -short -count=1
-#     scripts/run-module-tests.sh -race -short -count=1
-#     WEB=0 scripts/run-module-tests.sh -short -count=1   # Go modules only
+#     scripts/run-module-tests.sh -short
+#     scripts/run-module-tests.sh -race -short
+#     WEB=0 scripts/run-module-tests.sh -short   # Go modules only
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
@@ -174,6 +182,18 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
+# The durable per-worktree root every Go stream runs under. Its path must stay
+# the same across runs for Go's test cache to be reusable at all; see
+# lib/gate-roots.sh for why. Part of this script's own commit, so failing to
+# source it is a broken checkout, and refusing beats running every stream in a
+# root that silently defeats the cache.
+gate_roots_lib="$script_dir/../lib/gate-roots.sh"
+if ! . "$gate_roots_lib"; then
+	printf 'run-module-tests.sh: cannot source %s; refusing to run without the durable test roots\n' \
+		"$gate_roots_lib" >&2
+	exit 2
+fi
+
 root_skip="$fuzz_test_skip"
 
 # The caller's argv, preserved as an array and expanded quoted everywhere it
@@ -189,6 +209,15 @@ root_skip="$fuzz_test_skip"
 # parser that gets `-run -args` and Go's GOFLAGS quoting wrong.
 gate_args=("$@")
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+
+# Derived once, from the script's own location rather than git, so it is stable
+# across runs and independent of which directory the caller invoked from.
+gate_roots_dir="$(evener_durable_gate_root "$repo_root")"
+if [ -z "$gate_roots_dir" ]; then
+	printf 'run-module-tests.sh: cannot derive the durable test roots for %s; refusing to run\n' \
+		"$repo_root" >&2
+	exit 2
+fi
 
 # module_test_flags_array sets the global test_flags array for module m: the
 # caller's argv, or, for the root module under ROOT_FULL, the argv with short
@@ -214,6 +243,9 @@ keep_failed_logs=0
 # their logs even when no stream has reported a test failure.
 normal_completion=0
 active_pids=()
+# Durable roots this run claimed, to be released when it ends: emptied after a
+# green run, moved into the retained log directory after a red one.
+owned_gate_roots=()
 
 forget_pid() {
 	local pid="$1" i
@@ -251,11 +283,26 @@ stop_children() {
 	active_pids=()
 }
 
+# release_gate_roots [KEEP_DIR] — give back every durable root this run claimed.
+# With no KEEP_DIR (a green run) each root is emptied for the next run; with one
+# (a red or interrupted run, passing the retained log directory) each root is
+# moved there, so the scratch a failure left behind survives beside its logs.
+release_gate_roots() {
+	local keep="${1:-}" root
+	for root in ${owned_gate_roots[@]+"${owned_gate_roots[@]}"}; do
+		evener_release_gate_root "$root" "$keep"
+	done
+	owned_gate_roots=()
+}
+
 cleanup() {
 	stop_children
 	[ "$normal_completion" -eq 1 ] || keep_failed_logs=1
 	if [ "$keep_failed_logs" -eq 0 ]; then
+		release_gate_roots
 		scratch_rm
+	else
+		release_gate_roots "${logdir:+$logdir/roots}"
 	fi
 }
 
@@ -280,6 +327,10 @@ failed_modules=()
 
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
+# gate_root_path MODULE — this stream's durable per-worktree root. The module
+# name is mangled exactly as tmppath mangles it, so a root retained after a
+# failure keeps a name the next run's claim recognizes.
+gate_root_path() { printf '%s/%s' "$gate_roots_dir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 # run_bounded_timeout_diagnostic <what> <bound> <module> <log-file> — the
 # cache-stall diagnostic run_bounded (scripts/lib/gate-bounded.sh) calls on a
@@ -298,7 +349,7 @@ run_bounded_timeout_diagnostic() {
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
 	printf 'run-module-tests.sh: retained log: %s\n' "$log_file" >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
-	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q %q -short -count=1\n' \
+	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q %q -short\n' \
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$retry" >&2
 }
 
@@ -423,12 +474,23 @@ run_module() {
 run_wave() {
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
-	local m log extra tmp
+	local m log extra tmp root
 	for m in "$@"; do
 		log="$(logpath "$m")"
 		extra="$(gate_module_flags "$m")"
 		tmp="$(tmppath "$m")"
-		( mkdir -p "$tmp" && export TMPDIR="$tmp" && evener_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
+		# The durable root is what lets this stream's packages reuse Go's test
+		# cache; a stream that gets the per-run fallback is still isolated, it
+		# just re-runs. Either way the root is this stream's TMPDIR with its
+		# private HOME and XDG roots beneath it.
+		root="$(gate_root_path "$m")"
+		if evener_claim_gate_root "$root"; then
+			owned_gate_roots=(${owned_gate_roots[@]+"${owned_gate_roots[@]}"} "$root")
+		else
+			printf 'NOTE  %-8s durable test root held by another run; using a per-run root (uncached)\n' "$m"
+			root="$tmp"
+		fi
+		( mkdir -p "$root" && export TMPDIR="$root" && evener_prepare_private_go_home "$root" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i status

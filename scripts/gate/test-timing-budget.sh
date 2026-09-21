@@ -258,6 +258,11 @@ else
 		# Same capture-before-negation shape as the go list block above, for
 		# the same bash 3.2 reason: a failed outer redirection must land here,
 		# not be eaten by `!`.
+		#
+		# -count=1 is deliberate here and absent from the gate itself: this
+		# gate measures durations, and a package served from Go's cache
+		# reports no per-test elapsed at all, so caching would ratchet the
+		# budgets against a run that never happened.
 		( cd "$repo_root/$m" && go test -json -count=1 $short \
 			-run "$GATE_TEST_RUN" -skip "$GATE_FUZZ_TEST_SKIP" "${pkgs[@]}" ) >"$log" 2>"$log.stderr"
 		gt_status=$?

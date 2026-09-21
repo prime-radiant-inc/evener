@@ -315,18 +315,36 @@ make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
 test so frontend tests are not duplicated.
 
 The `make test` runner gives every Go module and frontend stream a distinct
-private `HOME` plus temporary and XDG roots beneath its per-run log directory.
-For Go streams, the runner copies ambient GOENV settings into that owned root
-and preserves configured or platform-default GOPATH/GOCACHE locations so
+private `HOME` plus temporary and XDG roots. For Go streams those roots live at
+a durable per-stream path under the caller's `TMPDIR` (`gate-roots.sh`, mode
+0700, keyed by a hash of the worktree root so sibling checkouts never share
+one), and each run empties them before it starts, so every run still begins
+pristine. They stay under `TMPDIR` rather than in a cache directory because
+these roots *become* `TMPDIR` for their stream, and the skill-cache trust check
+in `agent/skill` refuses a temp root whose ancestor chain any other user can
+write to — the caller's `TMPDIR` is a chain the gate already runs under, so
+deriving from it adds no new trust dependency. The *path* has to stay the same
+across runs because Go's test cache keys on the values of the environment
+variables a test consults — `t.TempDir()` alone makes a package read `TMPDIR` —
+and a path minted fresh per run re-runs every package that touches one however
+unchanged the code is. cmd/go rechecks files opened only inside the module,
+GOPATH, or GOROOT root, so scratch written under these roots never dirties a
+cache entry. A run that finds a root held by another live gate run in the same
+worktree takes a per-run root instead and says so: still isolated, just uncached.
+The gate passes no `-count=1`, so an unchanged tree reuses the cache; the gates
+that measure durations, drive live probes, or collect coverage still pass it
+(`test-timing-budget` reads per-test elapsed, which a cached package does not
+report). For Go streams, the runner copies ambient GOENV settings into the owned
+root and preserves configured or platform-default GOPATH/GOCACHE locations so
 ordinary reusable module and build caches stay warm. Frontend commands disable
-Node's automatic compile cache. After every child process
-exits successfully, a green run removes the complete per-run directory and its
-process-lifetime scratch. This process-exit cleanup is not a session-end policy:
-it does not delete scratch that a resumable live application still owns. A
-failed or interrupted run instead retains the directory and prints its path so
-the evidence that produced the failure remains available. Standard reusable
-caches outside the owned roots are audited separately rather than claimed as
-temporary cleanup.
+Node's automatic compile cache. After every child process exits successfully, a
+green run removes the roots and the per-run directory with its process-lifetime
+scratch, leaving nothing under the caller's `TMPDIR` to find. This process-exit
+cleanup is not a session-end policy: it does not delete scratch that a resumable
+live application still owns. A failed or interrupted run instead moves the roots
+into the retained log directory and prints its path, so the evidence that
+produced the failure remains available. Standard reusable caches outside the
+owned roots are audited separately rather than claimed as temporary cleanup.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
