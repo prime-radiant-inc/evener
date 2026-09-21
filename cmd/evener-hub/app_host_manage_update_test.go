@@ -690,3 +690,132 @@ func TestHostManageUpdateDropsAnAttachedChannel(t *testing.T) {
 		t.Fatalf("row after Update = %+v, want the edited host offline", row.Host)
 	}
 }
+
+// TestHostManageUpdateClearsTheAttachRecord pins criterion 8's offline half: an
+// edit retires the identity the retained attach facts belong to, so the retiring
+// record — its attach error and its last-known facts — does not outlive the entry
+// it describes. No teardown clears it for an offline host whose address changed;
+// this is the one live effect the edit performs itself.
+func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retain state the way the manager's lifecycle events and attached rows do.
+	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("dial refused")})
+	f.m.cfg.mu.Lock()
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}, hostFactsValidity{handshake: true, facts: true})
+	f.m.cfg.mu.Unlock()
+
+	before, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if before.Host.LastAttachErr != "dial refused" || before.Host.HubVersion != "9.9.9" {
+		t.Fatalf("row before the edit = %+v, want the retained attach state", before.Host)
+	}
+
+	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "side2.example"},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	after, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after the edit: %v", err)
+	}
+	if after.Host.LastAttachErr != "" {
+		t.Fatalf("row = %+v, want the retired identity's attach error gone", after.Host)
+	}
+	if after.Host.MidAttach {
+		t.Fatalf("row = %+v, want the retired identity's in-progress state gone", after.Host)
+	}
+	if after.Host.ServerName != "" || after.Host.ServerVersion != "" || after.Host.HubVersion != "" ||
+		after.Host.OS != "" || after.Host.Arch != "" {
+		t.Fatalf("row = %+v, want the retired identity's last-known facts gone", after.Host)
+	}
+	if after.Host.Address != "side2.example" {
+		t.Fatalf("row = %+v, want the edited entry", after.Host)
+	}
+}
+
+// TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange pins criterion 10's
+// both halves: a roots edit drops the host's derived rows and its last-good
+// retention and registers the source afresh — the source's identity owns what it
+// addresses — while an edit that leaves roots alone keeps the very same source,
+// its cache generation, and the retained list, so an address or path edit never
+// blanks the host's sessions in the tree.
+func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	cache := &hubcore.RemoteThreadCache{}
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
+	var forgotten []string
+	m.cfg.forgetLastGoodThreads = func(sourceID string) { forgotten = append(forgotten, sourceID) }
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example", Roots: []string{"/one"}},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	firstSource, ok := sources.Source("side")
+	if !ok {
+		t.Fatal("the added host has no source")
+	}
+	firstGen, ok := cache.SourceGeneration("side")
+	if !ok {
+		t.Fatal("the added host's source has no cache generation")
+	}
+
+	// A non-roots edit: the same source, the same generation, nothing forgotten.
+	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "side2.example", Roots: []string{"/one"}},
+	}); err != nil {
+		t.Fatalf("non-roots Update: %v", err)
+	}
+	if kept, ok := sources.Source("side"); !ok || kept != firstSource {
+		t.Fatalf("source after a non-roots edit = %v (present %v), want the same instance", kept, ok)
+	}
+	if gen, ok := cache.SourceGeneration("side"); !ok || gen != firstGen {
+		t.Fatalf("cache generation after a non-roots edit = %d (present %v), want it unchanged at %d", gen, ok, firstGen)
+	}
+	if len(forgotten) != 0 {
+		t.Fatalf("a non-roots edit dropped retained rows for %v, want nothing", forgotten)
+	}
+
+	// A roots edit: a fresh registration, the retention dropped first, and the
+	// generation the re-registration minted still in place afterwards.
+	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "side2.example", Roots: []string{"/two"}},
+	}); err != nil {
+		t.Fatalf("roots Update: %v", err)
+	}
+	secondSource, ok := sources.Source("side")
+	if !ok {
+		t.Fatal("the roots edit left the host with no source")
+	}
+	if secondSource == firstSource {
+		t.Fatal("the roots edit kept the old source, whose identity addresses the old roots")
+	}
+	secondGen, ok := cache.SourceGeneration("side")
+	if !ok {
+		t.Fatal("the roots edit left the source unregistered in the cache")
+	}
+	if secondGen == firstGen {
+		t.Fatalf("cache generation = %d, want the re-registration's own", secondGen)
+	}
+	if !slices.Equal(forgotten, []string{"side"}) {
+		t.Fatalf("forgotten = %v, want exactly the roots edit's own drop", forgotten)
+	}
+}

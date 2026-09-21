@@ -1412,19 +1412,23 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 //     reaches the file — persist durable-first with one atomic write that
 //     replaces the entry in place, replace the store row in the same critical
 //     section, set the mark, release the mutex.
-//   - Live, mutex-free: with a manager wired, manager.UpdateHost replaces the
-//     registry entry and retires the channel under the per-host gate as one
-//     atomic step; without one the registry's own Update is the whole story,
-//     exactly as remove falls back. An error means nothing live changed: the
-//     registry refuses ahead of its own swap.
+//   - Live, mutex-free: clear the name's retained attach record; with a manager
+//     wired, manager.UpdateHost replaces the registry entry and retires the
+//     channel under the per-host gate as one atomic step; without one the
+//     registry's own Update is the whole story, exactly as remove falls back. An
+//     error means nothing in the registry or manager changed: the registry
+//     refuses ahead of its own swap.
 //   - Finish, under the mutex: clear the mark, compensate a failed live phase
 //     by rolling the sidecar back to the live set as it stands now — not a
 //     pre-commit copy, so a concurrent add or removal that committed in this
-//     window survives — and build the response row from the entry the registry
-//     now holds.
+//     window survives — and, on success, compare the roots this call replaced
+//     with the stored entry's. A roots edit drops the remote-thread cache entry,
+//     retained last-known-good list, and old source, then registers the source
+//     afresh before building the response row from the entry the registry now
+//     holds.
 //
 // An edit never dials, deploys, or attaches: its live effects are exactly the
-// registry replacement and the teardown.
+// registry replacement, the teardown, and the derived-state reconciliation.
 func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostUpdateResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostUpdateResponse{}, err
@@ -1460,7 +1464,8 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, hostMutationConflict(name)
 	}
-	if _, ok := m.cfg.hosts.Get(name); !ok {
+	before, ok := m.cfg.hosts.Get(name)
+	if !ok {
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
@@ -1487,6 +1492,16 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	m.cfg.sidecar.replace(entry)
 	m.markMutating(name)
 	m.cfg.mu.Unlock()
+
+	// Live phase, mutex-free. The name's attach record goes first: the retiring
+	// identity's last-known facts and attach error are exactly the name-keyed
+	// resolved state an edit must clear wholesale, and an edit that leaves the
+	// host offline has no teardown of its own to invalidate them (most visibly
+	// when its address changed). It is derived state, not a fence: it is
+	// best-effort by construction, an attach already in flight can legitimately
+	// record again afterwards, and the row's authority for what it shows is that
+	// attach's outcome and the events the teardown emits.
+	m.cfg.state.remove(name)
 
 	// Live phase, mutex-free: the manager's swap blocks on the per-host gate a
 	// supervisor can hold for a whole reconnect/ensure cycle, so holding the
@@ -1526,6 +1541,32 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		// is gone, so there is no row to render.
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+	}
+	// The source's identity owns its derived rows, so a roots edit changes what
+	// the source addresses and everything keyed to the old roots goes with it:
+	// the remote-thread cache entry (its per-source generation included), the
+	// web server's retained last-known-good list, and the source itself, which is
+	// then registered afresh under the new roots. The drop must come FIRST —
+	// registerSource leaves an existing source alone, so re-registering before
+	// dropping would leave the old source and its rows in place, and dropping the
+	// cache entry after re-registering would delete the generation the
+	// registration just minted.
+	//
+	// A non-roots edit changes nothing the source's identity owns: it is the same
+	// source, its cache generation still owns its rows, and the retained list is
+	// still this host's — an edit of the SSH address or a path must not blank the
+	// host's sessions in the tree.
+	if !slices.Equal(before.Roots, stored.Roots) {
+		if m.cfg.remoteCache != nil {
+			m.cfg.remoteCache.RemoveSource(name)
+		}
+		if m.cfg.forgetLastGoodThreads != nil {
+			m.cfg.forgetLastGoodThreads(name)
+		}
+		if m.cfg.sources != nil {
+			m.cfg.sources.Remove(name)
+		}
+		m.registerSource(stored)
 	}
 	m.cfg.mu.Unlock()
 	// The row's retained-state fold is fenced on the entry's generation, so the
