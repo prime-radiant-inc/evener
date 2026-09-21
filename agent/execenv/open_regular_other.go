@@ -9,11 +9,12 @@ import (
 
 // OpenRegularNoFollow is the portable fallback: this platform has no
 // O_NOFOLLOW, so a leaf symlink is followed there (creating one requires
-// elevated privileges on the common non-unix hosts). It keeps the rest of the
-// contract: the open never blocks (O_NONBLOCK), and the descriptor is fstat'd
+// elevated privileges on the common non-unix hosts), and the open is a plain
+// read open — the FIFO-blocking hazard the unix variant guards against is
+// unix-shaped. The rest of the contract holds: the descriptor is fstat'd
 // regular before the caller reads a byte.
 func OpenRegularNoFollow(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_RDONLY|os.O_NONBLOCK, 0)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
