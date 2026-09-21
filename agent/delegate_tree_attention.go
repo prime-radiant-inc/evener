@@ -411,10 +411,7 @@ func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, 
 	if !pending {
 		return "", "", false
 	}
-	if c.attentionRestoreHolds == nil {
-		c.attentionRestoreHolds = make(map[string]int)
-	}
-	c.attentionRestoreHolds[delegateID]++
+	c.holdAttentionRestoreLocked(delegateID)
 	return delegateID, attentionID, true
 }
 
@@ -516,6 +513,16 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 func (c *delegateTreeController) holdAttentionRestore(delegateID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.holdAttentionRestoreLocked(delegateID)
+}
+
+// holdAttentionRestoreLocked is the one definition of the hold mutation: the
+// nil-map initialization plus the counted hold. Both hold sites share it — the
+// wake driver's selection, which already holds c.mu, and the standalone hold,
+// which takes the mutex itself — so the mutation semantics cannot diverge
+// between what tests exercise and what the driver takes. Callers must hold
+// c.mu.
+func (c *delegateTreeController) holdAttentionRestoreLocked(delegateID string) {
 	if c.attentionRestoreHolds == nil {
 		c.attentionRestoreHolds = make(map[string]int)
 	}

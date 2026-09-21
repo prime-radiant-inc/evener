@@ -1027,6 +1027,48 @@ func TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry(t *testing.T
 	}
 }
 
+// TestDelegateAttentionRestoreHold_ExcludedFromReclamationCapacity pins the
+// held check inside isResidentTerminalRuntimeLocked on the capacity path: a
+// held delegate must be excluded from BOTH the resident count and the claim's
+// candidates. If it were counted but not claimable, needed would demand one
+// more slot than the claimable candidates cover, and the admission would fail
+// with a capacity refusal produced solely by the held entry — spurious,
+// because the one free candidate satisfies the truthful requirement exactly.
+func TestDelegateAttentionRestoreHold_ExcludedFromReclamationCapacity(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	c.maxRetainedTerminal = 2
+	held := seedDelegateReclaimRuntime(t, c, "dlg_held", "", time.Unix(5, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_free", "", time.Unix(10, 0).UTC(), false, false)
+	c.holdAttentionRestore("dlg_held")
+	defer c.releaseAttentionRestoreHold("dlg_held")
+
+	// required == maxRetainedTerminal is the boundary: the truthful resident
+	// count — dlg_free alone — requires exactly the one claimable slot, so the
+	// claim must succeed; counting the held delegate too would demand two and
+	// refuse where one free candidate already covers the need.
+	claim, err := c.ClaimRuntimeReclamation(2)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation with a held resident: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("ClaimRuntimeReclamation declined with a held resident; the held delegate must not inflate the capacity requirement")
+	}
+	if got := reclamationDelegateIDs(claim); !reflect.DeepEqual(got, []string{"dlg_free"}) {
+		t.Fatalf("claimed runtimes = %v, want exactly dlg_free; a held delegate is neither capacity nor a candidate", got)
+	}
+	c.mu.Lock()
+	heldRuntime := c.live["dlg_held"].runtime
+	_, heldFenced := c.reclaiming["dlg_held"]
+	c.mu.Unlock()
+	if heldRuntime != held {
+		t.Fatalf("held delegate's runtime was claimed or cleared: got %p, want %p", heldRuntime, held)
+	}
+	if heldFenced {
+		t.Fatal("claim fenced the held delegate's runtime; a held delegate must not be claimed")
+	}
+	_ = c.AbortRuntimeReclamation(claim)
+}
+
 // finishHarnessDelegateGeneration drives one harness delegate through a
 // completed generation — reserve, commit, attach, admit, finish — leaving it
 // durable terminal-idle with a published live runtime.
