@@ -328,6 +328,10 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	for k, v := range rec.head.CredentialHeaders {
 		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
 			credHeaders[k] = e
+		} else if len(missing) > 0 {
+			// An unset reference or failed command silently dropping the
+			// header would leave an auth failure with no local hint.
+			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
 		}
 	}
 	if rec.head.Hidden {
@@ -609,6 +613,10 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 	for k, v := range rec.head.CredentialHeaders {
 		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
 			credHeaders[k] = e
+		} else if len(missing) > 0 {
+			// An unset reference or failed command silently dropping the
+			// header would leave an auth failure with no local hint.
+			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
 		}
 	}
 
@@ -925,6 +933,10 @@ func (r *Registry) buildHeaders(layers ...map[string]string) map[string]string {
 		if v == "" {
 			continue
 		}
+		// A header whose reference or command resolves to nothing drops out
+		// silently by design: display headers carry no credential, so there is
+		// no auth failure to explain — unlike the credential-header loops,
+		// which warn for exactly that reason.
 		expanded, missing := expandEnv(v, r.env)
 		if len(missing) > 0 || expanded == "" {
 			continue

@@ -471,7 +471,10 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 
 // credential resolves an instance's credential in spec §10's order and
 // returns the "no credential" warnings (none for the none/optional-bearer
-// schemes). It never performs I/O beyond a file-existence check.
+// schemes). It performs no I/O beyond a file-existence check and the
+// $(command) expressions an api_key or credential-header value carries,
+// which the shared evaluator resolves against the process environment with
+// its process-wide cache (spec §10).
 func (r *Registry) credential(rec *record) (Credential, []string) {
 	h := rec.head
 	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
@@ -519,7 +522,7 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 			// unset: say so, because "none" alone reads as "nothing is
 			// configured here" to every caller that decides whether a stored key
 			// would ever be sent.
-			cred, warns := none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(missing)))
 			cred.AuthoredLayer = "api_key"
 			return cred, warns
 		}
@@ -528,7 +531,7 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 	if auth, ok := h.CredentialHeaders["Authorization"]; ok && auth != "" {
 		v, missing := expandEnv(auth, r.env)
 		if len(missing) > 0 {
-			cred, warns := none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(missing)))
 			cred.AuthoredLayer = "credential_headers"
 			return cred, warns
 		}
@@ -549,7 +552,9 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 
 // computeInstances derives the instance set (spec §5.1): every explicit
 // entry, plus every curated implicit provider that is not shadowed, not
-// hidden, and whose credential resolves without the network.
+// hidden, and whose credential resolves without the network. The curated
+// layers author no $(command) expressions, so a derived row never runs one
+// here; explicit rows are listed whatever their credential resolves to.
 func (r *Registry) computeInstances() {
 	rank := map[string]int{}
 	for i, id := range r.defaultOrder {

@@ -1,10 +1,13 @@
 package registry
 
 import (
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 func TestExpandEnv(t *testing.T) {
@@ -23,12 +26,50 @@ func TestExpandEnv(t *testing.T) {
 		{"$1", "$1", nil},
 		{"$MISSING", "", []string{"MISSING"}},
 		{"x-$MISSING-$KEY", "x--sk-1", []string{"MISSING"}},
+		{"${KEY:-fallback}", "sk-1", nil},
+		{"${MISSING:-fallback}", "fallback", nil},
+		{"${MISSING:-}", "", nil},
+		{"${MISSING:-$NOT_A_REF}", "$NOT_A_REF", nil},
 	}
 	for _, c := range cases {
 		got, missing := expandEnv(c.in, lookup)
 		if got != c.want || !reflect.DeepEqual(missing, c.missing) {
 			t.Errorf("expandEnv(%q) = %q, %v; want %q, %v", c.in, got, missing, c.want, c.missing)
 		}
+	}
+}
+
+// Command expressions in an api_key-shaped value mint through the shared
+// evaluator's cache; a failed one behaves like an unset variable, worded as a
+// phrase so a warning can carry the command's own diagnosis.
+func TestExpandEnvCommandExpression(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
+	lookup := func(string) (string, bool) { return "", false }
+
+	got, missing := expandEnv("Bearer $(get-gateway-token)", lookup)
+	if got != "Bearer minted" || len(missing) != 0 {
+		t.Fatalf("expandEnv command = %q, %v", got, missing)
+	}
+	if _, missing := expandEnv("Bearer $(get-gateway-token)", lookup); len(missing) != 0 {
+		t.Fatal("second expansion re-ran the command")
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1", runs)
+	}
+
+	valueexpr.ResetForTest()
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "", errors.New("command exited with status 1: session expired")
+	}
+	got, missing = expandEnv("Bearer $(get-gateway-token)", lookup)
+	if got != "Bearer " {
+		t.Fatalf("failed command did not substitute empty: %q", got)
+	}
+	if len(missing) != 1 || !strings.HasPrefix(missing[0], "command expression failed: command exited with status 1: session expired") {
+		t.Fatalf("missing = %v; want the failure phrase", missing)
 	}
 }
 
@@ -46,6 +87,8 @@ func TestScanConfigValue(t *testing.T) {
 		{"${A}${B}", []string{"A", "B"}, ""},
 		{"literal only", nil, "literal only"},
 		{"a$$b", nil, "a$b"},
+		{"${A:-Bearer}", []string{"A"}, ""},
+		{"$(cat /tmp/thing)", nil, ""},
 	} {
 		refs, literal, err := ScanConfigValue(tt.value)
 		if err != nil {
@@ -74,6 +117,9 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		"Bearer ${PORTKEY_KEY}",
 		"Basic ${A}${B}",
 		"Custom $PORTKEY_KEY",
+		"${PORTKEY_KEY:-Bearer}",
+		"${PORTKEY_KEY:-}",
+		"Bearer ${A:-Basic}${B}",
 	} {
 		if err := CheckCredentialHeaderValue(value); err != nil {
 			t.Errorf("CheckCredentialHeaderValue(%q) = %v, want accepted", value, err)
@@ -102,6 +148,14 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		// name, but the content inside ${...} may be the very secret
 		// being protected -- it must never reach the refusal text.
 		{"an invalid name that is itself a secret", "Bearer ${sk-test-PLANTEDSECRET1234}", "invalid environment variable name", "sk-test-PLANTEDSECRET1234"},
+		// A reference's default is literal text standing in the file, so a
+		// key there is a key at rest: only an auth scheme word may stand.
+		{"a smuggled key as a default", "Bearer ${A:-sk-live-abc}", "auth scheme word", "sk-live-abc"},
+		// Command expressions are authored in providers.toml, never through
+		// an authoring surface; the refusal must not echo the command, which
+		// may embed a secret path or argument.
+		{"a command expression", "Bearer $(cat /tmp/planted-secret)", "command expressions are authored in providers.toml", "/tmp/planted-secret"},
+		{"a command expression beside a reference", "$(cat /tmp/planted-secret)${A}", "command expressions are authored in providers.toml", "/tmp/planted-secret"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckCredentialHeaderValue(tt.value)
@@ -139,11 +193,20 @@ func TestCheckEnvRefs(t *testing.T) {
 	if err := checkEnvRefs("Bearer $KEY and ${OTHER}", "api_key"); err != nil {
 		t.Fatal(err)
 	}
+	if err := checkEnvRefs("Bearer ${KEY:-fallback} and $(cat /tmp/thing)", "api_key"); err != nil {
+		t.Fatal(err)
+	}
 	if err := checkEnvRefs("${UNTERMINATED", "api_key"); err == nil {
 		t.Fatal("unterminated ${ must error")
 	}
 	if err := checkEnvRefs("${9BAD}", "api_key"); err == nil {
 		t.Fatal("invalid name must error")
+	}
+	if err := checkEnvRefs("$(unterminated", "api_key"); err == nil {
+		t.Fatal("unterminated $( must error")
+	}
+	if err := checkEnvRefs("$()", "api_key"); err == nil {
+		t.Fatal("empty command must error")
 	}
 	// checkEnvRefs is what config load time uses to tell the user which
 	// field is broken (issue #718). The braces may hold a pasted secret

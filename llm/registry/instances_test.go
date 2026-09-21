@@ -2,12 +2,15 @@ package registry
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 type fakeCreds map[string]string
@@ -670,4 +673,85 @@ base_url = "https://rename-inline.example.test/v1"
 			t.Fatal("work: want false, freeing a non-curated name recreates nothing")
 		}
 	})
+}
+
+// A credential whose api_key is a command expression resolves like any other
+// inline credential: the command mints the value, the shared evaluator caches
+// it across resolutions, and a failing command behaves like an unset variable
+// — warning plus no credential, retried on the next resolution.
+func TestCredentialFromCommandExpression(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(get-gateway-token)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Value != "minted-token" || res.Credential.Source != "api_key" {
+		t.Fatalf("credential = %+v; want minted-token from api_key", res.Credential)
+	}
+	// Resolve again: the load-time derivation and every resolution share the
+	// evaluator's cache, so one command run serves them all.
+	if _, err := r.Resolve("gw/house-model"); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (shared cache)", runs)
+	}
+
+	valueexpr.ResetForTest()
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "", errors.New("command exited with status 1: session expired")
+	}
+	failing := fixtureLoad(t, nil, config)
+	res, err = failing.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" {
+		t.Fatalf("credential source = %q; want none", res.Credential.Source)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "no credential (command expression failed: command exited with status 1: session expired)") {
+		t.Fatalf("warnings = %v; want the command failure wording", res.Warnings)
+	}
+}
+
+// A command expression in a credential header behaves like an unset
+// reference: the header drops out of the resolution with a warning naming it,
+// so an auth failure has a local explanation.
+func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "", errors.New("command timed out")
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Gateway-Key\"\n" +
+		"credential_headers = { \"X-Gateway-Key\" = '''$(get-gateway-token)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
+		t.Fatal("a failed command expression must drop the credential header")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), `credential header "X-Gateway-Key": command expression failed: command timed out`) {
+		t.Fatalf("warnings = %v; want the header failure wording", res.Warnings)
+	}
 }

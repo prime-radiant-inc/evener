@@ -928,7 +928,13 @@ func (r *Registry) varLookupWith(rec *record, t Transport, warn func(string)) fu
 		if v, ok := rec.userVars[name]; ok {
 			expanded, missing := expandEnv(v, r.env)
 			for _, m := range missing {
-				warn("unresolved variable " + m)
+				if strings.ContainsAny(m, " \t") {
+					// A failed command expression, already worded by the
+					// adapter; a variable name never contains a space.
+					warn(m)
+				} else {
+					warn("unresolved variable " + m)
+				}
 			}
 			switch {
 			case len(missing) > 0:
