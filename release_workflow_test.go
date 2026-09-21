@@ -93,6 +93,12 @@ func TestBinariesWorkflowSignsDarwinBeforePublishing(t *testing.T) {
 	if !workflowRuns(job.Steps, "codesign --force") {
 		t.Error("sign-macos does not sign the Darwin binaries")
 	}
+	if !workflowRuns(job.Steps, `grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION"`) {
+		t.Error("sign-macos does not validate the configured Developer ID identity")
+	}
+	if workflowRuns(job.Steps, `MACOS_DEVELOPER_ID_APPLICATION ($APPLE_TEAM_ID)`) {
+		t.Error("sign-macos validates the identity with a duplicated team suffix")
+	}
 	if !workflowRuns(job.Steps, "xcrun notarytool submit") {
 		t.Error("sign-macos does not submit the Darwin payload for notarization")
 	}

@@ -104,7 +104,7 @@ jobs:
             -T /usr/bin/codesign -T /usr/bin/security
           identities="$(security find-identity -v -p codesigning "$keychain")"
           printf '%s\n' "$identities"
-          grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION ($APPLE_TEAM_ID)" <<<"$identities" || {
+          grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION" <<<"$identities" || {
             echo "Imported keychain does not contain the expected Developer ID identity" >&2
             exit 1
           }
