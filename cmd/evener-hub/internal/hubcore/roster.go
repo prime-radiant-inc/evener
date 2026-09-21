@@ -405,6 +405,14 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte{1})
 		}
 		_, _ = h.Write([]byte{0})
+		// An escalation moving while the status holds still changes the
+		// Clear bit list rows advertise — the fallback folds it out the way
+		// the daemon's clear gate does — so it must bump the fingerprint like
+		// its sibling ask flag, or onChange never invalidates.
+		if bySess[id].PendingEscalation {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
 		// The daemon's capability answer is per-session observable state in
 		// the same sense the status is: bits fold daemon state the status
 		// string itself does not (Clear folds the clear-blocked reason, Send
