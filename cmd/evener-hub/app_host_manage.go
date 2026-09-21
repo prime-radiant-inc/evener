@@ -112,14 +112,15 @@ type hostManagerConfig struct {
 	// mu serializes add/remove/update read-modify-write cycles so concurrent calls
 	// cannot lose updates or interleave a save with a registry mutation.
 	mu sync.Mutex
-	// mutating holds the names with a mutation in flight: add, remove, and
-	// update all mark the name in their commit phase, after the durable change
-	// landed and the store row moved with it, and clear it in their finish
-	// phase. The window a mutation releases the mutex for — a teardown that
-	// blocks on the per-host gate a supervisor's reconnect/ensure cycle can hold
-	// for minutes — must admit no second mutation of the same name, so every
-	// mutation refuses a marked name until its own finish clears the mark.
-	// Guarded by mu.
+	// mutating holds the names with a remove or update in flight: both mark the
+	// name in their commit phase, after the durable change landed and the store
+	// row moved with it, and clear it in their finish phase. Add needs no mark
+	// because its whole mutation is atomic under mu, but it refuses a name that
+	// remove or update already marked. The window a mutation releases the mutex
+	// for — a teardown that blocks on the per-host gate a supervisor's
+	// reconnect/ensure cycle can hold for minutes — must admit no second mutation
+	// of the same name, so every mutation refuses a marked name until its own
+	// finish clears the mark. Guarded by mu.
 	mutating map[string]struct{}
 }
 
@@ -714,9 +715,10 @@ func hostManageHandler[Req, Resp any](h func(context.Context, Req) (Resp, error)
 // the live host registry, and the selected config path through WebConfig, so
 // the surface is wired in production (a nil manager or config path there —
 // tests, embedders — leaves the fallbacks: no channel teardown, no sidecar
-// persistence). navigation, when non-nil, is invalidated after add/remove
-// commits so the manifest's sources converge without waiting for the next
-// refresh tick. It returns the manager so tests can drive it directly.
+// persistence). navigation, when non-nil, is invalidated after successful
+// add/remove/update commits so the manifest's sources converge without waiting
+// for the next refresh tick. It returns the manager so tests can drive it
+// directly.
 func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, hosts *hostreg.Registry, navigation *NavigationService, logf func(format string, args ...any)) *hubHostManager {
 	m := newHubHostManager(sources, cfg.RemoteHostSSHManager, cfg, cfg.RemoteHostConfigPath, hosts, logf)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAdd, hostManageHandler(func(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
@@ -1263,19 +1265,19 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 // returns), the sidecar row's drop in the same
 // critical section (the store is what every later save derives its contents
 // from, so a row kept past the save would let a concurrent Add or Remove
-// re-persist an entry this removal already committed), and the removing mark
+// re-persist an entry this removal already committed), and the mutation mark
 // that fences the name. The mutex then releases for the teardown itself: the
 // manager-owned RemoveHost blocks on the per-host gate a supervisor holds for
 // a whole reconnect/ensure cycle and on the ssh child's exit, so holding the
 // mutation mutex across it would freeze every concurrent host/list,
 // host/status, and host/add behind one host's removal.
-// The mark fences the window instead: Add and a second Remove refuse the
-// name, so nothing re-exposes or double-tears a host whose removal is in
-// flight. The finish phase retakes the mutex, clears the mark, and completes
-// the bookkeeping. A teardown that fails rolls the sidecar forward again to
-// keep the entry (rollbackSidecar over the live snapshot), so the durable
-// state never forgets a host the live set still holds, and the cleared mark
-// leaves the name retryable. Nothing is resurrected: the entry, its source,
+// The mark fences the window instead: Add, Update, and a second Remove refuse
+// the name, so nothing re-exposes, edits, or double-tears a host whose removal
+// is in flight. The finish phase retakes the mutex, clears the mark, and
+// completes the bookkeeping. A teardown that fails rolls the sidecar forward
+// again to keep the entry (rollbackSidecar over the live snapshot), so the
+// durable state never forgets a host the live set still holds, and the cleared
+// mark leaves the name retryable. Nothing is resurrected: the entry, its source,
 // its channel, and its retained attach state are all gone by the time a
 // successful Remove returns — and so are its cached remote-thread rows, so
 // its sessions stop rendering with the removal instead of lingering live
