@@ -123,6 +123,14 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 		_ = os.Remove(path) // a partial file must not poison the content-addressed name for retries
 		return err
 	}
+	// The file must be on disk before the note naming it can be recorded in
+	// the transcript: a crash right after the turn is persisted would otherwise
+	// leave the model holding a promised path whose bytes never landed.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(path)
 		return err
