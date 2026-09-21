@@ -1231,9 +1231,10 @@ function olderItemAddsCoverage(
 ): boolean {
   if (matches.length === 0) return !fullySupersededToolResult(older, freshToolCandidates, toolCallCallIds);
   if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
-    // The fold carries no text onto a surviving call: the older text only
-    // counts while the merged item hosting it survives.
-    return matchedFieldSurvivesFold(older, "text", groupTurn, view);
+    // The fold carries no text onto a surviving call: the older text counts
+    // only while the merged item hosting it survives. A discarded result can
+    // still contribute surviving fields, so keep walking instead of returning.
+    if (matchedFieldSurvivesFold(older, "text", groupTurn, view)) return true;
   }
   return Object.keys(older).some((field) => {
     if (itemNonCoverageFields.has(field)) return false;
@@ -1273,10 +1274,12 @@ function olderTurnAddsCoverage(
         !absentForCoverage(older[field], true) && matches.every((turn) => absentForCoverage(turn[field], true)),
     )
   ) {
-    // The claimed turn fields ride the merged group turn, and the fold drops
-    // that turn once it has folded every item away — usage on a turn the
-    // fold drops never reaches the returned history.
-    return turnSurvivesFold(groupTurn, view);
+    // The claimed turn fields ride the merged group turn, which the fold
+    // drops once it has folded every item away — usage on a turn the fold
+    // drops never reaches the returned history. The turn's items can still
+    // contribute data the fold carries onto a surviving call, so keep
+    // checking instead of returning.
+    if (turnSurvivesFold(groupTurn, view)) return true;
   }
   // The fold is global across turns: an older result in a turn that matches
   // nothing can still be superseded by a fresh call living in another turn,

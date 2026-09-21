@@ -3738,6 +3738,103 @@ test("mergeTurnHistory does not count fallback fields on a fold-discarded matche
   expect(items.map((item) => item.id)).not.toContain("item_tool_result_1");
 });
 
+test("mergeTurnHistory counts surviving result output despite a dropped turn's usage", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-older-result",
+        status: "completed",
+        usage: { inputTokens: 30, outputTokens: 4 },
+        items: [
+          {
+            id: "item_tool_result_0_0",
+            turnId: "turn-older-result",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-cross-turn",
+            text: "",
+            output: "older output",
+            status: "completed",
+            completedAt: new Date(10).toISOString(),
+          },
+        ],
+      },
+    ],
+    [
+      toolModelTurn("turn-fresh-call", {
+        id: "item_tool_1_0",
+        callId: "call-cross-turn",
+        status: "completed",
+        completedAt: new Date(20).toISOString(),
+      }),
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("turn-fresh-call");
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "item_tool_1_0", output: "older output" });
+  expect(merged.turns[0]?.usage).toBeUndefined();
+});
+
+test("mergeTurnHistory counts surviving output despite a folded result's discarded text", () => {
+  let model = testHydrate({
+    turns: [{ id: "turn-live", status: "inProgress", itemsView: "full", items: [] }],
+  });
+  const startItem = (item: ThreadItem, at: number): ThreadModel =>
+    applyNotification(
+      model,
+      { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn-live", item } },
+      at,
+    );
+  // Wire items without text land with omitted text presence, and the live path
+  // appends both without folding the result into its call.
+  model = startItem(
+    { type: "commandExecution", id: "item_tool_1", turnId: "turn-live", toolName: "shell", callId: "call-text" },
+    2000,
+  );
+  model = startItem(
+    {
+      type: "commandExecution",
+      id: "item_tool_result_1",
+      turnId: "turn-live",
+      toolName: "shell",
+      callId: "call-text",
+      status: "completed",
+    },
+    2100,
+  );
+
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-page",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_result_1",
+            turnId: "turn-page",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-text",
+            text: "older settled text",
+            output: "older output",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    model.turns,
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns).toHaveLength(1);
+  const items = merged.turns[0]?.items ?? [];
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ id: "item_tool_1", output: "older output" });
+  expect(items[0]?.text).toBe("");
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [
