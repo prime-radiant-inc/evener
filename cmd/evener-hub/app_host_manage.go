@@ -109,17 +109,18 @@ type hostManagerConfig struct {
 	// logf is the hub's logging path for sidecar load problems; nil drops
 	// the lines (tests that never load a broken file).
 	logf func(format string, args ...any)
-	// mu serializes add/remove read-modify-write cycles so concurrent calls
+	// mu serializes add/remove/update read-modify-write cycles so concurrent calls
 	// cannot lose updates or interleave a save with a registry mutation.
 	mu sync.Mutex
-	// removing holds the names whose removal is in flight: the durable sidecar
-	// save already dropped the entry, and the sidecar row left the store with
-	// it in the same commit phase (so no later save can re-persist it), while
-	// the channel teardown runs without mu held. Add and a second Remove
-	// refuse a marked name until the removal's finish phase clears the mark,
-	// so the released window cannot admit a re-add that races the finish or a
-	// second teardown of the same host. Guarded by mu.
-	removing map[string]struct{}
+	// mutating holds the names with a mutation in flight: add, remove, and
+	// update all mark the name in their commit phase, after the durable change
+	// landed and the store row moved with it, and clear it in their finish
+	// phase. The window a mutation releases the mutex for — a teardown that
+	// blocks on the per-host gate a supervisor's reconnect/ensure cycle can hold
+	// for minutes — must admit no second mutation of the same name, so every
+	// mutation refuses a marked name until its own finish clears the mark.
+	// Guarded by mu.
+	mutating map[string]struct{}
 }
 
 // hostSidecarStore is the durable sidecar: UI-added entries in add order.
@@ -412,6 +413,38 @@ func (s *hostSidecarStore) without(name string) []hostreg.Host {
 	return out
 }
 
+// replace swaps entry in for the entry already stored under entry.Name, in
+// place, so the file keeps the order it had: an edit is a minimal change to it
+// rather than a reordering nothing asked for. Callers hold hostManagerConfig.mu.
+func (s *hostSidecarStore) replace(entry hostreg.Host) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = replaceEntry(s.entries, entry)
+}
+
+// withReplaced returns the entries a durable replace would write: the stored
+// entries with entry swapped in for the same-name one, in place. Callers hold
+// hostManagerConfig.mu.
+func (s *hostSidecarStore) withReplaced(entry hostreg.Host) []hostreg.Host {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return replaceEntry(append([]hostreg.Host(nil), s.entries...), entry)
+}
+
+// replaceEntry swaps entry in for the same-name entry, in place, appending when
+// the name is absent — unreachable on the update path, whose commit checks
+// liveness first, but keeping this helper total rather than silently dropping an
+// edit.
+func replaceEntry(entries []hostreg.Host, entry hostreg.Host) []hostreg.Host {
+	for i, e := range entries {
+		if e.Name == entry.Name {
+			entries[i] = entry
+			return entries
+		}
+	}
+	return append(entries, entry)
+}
+
 // isSidecar reports whether name is a live sidecar entry.
 func (s *hostSidecarStore) isSidecar(name string) bool {
 	s.mu.Lock()
@@ -557,11 +590,12 @@ func (s *hostAttachState) remove(name string) {
 }
 
 // hubHostManager serves evener/host/add, evener/host/list,
-// evener/host/status, and evener/host/remove: the slice-1 host registry
-// surface. It owns no connections: list and status resolve through the
-// attached-only seams, add validates hub.toml-authoritatively and wires the
-// new host's source with the same seams startup uses, and remove tears the
-// host down through the manager's atomic RemoveHost. It never dials.
+// evener/host/status, evener/host/remove, and evener/host/update: the host
+// registry surface. It owns no connections: list and status resolve through
+// the attached-only seams, add validates hub.toml-authoritatively and wires the
+// new host's source with the same seams startup uses, remove tears the host
+// down through the manager's atomic RemoveHost, and update swaps its entry and
+// retires its channel through UpdateHost. It never dials.
 //
 // It is controller-LOCAL: these methods act on the controller's own config and
 // channels, so they MUST NOT be added to remoteHostAdminMethods (pinned by
@@ -604,7 +638,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		handshake:        cfg.RemoteHostHandshake,
 		facts:            cfg.RemoteHostFacts,
 		state:            newHostAttachState(),
-		removing:         map[string]struct{}{},
+		mutating:         map[string]struct{}{},
 		logf:             logf,
 	}}
 	entries, err := loadHostSidecar(m.cfg.sidecarPath)
@@ -673,8 +707,8 @@ func hostManageHandler[Req, Resp any](h func(context.Context, Req) (Resp, error)
 	}
 }
 
-// registerHostManageHandlers installs the four slice-1 host-management
-// handlers. hosts is the one live registry the server constructor resolved —
+// registerHostManageHandlers installs the add/list/status/remove/update
+// host-management handlers. hosts is the one live registry the server constructor resolved —
 // the same instance the attach handler validates against — and the manager
 // and hub.toml path come from cfg: main.go threads the live sshconn.Manager,
 // the live host registry, and the selected config path through WebConfig, so
@@ -696,6 +730,17 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostStatus, hostManageHandler(m.Status))
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRemove, hostManageHandler(func(ctx context.Context, params appwire.HostRemoveParams) (appwire.HostRemoveResponse, error) {
 		resp, err := m.Remove(ctx, params)
+		if err == nil && navigation != nil {
+			navigation.Invalidate(navigationChangeHint{Sources: true})
+		}
+		return resp, err
+	}))
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostUpdate, hostManageHandler(func(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostUpdateResponse, error) {
+		resp, err := m.Update(ctx, params)
+		// An edit can change the host's roots, which is what a source's identity
+		// addresses; both add and remove invalidate the manifest's sources on
+		// commit, and an edit that moves a source must converge the same way
+		// rather than wait for the next refresh tick.
 		if err == nil && navigation != nil {
 			navigation.Invalidate(navigationChangeHint{Sources: true})
 		}
@@ -870,33 +915,32 @@ func (m *hubHostManager) registerSource(entry hostreg.Host) {
 	})
 }
 
-// markRemoving records name as mid-removal, in the commit phase that already
-// saved the sidecar without the entry and dropped its store row. Callers
-// hold mu.
-func (m *hubHostManager) markRemoving(name string) {
-	m.cfg.removing[name] = struct{}{}
+// markMutating records name as having a mutation in flight, in the commit phase
+// that already made its durable change. Callers hold mu.
+func (m *hubHostManager) markMutating(name string) {
+	m.cfg.mutating[name] = struct{}{}
 }
 
-// unmarkRemoving clears the removal mark in the finish phase, on the success
-// and the failure exit alike: a successful removal leaves the name addable
-// again, a failed one leaves it fully intact and retryable. Callers hold mu.
-func (m *hubHostManager) unmarkRemoving(name string) {
-	delete(m.cfg.removing, name)
+// unmarkMutating clears the mark in the finish phase, on the success and the
+// failure exit alike: a successful mutation leaves the name mutable again, a
+// failed one leaves it fully intact and retryable. Callers hold mu.
+func (m *hubHostManager) unmarkMutating(name string) {
+	delete(m.cfg.mutating, name)
 }
 
-// isRemoving reports whether name's removal is currently in flight — its
-// durable commit landed and its teardown has not finished. Callers hold mu.
-func (m *hubHostManager) isRemoving(name string) bool {
-	_, marked := m.cfg.removing[name]
+// isMutating reports whether name has a mutation in flight — its durable commit
+// landed and its live phase has not finished. Callers hold mu.
+func (m *hubHostManager) isMutating(name string) bool {
+	_, marked := m.cfg.mutating[name]
 	return marked
 }
 
-// hostRemovingConflict is the typed refusal for a name whose removal is in
-// flight: the conflict code tells the caller the name is transiently held and
-// retryable, rather than mislabeling it a duplicate (Add) or file-declared
-// (a second Remove). It commits nothing.
-func hostRemovingConflict(name string) error {
-	return appwire.Conflict(fmt.Sprintf("host %q: removal in progress; retry once the removal finishes", name))
+// hostMutationConflict is the typed refusal for a name with a mutation already
+// in flight: the conflict code tells the caller the name is transiently held and
+// retryable, rather than mislabeling it a duplicate (Add) or file-declared (a
+// second Remove). It commits nothing.
+func hostMutationConflict(name string) error {
+	return appwire.Conflict(fmt.Sprintf("host %q: a mutation is already in progress; retry once it finishes", name))
 }
 
 // rowOrigin is the list-row origin for name: the sidecar origin while the name
@@ -907,7 +951,7 @@ func hostRemovingConflict(name string) error {
 // origin truthful instead of relabeling a mid-removal host hub.toml-declared.
 // Callers hold mu.
 func (m *hubHostManager) rowOrigin(name string) string {
-	if m.cfg.sidecar.isSidecar(name) || m.isRemoving(name) {
+	if m.cfg.sidecar.isSidecar(name) || m.isMutating(name) {
 		return hostOriginSidecar
 	}
 	return hostOriginHubTOML
@@ -1003,9 +1047,9 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// that window would race the removal's finish — a re-registered source
 	// or sidecar row the finish then drops, or a live channel for a host
 	// being removed. The refusal commits nothing, the sidecar write included.
-	if m.isRemoving(entry.Name) {
+	if m.isMutating(entry.Name) {
 		m.cfg.mu.Unlock()
-		return appwire.HostRow{}, hostRemovingConflict(entry.Name)
+		return appwire.HostRow{}, hostMutationConflict(entry.Name)
 	}
 	if _, ok := m.cfg.hosts.Get(entry.Name); ok {
 		m.cfg.mu.Unlock()
@@ -1245,9 +1289,9 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// change together, under the mutation mutex, as one read-modify-write
 	// cycle.
 	m.cfg.mu.Lock()
-	if m.isRemoving(name) {
+	if m.isMutating(name) {
 		m.cfg.mu.Unlock()
-		return appwire.HostRemoveResponse{}, hostRemovingConflict(name)
+		return appwire.HostRemoveResponse{}, hostMutationConflict(name)
 	}
 	host, ok := m.cfg.hosts.Get(name)
 	if !ok {
@@ -1279,7 +1323,7 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// would resurrect the host this call is removing.
 	m.cfg.sidecar.remove(host.Name)
 	// The mark fences the name for the window the mutex is about to release.
-	m.markRemoving(host.Name)
+	m.markMutating(host.Name)
 	m.cfg.mu.Unlock()
 
 	// Teardown, mutex-free: with a manager wired, RemoveHost drops the
@@ -1300,7 +1344,7 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// clears on both exits — a success leaves the name addable again, a
 	// failure leaves it fully intact and retryable.
 	m.cfg.mu.Lock()
-	m.unmarkRemoving(host.Name)
+	m.unmarkMutating(host.Name)
 	if teardownErr != nil {
 		// The teardown failed before dropping anything live (RemoveHost
 		// refuses ahead of its registry step), so the removal un-commits: the
@@ -1347,4 +1391,143 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		Origin:  hostOriginSidecar,
 		Removed: true,
 	}}, nil
+}
+
+// Update applies one edit to a live sidecar host entry: the durable sidecar
+// entry, the store row, the live registry entry, and the host's channel. Name is
+// immutable — it is the target this call addresses, never a value it changes,
+// because it keys source IDs, cached rows, manager state, and the file's own
+// entries. hub.toml-declared names are refused (edit the file); unknown names
+// are InvalidParams; a mutation already in flight for the name is a Conflict.
+//
+// The three phases mirror Remove's, which is what keeps the durable-first order
+// and the compensation paths in one shape:
+//
+//   - Commit, under the mutation mutex: refuse an in-flight mutation on the
+//     name, require a live sidecar entry, validate the entry BEFORE anything is
+//     written — hostreg.ValidateEntry is the same call the add flow runs, so a
+//     refusal commits nothing and an entry the registry would reject never
+//     reaches the file — persist durable-first with one atomic write that
+//     replaces the entry in place, replace the store row in the same critical
+//     section, set the mark, release the mutex.
+//   - Live, mutex-free: with a manager wired, manager.UpdateHost replaces the
+//     registry entry and retires the channel under the per-host gate as one
+//     atomic step; without one the registry's own Update is the whole story,
+//     exactly as remove falls back. An error means nothing live changed: the
+//     registry refuses ahead of its own swap.
+//   - Finish, under the mutex: clear the mark, compensate a failed live phase
+//     by rolling the sidecar back to the live set as it stands now — not a
+//     pre-commit copy, so a concurrent add or removal that committed in this
+//     window survives — and build the response row from the entry the registry
+//     now holds.
+//
+// An edit never dials, deploys, or attaches: its live effects are exactly the
+// registry replacement and the teardown.
+func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdateParams) (appwire.HostUpdateResponse, error) {
+	if err := guardControllerLocalHosts(ctx); err != nil {
+		return appwire.HostUpdateResponse{}, err
+	}
+	name := strings.TrimSpace(params.Name)
+	// params.Entry.Name is deliberately not read: the update's target is
+	// params.Name, and not reading the entry's own name is what makes a rename
+	// unrepresentable rather than merely refused. Name is immutable — it keys
+	// source IDs, cached rows, manager state, and the file's own entries — so the
+	// request has nowhere to put a new one.
+	entry := hostreg.Normalize(hostreg.Host{
+		Name:       name,
+		SSH:        params.Entry.Address,
+		User:       params.Entry.User,
+		KeyPath:    params.Entry.KeyPath,
+		EvenerPath: params.Entry.EvenerPath,
+		ConfigPath: params.Entry.ConfigPath,
+		Addr:       params.Entry.Addr,
+		Roots:      params.Entry.Roots,
+	})
+	// Validate before the write: a refusal here commits nothing, and an entry
+	// the registry would reject never reaches the file. The registry re-runs the
+	// same validation under its own lock; this check is what keeps the file
+	// clean, not a substitute for it.
+	if err := hostreg.ValidateEntry(entry); err != nil {
+		return appwire.HostUpdateResponse{}, hostValidationRefusal(name, err)
+	}
+
+	// Commit phase: the durable state and the in-memory sidecar change together,
+	// under the mutation mutex, as one read-modify-write cycle.
+	m.cfg.mu.Lock()
+	if m.isMutating(name) {
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, hostMutationConflict(name)
+	}
+	if _, ok := m.cfg.hosts.Get(name); !ok {
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+	}
+	if !m.cfg.sidecar.isSidecar(name) {
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("host %q is declared in hub.toml; edit the file to change it", name))
+	}
+	// Persist first: the durable sidecar holds the edited entry before any live
+	// state changes, so a save failure leaves the host fully intact and the
+	// caller can retry. A failure the rename already committed leaves the file
+	// holding the edit while the live set still holds the old entry, so it is
+	// compensated back before the refusal returns.
+	if err := m.saveSidecar(m.cfg.sidecar.withReplaced(entry)); err != nil {
+		if sidecarRenameCommitted(err) {
+			err = m.rollbackSidecar(m.cfg.sidecar.snapshot(), err)
+		}
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, err
+	}
+	// The store row moves with the save it belongs to, in the same critical
+	// section: a concurrent Add or Remove committing in the window below derives
+	// its save from the store, and a row still holding the old entry would
+	// re-persist it, undoing the edit on the next start.
+	m.cfg.sidecar.replace(entry)
+	m.markMutating(name)
+	m.cfg.mu.Unlock()
+
+	// Live phase, mutex-free: the manager's swap blocks on the per-host gate a
+	// supervisor can hold for a whole reconnect/ensure cycle, so holding the
+	// mutation mutex across it would freeze every concurrent host/list,
+	// host/status, and host/add. The mark fences the window instead.
+	var liveErr error
+	if m.cfg.manager != nil {
+		if err := m.cfg.manager.UpdateHost(entry); err != nil {
+			liveErr = fmt.Errorf("update host %q: %w", name, err)
+		}
+	} else if err := m.cfg.hosts.Update(entry); err != nil {
+		liveErr = err
+	}
+
+	// Finish phase: the mutex comes back for the bookkeeping, and the mark clears
+	// on both exits.
+	m.cfg.mu.Lock()
+	m.unmarkMutating(name)
+	if liveErr != nil {
+		// The live phase refused ahead of changing anything, so the edit
+		// un-commits: the store row goes back to the live entry and the file
+		// follows it. The rollback saves the live snapshot, not a pre-commit
+		// copy: concurrent Adds and Removes may have committed in the window,
+		// and their entries must survive.
+		if live, ok := m.cfg.hosts.Get(name); ok {
+			m.cfg.sidecar.replace(live)
+		}
+		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), liveErr)
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, err
+	}
+	stored, ok := m.cfg.hosts.Get(name)
+	if !ok {
+		// A concurrent removal took the name while this edit's teardown ran —
+		// impossible for the same name through this manager (the mark fences it),
+		// but a directly driven registry could still have dropped it: the entry
+		// is gone, so there is no row to render.
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+	}
+	m.cfg.mu.Unlock()
+	// The row's retained-state fold is fenced on the entry's generation, so the
+	// reread above is what makes the returned row the identity this call
+	// committed.
+	return appwire.HostUpdateResponse{Host: m.hostRow(ctx, stored, hostOriginSidecar)}, nil
 }
