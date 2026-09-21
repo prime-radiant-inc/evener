@@ -1531,16 +1531,16 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// source IDs, cached rows, manager state, and the file's own entries — so the
 	// request has nowhere to put a new one.
 	entry := hostreg.Normalize(hostEntryToHost(name, params.Entry))
-	// Validate before the write: a refusal here commits nothing, and an entry
-	// the registry would reject never reaches the file. The registry re-runs the
-	// same validation under its own lock; this check is what keeps the file
-	// clean, not a substitute for it.
-	if err := hostreg.ValidateEntry(entry); err != nil {
-		return appwire.HostUpdateResponse{}, hostValidationRefusal(name, err)
-	}
-
 	// Commit phase: the durable state and the in-memory sidecar change together,
-	// under the mutation mutex, as one read-modify-write cycle.
+	// under the mutation mutex, as one read-modify-write cycle. Its refusals are
+	// ordered as the surface specifies: the in-flight mark first (a conflict — the
+	// name is transiently held and the caller retries), then the target itself —
+	// a live sidecar entry, so a hub.toml-declared name gets the edit-the-file
+	// refusal and a gone or tombstone-only name is not found — and only then the
+	// entry's shape. Resolving the target before validating the entry is what
+	// keeps a generic field refusal from masking the more specific target refusal
+	// an invalid entry aimed at a hub.toml name or an unknown name would
+	// otherwise hide.
 	m.cfg.mu.Lock()
 	if m.isMutating(name) {
 		m.cfg.mu.Unlock()
@@ -1554,6 +1554,16 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	if !m.cfg.sidecar.isSidecar(name) {
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("host %q is declared in hub.toml; edit the file to change it", name))
+	}
+	// Validate before the write: a refusal here commits nothing, and an entry the
+	// registry would reject never reaches the file. The registry re-runs the same
+	// validation under its own lock; this check is what keeps the file clean, not
+	// a substitute for it. It runs last of the commit-phase refusals so an invalid
+	// entry still gets the target's own refusal above, and still before the
+	// durable save so nothing is written when it refuses.
+	if err := hostreg.ValidateEntry(entry); err != nil {
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, hostValidationRefusal(name, err)
 	}
 	// Persist first: the durable sidecar holds the edited entry before any live
 	// state changes, so a save failure leaves the host fully intact and the

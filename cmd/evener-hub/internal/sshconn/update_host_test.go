@@ -347,8 +347,8 @@ func TestUpdateHostRetireHookNotRunOnRefusal(t *testing.T) {
 	m := newTestManager(t, reg, fr, Options{})
 	called := 0
 	hook := func(hostreg.Host) { called++ }
-	// An unknown name: the registry's Update reports ErrUnknownHost before the
-	// teardown or the hook.
+	// An absent name: the pre-swap admission reports ErrUnknownHost before the
+	// teardown, the swap seam, or the hook.
 	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}, hook); !errors.Is(err, hostreg.ErrUnknownHost) {
 		t.Fatalf("UpdateHost(unknown) = %v, want ErrUnknownHost", err)
 	}
@@ -362,26 +362,30 @@ func TestUpdateHostRetireHookNotRunOnRefusal(t *testing.T) {
 	}
 }
 
-// TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName pins the teardown's
-// target and the hook's negative contract when a directly driven registry
-// inserts the name between the pre-swap capture and the swap: the capture is
-// absent, the swap still succeeds, and there is no identity this call captured
-// to key the teardown to or to hand the hook. The devDeployed sentinel under
-// the empty name is state a teardown keyed to "" would sweep — and "" is never
-// a host, so its survival proves the empty name was not the target. Pre-fix the
-// teardown targeted the capture's empty name and the hook ran with a
-// zero-generation entry, which would clear a caller's record without advancing
-// its fence.
+// TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName pins the refusal's
+// precedence over every live step when a directly driven registry would insert
+// the name between the pre-swap capture and the swap. The capture is taken
+// first thing under the gate, and the name is absent there, so UpdateHost now
+// refuses it with ErrUnknownHost before the teardown, before the
+// beforeUpdateHostSwap seam that would have inserted the late entry, and before
+// the swap: the whole update is a no-op rather than a successful swap over an
+// absent capture. The devDeployed sentinel under the empty name is state a
+// teardown keyed to "" would sweep — and "" is never a host — so its survival,
+// the unfired seam, and the untouched registry together prove the empty name
+// was never a teardown target.
 func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 	reg := testRegistry(t)
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	seamRan := false
 	m := newTestManager(t, reg, fr, Options{
 		beforeUpdateHostSwap: func(name string) {
-			// The directly driven insert: the name appears after the capture and
-			// before the swap, so hadCaptured is false while Update succeeds.
-			if err := reg.Add(hostreg.Host{Name: name, SSH: "late.example"}); err != nil {
-				t.Fatalf("direct registry insert: %v", err)
-			}
+			// The directly driven insert the old order reached: the name appears
+			// after the capture and before the swap. The refusal returns before this
+			// seam now, so it must never run. Recorded rather than failed here: this
+			// runs inside the gate hold, and a t.Fatalf would Goexit out of UpdateHost
+			// without releasing the gate it holds.
+			seamRan = true
+			_ = reg.Add(hostreg.Host{Name: name, SSH: "late.example"})
 		},
 	})
 	m.mu.Lock()
@@ -391,11 +395,14 @@ func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 	called := 0
 	if err := m.UpdateHost(hostreg.Host{Name: "ghost", SSH: "ghost.example"}, func(hostreg.Host) {
 		called++
-	}); err != nil {
-		t.Fatalf("UpdateHost = %v, want nil", err)
+	}); !errors.Is(err, hostreg.ErrUnknownHost) {
+		t.Fatalf("UpdateHost(absent name) = %v, want ErrUnknownHost", err)
+	}
+	if seamRan {
+		t.Fatal("beforeUpdateHostSwap ran; the refusal must precede the swap")
 	}
 	if called != 0 {
-		t.Fatalf("the retire hook ran %d times with no pre-swap capture, want 0", called)
+		t.Fatalf("the retire hook ran %d times on a refusal, want 0", called)
 	}
 	m.mu.Lock()
 	_, emptySurvived := m.devDeployed[""]
@@ -403,8 +410,42 @@ func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 	if !emptySurvived {
 		t.Fatal("the teardown ran under the empty name, want it keyed to the gate key")
 	}
-	if after, ok := reg.Get("ghost"); !ok || after.SSH != "ghost.example" {
-		t.Fatalf("registry after the update = %+v, want the swapped entry", after)
+	if _, ok := reg.Get("ghost"); ok {
+		t.Fatal("the refused update registered the name, want nothing live changed")
+	}
+}
+
+// TestUpdateHostDroppedLiveNameRefusedWithChannelAttached pins the contract the
+// pre-swap absence refusal exists for: a name an external, directly driven
+// registry change dropped — bypassing this manager's own RemoveHost — while its
+// host is still attached. UpdateHost must answer hostreg's ErrUnknownHost with
+// the live channel untouched, because the caller's contract is that an error
+// means nothing live changed. Before the refusal moved ahead of the teardown,
+// this call retired the still-live channel first and only then had
+// Registry.Update refuse, disconnecting a host it reported it had not touched.
+func TestUpdateHostDroppedLiveNameRefusedWithChannelAttached(t *testing.T) {
+	m, events := detachHostFixture(t)
+	if !m.Attached("alpha") {
+		t.Fatal("the fixture host is not attached")
+	}
+	// The directly driven drop: the name leaves the registry without going
+	// through RemoveHost, so the manager's channel map still holds the attach.
+	if err := m.reg.Remove("alpha"); err != nil {
+		t.Fatalf("direct registry remove: %v", err)
+	}
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); !errors.Is(err, hostreg.ErrUnknownHost) {
+		t.Fatalf("UpdateHost(dropped name) = %v, want ErrUnknownHost", err)
+	}
+	if !m.Attached("alpha") {
+		t.Fatal("Attached after the refused update = false, want the still-live channel: a refusal must change nothing live")
+	}
+	// The registry-resolving accessors (ClientIfAttached, ChannelIfAttached) read
+	// the name back through the registry first, so they report false for a name
+	// the direct drop removed — from the registry, not the manager. Attached is
+	// the manager-map lookup that proves the channel itself survived, which is
+	// exactly the live state this refusal must leave untouched.
+	if kinds := detachHostKinds(events); detachHostCount(kinds, EventDetached) != 0 {
+		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
 	}
 }
 

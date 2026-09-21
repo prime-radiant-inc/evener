@@ -289,6 +289,60 @@ func TestHostManageUpdateValidatesBeforeWriting(t *testing.T) {
 	}
 }
 
+// TestHostManageUpdateRefusalPrecedence pins the commit phase's refusal order
+// against an invalid entry: the target's own refusal wins over the entry's shape
+// refusal. An empty address is a field refusal on its own, so each case below
+// would get that generic refusal if the entry were validated first — the old
+// order. The surface specifies the target refusal instead: a hub.toml-declared
+// name is the edit-the-file refusal, an unknown name is not found, and a name
+// with a mutation in flight is the conflict, whatever the entry carries.
+func TestHostManageUpdateRefusalPrecedence(t *testing.T) {
+	f := newUpdateFixture(t, hostreg.Host{Name: "toml", SSH: "toml.example"})
+	// The invalid entry: an empty address, which ValidateEntry alone refuses as a
+	// field error. It must not be what these calls are told.
+	invalid := appwire.HostEntry{Address: ""}
+
+	assertTargetRefusal := func(name string, err error, want string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("Update(%s, invalid entry) committed, want a refusal", name)
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("refusal for %s = %v, want a WireError", name, err)
+		}
+		if _, isField := wire.Data.(appwire.HostFieldErrorData); isField {
+			t.Fatalf("refusal data for %s = %#v, want the target refusal, not a field blame", name, wire.Data)
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal for %s = %v, want it to contain %q", name, err, want)
+		}
+	}
+
+	// hub.toml-declared name: the edit-the-file refusal, not the field refusal.
+	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "toml", Entry: invalid})
+	assertTargetRefusal("toml", err, "hub.toml")
+
+	// Unknown name: not found, not the field refusal.
+	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "nope", Entry: invalid})
+	assertTargetRefusal("nope", err, "unknown host")
+
+	// A live sidecar name with a mutation in flight: the conflict, not the field
+	// refusal. Take the mark the update path takes, in the same commit-phase hold.
+	f.m.cfg.mu.Lock()
+	f.m.markMutating("side")
+	f.m.cfg.mu.Unlock()
+	_, err = f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "side", Entry: invalid})
+	assertTargetRefusal("side", err, "a mutation is already in progress")
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("in-flight refusal = %v, want the conflict code", err)
+	}
+	f.m.cfg.mu.Lock()
+	f.m.unmarkMutating("side")
+	f.m.cfg.mu.Unlock()
+}
+
 // TestHostManageUpdateAdvancesTheRegistryGeneration pins criterion 6 through the
 // hub: two successive edits give strictly increasing generations and each stops
 // matching a capture taken before it.

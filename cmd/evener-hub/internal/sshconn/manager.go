@@ -1232,8 +1232,8 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 
 // UpdateHost replaces name's registry entry with entry and tears the host's
 // channel down as one atomic step, under the per-host gate. Inside the one
-// hold the order is fixed: validate, then tear the retired channel down, then
-// swap the registry, then release.
+// hold the order is fixed: refuse an absent name, validate, then tear the
+// retired channel down, then swap the registry, then release.
 //
 // The teardown comes BEFORE the swap because a gate-free reader must never pair
 // the new entry with the retired channel. The row build behind host/list and
@@ -1249,15 +1249,19 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 // window, the old entry observed with no channel, is harmless: it can only make
 // a row render offline, and the retire leaves that clean.
 //
-// Validation comes before the teardown because the caller's contract is that an
-// error from this method means nothing live changed. hostreg.ValidateEntry is
-// the side-effect-free half of the same Normalize+validateEntry pass
+// An absent name is refused and the entry validated before the teardown because
+// the caller's contract is that an error from this method means nothing live
+// changed. The absence check runs first: Registry.Update is the authority on
+// ErrUnknownHost and rechecks it under its own lock, but by the time it runs
+// below the channel is already retired, so a name a directly driven registry
+// dropped would otherwise be disconnected while still live. hostreg.ValidateEntry
+// is the side-effect-free half of the same Normalize+validateEntry pass
 // Registry.Update runs, so checking it here lets the teardown stay
 // unconditional — a shape refusal returns before the channel is touched, and
 // the swap below cannot refuse for a shape reason. Only a directly driven
-// registry can still refuse the swap (the name dropped from under the gate);
-// that path returns the error with the retired channel already gone, and the
-// host reattaches on the next Ensure.
+// registry can still refuse the swap (the name dropped inside the gate hold
+// after the capture); that path returns the error with the retired channel
+// already gone, and the host reattaches on the next Ensure.
 //
 // Every update tears the channel down, whether or not the edit changed a field
 // the dial reads. The reason is the fence, not the dial: a supervisor captures
@@ -1281,11 +1285,10 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 // with the gate held, so a concurrent attach can only start for the new
 // generation once the gate is free; a caller's per-identity state retired from
 // this hook therefore cannot have a new-generation event interleave between the
-// swap and the retirement and be erased by it. The hook runs only when the
-// pre-swap capture was present: never on a refusal, and never when the swap
-// replaced nothing this call captured (a directly driven registry can insert
-// the name between the capture and the swap, and the new entry is no identity
-// of this call's to retire).
+// swap and the retirement and be erased by it. The hook runs only on a swap
+// this call actually made: never on a refusal, and the pre-swap capture it is
+// handed is guaranteed present, because an absent name is refused before
+// anything live moves.
 //
 // The hook receives the entry the swap actually retired — the pre-swap capture,
 // its Generation included — so a caller can retire per-identity state by
@@ -1308,12 +1311,25 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// The identity this call retires is resolved under the gate, and so is the
 	// swap: a remove/re-add that took the name while this call waited is not
 	// this call's to tear down, and the teardown below is scoped to the entry
-	// the update actually replaced. The capture is normally present whenever
-	// the swap succeeded — Update refuses an unknown name — but a directly
-	// driven registry can insert the name inside the window below, so
-	// hadCaptured is false even then; it keeps teardownHostChannel's own
-	// contract explicit and gates the caller's hook.
+	// the update actually replaced. The capture is guaranteed present on every
+	// path that reaches the teardown — an absent name is refused immediately
+	// below — so hadCaptured reads as "there is an identity here to retire" for
+	// teardownHostChannel's own contract.
 	before, hadCaptured := m.reg.Get(name)
+	// Refuse an absent name before anything live moves, in the same gate hold as
+	// the swap it guards. Registry.Update is the authority on this refusal and
+	// rechecks it under its own lock, but by the time it runs below the teardown
+	// has already retired the channel: an update whose name a directly driven
+	// registry dropped (one bypassing this manager) would disconnect a host that
+	// is still live and then answer an error — exactly the "an error means
+	// nothing live changed" contract the validate-first step exists to keep.
+	// The message is Registry.Update's own — fmt.Errorf("%w: %q",
+	// ErrUnknownHost, name) — so callers' errors.Is keeps working across the
+	// moved check.
+	if !hadCaptured {
+		lock.Unlock()
+		return fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
+	}
 	// Validate before anything live moves. The caller's contract is that an
 	// error from this method means nothing live changed, so a refused update
 	// must not have torn the host's channel down on its way out. ValidateEntry
@@ -1325,22 +1341,18 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 		lock.Unlock()
 		return err
 	}
-	// The teardown never targets the empty name. When the pre-swap capture was
-	// absent — a directly driven registry inserted the name inside the window
-	// above — the swap still replaced the entry now under the gate key, so the
-	// teardown falls back to name; before.Name would be "", which is never a
-	// host, and tearing down under it would sweep whatever "" holds while
-	// leaving the replaced host's own channel and caches untouched.
-	teardownName := name
-	if hadCaptured {
-		teardownName = before.Name
-	}
+	// The teardown targets the captured entry's own spelling. The capture is
+	// guaranteed present — an absent name was refused above — so before.Name is
+	// always a real host and there is no fallback to the gate key: a fallback
+	// keyed to name could never run, and the empty name it once guarded against
+	// (a directly driven registry inserting the name inside the capture/swap
+	// window) is now refused before the teardown instead of swapped past it.
 	// Tear the retired channel down BEFORE the swap becomes visible. A gate-free
 	// row build resolves a name through the registry and then looks the channel
 	// up by name alone, so a swap that landed first would let it pair the new
 	// entry with this retired channel; unmapping first closes that window. See
 	// the method comment.
-	ch := m.teardownHostChannel(teardownName, before, hadCaptured)
+	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
 	if m.opts.beforeUpdateHostSwap != nil {
 		m.opts.beforeUpdateHostSwap(name)
 	}
@@ -1362,10 +1374,10 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
 	// cannot acquire the gate until it is released below. It receives the entry
-	// the swap replaced (the capture above, when there was one), so the caller
-	// retires by identity rather than by timing; with no capture there is no
-	// identity this call retired to hand over, and it does not run.
-	if onRetire != nil && hadCaptured {
+	// the swap replaced — the capture above, guaranteed present because an
+	// absent name was refused before the teardown — so the caller retires by
+	// identity rather than by timing.
+	if onRetire != nil {
 		onRetire(before)
 	}
 	// The post-swap seam runs last in the hold, so the window it exposes is
