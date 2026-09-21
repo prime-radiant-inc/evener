@@ -301,9 +301,11 @@ live facts; the lookup pairs the channel with the entry the row is rendering,
 not merely with the name. The hub-side `attachedClient` helper reads the
 manager's `ChannelIfAttached` once — one lookup, one generation, the
 `remoteHostFactsForChannel` idiom at `main.go` — and hands back the channel's
-client only while the channel's own registration (`sshconn.Channel.Host`) is
-the entry being rendered: content and generation both, the same
-captured-registration predicate `hostreg.Registry.SameRegistration` implements
+client only while the registration the channel was published for is the entry
+being rendered — `sshconn.Channel.MatchesRegistration` compares that
+publish-time registration through `hostreg.SameRegistration`, content and
+generation both, the same captured-registration predicate
+`hostreg.Registry.SameRegistration` implements
 and `hostEntryCurrent` applies to the retained-state fold, compared between the
 two captures rather than through the registry, so a swap cannot slip between a
 read of the entry and a read of the channel and let a mismatched pair pass. A
