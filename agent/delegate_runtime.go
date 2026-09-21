@@ -2438,6 +2438,14 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 	if env == nil {
 		return false, nil
 	}
+	// The pool is an init-time snapshot; a delegate created after init, or one
+	// whose runtime an idle release retired, is not in it. Converge onto the
+	// live manifest first — the rows a fresh daemon would adopt from — so the
+	// adoption below restores the original scratch instead of silently leaving
+	// the fresh mint in place.
+	if err := s.refreshRetainedScratchConsumer(sessionID); err != nil {
+		return false, err
+	}
 	before := scratchRefDirs(env)
 	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
 	if ownsFresh && ok && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
