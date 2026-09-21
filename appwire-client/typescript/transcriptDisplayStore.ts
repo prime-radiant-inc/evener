@@ -1218,20 +1218,18 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       endReadyGeneration();
       missedChangeNotification = false;
       previewBases.clear();
-      // The persisted draft outlives the hub lifecycle: reset re-reads it -
-      // the same restore the store was built with - instead of wiping it.
-      // Wiping the draft fields would leave the record still classified on
-      // the port while the memory said nothing was there, so the next edit's
-      // compare-and-swap would succeed against it and overwrite an
-      // unresolved write the flags no longer carried. The restore also
-      // merges onto the PRIOR draft state, the same merge recoverDraftPort
-      // runs: its catch omits the fields a plain port failure knows nothing
-      // about so they keep their pre-reset values, and spreading
-      // initialState() here would have set them to their cleared values
-      // first - wiping (for one) the unreadable classification that lets
-      // discard keep naming the record it holds. `saving` is not the
-      // restore's to clear, and a reset always ends the editor's in-flight
-      // bookkeeping.
+      // The persisted draft outlives the hub lifecycle: reset re-reads it
+      // instead of wiping it - an identity-aware reload, so a record this
+      // store had in view keeps the generation stamp it was composed under
+      // while a replacement (which knows nothing about this store's
+      // generations) restores with none, exactly as an adoption would. The
+      // restore merges onto the PRIOR draft state, the same merge
+      // recoverDraftPort runs, so a plain port failure's omitted fields
+      // keep their pre-reset values - in particular the unreadable
+      // classification that lets discard keep naming the record it holds;
+      // spreading initialState() here would have set them to their cleared
+      // values first. `saving` is not the restore's to clear, and a reset
+      // always ends the editor's in-flight bookkeeping.
       const {
         draft: _draft,
         saving: _saving,
@@ -1242,7 +1240,27 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         draftError: _draftError,
         ...lifecycle
       } = initialState();
-      setState({ ...lifecycle, saving: false, ...restoreDraft({ loaded: false, hub: {} }) });
+      try {
+        const { checkpoint, sameIdentity } = draftRepository.reload();
+        setState({
+          ...lifecycle,
+          saving: false,
+          ...restoreDraft(
+            { loaded: false, hub: {} },
+            sameIdentity ? (getState().draft?.generation ?? null) : null,
+            checkpoint,
+          ),
+        });
+      } catch (error) {
+        const unreadable = error instanceof UnreadableDraftError;
+        setState({
+          ...lifecycle,
+          saving: false,
+          storageUnavailable: true,
+          draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+          ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
+        });
+      }
     },
     dispose() {
       if (fence.disposed) return;

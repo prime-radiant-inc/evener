@@ -1730,13 +1730,15 @@ describe("the checkpointed draft editor", () => {
 
     // A lifecycle reset re-reads the checkpoint rather than wiping it: the
     // unresolved write survives reset with its uncertainty, so nothing may
-    // compose past the still-classified record.
+    // compose past the still-classified record. The re-read is
+    // identity-aware, so the same record keeps the generation it was
+    // composed under.
     store.reset();
     expect(store.getState().draft).toEqual({
       layout: "mobile",
       revision: 2,
       config: proposed,
-      generation: null,
+      generation: 1,
     });
     expect(store.getState().writeUncertain).toBe(true);
     expect(store.getState().storageUnavailable).toBe(false);
@@ -1771,6 +1773,34 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toBeNull();
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
+  });
+
+  test("reset preserves a persisted draft's generation against an equal-revision replacement hub", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    expect(store.getState().draft?.generation).toBe(1);
+
+    // The lifecycle reset re-reads the SAME record: the generation stamp is
+    // this store's own claim about it, and wiping it would let a
+    // replacement hub's coincidentally equal revision read the draft as
+    // current - exactly what the generation guard exists to prevent.
+    store.reset();
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: proposed,
+      generation: 1,
+    });
+
+    // The replacement hub restarts numbering on the same revision: the
+    // draft stays in review and saving refuses.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draftConflict).toBe(true);
+    await expect(store.getState().saveDraft()).rejects.toThrow(/before saving your changes/);
   });
 
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
