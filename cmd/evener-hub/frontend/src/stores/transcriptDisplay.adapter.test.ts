@@ -466,4 +466,46 @@ describe("transcript display adapter (package store delegation)", () => {
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("activity") });
     expect(transcriptDisplayStore.getState().hub.mobile).toEqual({ revision: 2, config: preset("chat") });
   });
+
+  test("a replacement during the anchor leaves the superseded client's ready listener unregistered", async () => {
+    const first = new FakeClient("ready");
+    first.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(first);
+    connectionStore.setState({
+      features: { ...(await first.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    const second = new FakeClient("ready");
+    const third = new FakeClient("ready");
+    third.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 7, config: preset("full") },
+      mobile: { revision: 7, config: shippedMobileConfig },
+    }));
+
+    let stopSwapping: (() => void) | undefined;
+    const stop = transcriptDisplayStore.subscribe((state) => {
+      if (state.hub.desktop !== undefined) return;
+      stopSwapping?.();
+      // Replaces the client from inside the anchor's publication window:
+      // the outer rewire (second's) must not register second's ready
+      // callback once third's rewire owns the module slots.
+      connectionStore.getState().connect(third);
+    });
+    stopSwapping = stop;
+
+    connectionStore.getState().connect(second);
+    stop();
+    expect(second.listenerCount).toBe(0);
+
+    // The replacement's world is functional: handshake and read land.
+    connectionStore.setState({
+      features: { ...(await third.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 7, config: preset("full") });
+  });
 });
