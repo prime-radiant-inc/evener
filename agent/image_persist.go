@@ -139,7 +139,7 @@ func readAttachmentForDedupe(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 	return io.ReadAll(f)
 }
 
