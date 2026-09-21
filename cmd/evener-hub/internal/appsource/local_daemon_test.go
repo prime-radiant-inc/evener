@@ -696,6 +696,40 @@ func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListFallbackFoldsDaemonStatus pins the unprobed
+// fallback's status folding against the daemon's own derivation
+// (appCapabilitiesLocked): activity withholds Send and Clear but no turn
+// action (#1363, #1375), closed withholds every mutating bit while Shutdown
+// and skillInput — the two the daemon does not close-gate — stay
+// advertised. A fallback that overstated these offered the same
+// offer-then-refuse drift the probed path was fixed for.
+func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", harnessSupportRosterEntries, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	capsByID := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsByID[thread.ID] = thread.Evener.Capabilities
+	}
+	processing := capsByID["th_processing"]
+	if processing.Send || processing.Clear {
+		t.Fatalf("active row advertised Send or Clear, folded by the daemon's own answer: %+v", processing)
+	}
+	if !processing.Queue || !processing.Steer || !processing.Interrupt || !processing.Goal || !processing.SharedNotes {
+		t.Fatalf("active row withheld bits the daemon keeps while a turn runs: %+v", processing)
+	}
+	closed := capsByID["th_closed"]
+	if closed.Send || closed.Clear || closed.Compact || closed.ChangeModel || closed.ChangeVisionModel || closed.Rename || closed.Goal || closed.SharedNotes {
+		t.Fatalf("closed row advertised mutating bits the daemon withholds: %+v", closed)
+	}
+	if !closed.Shutdown || !closed.SkillInput {
+		t.Fatalf("closed row withheld Shutdown or skillInput, which the daemon does not close-gate: %+v", closed)
+	}
+}
+
 // TestLocalDaemonSourceListUsesProbedCapabilities pins the probe-carried row:
 // when the roster's probe captured the daemon's own capability set, the list
 // row mirrors it rather than the fallback approximation — the same one-answer

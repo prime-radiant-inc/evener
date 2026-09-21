@@ -1171,8 +1171,9 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 // on every path that serves a local row.
 //
 // The hand literal below is the fallback for rows no probe answered: it
-// approximates the daemon's expected idle answer rather than understating a
-// live session until a read hydrates it. The restart-required and read-only
+// approximates the daemon's expected answer at the row's status, folding
+// what the daemon folds (appCapabilitiesLocked) rather than overstating a
+// session until a read hydrates it. The restart-required and read-only
 // alias branches in threadFromEntry still replace the whole set after this
 // projection.
 func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCapabilities {
@@ -1180,18 +1181,25 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		return item.Capabilities
 	}
 	return appwire.ThreadCapabilities{
-		Send: true,
+		// The daemon refuses a plain send while a turn runs and once the
+		// session is closed; a session awaiting a user answer keeps it.
+		Send: status != appwire.ThreadStatusActive && status != appwire.ThreadStatusClosed,
 		// Steer, Interrupt and Queue advertise harness support and are
 		// withheld the way the daemon withholds them: closed removes all
 		// three (appCapabilitiesLocked's `!closed`), while `active` moves
 		// none of them (#1363, #1375). Gating only Queue left a closed
 		// entry advertising two actions the daemon it mirrors refuses.
-		Steer:       status != appwire.ThreadStatusClosed,
-		Interrupt:   status != appwire.ThreadStatusClosed,
-		Compact:     true,
-		Clear:       !item.ReadOnlyAlias,
+		// The rest of this literal is the daemon's `!closed` family: it stays
+		// advertised while a turn runs, and closed removes it the way closed
+		// removes the turn actions above.
+		Steer:     status != appwire.ThreadStatusClosed,
+		Interrupt: status != appwire.ThreadStatusClosed,
+		Compact:   status != appwire.ThreadStatusClosed,
+		// Clear is the one !closed bit that also folds activity — the daemon
+		// gates it on !active for the same reason as Send.
+		Clear:       !item.ReadOnlyAlias && status != appwire.ThreadStatusActive && status != appwire.ThreadStatusClosed,
 		Shutdown:    true,
-		ChangeModel: true,
+		ChangeModel: status != appwire.ThreadStatusClosed,
 		// The daemon advertises this whenever its vision-model seam is wired
 		// (every current daemon wires it at startup) and withholds it when
 		// closed, like its siblings here; the live-hub probe showed list rows
@@ -1201,9 +1209,9 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		// Folding `active` into Queue made ListThreads disagree with
 		// ThreadRead and the status frames for the same session.
 		Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
-		Goal:        true,
-		SharedNotes: !item.ReadOnlyAlias,
-		Rename:      true,
+		Goal:        status != appwire.ThreadStatusClosed,
+		SharedNotes: !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
+		Rename:      status != appwire.ThreadStatusClosed,
 		// SkillInput follows the harness-support rule Steer, Interrupt
 		// and Queue follow (#1375, #1840): every current daemon wires all
 		// four input-bearing turn mutations, so a live local session's
