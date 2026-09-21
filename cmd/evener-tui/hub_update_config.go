@@ -781,10 +781,25 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			return m, replacement
 		}
 	}
+	if msg.Action != "remove" && m.marketplaceListReadsOrdered && (msg.Generation <= m.marketplaceListFloor || msg.Generation <= m.marketplaceListApplied) {
+		// An add or refresh issued before the latest removal landed or
+		// before the newest applied read carries a list that predates
+		// state the panel already holds, so applying it would resurrect
+		// what the settled list dropped. Discard it and schedule the
+		// replacement read that lands the mutation's own effect. A
+		// remove's own response is excepted: the hub reads its list after
+		// the unregister, so it is post-removal truth by construction.
+		if m.client != nil {
+			m.marketplaceReconcileGeneration++
+			return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+		}
+		return m, nil
+	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
 		panel := updated.(launchconfig.PluginsPanel)
 		m.pluginsPanel = &panel
+		m.marketplaceListApplied = msg.Generation
 		return m, cmd
 	}
 	return m, nil
@@ -802,7 +817,8 @@ func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrow
 
 func (m hubModel) handleMarketplaceAddSubmit(msg launchconfig.MarketplaceAddSubmitMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params)
+		m.marketplaceReconcileGeneration++
+		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params, m.marketplaceReconcileGeneration)
 	}
 	return m, nil
 }
@@ -812,15 +828,17 @@ func (m hubModel) handleMarketplaceRemove(msg launchconfig.MarketplaceRemoveMsg)
 		return m, nil
 	}
 	if m.client != nil {
+		m.marketplaceReconcileGeneration++
 		m.marketplaceRemovePending = msg.Name
-		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name)
+		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name, m.marketplaceReconcileGeneration)
 	}
 	return m, nil
 }
 
 func (m hubModel) handleMarketplaceRefresh(msg launchconfig.MarketplaceRefreshMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name)
+		m.marketplaceReconcileGeneration++
+		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name, m.marketplaceReconcileGeneration)
 	}
 	return m, nil
 }

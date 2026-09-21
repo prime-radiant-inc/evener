@@ -43,6 +43,12 @@ type MarketplaceMutateResultMsg struct {
 	Err    error
 	Action string
 	Name   string
+	// Generation is the model read sequence value the issuance of this
+	// mutation was stamped with, so its response's list snapshot can be
+	// ordered against the removal floor and the newest applied read like
+	// any list read's response: 0 for issuances outside the model's
+	// ordering.
+	Generation uint64
 }
 
 // MarketplaceBrowseResultMsg carries the result of a evener/marketplace/browse
@@ -145,30 +151,30 @@ func cmdMarketplaceList(client *appwire.Client, generation uint64) tea.Cmd {
 	}
 }
 
-func CmdMarketplaceAdd(client *appwire.Client, params appwire.MarketplaceAddParams) tea.Cmd {
+func CmdMarketplaceAdd(client *appwire.Client, params appwire.MarketplaceAddParams, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceAdd(ctx, params)
-		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "add"}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "add", Generation: generation}
 	}
 }
 
-func CmdMarketplaceRemove(client *appwire.Client, name string) tea.Cmd {
+func CmdMarketplaceRemove(client *appwire.Client, name string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRemove(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "remove", Name: name}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "remove", Name: name, Generation: generation}
 	}
 }
 
-func CmdMarketplaceRefresh(client *appwire.Client, name string) tea.Cmd {
+func CmdMarketplaceRefresh(client *appwire.Client, name string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), pluginsSlowTimeout)
 		defer cancel()
 		resp, err := client.MarketplaceRefresh(ctx, appwire.MarketplaceNameParams{Name: name})
-		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "refresh", Name: name}
+		return MarketplaceMutateResultMsg{List: resp, Err: err, Action: "refresh", Name: name, Generation: generation}
 	}
 }
 
