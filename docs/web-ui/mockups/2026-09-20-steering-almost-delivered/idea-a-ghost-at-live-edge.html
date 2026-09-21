@@ -141,7 +141,7 @@
   .ghost .holdrow .pulsedot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: holdpulse 1.8s ease-in-out infinite; }
   @keyframes holdpulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
   .ghost .holdrow .held { font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); }
-  .ghost .bubble { border: 1px dashed var(--accent); background: rgba(61, 154, 255, 0.08); position: relative; }
+  .ghost .bubble { border: 1px dashed var(--accent); background: rgba(61, 154, 255, 0.15); position: relative; }
   .ghost .railmark { position: absolute; left: -12px; top: 4px; bottom: 4px; width: 2px; background: repeating-linear-gradient(180deg, var(--accent) 0 4px, transparent 4px 8px); opacity: .55; border-radius: 1px; }
   .delivered-note { margin-left: var(--speaker-gutter); font-size: 12px; color: var(--ink-low); padding: 2px 0; }
 
@@ -178,7 +178,7 @@
 <header class="ideahead">
   <div class="eyebrow">Steering, almost delivered — direction A of 3</div>
   <h1>Ghost at the live edge</h1>
-  <p class="thesis">The held steering message renders in the transcript, directly under the step it is queued behind — the exact slot it will be injected into — as the same user message it will become, in a provisional register: dashed accent edge, reduced opacity, and a caption where the timestamp goes. On delivery it does not move; the dashed edge fades and the message becomes real in place.</p>
+  <p class="thesis">The held steering message renders in the transcript, directly under the step it is queued behind — the exact slot it will be injected into — as the same user message it will become, in a provisional register: dashed accent edge, reduced opacity, and a caption where the timestamp goes. On delivery it does not move; the ghost unmounts and the real message renders in its place, same shape.</p>
   <ul>
     <li>The message is visible where the eye already is, and where it will land — no vanish, no jump, no interpretation needed.</li>
     <li>Multiple held steers stack in submission order: the ghost stack IS the steering queue.</li>
@@ -360,7 +360,7 @@
           <div class="prose" style="margin-left:var(--speaker-gutter); color:var(--ink-hi)">Understood — locking the regression suite onto the idle-but-valid case first<span class="cursor"></span></div>
         </div>
       </div>
-      <div class="caption"><span class="num">3</span><b>Delivered.</b> The tool collapsed, the dashed edge and caption faded out over ~200 ms, and the timestamp filled in. The message never moved.</div>
+      <div class="caption"><span class="num">3</span><b>Delivered.</b> The tool collapsed, the ghost unmounted and the real item rendered in the same place, and the timestamp filled in. The message never moved.</div>
     </div>
 
   </div>

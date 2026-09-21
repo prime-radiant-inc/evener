@@ -65,9 +65,9 @@ running tool call — the precise slot the daemon will upsert into
 the exact component it will become — avatar, "You" header, serif accent
 bubble — but dashed accent edge, reduced opacity, and where the timestamp
 would go: `Delivers when this step finishes · held 0:42`. On
-`evener/steering/injected` the ghost and the real item are the same DOM shape
-in the same place; the dashed edge and caption fade and full opacity settles.
-The message never moves, never disappears — it materializes.
+`evener/steering/injected` the ghost unmounts and the real item renders in
+the same place, in the same shape — a plain swap, no transition machinery.
+The message never moves.
 
 - Rendered as a live-edge element under the turn block (not inside the
   virtualizer's item list), respecting the documented constraint that kept
