@@ -72,13 +72,23 @@ export function unwrapGlobal(cssText) {
 }
 
 export function resolveComposes(cssTexts) {
-  const combined = cssTexts.map(unwrapGlobal).join("\n\n");
+  // Comments are stripped FIRST, before any position scan: an "@media" or
+  // ":global(" mentioned in comment prose would otherwise pair with the next
+  // `{` (MEDIA_OPEN_RE below) or trip unwrapGlobal's leftover check, turning
+  // comment text into a malformed gate or a spurious throw - real files in
+  // this tree mention both (holdhints.module.css, welcome.module.css). The
+  // resolved sheet loses its comments, which the browser ignores anyway.
+  const combined = cssTexts
+    .map((css) => css.replace(/\/\*[\s\S]*?\*\//g, ""))
+    .map(unwrapGlobal)
+    .join("\n\n");
 
   // Every @media block, brace-counted so nested rules cannot end one early:
   // the map from a rule's position to the gate it sits under.
   const mediaBlocks = [];
   const MEDIA_OPEN_RE = /@media[^{]*\{/g;
-  for (let m; (m = MEDIA_OPEN_RE.exec(combined)) !== null; ) {
+  let m = MEDIA_OPEN_RE.exec(combined);
+  while (m !== null) {
     const open = m.index + m[0].length - 1;
     let depth = 0;
     let end = -1;
@@ -97,6 +107,7 @@ export function resolveComposes(cssTexts) {
     }
     mediaBlocks.push({ gate: m[0].replace(/\{\s*$/, "").trim(), start: m.index, end });
     MEDIA_OPEN_RE.lastIndex = end + 1;
+    m = MEDIA_OPEN_RE.exec(combined);
   }
 
   const gateAt = (index) => {

@@ -57,10 +57,7 @@ describe("resolveComposes", () => {
   });
 
   test("splices an ungated composed body in place of the composes line", () => {
-    const out = resolveComposes([
-      ".base { color: red; }",
-      '.a { composes: base from "./b.module.css"; }',
-    ]);
+    const out = resolveComposes([".base { color: red; }", '.a { composes: base from "./b.module.css"; }']);
     expect(out).toMatch(/\.a\s*\{[^}]*color:\s*red/);
   });
 
@@ -123,9 +120,22 @@ describe("resolveComposes", () => {
     ).toThrow(/gated/);
   });
 
+  test("comment prose mentioning @media cannot poison the gate scan", () => {
+    // holdhints.module.css's comment says "The @media rule is..." directly
+    // before its real media block, and welcome.module.css mentions
+    // "@media min-height" in prose (roborev). A raw-text position scan pairs
+    // the comment's mention with the next `{` - swallowing the real opener
+    // into a gate string of comment prose, which re-targets garbage or
+    // throws - so comments are stripped before the scan runs.
+    const out = resolveComposes([
+      "/* The @media rule is the first-paint source of truth (the house pattern). */\n@media (prefers-reduced-motion: no-preference) {\n  .spin {\n    animation: x 1s;\n  }\n}",
+      '.a {\n  composes: spin from "./x.module.css";\n  color: red;\n}',
+    ]);
+    expect(out).toMatch(/@media \(prefers-reduced-motion: no-preference\)\s*\{[\s\S]*?\.a\s*\{[^}]*animation:\s*x 1s/);
+    expect(out).not.toContain("first-paint");
+  });
+
   test("names the missing source when a composed rule is not among the cssFiles", () => {
-    expect(() => resolveComposes(['.a { composes: missing from "./x.module.css"; }'])).toThrow(
-      /cssFiles/,
-    );
+    expect(() => resolveComposes(['.a { composes: missing from "./x.module.css"; }'])).toThrow(/cssFiles/);
   });
 });

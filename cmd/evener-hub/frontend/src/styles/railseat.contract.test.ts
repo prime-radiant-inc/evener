@@ -24,6 +24,7 @@ const toolcallitem = read("../panes/session/transcript/toolcallitem.module.css")
 const notificationcard = read("../panes/session/transcript/messages/notificationcard.module.css");
 const loader = read("../widgets/loader/loader.module.css");
 const thinkblock = read("../panes/session/transcript/messages/thinkblock.module.css");
+const steeringitem = read("../panes/session/transcript/messages/steeringitem.module.css");
 
 // The media query runContent and the rail pull share: the pull only exists
 // where the padding it eats exists (turnblock.module.css reserves the gutter
@@ -131,4 +132,22 @@ test("the live thought's kind glyph stays the deliberate variant, not a seat", (
   expect(iconRule).not.toMatch(/composes:/);
   expect(iconRule).toMatch(/align-self:\s*center/);
   expect(iconRule).toMatch(/margin-right:\s*var\(--speaker-gap\)/);
+});
+
+test("the steer diamond stays the deliberate variant, not a seat", () => {
+  // The same stance as ThinkBlock's .icon (a centered, single-line row whose
+  // pull rides the container): .railIcon keeps the shared SUBSET by hand -
+  // the avatar-size width, the gap-netting margin-right, the ambient 50% -
+  // but composes nothing, so the values are pinned HERE too, where drift
+  // from the seat's own declarations would fail a test instead of passing
+  // silently (roborev).
+  const diamondRule = steeringitem.match(/\.railIcon\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(diamondRule).not.toMatch(/composes:/);
+  expect(diamondRule).toMatch(/align-self:\s*center/);
+  expect(diamondRule).toMatch(/width:\s*var\(--speaker-avatar-size\)/);
+  expect(diamondRule).toMatch(/margin-right:\s*calc\(var\(--speaker-gap\) - var\(--space-2\)\)/);
+  expect(diamondRule).toMatch(/opacity:\s*0\.5/);
+  // The pull rides the .summary container, never the diamond.
+  const gated = steeringitem.match(/@media\s*\(min-width:\s*700px\)\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+  expect(gated).toMatch(/\.summary\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
 });

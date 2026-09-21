@@ -1,9 +1,11 @@
 // Contract test for the notification card's status glyph seat. The card is a
 // "run" row (layoutRoles.ts), so its head sits inside .runContent's reserved
 // --speaker-gutter padding above the 700px breakpoint; the status glyph is
-// the one element that reaches back into that gutter, in the same seat every
-// other rail icon (ToolRow's .rowIcon, ThinkBlock's bulb, the steer diamond)
-// occupies. jsdom cannot see CSS, so these are declaration-level assertions
+// the one element that reaches back into that gutter, in the same avatar
+// column every other rail icon (ToolRow's .rowIcon, ThinkBlock's bulb, the
+// steer diamond) occupies - the column is shared by this seat's consumers
+// and the documented variants alike (styles/railseat.module.css). jsdom
+// cannot see CSS, so these are declaration-level assertions
 // over the stylesheet sources - the same idiom as thinkBlockMotion.test.ts and
 // agentMessageSize.contract.test.ts. Comments are stripped first: a stylesheet
 // grep that matches its own comment prose asserts nothing.
