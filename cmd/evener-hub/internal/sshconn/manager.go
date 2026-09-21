@@ -1236,10 +1236,17 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 // with the gate held, so a concurrent attach can only start for the new
 // generation once the gate is free; a caller's per-identity state retired from
 // this hook therefore cannot have a new-generation event interleave between the
-// swap and the retirement and be erased by it. The hook must not call back into
-// Manager — the gate is non-reentrant — and must not take a lock another
-// goroutine may hold while parked on this gate.
-func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error {
+// swap and the retirement and be erased by it.
+//
+// The hook receives the entry the swap actually retired — the pre-swap capture,
+// its Generation included — so a caller can retire per-identity state by
+// generation rather than by timing: it can mark every row built from that
+// identity (or any earlier one) as retired, which is what makes the retirement
+// immune to a late write from a row that captured the old entry before the
+// swap but only reaches its state write after the hook. The hook must not call
+// back into Manager — the gate is non-reentrant — and must not take a lock
+// another goroutine may hold while parked on this gate.
+func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error {
 	if m.reg == nil {
 		return errors.New("sshconn: UpdateHost with no registry")
 	}
@@ -1263,9 +1270,11 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error {
 	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
-	// cannot acquire the gate until it is released below.
+	// cannot acquire the gate until it is released below. It receives the entry
+	// the swap replaced (the capture above, present whenever the swap succeeded),
+	// so the caller retires by identity rather than by timing.
 	if onRetire != nil {
-		onRetire()
+		onRetire(before)
 	}
 	lock.Unlock()
 	// The reap runs after the lock is released, exactly as DetachHost's and

@@ -233,7 +233,7 @@ func TestUpdateHostRetireHookRunsAfterTheSwap(t *testing.T) {
 		present bool
 	)
 	m := newTestManager(t, reg, fr, Options{})
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, func() {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, func(hostreg.Host) {
 		called = true
 		saw, present = reg.Get("alpha")
 	}); err != nil {
@@ -244,6 +244,62 @@ func TestUpdateHostRetireHookRunsAfterTheSwap(t *testing.T) {
 	}
 	if !present || saw.SSH != "alpha2.example" {
 		t.Fatalf("inside the hook the registry = %+v (present %v), want the new entry", saw, present)
+	}
+}
+
+// TestUpdateHostRetireHookReceivesTheRetiredEntry pins the hook's payload
+// contract: the hook is handed the entry the swap actually replaced — the
+// pre-swap capture, with the pre-swap generation and the pre-edit fields — so a
+// caller can retire the right identity's state by generation rather than guess
+// it by timing. The ordering half is pinned here too: the retired identity's
+// Detached is emitted before the hook, both inside the same gate hold.
+func TestUpdateHostRetireHookReceivesTheRetiredEntry(t *testing.T) {
+	reg := testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example", KeyPath: "/keys/old"})
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	before, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("alpha not registered before the update")
+	}
+	var (
+		mu      sync.Mutex
+		order   []string
+		retired hostreg.Host
+	)
+	m := newTestManager(t, reg, fr, Options{OnEvent: func(ev Event) {
+		if ev.Kind == EventDetached {
+			mu.Lock()
+			order = append(order, "detached")
+			mu.Unlock()
+		}
+	}})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example", KeyPath: "/keys/new"}, func(entry hostreg.Host) {
+		mu.Lock()
+		retired = entry
+		order = append(order, "retire")
+		mu.Unlock()
+	}); err != nil {
+		t.Fatalf("UpdateHost = %v, want nil", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if retired.Generation != before.Generation {
+		t.Fatalf("retired generation = %d, want the pre-swap %d", retired.Generation, before.Generation)
+	}
+	if retired.SSH != "alpha.example" || retired.KeyPath != "/keys/old" {
+		t.Fatalf("retired entry = %+v, want the pre-edit fields", retired)
+	}
+	after, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("the update dropped the registry entry")
+	}
+	if retired.Equal(after) {
+		t.Fatal("the hook received the post-swap entry, not the retired identity")
+	}
+	if !slices.Equal(order, []string{"detached", "retire"}) {
+		t.Fatalf("event/hook order = %v, want [detached retire]", order)
 	}
 }
 
@@ -268,7 +324,7 @@ func TestUpdateHostRetireHookRunsAfterDetached(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, func() {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, func(hostreg.Host) {
 		mu.Lock()
 		order = append(order, "retire")
 		mu.Unlock()
@@ -290,7 +346,7 @@ func TestUpdateHostRetireHookNotRunOnRefusal(t *testing.T) {
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
 	m := newTestManager(t, reg, fr, Options{})
 	called := 0
-	hook := func() { called++ }
+	hook := func(hostreg.Host) { called++ }
 	// An unknown name: the registry's Update reports ErrUnknownHost before the
 	// teardown or the hook.
 	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}, hook); !errors.Is(err, hostreg.ErrUnknownHost) {

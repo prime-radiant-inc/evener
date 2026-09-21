@@ -113,7 +113,7 @@ deviation and what the pipeline slice inherits.
   `ErrReservedName`, `ErrMissingSSH`, `ErrAmbiguousSSHUser`, `ErrEmptyRoot`,
   `ErrHostCycle`).
 
-### 3.3 `sshconn.Manager.UpdateHost(entry hostreg.Host, onRetire func()) error`
+### 3.3 `sshconn.Manager.UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error`
 
 - One hold of the per-host gate: the registry `Update`, then the same teardown
   body `RemoveHost` and `DetachHost` already share (stop the supervisor, drop
@@ -125,9 +125,15 @@ deviation and what the pipeline slice inherits.
   synchronously with the gate held, so a concurrent attach can start only for
   the new generation, after the gate is free; a caller's per-identity state
   retired from the hook therefore cannot have a new-generation event interleave
-  between the swap and the retirement and be erased by it. The hook must not
-  call back into `Manager` (the gate is non-reentrant) and must not take a lock
-  another goroutine may hold while parked on this gate.
+  between the swap and the retirement and be erased by it. The hook receives
+  **the entry the swap actually retired** — the pre-swap capture, its
+  `Generation` and all its pre-edit fields — so a caller can retire per-identity
+  state **by generation rather than by timing**: it can mark every row built
+  from that identity (or an earlier one) as retired, which is what makes the
+  retirement immune to a late write from a row that captured the old entry
+  before the swap but only reaches its state write after the hook. The hook must
+  not call back into `Manager` (the gate is non-reentrant) and must not take a
+  lock another goroutine may hold while parked on this gate.
 - **Every update tears the channel down**, not only the edits that change a
   field the dial reads. The reason is the fence, not the dial: a supervisor
   captures the entry it supervises when it starts, and `reconnectOnce` refuses
@@ -165,27 +171,45 @@ and the compensation paths in one shape:
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
 - **Live, mutex-free, in this order.** Call `manager.UpdateHost(entry, onRetire)`
-  when a manager is wired, handing it an `onRetire` that clears the name's
-  attach record; otherwise call the registry's own `Update` and clear the record
-  inline after a successful swap, mirroring how remove falls back when no
-  manager is wired (tests, embedders) and safe because with no manager no
-  lifecycle event can exist. The registry re-runs the same validation under its
-  own lock; the commit phase's check is what keeps an invalid or unnormalized
-  entry out of the file, and is not a substitute for it. The manager's swap is
-  atomic under the host gate — the registry entry is replaced and the channel
-  retired, or neither — so an error from it means nothing live changed, and the
-  hook never runs on a refusal, so the still-live identity's record survives
-  one. §4 requires the name-keyed resolved state to be cleared wholesale on
-  every update, and the record is exactly that: the retiring identity's
-  last-known facts and attach error, which an edit otherwise leaves lying about
-  an entry that no longer exists (most visibly on an offline host whose address
-  changed, where no channel exists to tear down). The clear runs inside the
-  swap's own gate hold (§3.3), so neither a pre-swap row nor a post-swap
-  new-identity lifecycle event can defeat it: while the manager waits for the
-  gate the old registry entry is still current, but once the swap advances the
-  generation that old row fails the `hostEntryCurrent` fence and cannot
-  repopulate the record, and any new-identity event is delivered only after the
-  hook has already cleared it.
+  when a manager is wired, handing it an `onRetire` that **retires the name's
+  attach record by the generation the swap replaced** — `state.retire(name,
+  retired.Generation)`, the hook's argument being the entry the swap actually
+  retired; otherwise call the registry's own `Update` and retire inline after a
+  successful swap using the pre-swap entry's generation read immediately before
+  it, mirroring how remove falls back when no manager is wired (tests,
+  embedders) and safe because with no manager no lifecycle event can exist (but
+  a stale row can still be racing the clear, so the mark is what fences it).
+  The registry re-runs the same validation under its own lock; the commit
+  phase's check is what keeps an invalid or unnormalized entry out of the file,
+  and is not a substitute for it. The manager's swap is atomic under the host
+  gate — the registry entry is replaced and the channel retired, or neither —
+  so an error from it means nothing live changed, and the hook never runs on a
+  refusal, so the still-live identity's record survives one. §4 requires the
+  name-keyed resolved state to be cleared wholesale on every update, and the
+  record is exactly that: the retiring identity's last-known facts and attach
+  error, which an edit otherwise leaves lying about an entry that no longer
+  exists (most visibly on an offline host whose address changed, where no
+  channel exists to tear down).
+
+  The retirement is **generation-scoped**, which is what makes the clear immune
+  to a pre-swap row. The row build runs without the mutation mutex (round-7 M4,
+  so a parked facts read holds up no commit), so a row can pass
+  `hostEntryCurrent` before the swap and only reach its `apply`/`recordKnown`
+  after the hook has run. The retire marks the name's record with the retired
+  entry's generation and keeps that mark (`retiredThrough`, monotonic — the max
+  of the existing and the new generation); `apply` and `recordKnown` are fenced
+  on it, so a row whose entry generation is at or below the mark folds nothing
+  and writes nothing, while a row for the new, higher generation is served and
+  records normally. A bare delete could not hold: the stale row's late
+  `recordKnown` would recreate the record from the retired identity, and the
+  edited host's later offline rows would render the retired facts and attach
+  error as their own. The mark is what defeats that late write, and it also
+  leaves the post-swap new-identity lifecycle event (delivered only after the
+  hook cleared the record) free to record the new identity's own state.
+
+  Dropping a record wholesale — `remove` — remains the clean-slate path
+  (Remove, Add's clean re-add, the two vanished arms): it deletes the record
+  and its mark together, so a re-add starts clean.
 - **Finish, under the mutex.** Clear the mark. On success:
   - when `roots` changed, retire both old identities first — the remote-thread
     cache's source entry and the source registration — then clear the last-good

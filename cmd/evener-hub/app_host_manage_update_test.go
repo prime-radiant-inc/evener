@@ -480,10 +480,11 @@ func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 		t.Fatal("the added host's source has no cache generation")
 	}
 	// Retain an attach record the way a lifecycle event and an attached row do.
+	seeded, _ := m.cfg.hosts.Get("side")
 	m.cfg.mu.Lock()
 	m.cfg.state.recordKnown(appwire.HostRow{
 		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
-	}, hostFactsValidity{handshake: true})
+	}, hostFactsValidity{handshake: true}, seeded.Generation)
 	m.cfg.mu.Unlock()
 
 	// Drive the finish-phase vanished arm: the live phase swaps successfully, then
@@ -785,12 +786,15 @@ func TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate(t *testing.T)
 
 	// Simulate the fenced fold of a concurrent row built from the still-current
 	// old entry. observeEvent and recordKnown are the same seams lifecycle events
-	// and attached hostRow calls use to repopulate the name-keyed record.
+	// and attached hostRow calls use to repopulate the name-keyed record; the row
+	// carries the still-current old entry's generation, exactly as a row built
+	// before the swap would.
+	preSwap, _ := pu.m.cfg.hosts.Get("side")
 	pu.m.cfg.mu.Lock()
 	pu.m.cfg.state.recordKnown(appwire.HostRow{
 		Name: "side", Attached: true, ServerName: "old-server", ServerVersion: "0.1.0",
 		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
-	}, hostFactsValidity{handshake: true, facts: true})
+	}, hostFactsValidity{handshake: true, facts: true}, preSwap.Generation)
 	pu.m.cfg.mu.Unlock()
 	pu.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("old attach failed")})
 
@@ -937,11 +941,12 @@ func TestHostManageUpdateClearsTheAttachRecord(t *testing.T) {
 	f := newUpdateFixture(t)
 	// Retain state the way the manager's lifecycle events and attached rows do.
 	f.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("dial refused")})
+	live, _ := f.hosts.Get("side")
 	f.m.cfg.mu.Lock()
 	f.m.cfg.state.recordKnown(appwire.HostRow{
 		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
 		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
-	}, hostFactsValidity{handshake: true, facts: true})
+	}, hostFactsValidity{handshake: true, facts: true}, live.Generation)
 	f.m.cfg.mu.Unlock()
 
 	before, err := f.m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
@@ -1351,5 +1356,207 @@ func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
 	newOnce.Do(func() { close(runner.newRelease) })
 	if err := <-newEnsureDone; err == nil {
 		t.Fatal("the parked new-identity Ensure succeeded; the runner must fail the released attach")
+	}
+}
+
+// TestHostManageUpdateStaleRowCannotResurrectRetiredState pins the reviewer's
+// interleaving exactly: a row built from the PRE-swap entry passes
+// hostEntryCurrent before the swap, the swap advances the generation and its
+// retire hook clears the record, and only THEN does the stale row reach its
+// state writes. With the update parked in its reap, the swap and the hook have
+// already run and the gate is free, so the stale write lands after the
+// retirement — the window that TestHostManageUpdateClearsFactsRecordedWhile-
+// WaitingForTheGate never places the write in (that test records before the
+// swap). Pre-fix the retirement was a bare remove, so the stale recordKnown
+// recreated the record from the retired identity and the stale apply folded
+// its facts back; the generation-scoped retire fences both. The other half is
+// asserted too: a row for the NEW generation still records and folds normally,
+// so the mark cannot block the live identity.
+func TestHostManageUpdateStaleRowCannotResurrectRetiredState(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &reapParkingRunner{
+		reapEntered: make(chan struct{}),
+		reapRelease: make(chan struct{}),
+		newEntered:  make(chan struct{}),
+		newRelease:  make(chan struct{}),
+	}
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, reg, nil)
+	manager := sshconn.New(reg, sshconn.Options{
+		Runner:  runner,
+		OnEvent: func(ev sshconn.Event) { m.observeEvent(ev) },
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	var reapOnce, newOnce sync.Once
+	t.Cleanup(func() {
+		reapOnce.Do(func() { close(runner.reapRelease) })
+		newOnce.Do(func() { close(runner.newRelease) })
+	})
+	m.cfg.manager = manager
+
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	staleEntry, ok := reg.Get("side")
+	if !ok {
+		t.Fatal("side not registered before the update")
+	}
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+
+	updateDone := make(chan updateOutcome, 1)
+	go func() {
+		resp, err := m.Update(context.Background(), appwire.HostUpdateParams{
+			Name:  "side",
+			Entry: appwire.HostEntry{Address: "edited.example"},
+		})
+		updateDone <- updateOutcome{resp: resp, err: err}
+	}()
+	// The update has swapped the entry and run its retire hook, then released the
+	// gate and parked in the reap: the retirement is already done, and the gate is
+	// free for the stale write to land.
+	select {
+	case <-runner.reapEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never reached its reap; the runner did not park the channel close")
+	}
+
+	newEntry, ok := reg.Get("side")
+	if !ok {
+		t.Fatal("the update dropped the registry entry")
+	}
+	if newEntry.Generation <= staleEntry.Generation {
+		t.Fatalf("new generation = %d, want > the retired %d", newEntry.Generation, staleEntry.Generation)
+	}
+
+	// The stale late write: an ATTACHED row captured from the retired entry
+	// reaches recordKnown after the retirement. Its generation is at or below the
+	// retired mark, so it must write nothing back — pre-fix (a bare remove) it
+	// recreated the record from the retired identity, which the edited host's
+	// later offline rows then rendered as their own.
+	staleAttached := appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "retired-hub", ServerVersion: "0.0.1",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}
+	m.cfg.mu.Lock()
+	m.cfg.state.recordKnown(staleAttached, hostFactsValidity{handshake: true, facts: true}, staleEntry.Generation)
+	m.cfg.mu.Unlock()
+	m.cfg.state.mu.Lock()
+	rec := m.cfg.state.records["side"]
+	var (
+		known   appwire.HostRow
+		errText string
+		mark    uint64
+	)
+	if rec != nil {
+		known = rec.known
+		errText = rec.lastErr
+		mark = rec.retiredThrough
+	}
+	m.cfg.state.mu.Unlock()
+	if mark != staleEntry.Generation {
+		t.Fatalf("retired mark = %d, want the retired generation %d", mark, staleEntry.Generation)
+	}
+	if known.ServerName != "" || known.ServerVersion != "" || known.HubVersion != "" || known.OS != "" || known.Arch != "" {
+		t.Fatalf("record after the stale write = %+v, want the retired identity's facts gone", known)
+	}
+	if errText != "" {
+		t.Fatalf("record attach error after the stale write = %q, want it empty", errText)
+	}
+
+	// An offline row built from the retired generation folds nothing either: the
+	// offline row the edited host's later list/status renders must not carry the
+	// retired facts.
+	staleOffline := appwire.HostRow{Name: "side"}
+	m.cfg.mu.Lock()
+	m.cfg.state.apply(&staleOffline, staleEntry.Generation)
+	m.cfg.mu.Unlock()
+	if staleOffline.MidAttach || staleOffline.LastAttachErr != "" {
+		t.Fatalf("stale offline row = %+v, want no retired attach state folded in", staleOffline)
+	}
+	if staleOffline.ServerName != "" || staleOffline.ServerVersion != "" || staleOffline.HubVersion != "" || staleOffline.OS != "" || staleOffline.Arch != "" {
+		t.Fatalf("stale offline row = %+v, want no retired facts folded in", staleOffline)
+	}
+
+	// The mark must not block the live identity: a row for the new generation
+	// still records and folds normally.
+	freshAttached := appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "new-hub", ServerVersion: "1.0.0",
+		HubVersion: "1.2.3", OS: "darwin", Arch: "arm64",
+	}
+	m.cfg.mu.Lock()
+	m.cfg.state.recordKnown(freshAttached, hostFactsValidity{handshake: true, facts: true}, newEntry.Generation)
+	freshOffline := appwire.HostRow{Name: "side"}
+	m.cfg.state.apply(&freshOffline, newEntry.Generation)
+	m.cfg.mu.Unlock()
+	if freshOffline.ServerName != "new-hub" || freshOffline.ServerVersion != "1.0.0" ||
+		freshOffline.HubVersion != "1.2.3" || freshOffline.OS != "darwin" || freshOffline.Arch != "arm64" {
+		t.Fatalf("new-generation row = %+v, want its own facts retained and folded", freshOffline)
+	}
+
+	reapOnce.Do(func() { close(runner.reapRelease) })
+	select {
+	case done := <-updateDone:
+		if done.err != nil {
+			t.Fatalf("Update: %v", done.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never returned after its reap was released")
+	}
+}
+
+// TestHostManageRemoveCarriesTheEffectiveEntryFields pins the removal response's
+// shape: it carries the whole effective entry it removed — User, EvenerPath,
+// ConfigPath, Addr, and a cloned Roots — not just the name/address/key subset
+// slice 1 needed, so a removal row matches every other row for the same host.
+// The Roots clone is asserted directly: mutating the response's slice must not
+// reach the registry entry's.
+func TestHostManageRemoveCarriesTheEffectiveEntryFields(t *testing.T) {
+	f := newUpdateFixture(t)
+	entry := appwire.HostEntry{
+		Name: "rem", Address: "rem.example", User: "operator", KeyPath: "/keys/rem",
+		EvenerPath: "/opt/evener", ConfigPath: "/etc/evener/hub.toml",
+		Addr: "127.0.0.1:9180", Roots: []string{"/srv/one", "/srv/two"},
+	}
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: entry}); err != nil {
+		t.Fatalf("Add(rem): %v", err)
+	}
+	live, ok := f.hosts.Get("rem")
+	if !ok {
+		t.Fatal("rem not registered after Add")
+	}
+	resp, err := f.m.Remove(context.Background(), appwire.HostRemoveParams{Name: "rem"})
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	got := resp.Host
+	if !got.Removed || got.Origin != hostOriginSidecar {
+		t.Fatalf("removal row = %+v, want Removed with the sidecar origin", got)
+	}
+	if got.Name != "rem" || got.Address != entry.Address || got.User != entry.User ||
+		got.KeyPath != entry.KeyPath || got.EvenerPath != entry.EvenerPath ||
+		got.ConfigPath != entry.ConfigPath || got.Addr != entry.Addr {
+		t.Fatalf("removal row = %+v, want the whole effective entry %+v", got, entry)
+	}
+	if !slices.Equal(got.Roots, entry.Roots) {
+		t.Fatalf("removal row Roots = %v, want %v", got.Roots, entry.Roots)
+	}
+	if len(got.Roots) == 0 {
+		t.Fatal("removal row carried no roots; the clone assertion below cannot prove independence")
+	}
+	got.Roots[0] = "/mutated"
+	if live.Roots[0] != "/srv/one" {
+		t.Fatalf("mutating the response Roots reached the registry entry: %v", live.Roots)
 	}
 }

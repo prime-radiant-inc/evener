@@ -458,19 +458,38 @@ func (s *hostSidecarStore) isSidecar(name string) bool {
 
 // hostAttachRecord is one host's retained attach state: what the lifecycle
 // events say about an in-progress or failed attach, plus the last-known facts
-// of the last row that rendered attached.
+// of the last row that rendered attached. retiredThrough is the highest entry
+// generation this name's record has been retired through.
 type hostAttachRecord struct {
 	midAttach bool
 	lastErr   string
 	known     appwire.HostRow // only the fact fields are read back
+	// retiredThrough fences the retained state to the entry generations that are
+	// still live: content is served only to a row whose entry generation is
+	// above this mark, and a row at or below it writes nothing back. It is the
+	// generation of the retired entry an edit's swap replaced (retire), kept
+	// monotonically non-decreasing so a later retirement cannot lower it. Zero
+	// means no identity has been retired for this name, which is why a fresh
+	// name's rows are never fenced.
+	retiredThrough uint64
 }
 
 // hostAttachState retains per-host attach records from the SSH manager's
 // lifecycle events and from attached rows this surface renders, so offline
 // and in-progress rows keep the metadata the wire contract promises (a host
 // mid-attach renders midAttach; a host that failed renders lastAttachError;
-// an offline row keeps its last-known facts). Records for removed hosts are
-// dropped, so a re-add starts clean.
+// an offline row keeps its last-known facts).
+//
+// It is generation-scoped, not merely name-keyed: an update retires the
+// identity a name's record describes, and the retirement is marked by that
+// identity's entry generation (retire). Rows carry the generation of the entry
+// they were built from, and only a row above the mark is served or may write
+// back. That is what makes an edit's clear immune to a row that captured the
+// pre-swap entry before the update but only reaches its state write after the
+// swap's retirement: its generation is at or below the mark, so its stale facts
+// are neither folded into the row it is building nor recorded for later rows.
+// Records for removed hosts are dropped wholesale — remove, the clean-slate
+// path — so a re-add starts clean, its mark included.
 type hostAttachState struct {
 	mu      sync.Mutex
 	records map[string]*hostAttachRecord
@@ -540,11 +559,18 @@ type hostFactsValidity struct {
 // lookup succeeded are written: a transient handshake or facts failure on an
 // attached host leaves those fields empty in the row, and recording them would
 // blank the previously retained facts — the offline rows that follow would
-// lose the metadata the wire contract promises.
-func (s *hostAttachState) recordKnown(row appwire.HostRow, validity hostFactsValidity) {
+// lose the metadata the wire contract promises. gen is the entry generation the
+// row was built from; a row at or below the name's retired mark describes an
+// identity the record no longer belongs to, so it writes nothing — this is the
+// write that a retirement fences out, and without it a late pre-swap row would
+// recreate the retired identity's facts after the clear.
+func (s *hostAttachState) recordKnown(row appwire.HostRow, validity hostFactsValidity, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec := s.records[row.Name]
+	if rec != nil && gen <= rec.retiredThrough {
+		return
+	}
 	if rec == nil {
 		rec = &hostAttachRecord{}
 		s.records[row.Name] = rec
@@ -562,12 +588,14 @@ func (s *hostAttachState) recordKnown(row appwire.HostRow, validity hostFactsVal
 
 // apply folds the retained record into row: the attach state always, the
 // last-known facts only when the row is not attached (an attached row's facts
-// come from the live channel).
-func (s *hostAttachState) apply(row *appwire.HostRow) {
+// come from the live channel). gen is the entry generation the row was built
+// from; a row at or below the name's retired mark folds nothing, so a stale
+// pre-swap row renders clean instead of the retired identity's state.
+func (s *hostAttachState) apply(row *appwire.HostRow, gen uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec := s.records[row.Name]
-	if rec == nil {
+	if rec == nil || gen <= rec.retiredThrough {
 		return
 	}
 	row.MidAttach = rec.midAttach
@@ -579,6 +607,31 @@ func (s *hostAttachState) apply(row *appwire.HostRow) {
 		row.OS = rec.known.OS
 		row.Arch = rec.known.Arch
 	}
+}
+
+// retire drops the record's content for name and marks every row whose entry
+// generation is <= gen as retired: such a row must neither be served the
+// name's retained state nor write any back. gen is the generation of the entry
+// an update retired, so a row that captured that entry — or any earlier one —
+// is fenced, while a row built from the new identity's higher generation is
+// served and records normally. The mark is monotonic (the max of the existing
+// and the new generation) so a retirement can never lower it, and the record
+// entry is kept (with its mark) so the mark survives even though the content is
+// gone.
+func (s *hostAttachState) retire(name string, gen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.records[name]
+	if rec == nil {
+		rec = &hostAttachRecord{}
+		s.records[name] = rec
+	}
+	if gen > rec.retiredThrough {
+		rec.retiredThrough = gen
+	}
+	rec.midAttach = false
+	rec.lastErr = ""
+	rec.known = appwire.HostRow{}
 }
 
 // remove drops name's record; a removed or re-added host starts clean.
@@ -780,6 +833,26 @@ func (m *hubHostManager) hostOnline(host string) bool {
 	return online.Online()
 }
 
+// hostEntryRow builds the row fields every host row carries from the effective
+// entry: the configured values and a clone of roots (never an alias — the row
+// crosses the wire and a caller mutating its Roots must not be able to reach
+// back into the registry entry). List, status, add, update, and remove rows all
+// start from this, so the removal response carries exactly the entry it removed
+// instead of a hand-picked subset that can silently drift from the wire shape.
+func hostEntryRow(host hostreg.Host, origin string) appwire.HostRow {
+	return appwire.HostRow{
+		Name:       host.Name,
+		Address:    host.SSH,
+		User:       host.User,
+		KeyPath:    host.KeyPath,
+		EvenerPath: host.EvenerPath,
+		ConfigPath: host.ConfigPath,
+		Addr:       host.Addr,
+		Roots:      slices.Clone(host.Roots),
+		Origin:     origin,
+	}
+}
+
 // hostRow renders one host's list row: the effective entry fields plus live
 // state. Attached rows read the live channel's handshake and preflight facts
 // through the attached-only lookups and record them as last-known; a failed
@@ -796,17 +869,7 @@ func (m *hubHostManager) hostOnline(host string) bool {
 // returned — so the parked read the fence exists for still holds up no
 // commit.
 func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin string) appwire.HostRow {
-	row := appwire.HostRow{
-		Name:       host.Name,
-		Address:    host.SSH,
-		User:       host.User,
-		KeyPath:    host.KeyPath,
-		EvenerPath: host.EvenerPath,
-		ConfigPath: host.ConfigPath,
-		Addr:       host.Addr,
-		Roots:      slices.Clone(host.Roots),
-		Origin:     origin,
-	}
+	row := hostEntryRow(host, origin)
 	// Attached is reported only when the attached-only client lookup
 	// confirms a live channel. The online
 	// signal alone is not sufficient: with no signal wired a hub.toml source
@@ -862,9 +925,9 @@ func (m *hubHostManager) hostRow(ctx context.Context, host hostreg.Host, origin 
 	// record exactly as clean as its own commit left it.
 	m.cfg.mu.Lock()
 	if m.hostEntryCurrent(host) {
-		m.cfg.state.apply(&row)
+		m.cfg.state.apply(&row, host.Generation)
 		if row.Attached {
-			m.cfg.state.recordKnown(row, validity)
+			m.cfg.state.recordKnown(row, validity, host.Generation)
 		}
 	}
 	m.cfg.mu.Unlock()
@@ -1391,13 +1454,14 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		m.cfg.forgetLastGoodThreads(host.Name)
 	}
 	m.cfg.mu.Unlock()
-	return appwire.HostRemoveResponse{Host: appwire.HostRow{
-		Name:    host.Name,
-		Address: host.SSH,
-		KeyPath: host.KeyPath,
-		Origin:  hostOriginSidecar,
-		Removed: true,
-	}}, nil
+	// The removal row carries the whole effective entry it removed — the same
+	// fields a list or status row renders — not the name/address/key subset
+	// slice 1 needed: the wire's HostRow now carries the configured entry, so a
+	// removal response that dropped User, EvenerPath, ConfigPath, Addr, or Roots
+	// would be a different shape than every other row for the same host.
+	removedRow := hostEntryRow(host, hostOriginSidecar)
+	removedRow.Removed = true
+	return appwire.HostRemoveResponse{Host: removedRow}, nil
 }
 
 // Update applies one edit to a live sidecar host entry: the durable sidecar
@@ -1496,31 +1560,51 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// host/status, and host/add. The mark fences the window instead.
 	var liveErr error
 	if m.cfg.manager != nil {
-		// The retiring identity's name-keyed attach record is cleared from inside
+		// The retiring identity's name-keyed attach record is retired from inside
 		// the manager's own gate hold, in the same hold as the swap: UpdateHost
 		// runs this hook after it has replaced the registry entry and torn down the
-		// retired identity's channel, and still before it releases the gate. The
-		// retired identity's Detached is emitted earlier in that same hold, and no
-		// lifecycle event for the new identity can interleave between the swap and
-		// the clear, because every event is delivered synchronously with the gate
-		// held. A pre-swap row built from the still-current old entry is fenced out
-		// by the generation advance, so it cannot repopulate the record after the
-		// swap either. The hook must not call back into the manager (the gate is
-		// non-reentrant) and must not take the mutation mutex (another goroutine
-		// may hold it while parked on this gate) — it only touches the record
-		// state's own lock.
-		if err := m.cfg.manager.UpdateHost(entry, func() { m.cfg.state.remove(name) }); err != nil {
+		// retired identity's channel, and still before it releases the gate,
+		// handing it the entry the swap replaced. The retired identity's Detached
+		// is emitted earlier in that same hold, and no lifecycle event for the new
+		// identity can interleave between the swap and the retirement, because
+		// every event is delivered synchronously with the gate held.
+		//
+		// The retirement is generation-scoped rather than a mere delete. A row that
+		// captured the still-current old entry before the swap can be parked
+		// outside this gate (the row build runs without the mutation mutex), pass
+		// hostEntryCurrent before the swap, and only reach its state write after
+		// this hook deleted the record — a late write that a bare remove would let
+		// recreate the retired identity's facts. Marking the retired entry's
+		// generation (retired.Generation) fences that row: its generation is at or
+		// below the mark, so its apply folds nothing and its recordKnown writes
+		// nothing, while a row built from the new identity's higher generation is
+		// served and records normally. The hook must not call back into the
+		// manager (the gate is non-reentrant) and must not take the mutation mutex
+		// (another goroutine may hold it while parked on this gate) — it only
+		// touches the record state's own lock.
+		if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
+			m.cfg.state.retire(name, retired.Generation)
+		}); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
 	} else if err := m.cfg.hosts.Update(entry); err != nil {
 		liveErr = err
 	} else {
 		// No sshconn manager is wired (tests, embedders), so no lifecycle event can
-		// exist for the new identity: clearing inline on the successful swap gives
+		// exist for the new identity: retiring inline on the successful swap gives
 		// the same guarantee the manager path's hook holds, and this also clears an
 		// offline host's retained error and facts when an address edit has no
-		// channel to tear down.
-		m.cfg.state.remove(name)
+		// channel to tear down. The pre-swap entry's generation is read immediately
+		// before the swap — the mark fences rows built from it, exactly as the
+		// manager path fences rows built from the entry its swap replaced, so a
+		// stale row still racing the clear cannot resurrect the retired identity's
+		// state even with no manager.
+		prior, _ := m.cfg.hosts.Get(name)
+		if err := m.cfg.hosts.Update(entry); err != nil {
+			liveErr = err
+		} else {
+			m.cfg.state.retire(name, prior.Generation)
+		}
 	}
 
 	// Finish phase: the mutex comes back for the bookkeeping, and the mark clears

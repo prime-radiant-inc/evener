@@ -261,7 +261,7 @@ git commit -m "feat(hosts): add Registry.Update, the identity-fenced in-place en
 
 **Interfaces:**
 - Consumes: `hostreg.Registry.Update` (Task 1), `Manager.hostLock`/`releaseHostLock`, `Manager.teardownHostChannel`, `Manager.reg` — all existing.
-- Produces: `func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error` — one hold of the per-host gate around the registry swap and the pre-swap identity's teardown; `onRetire`, when non-nil, runs inside that same hold, after the swap and teardown; never dials; a nil registry is an error. Task 5's live phase calls it.
+- Produces: `func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error` — one hold of the per-host gate around the registry swap and the pre-swap identity's teardown; `onRetire`, when non-nil, runs inside that same hold, after the swap and teardown, receiving the entry the swap retired (its generation included) so callers retire per-identity state by generation; never dials; a nil registry is an error. Task 5's live phase calls it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -529,10 +529,14 @@ Add to `cmd/evener-hub/internal/sshconn/manager.go`, directly after `AddHost`:
 // with the gate held, so a concurrent attach can only start for the new
 // generation once the gate is free; a caller's per-identity state retired from
 // this hook therefore cannot have a new-generation event interleave between the
-// swap and the retirement and be erased by it. The hook must not call back into
-// Manager — the gate is non-reentrant — and must not take a lock another
-// goroutine may hold while parked on this gate.
-func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error {
+// swap and the retirement and be erased by it. The hook receives the entry the
+// swap actually retired — the pre-swap capture, its Generation included — so a
+// caller retires per-identity state by generation rather than by timing, which
+// is what makes the retirement immune to a late write from a row captured
+// before the swap. The hook must not call back into Manager — the gate is
+// non-reentrant — and must not take a lock another goroutine may hold while
+// parked on this gate.
+func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error {
 	if m.reg == nil {
 		return errors.New("sshconn: UpdateHost with no registry")
 	}
@@ -556,9 +560,10 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error {
 	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
-	// cannot acquire the gate until it is released below.
+	// cannot acquire the gate until it is released below. It receives the entry
+	// the swap replaced, so the caller retires by identity, not by timing.
 	if onRetire != nil {
-		onRetire()
+		onRetire(before)
 	}
 	lock.Unlock()
 	// The reap runs after the lock is released, exactly as DetachHost's and
@@ -2305,36 +2310,41 @@ Expected: FAIL — the record survives the edit, and neither the source nor the 
 
 - [ ] **Step 3: Retire the attach record inside the swap's gate hold**
 
-In `Update`, hand the clear to the manager so it runs inside the swap's own gate hold, and clear inline only on the no-manager fallback — with no manager no lifecycle event can exist:
+In `Update`, hand the retirement to the manager so it runs inside the swap's own gate hold, and retire inline only on the no-manager fallback — with no manager no lifecycle event can exist, but a stale row can still race the clear. The retirement is generation-scoped (`state.retire(name, gen)`): the manager path retires by the generation the swap replaced (the hook's argument), and the no-manager path reads the live entry's generation immediately before its own swap:
 
 ```go
 	var liveErr error
 	if m.cfg.manager != nil {
-		// The retiring identity's name-keyed attach record is cleared from inside
+		// The retiring identity's name-keyed attach record is retired from inside
 		// the manager's own gate hold, in the same hold as the swap: UpdateHost
 		// runs this hook after it has replaced the registry entry and torn down the
-		// retired identity's channel, and still before it releases the gate. The
-		// retired identity's Detached is emitted earlier in that same hold, and no
-		// lifecycle event for the new identity can interleave between the swap and
-		// the clear, because every event is delivered synchronously with the gate
-		// held. A pre-swap row built from the still-current old entry is fenced out
-		// by the generation advance, so it cannot repopulate the record after the
-		// swap either. The hook must not call back into the manager (the gate is
+		// retired identity's channel, and still before it releases the gate.
+		// The retirement is generation-scoped: the hook receives the entry the swap
+		// replaced, and marking its generation fences a row that captured the old
+		// entry before the swap but only reaches its state write after the
+		// retirement. The hook must not call back into the manager (the gate is
 		// non-reentrant) and must not take the mutation mutex (another goroutine
 		// may hold it while parked on this gate) — it only touches the record
 		// state's own lock.
-		if err := m.cfg.manager.UpdateHost(entry, func() { m.cfg.state.remove(name) }); err != nil {
+		if err := m.cfg.manager.UpdateHost(entry, func(retired hostreg.Host) {
+			m.cfg.state.retire(name, retired.Generation)
+		}); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
-	} else if err := m.cfg.hosts.Update(entry); err != nil {
-		liveErr = err
 	} else {
 		// No sshconn manager is wired (tests, embedders), so no lifecycle event can
-		// exist for the new identity: clearing inline on the successful swap gives
+		// exist for the new identity: retiring inline on the successful swap gives
 		// the same guarantee the manager path's hook holds, and this also clears an
 		// offline host's retained error and facts when an address edit has no
-		// channel to tear down.
-		m.cfg.state.remove(name)
+		// channel to tear down. The pre-swap entry's generation is read immediately
+		// before the swap, exactly as the manager path fences rows built from the
+		// entry its swap replaced.
+		prior, _ := m.cfg.hosts.Get(name)
+		if err := m.cfg.hosts.Update(entry); err != nil {
+			liveErr = err
+		} else {
+			m.cfg.state.retire(name, prior.Generation)
+		}
 	}
 ```
 
