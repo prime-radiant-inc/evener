@@ -711,8 +711,11 @@ func fileHasContent(path string) bool {
 // itself, so the failure stays legible even with the stack left out.
 //
 // A survey that died with no marker at all — a fatal error, an os.Exit, a
-// killed binary — has no block to show, so a bounded tail of the log stands in
-// and the excerpt is never empty on a failure.
+// killed binary — has no block to show, so a bounded tail of the log stands in.
+// The excerpt is non-empty whenever the log has content: the run has just
+// written that log, so the only silent case is a path this function cannot read
+// (or one holding nothing but whitespace) — an unreadable log, not an absent
+// one.
 func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
