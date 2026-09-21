@@ -3994,6 +3994,18 @@ test("mergeTurnHistory does not count a field a later older fragment clears", ()
   expect(merged.transcriptOverlap).toBe(true);
 });
 
+test("mergeTurnHistory counts an older status the rank merge retains", () => {
+  const item = { id: "a", turnId: "turn-1", type: "agentMessage", text: "same" };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-1", status: "completed", items: [{ ...item, status: "completed" }] }],
+    [{ id: "turn-1", status: "completed", items: [{ ...item, status: "inProgress" }] }],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.items[0]).toMatchObject({ id: "a", status: "completed" });
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [

@@ -1216,6 +1216,21 @@ function membershipHasLeaf(membership: ToolItemSourceMembership | undefined, lea
   return membershipHasLeaf(membership.left, leaf) || membershipHasLeaf(membership.right, leaf);
 }
 
+// Status merges by rank (mergePageItem), not by later-wins: a later
+// contributor's status only takes over when it is defined and not
+// LOWER-ranked than what came before, so an older completed status outlives
+// a later inProgress one. The chain walks the later contributors in merge
+// order — once any of them takes over, the older value is gone for good.
+function statusOutlivesContributors(older: ItemModel, later: ItemModel[]): boolean {
+  const status = older.status;
+  for (const item of later) {
+    const next = item.status;
+    if (next === undefined || (statusRank[next] ?? 0) < (statusRank[status ?? ""] ?? 0)) continue;
+    return false;
+  }
+  return true;
+}
+
 // The merged item in the group turn hosting the older item's data. Identity
 // alone stops at the first hop: coalescing can chain an older item through a
 // fresh alias into a second fresh item that no longer matches the original
@@ -1300,9 +1315,9 @@ function olderItemAddsCoverage(
   return Object.keys(older).some((field) => {
     if (itemNonCoverageFields.has(field)) return false;
     const nullishMerged = itemNullishMergedFields.has(field);
-    // Status merges by rank and falls back to the older side on an undefined
-    // fresh value, so its absence still reads the value. Every other field the
-    // walk reaches outside the ?? list merges by spread ({ ...older, ...newer }:
+    // Status merges by rank, so its claim follows the rank chain above rather
+    // than treating any defined later status as superseding. Every other field
+    // the walk reaches outside the ?? list merges by spread ({ ...older, ...newer }:
     // the later side's own property wins, even when its value is undefined),
     // so a later contributor that OWNS the property blocks the claim however
     // undefined its value reads — the spread discards the older value, and
@@ -1310,10 +1325,13 @@ function olderItemAddsCoverage(
     const presenceMerged = !nullishMerged && field !== "status";
     const olderValue = (older as unknown as Record<string, unknown>)[field];
     if (absentForCoverage(olderValue, nullishMerged)) return false;
-    const freshLacks = later.every((item) => {
-      if (presenceMerged) return !Object.hasOwn(item, field);
-      return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
-    });
+    const freshLacks =
+      field === "status"
+        ? statusOutlivesContributors(older, later)
+        : later.every((item) => {
+            if (presenceMerged) return !Object.hasOwn(item, field);
+            return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
+          });
     return freshLacks && matchedFieldSurvivesFold(field, host, view);
   });
 }
