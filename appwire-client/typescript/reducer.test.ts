@@ -4006,6 +4006,18 @@ test("mergeTurnHistory counts an older status the rank merge retains", () => {
   expect(merged.turns[0]?.items[0]).toMatchObject({ id: "a", status: "completed" });
 });
 
+test("mergeTurnHistory counts a turn status the rank merge retains", () => {
+  const merged = mergeTurnHistory(
+    [{ id: "t", status: "completed", items: [] }],
+    [{ id: "t", status: "inProgress", items: [] }],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns).toHaveLength(1);
+  expect(merged.turns[0]?.id).toBe("t");
+  expect(merged.turns[0]?.status).toBe("completed");
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [

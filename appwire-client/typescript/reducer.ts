@@ -1216,15 +1216,16 @@ function membershipHasLeaf(membership: ToolItemSourceMembership | undefined, lea
   return membershipHasLeaf(membership.left, leaf) || membershipHasLeaf(membership.right, leaf);
 }
 
-// Status merges by rank (mergePageItem), not by later-wins: a later
-// contributor's status only takes over when it is defined and not
-// LOWER-ranked than what came before, so an older completed status outlives
-// a later inProgress one. The chain walks the later contributors in merge
-// order — once any of them takes over, the older value is gone for good.
-function statusOutlivesContributors(older: ItemModel, later: ItemModel[]): boolean {
-  const status = older.status;
-  for (const item of later) {
-    const next = item.status;
+// Status merges by rank (mergePageItem and mergePageTurn), not by
+// later-wins: a later contributor's status only takes over when it is
+// defined and not LOWER-ranked than what came before, so an older completed
+// status outlives a later inProgress one. The chain walks the later
+// contributors in merge order — once any of them takes over, the older
+// value is gone for good.
+function statusOutlives(base: string | undefined, later: readonly { status?: string }[]): boolean {
+  const status = base;
+  for (const contributor of later) {
+    const next = contributor.status;
     if (next === undefined || (statusRank[next] ?? 0) < (statusRank[status ?? ""] ?? 0)) continue;
     return false;
   }
@@ -1327,7 +1328,7 @@ function olderItemAddsCoverage(
     if (absentForCoverage(olderValue, nullishMerged)) return false;
     const freshLacks =
       field === "status"
-        ? statusOutlivesContributors(older, later)
+        ? statusOutlives(older.status, later)
         : later.every((item) => {
             if (presenceMerged) return !Object.hasOwn(item, field);
             return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
@@ -1339,6 +1340,7 @@ function olderItemAddsCoverage(
 function olderTurnAddsCoverage(
   older: TurnModel,
   matches: TurnModel[],
+  laterTurns: TurnModel[],
   groupTurn: TurnModel,
   view: ToolFoldView,
   context?: ToolItemMergeContext,
@@ -1357,6 +1359,15 @@ function olderTurnAddsCoverage(
     // drops never reaches the returned history. The turn's items can still
     // contribute data the fold carries onto a surviving call, so keep
     // checking instead of returning.
+    if (turnSurvivesFold(groupTurn, view)) return true;
+  }
+  if (matches.length > 0 && statusOutlives(older.status, laterTurns)) {
+    // Turn status merges by rank (mergePageTurn) exactly as item status does:
+    // a matched older turn's completed outlives fresh inProgress fragments and
+    // the group turn keeps that persisted state. Unmatched retained turns
+    // keep their status with the turn itself and claim through their items or
+    // canonical fields instead. The status rides the group turn, so it is
+    // gated on the same fold survival — and keeps walking when the gate fails.
     if (turnSurvivesFold(groupTurn, view)) return true;
   }
   // The fold is global across turns: an older result in a turn that matches
@@ -1410,7 +1421,7 @@ function mergeTurnHistoryWithContext(
 
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
-    for (const olderIndex of group.olderIndexes) {
+    for (const [position, olderIndex] of group.olderIndexes.entries()) {
       const turn = older[olderIndex];
       if (turn === undefined) continue;
       if (
@@ -1422,7 +1433,17 @@ function mergeTurnHistoryWithContext(
       ) {
         transcriptOverlap = true;
       }
-      if (olderTurnAddsCoverage(turn, freshTurns, group.turn, view, context)) olderCoverage = true;
+      // A group turn folds its older fragments before its fresh ones, so the
+      // turns merged after this one are the later older fragments followed by
+      // every fresh fragment — the rank chain a turn-status claim walks.
+      const laterTurns = [
+        ...group.olderIndexes.slice(position + 1).flatMap((index): TurnModel[] => {
+          const laterTurn = older[index];
+          return laterTurn === undefined ? [] : [laterTurn];
+        }),
+        ...freshTurns,
+      ];
+      if (olderTurnAddsCoverage(turn, freshTurns, laterTurns, group.turn, view, context)) olderCoverage = true;
     }
 
     if (group.olderIndexes.length === 0) continue;
