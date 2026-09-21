@@ -322,9 +322,10 @@ export function harnessStylesheetsLoadedInPage() {
 }
 
 /**
- * Group the Network.loadingFailed events captured during one boot window by
- * what failed and how often, so the terminal error reports the burst
- * ("Script net::ERR_NETWORK_CHANGED x3") instead of 40 near-identical lines.
+ * Group the Network.loadingFailed events captured during one attempt's boot
+ * window by what failed and how often, so the terminal error reports the
+ * burst ("Script net::ERR_NETWORK_CHANGED x3") instead of 40
+ * near-identical lines.
  */
 function summarizeLoadingFailures(failures) {
   if (failures.length === 0) return null;
@@ -334,6 +335,21 @@ function summarizeLoadingFailures(failures) {
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
   return [...counts.entries()].map(([kind, count]) => (count === 1 ? kind : `${kind} x${count}`)).join("; ");
+}
+
+// The error texts that name a host network-state change - the flake this seam
+// exists for (a Tailscale interface flap announces itself to Chrome as
+// ERR_NETWORK_CHANGED; the interface's own outage arrives as
+// ERR_INTERNET_DISCONNECTED). Anything else that fails on the wire - a
+// blocked request, an ERR_FAILED resource the harness itself caused - is
+// deterministic evidence about the harness: reported, but never counted as
+// the network-change signature that earns the environment framing. Extending
+// this set is a diagnosis decision, not a catch-all: a text added here lets
+// every guard's boot-death attribution claim an environment cause.
+const NETWORK_CHANGE_FAILURE_TEXTS = ["net::ERR_NETWORK_CHANGED", "net::ERR_INTERNET_DISCONNECTED"];
+
+function isNetworkChangeFailure(failure) {
+  return NETWORK_CHANGE_FAILURE_TEXTS.includes(failure?.errorText ?? "");
 }
 
 /**
@@ -399,8 +415,12 @@ async function navigateToOnce({ ws, send }, url) {
  * not name the cause. A harness entry whose module-init path throws at top
  * level, a bad script href, or a broken import graph all leave the marker
  * unset while every request succeeds - a deterministic code failure. Only a
- * boot death that captured failed requests is framed as the environment
- * flake; without that evidence the terminal error points at the harness.
+ * boot death whose FINAL attempt captured recognized network-change failures
+ * is framed as the environment flake. Evidence never outlives the attempt
+ * that captured it (each attempt opens a clean window, so a flap that killed
+ * an early attempt cannot launder a deterministic death on the final one),
+ * navigation-induced aborts are never recorded at all, and any other captured
+ * failure is reported under the harness diagnosis rather than flipping it.
  *
  * The legacy two-argument call is unchanged: no boot options, no Network
  * domain, no extra evaluate - skillguard's driver and editorial-preview keep
@@ -433,55 +453,84 @@ export async function navigateTo(
     } catch {
       return;
     }
-    if (message?.method === "Network.loadingFailed" && message.params) loadingFailures.push(message.params);
+    if (message?.method !== "Network.loadingFailed" || !message.params) return;
+    // A re-navigation ABORTS the previous attempt's in-flight requests, so
+    // canceled:true / net::ERR_ABORTED arrivals are the seam's own doing, and
+    // a harness aborting its own request is equally deterministic. Neither is
+    // a wire death, so neither is recorded: evidence must be failures that
+    // happened to requests the page wanted kept alive.
+    if (message.params.canceled === true || message.params.errorText === "net::ERR_ABORTED") return;
+    loadingFailures.push(message.params);
   };
   ws.addEventListener("message", onLoadingFailed);
   let attempts = 0;
   try {
     // Network events only flow while the domain is enabled, and only this
-    // window needs them: the captured failures are what names the real cause
-    // when the retries run out.
+    // window needs them. The enable sits inside the SAME cleanup scope as the
+    // loop: a command whose response times out may still have been applied by
+    // Chrome, and the guards reuse this page for every later case, so the
+    // disable must go out on every path - including the enable never
+    // answering.
     await withTimeout(send("Network.enable"), 30000, "Network.enable");
-    try {
-      for (;;) {
-        attempts++;
-        await navigateToOnce(page, url);
-        if (await evaluate(send, bootExpression)) return;
-        if (attempts > BOOT_RETRY_LIMIT) {
-          const evidence = summarizeLoadingFailures(loadingFailures);
-          const budget =
-            `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
-            `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed)`;
-          const verdict =
-            `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
-            `so the page is a dead document no measurement can read`;
-          throw new Error(
-            evidence
-              ? `environment problem, not a test case failure: the harness page at ${url} never booted ${budget}: ` +
-                  `${verdict}. Chrome reported these failed requests during the boot window: ${evidence}. A burst ` +
-                  `dying on the wire like that is the transient network change this seam exists for ` +
-                  `(net::ERR_NETWORK_CHANGED is its signature) - an environment flake, not a test case regression.`
-              : `harness boot failure - likely a test case regression, not an environment flake: the harness page ` +
-                  `at ${url} never booted ${budget}: ${verdict}. No request failures were captured during the boot ` +
-                  `window, so no request died on the wire: check what the boot check measures - the harness entry and ` +
-                  `the product modules it imports (a top-level throw in module init, a bad script href, or a broken ` +
-                  `import graph all leave the boot marker unset without reporting a failed request), or the case's ` +
-                  `own stylesheet links.`,
-          );
-        }
-        const captured = loadingFailures.length;
-        console.error(
-          `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
-            `${bootLabel ?? bootExpression} is missing` +
-            (captured > 0 ? `, ${captured} request failure${captured === 1 ? "" : "s"} captured` : "") +
-            ") - re-navigating",
+    for (;;) {
+      // EVIDENCE IS SCOPED TO ONE ATTEMPT: the terminal attribution must
+      // describe the boot death that decided the run - the final attempt's -
+      // so each attempt opens a clean window. A network flap that killed
+      // attempt 1 must not launder a deterministic harness bug that killed
+      // the final attempt as an environment problem.
+      loadingFailures.length = 0;
+      attempts++;
+      await navigateToOnce(page, url);
+      if (await evaluate(send, bootExpression)) return;
+      if (attempts > BOOT_RETRY_LIMIT) {
+        const budget =
+          `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
+          `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed)`;
+        const verdict =
+          `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
+          `so the page is a dead document no measurement can read`;
+        const networkEvidence = summarizeLoadingFailures(loadingFailures.filter(isNetworkChangeFailure));
+        const otherEvidence = summarizeLoadingFailures(
+          loadingFailures.filter((failure) => !isNetworkChangeFailure(failure)),
         );
-        await delay(retryDelayMs);
+        let diagnosis;
+        if (networkEvidence) {
+          diagnosis =
+            `environment problem, not a test case failure: the harness page at ${url} never booted ${budget}: ` +
+            `${verdict}. Chrome reported these failed requests during the boot window: ${networkEvidence}. A ` +
+            `burst dying on the wire like that is the transient network change this seam exists for ` +
+            `(net::ERR_NETWORK_CHANGED is its signature) - an environment flake, not a test case regression.`;
+        } else if (otherEvidence) {
+          diagnosis =
+            `harness boot failure - likely a test case regression, not an environment flake: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. Chrome reported these failed requests during the boot ` +
+            `window: ${otherEvidence} - none of them the wire-death signature of the network-change flake this ` +
+            `seam exists for, so no host network change explains the missing marker: check what the boot check ` +
+            `measures - the harness entry and the product modules it imports (a top-level throw in module init, ` +
+            `a bad script href, or a broken import graph all leave the boot marker unset), or the case's own ` +
+            `stylesheet links.`;
+        } else {
+          diagnosis =
+            `harness boot failure - likely a test case regression, not an environment flake: the harness page at ` +
+            `${url} never booted ${budget}: ${verdict}. No request failures were captured during the boot ` +
+            `window, so no request died on the wire: check what the boot check measures - the harness entry and ` +
+            `the product modules it imports (a top-level throw in module init, a bad script href, or a broken ` +
+            `import graph all leave the boot marker unset without reporting a failed request), or the case's ` +
+            `own stylesheet links.`;
+        }
+        throw new Error(diagnosis);
       }
-    } finally {
-      await withTimeout(send("Network.disable"), 30000, "Network.disable").catch(() => {});
+      const captured = loadingFailures.length;
+      console.error(
+        `navigateTo: the harness page at ${url} never booted (attempt ${attempts}: ` +
+          `${bootLabel ?? bootExpression} is missing` +
+          (captured > 0 ? `, ${captured} request failure${captured === 1 ? "" : "s"} captured` : "") +
+          ") - re-navigating",
+      );
+      await delay(retryDelayMs);
     }
   } finally {
+    await withTimeout(send("Network.disable"), 30000, "Network.disable").catch(() => {});
     ws.removeEventListener("message", onLoadingFailed);
   }
 }

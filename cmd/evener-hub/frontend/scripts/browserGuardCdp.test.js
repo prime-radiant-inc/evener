@@ -602,17 +602,18 @@ test("navigateTo fails with the boot cause - never the font check - when the ret
       case "Page.navigate":
         navigations++;
         socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
-        if (navigations === 1) {
-          // The burst dies on the first navigation: the page still loads, but
-          // the module and stylesheet requests fail with the network error.
-          for (const type of ["Script", "Stylesheet"]) {
-            socket.dispatch("message", {
-              data: JSON.stringify({
-                method: "Network.loadingFailed",
-                params: { type, errorText: "net::ERR_NETWORK_CHANGED" },
-              }),
-            });
-          }
+        // The burst dies on EVERY navigation: the page still loads, but the
+        // module and stylesheet requests fail with the network error. Evidence
+        // is scoped per attempt, so the environment framing holds only while
+        // the FINAL attempt itself died on the wire (the stale-evidence test
+        // below pins the other side).
+        for (const type of ["Script", "Stylesheet"]) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { type, errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
         }
         return { result: { frameId: "fixture-frame" } };
       case "Runtime.evaluate":
@@ -739,6 +740,181 @@ test("navigateTo blames the harness entry, not the environment, when no request 
   assert.equal(navigations, 1 + BOOT_RETRY_LIMIT, "the bounded retry budget is unchanged");
   assert.equal(socket.listenerCount("message"), 0);
   assert.ok(liveTimers() <= before);
+});
+
+// Evidence scoping (review round 3): the loading-failure window is per
+// ATTEMPT. A network flap that killed attempt 1 must not launder a
+// deterministic harness bug that killed the FINAL attempt as an environment
+// problem - the terminal diagnosis describes the boot death that decided the
+// run, and only the final attempt's failures are that attempt's evidence.
+test("evidence from an earlier attempt does not outlive it: only the final attempt names the cause", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        // Attempt 1 dies in the flap; every re-navigation lands on a page
+        // whose harness never boots for a deterministic reason and reports
+        // nothing on the wire.
+        if (navigations === 1) {
+          socket.dispatch("message", {
+            data: JSON.stringify({
+              method: "Network.loadingFailed",
+              params: { type: "Script", errorText: "net::ERR_NETWORK_CHANGED" },
+            }),
+          });
+        }
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  const before = liveTimers();
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/overflowharness.html", {
+        bootExpression: "typeof window.settled !== 'undefined'",
+        bootLabel: "the overflowharness entry global window.settled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /harness boot failure - likely a test case regression/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.ok(liveTimers() <= before);
+});
+
+// Abort filtering (review round 3): a re-navigation ABORTS the previous
+// attempt's in-flight requests, so canceled / net::ERR_ABORTED arrivals are
+// the seam's own doing, and a harness aborting its own request is equally
+// deterministic. Neither may be recorded as wire evidence - not counted, not
+// listed.
+test("a canceled or aborted request is never counted as wire evidence", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        // Both flavors arrive on EVERY attempt, including the final one: the
+        // first is canceled by the re-navigation (canceled: true), the second
+        // aborts outright (net::ERR_ABORTED).
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.loadingFailed",
+            params: { type: "Script", errorText: "net::ERR_FAILED", canceled: true },
+          }),
+        });
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.loadingFailed",
+            params: { type: "Script", errorText: "net::ERR_ABORTED" },
+          }),
+        });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /No request failures were captured/);
+        // Dropped whole: neither flavor may appear in the diagnosis as if it
+        // were evidence.
+        assert.doesNotMatch(error.message, /ERR_ABORTED/);
+        assert.doesNotMatch(error.message, /ERR_FAILED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// Classification (review round 3): a request failure that is NOT a recognized
+// network-state change - a blocked request, an ERR_FAILED resource the harness
+// itself caused - is deterministic evidence about the harness. It is included
+// in the diagnosis so the reader can judge it, but it never flips the
+// attribution: only recognized network-change failures earn the environment
+// framing.
+test("a deterministic request failure is reported but never flips the attribution", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        socket.dispatch("message", {
+          data: JSON.stringify({
+            method: "Network.loadingFailed",
+            params: { type: "Script", errorText: "net::ERR_FAILED" },
+          }),
+        });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/transcriptscrollguard.html", {
+        bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
+        bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.match(error.message, /harness boot failure - likely a test case regression/);
+        // Included for the reader, so the diagnosis is not blind to what the
+        // wire actually said.
+        assert.match(error.message, /net::ERR_FAILED/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
 });
 
 // layoutguard's boot predicate (review M2): [].every(...) is vacuously true,
@@ -910,6 +1086,40 @@ test("an inner navigation failure with boot options propagates without a retry",
   assert.ok(sent.includes("Network.disable"), "the Network domain must be torn down on the failure path");
   assert.equal(socket.listenerCount("message"), 0);
   assert.ok(liveTimers() <= before, "the failure path must not leave a timer holding the event loop");
+});
+
+// Cleanup scoping (review round 3): a Network.enable whose response never
+// arrives may still have ENABLED the domain inside Chrome - a timeout on the
+// command does not prove the command was not applied. The guards reuse this
+// page for every later case, so the disable must go out on that path too, not
+// only when the enable answers.
+test("a Network.enable that never answers still tears the Network domain down", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const socket = fakeSocket();
+  const sent = [];
+  const send = async (method) => {
+    sent.push(method);
+    if (method === "Network.enable") return new Promise(() => {});
+    return {};
+  };
+
+  const rejected = assert.rejects(
+    navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+      bootExpression: "typeof window.settledShell !== 'undefined'",
+      bootLabel: "the shellguard entry global window.settledShell",
+      retryDelayMs: 0,
+    }),
+    /timeout calling Network\.enable after 30000ms/,
+  );
+  await vi.advanceTimersByTimeAsync(30_000);
+  await rejected;
+
+  assert.ok(
+    sent.includes("Network.disable"),
+    "the enable timing out must still disable the domain: the guards reuse this page",
+  );
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.equal(vi.getTimerCount(), 0, "the enable-timeout path must not leave a timer armed");
 });
 
 // waitForFonts runs on one coordinated in-page deadline: the registration
