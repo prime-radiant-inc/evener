@@ -516,3 +516,45 @@ func TestUpdateHostRefusedEntryLeavesTheLiveChannelAttached(t *testing.T) {
 		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
 	}
 }
+
+// TestUpdateHostNormalizesBeforeThePreSwapCheck pins that the pre-swap
+// ValidateEntry and Registry.Update judge the same normalized entry, so the
+// guard really is the swap's own refusal moved ahead of the teardown. A
+// whitespace-only SSH destination is the entry that tells the two apart: it is
+// non-empty as handed in, so a check that did NOT normalize would pass it, tear
+// the live channel down, and only then have the swap's Normalize+validate
+// refuse it as ErrMissingSSH — answering an error while the channel was already
+// gone. ValidateEntry normalizes (validateEntry(Normalize(entry))), so it
+// refuses here before anything live moves and "an error means nothing live
+// changed" holds for raw entries too.
+func TestUpdateHostNormalizesBeforeThePreSwapCheck(t *testing.T) {
+	m, events := detachHostFixture(t)
+	if !m.Attached("alpha") {
+		t.Fatal("Attached before the refused update = false, want true")
+	}
+	before, ok := m.reg.Get("alpha")
+	if !ok {
+		t.Fatal("alpha not registered before the refused update")
+	}
+	// Whitespace-only: unreachable as a destination, so both the pre-check and
+	// the swap must refuse it once normalized.
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "   "}, nil); !errors.Is(err, hostreg.ErrMissingSSH) {
+		t.Fatalf("UpdateHost(whitespace ssh) = %v, want ErrMissingSSH", err)
+	}
+	if !m.Attached("alpha") {
+		t.Fatal("Attached after the refused update = false, want true: the pre-check must catch what the swap would refuse")
+	}
+	if _, ok := m.ClientIfAttached("alpha"); !ok {
+		t.Fatal("ClientIfAttached after the refused update = false, want the still-live channel")
+	}
+	if _, ok := m.ChannelIfAttached("alpha"); !ok {
+		t.Fatal("ChannelIfAttached after the refused update = false, want the still-live channel")
+	}
+	after, ok := m.reg.Get("alpha")
+	if !ok || !after.Equal(before) || after.Generation != before.Generation {
+		t.Fatalf("registry after the refused update = %+v, want the unedited entry", after)
+	}
+	if kinds := detachHostKinds(events); detachHostCount(kinds, EventDetached) != 0 {
+		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
+	}
+}

@@ -1629,6 +1629,25 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 			m.cfg.sidecar.replace(live)
 		} else {
 			m.cfg.sidecar.remove(name)
+			// The name's derived state goes with the dropped row, exactly as the
+			// finish phase's vanished arm below retires it and in the same order:
+			// the source registration, the name-keyed attach record, then the
+			// remote-thread cache entry, then the retained last-known-good list.
+			// The order is load-bearing for the same reason that arm's comment
+			// gives: an in-flight walk must fail its cache-generation sweep or its
+			// source-ownership check, so it cannot re-store obsolete rows after the
+			// cache drop. The committed row is already gone, so nothing renders this
+			// name again.
+			if m.cfg.sources != nil {
+				m.cfg.sources.Remove(name)
+			}
+			m.cfg.state.remove(name)
+			if m.cfg.remoteCache != nil {
+				m.cfg.remoteCache.RemoveSource(name)
+			}
+			if m.cfg.forgetLastGoodThreads != nil {
+				m.cfg.forgetLastGoodThreads(name)
+			}
 		}
 		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), liveErr)
 		m.cfg.mu.Unlock()

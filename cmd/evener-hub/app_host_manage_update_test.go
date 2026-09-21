@@ -498,7 +498,11 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 // entry to restore, so the un-commit must be a removal — the committed store
 // row and the file entry go too. Restoring the edited row instead leaves an edit
 // for a name that is not live, which a later Add duplicates and the next sidecar
-// load rejects.
+// load rejects. The name's derived state goes with the row exactly as the
+// success-side vanished arm retires it: leaving the source registration, the
+// attach record, the cache generation, or the retained list behind keeps facts
+// for a name the live registry no longer holds, and a later Add reuses the stale
+// source instance.
 func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.T) {
 	pu := startParkedUpdate(t, "side")
 	// The commit landed (the helper waited on the file) and the live phase is
@@ -509,6 +513,22 @@ func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.
 	pu.m.cfg.mu.Unlock()
 	if !present {
 		t.Fatal("the live entry vanished before the test could drop it")
+	}
+	// Seed the derived state a lifecycle event and an attached row would leave:
+	// a name-keyed attach record, plus the fixture's own cache generation and
+	// source registration for the name. The assertions below prove the rollback
+	// takes all of them with the dropped row.
+	seeded, _ := pu.m.cfg.hosts.Get("side")
+	pu.m.cfg.mu.Lock()
+	pu.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+	}, hostFactsValidity{handshake: true}, seeded.Generation)
+	pu.m.cfg.mu.Unlock()
+	if _, ok := pu.cache.SourceGeneration("side"); !ok {
+		t.Fatal("the fixture host's source has no cache generation to retire")
+	}
+	if _, ok := pu.sources.Source("side"); !ok {
+		t.Fatal("the fixture host has no source registration to retire")
 	}
 	if err := pu.m.cfg.hosts.Remove("side"); err != nil {
 		t.Fatalf("direct registry removal: %v", err)
@@ -539,6 +559,25 @@ func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.
 		if e.Name == "side" {
 			t.Fatalf("sidecar still holds %q after the failed edit = %+v", e.Name, onDisk)
 		}
+	}
+	// The derived state is gone too, exactly as the success-side vanished arm
+	// retires it and in the same order. The cache and the retention hook are the
+	// fixture's own seams (startParkedUpdate's RemoteThreadCache and
+	// forgottenSources), observed the way the success arm's test observes them.
+	if _, ok := pu.sources.Source("side"); ok {
+		t.Fatal("the vanished host's source registration survived the failed edit")
+	}
+	if _, ok := pu.cache.SourceGeneration("side"); ok {
+		t.Fatal("the vanished host's remote-thread cache entry survived the failed edit")
+	}
+	if got := pu.forgotten.snapshot(); !slices.Equal(got, []string{"side"}) {
+		t.Fatalf("forgotten = %v, want the vanished host's own last-known-good drop", got)
+	}
+	pu.m.cfg.state.mu.Lock()
+	_, hasRecord := pu.m.cfg.state.records["side"]
+	pu.m.cfg.state.mu.Unlock()
+	if hasRecord {
+		t.Fatal("the vanished host's attach record survived the failed edit")
 	}
 }
 
@@ -653,11 +692,33 @@ type updateOutcome struct {
 type parkedUpdate struct {
 	m          *hubHostManager
 	sources    *appsource.Registry
+	cache      *hubcore.RemoteThreadCache
+	forgotten  *forgottenSources
 	configPath string
 	runner     *blockingRunner
 	release    func()
 	ensureDone chan error
 	updateDone chan updateOutcome
+}
+
+// forgottenSources records the names the retention seam was asked to drop. The
+// seam runs on the update's own goroutine while the test reads after
+// waitUpdateDone, so the mutex keeps the read race-free.
+type forgottenSources struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (f *forgottenSources) forget(sourceID string) {
+	f.mu.Lock()
+	f.names = append(f.names, sourceID)
+	f.mu.Unlock()
+}
+
+func (f *forgottenSources) snapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.names)
 }
 
 func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
@@ -675,7 +736,16 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 	manager := sshconn.New(reg, sshconn.Options{Runner: runner})
 	t.Cleanup(func() { _ = manager.Close() })
 	sources := appsource.NewRegistry()
-	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, reg, nil)
+	// The cache and the retention hook are the fixture's own derived-state
+	// seams: a real RemoteThreadCache mints a generation per source at
+	// registration (registerRemoteHubSource) and lets RemoveSource drop it, and
+	// forgetLastGoodThreads stands in for the web server's retained
+	// last-known-good list. Both are wired here so the removal/rollback arms that
+	// retire derived state can be observed from the tests that drive them.
+	cache := &hubcore.RemoteThreadCache{}
+	forgotten := &forgottenSources{}
+	m := newHubHostManager(sources, manager, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, reg, nil)
+	m.cfg.forgetLastGoodThreads = forgotten.forget
 	for _, host := range []appwire.HostAddParams{
 		{Entry: appwire.HostEntry{Name: "keep", Address: "keep.example"}},
 		{Entry: appwire.HostEntry{Name: name, Address: name + ".example"}},
@@ -711,6 +781,8 @@ func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
 	pu := &parkedUpdate{
 		m:          m,
 		sources:    sources,
+		cache:      cache,
+		forgotten:  forgotten,
 		configPath: configPath,
 		runner:     runner,
 		release:    func() { releaseOnce.Do(func() { close(runner.release) }) },
