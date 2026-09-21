@@ -155,12 +155,13 @@ test("rail seats the grid in the standard icon slot: avatar-size, centred, speak
   expect(css).toMatch(/\.rail \.grid\s*\{[^}]*margin-right:\s*calc\(var\(--speaker-gap\) - var\(--space-2\)\)/);
 });
 
-test("the rail gutter pull exists only inside the 700px breakpoint, never unconditionally", () => {
-  // Same brace-counted split as the motion test above, for the one media
-  // block the pull may live in. Below 700px there is no reserved gutter
-  // padding to eat (runContent collapses), so an unconditional negative
-  // margin would push the glyph out of the pane.
-  const { inside, outside } = mediaBlock("@media (min-width: 700px)");
-  expect(inside).toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
-  expect(outside).not.toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1/);
+test("the rail row composes the shared gutter pull rather than restating it", () => {
+  // The pull lives in the shared rail seat (styles/railseat.module.css) so
+  // the three rail pulls cannot drift apart; this module keeps no copy of
+  // it. The gate around the shared .gutterPull is pinned where the shared
+  // geometry lives, in railseat.contract.test.ts; a local restatement is
+  // what this test forbids.
+  expect(css).toMatch(/\.rail\s*\{[^}]*composes:\s*gutterPull from "\.\.\/\.\.\/styles\/railseat\.module\.css"/);
+  expect(css).not.toMatch(/@media\s*\(min-width:\s*700px\)/);
+  expect(css).not.toMatch(/margin-left:\s*calc\(-1/);
 });
