@@ -288,13 +288,14 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 // Machinery notification blocks ride user-input and steering messages as
 // extra text parts the model needs (e.g. the stored-attachment path note for
 // a pasted image) but the user never typed and must not see in a bubble.
-// The producer is the agent package's systemNotification helper, which this
-// package cannot import (agent imports this package), so the tags are
-// restated here. Skip is exact-block: a part merely mentioning the tags
+// The producer is the agent package's systemNotification helper; agent
+// imports this package, so the helper builds its blocks from these exported
+// constants — one spelling, shared by producer and filter, so the tags
+// cannot drift apart. Skip is exact-block: a part merely mentioning the tags
 // inline is the user's own words and stays.
 const (
-	systemNotificationOpenTag  = "<system-notification>"
-	systemNotificationCloseTag = "</system-notification>"
+	SystemNotificationOpenTag  = "<system-notification>"
+	SystemNotificationCloseTag = "</system-notification>"
 )
 
 // isMachineryNotificationPart reports whether text is exactly one machinery
@@ -302,8 +303,8 @@ const (
 // and nothing else on either end.
 func isMachineryNotificationPart(text string) bool {
 	trimmed := strings.TrimSpace(text)
-	return strings.HasPrefix(trimmed, systemNotificationOpenTag) &&
-		strings.HasSuffix(trimmed, systemNotificationCloseTag)
+	return strings.HasPrefix(trimmed, SystemNotificationOpenTag) &&
+		strings.HasSuffix(trimmed, SystemNotificationCloseTag)
 }
 
 // UserFacingText concatenates a message's text parts the way Message.Text

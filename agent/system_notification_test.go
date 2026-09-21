@@ -3,6 +3,8 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 func TestSystemNotification(t *testing.T) {
@@ -20,6 +22,22 @@ func TestSystemNotificationf(t *testing.T) {
 	want := `<system-notification>dir: "/tmp/skill"</system-notification>`
 	if got != want {
 		t.Fatalf("systemNotificationf = %q, want %q", got, want)
+	}
+}
+
+// TestSystemNotificationUsesApptranscriptMachineryTags pins the
+// producer-to-filter contract across the package boundary: apptranscript's
+// reloaded-bubble filtering recognizes exactly these tag spellings, and the
+// agent package is the sole producer of the machinery blocks. Building the
+// producer from the same exported constants the filter matches on makes tag
+// drift a compile error instead of a silent machinery-note leak into
+// bubbles, fork prefill, and titles.
+func TestSystemNotificationUsesApptranscriptMachineryTags(t *testing.T) {
+	t.Parallel()
+	got := systemNotification("hello")
+	want := apptranscript.SystemNotificationOpenTag + "hello" + apptranscript.SystemNotificationCloseTag
+	if got != want {
+		t.Fatalf("systemNotification = %q, want the shared apptranscript tag constants %q", got, want)
 	}
 }
 
