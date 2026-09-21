@@ -187,6 +187,50 @@ func (rp ResolvedPolicy) Enforced() bool { return rp.Mode != ModeOff }
 // nothing, so the file tools keep today's byte-identical os path.
 func (rp ResolvedPolicy) FileToolConfined() bool { return rp.Mode != ModeOff || rp.WriteBlocked }
 
+// FileToolCanRead reports whether the in-process file-tool layer may read
+// the absolute path under this policy — the question a caller naming a path
+// to the model must settle first (the pasted-image attachment note promises
+// read_file, and the promise must be true). It models the policy-level
+// grants: masked paths deny in every mode, ReadAnywhere allows everything
+// else, and ReadWorktreeOnly requires the path to fall under a read root.
+// The live-filesystem checks securepath layers on top (symlink-component
+// refusal, escape detection) are TOCTOU guards around these grants and stay
+// there. An unconfined policy reads with plain os and allows any path; a
+// relative path cannot be proved inside any root and reads false.
+func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
+	if !rp.FileToolConfined() {
+		return true
+	}
+	for _, masked := range rp.MaskedPaths {
+		if rootContainsPath(masked, path) {
+			return false
+		}
+	}
+	if rp.FileTool.Read == ReadAnywhere {
+		return true
+	}
+	for _, root := range rp.FileTool.ReadRoots {
+		if rootContainsPath(root, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// rootContainsPath reports whether the absolute path is the absolute root or
+// falls beneath it. Both sides must be absolute and are compared lexically;
+// a non-absolute side can never be contained.
+func rootContainsPath(root, path string) bool {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(path) {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
 // FileToolEnforceable reports whether this OS has an in-process file-tool
 // enforcement implementation. Its race-safe primitives (openat2 /
 // RESOLVE_NO_SYMLINKS on Linux, the O_NOFOLLOW tail walk on darwin) exist only

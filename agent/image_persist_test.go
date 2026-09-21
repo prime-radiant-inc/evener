@@ -32,6 +32,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -42,10 +43,17 @@ import (
 // state persistence, mirroring the library/test shape).
 func newImagePersistenceSession(t *testing.T, stateDir string, steps ...func(req llm.Request) llm.Response) *Session {
 	t.Helper()
-	dir := t.TempDir()
+	return newImagePersistenceSessionWithEnv(t, stateDir, execenv.NewLocalExecutionEnvironment(t.TempDir()), steps...)
+}
+
+// newImagePersistenceSessionWithEnv is newImagePersistenceSession with the
+// session's execution environment supplied by the caller, for tests that pin
+// behavior under a sandboxed env.
+func newImagePersistenceSessionWithEnv(t *testing.T, stateDir string, env execenv.ExecutionEnvironment, steps ...func(req llm.Request) llm.Response) *Session {
+	t.Helper()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: steps})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: stateDir})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{StateDir: stateDir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -60,6 +68,24 @@ func newImagePersistenceSession(t *testing.T, stateDir string, steps ...func(req
 	}})
 	updateSessionTestConfig(sess, func(cfg *testConfig) { cfg.namerClient = namerClient })
 	return sess
+}
+
+// newSandboxedImagePersistenceSession builds the session with a sandboxed
+// environment: the policy resolves against a fresh worktree exactly the way
+// the daemon resolves a session policy at startup, so the file-tool scope the
+// tests pin is the real resolved policy, not a hand-built approximation.
+func newSandboxedImagePersistenceSession(t *testing.T, stateDir string, policy sandbox.SandboxPolicy, steps ...func(req llm.Request) llm.Response) *Session {
+	t.Helper()
+	worktree := t.TempDir()
+	net := true
+	policy.Network = &net
+	rp, err := sandbox.Resolve(policy, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}, worktree)
+	if err != nil {
+		t.Fatalf("sandbox.Resolve: %v", err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	return newImagePersistenceSessionWithEnv(t, stateDir, env, steps...)
 }
 
 // expectedAttachmentPath derives the contract path for an attachment: a
@@ -239,6 +265,61 @@ func TestProcessInput_NoStateDir_LeavesImageUnpersisted(t *testing.T) {
 	}
 	if _, ok := findSystemNotificationPart(turn.Message); ok {
 		t.Errorf("session without StateDir announced a stored path: %+v", turn.Message.Content)
+	}
+}
+
+// TestProcessInput_RestrictedSandbox_UnreadableStateDir_OmitsAttachmentNote
+// pins the sandbox half of the annotation contract: a restricted session's
+// file tools may only read its worktree, so when the state dir lives outside
+// it the stored path is one read_file would deny — the note promising it must
+// not be attached. The bytes are still written (durability for unrestricted
+// readers — a later session, doctor tooling — is not the model's to lose), and
+// the image still rides the turn inline.
+func TestProcessInput_RestrictedSandbox_UnreadableStateDir_OmitsAttachmentNote(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newSandboxedImagePersistenceSession(t, stateDir, sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted}, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	wantPath := expectedAttachmentPath(t, stateDir, sess.ID(), img)
+	got, err := os.ReadFile(wantPath)
+	if err != nil || !bytes.Equal(got, png) {
+		t.Fatalf("attachment bytes must still be persisted for unrestricted readers: %v", err)
+	}
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	if !hasImagePart(turn.Message) {
+		t.Error("image must still ride the turn inline")
+	}
+	if _, ok := findSystemNotificationPart(turn.Message); ok {
+		t.Errorf("restricted sandbox: the state dir %q is outside the file-tool read roots, so no read_file path may be announced: %+v", stateDir, turn.Message.Content)
+	}
+}
+
+// TestProcessInput_RestrictedSandbox_ExtraReadRootStateDir_AnnouncesAttachmentNote
+// pins the complementary case: when the session's policy grants the file
+// tools a read of the state dir (ExtraReadRoots), the announcement contract
+// holds exactly as it does unconfined.
+func TestProcessInput_RestrictedSandbox_ExtraReadRootStateDir_AnnouncesAttachmentNote(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newSandboxedImagePersistenceSession(t, stateDir, sandbox.SandboxPolicy{Mode: sandbox.ModeRestricted, ExtraReadRoots: []string{stateDir}}, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	wantPath := expectedAttachmentPath(t, stateDir, sess.ID(), img)
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	note, ok := findSystemNotificationPart(turn.Message)
+	if !ok || !strings.Contains(note, wantPath) {
+		t.Errorf("with the state dir inside ExtraReadRoots the stored path must be announced: note=%q want path %q", note, wantPath)
 	}
 }
 

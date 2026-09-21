@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 )
 
 // attachmentsSubdir is the per-session directory, under
@@ -38,7 +39,11 @@ const attachmentPathPrefixLen = 16
 // inline and its Path stays empty, so nothing is announced that a reader
 // could not fetch. Each failure is reported as a warning on the general
 // channel — firing the Notification hook like every other session file
-// I/O failure — instead of failing the turn.
+// I/O failure — instead of failing the turn. A stored path the session's own
+// file tools cannot read (a restricted sandbox keeps them inside the
+// worktree while the state dir lives outside it) also stays unannounced: the
+// file is still written for unrestricted readers, but the note promising a
+// read_file must only name a path the model can actually fetch.
 func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment {
 	if s == nil || len(images) == 0 || s.stateDir == "" {
 		return images
@@ -60,9 +65,26 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
+		if !s.fileToolsCanRead(path) {
+			continue
+		}
 		out[i].Path = path
 	}
 	return out
+}
+
+// fileToolsCanRead reports whether the session's in-process file tools — the
+// layer read_file runs under — may read path, so the attachment note only
+// promises what a tool call can fetch. An unconfined session (no sandbox
+// policy, or an environment other than the local one) reads with plain os.
+// persistInputImages always runs without s.mu held, so taking the lock here
+// via currentEnv is safe.
+func (s *Session) fileToolsCanRead(path string) bool {
+	le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || le.Sandbox == nil {
+		return true
+	}
+	return le.Sandbox.FileToolCanRead(path)
 }
 
 // sanitizeAttachmentName derives the stored filename for an attachment:
