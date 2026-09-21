@@ -6034,6 +6034,130 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
+    it("askPending resolve via a model-only status frame resyncs: the question row leaves with the sheet", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const askTurn = makeTurn({
+        id: "t1",
+        items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+        status: "completed",
+      });
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [askTurn],
+        }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.items.some((row) => row.kind === "question")).toBe(true);
+      const initialReads = service.readProjectionCalls.length;
+      // The hub resolves the ask with a status frame alone — no item frame,
+      // no answer row. The reducer folds askPending (snapshot-authoritative
+      // on thread/status/changed), the row appliers have no case for this
+      // frame, and question rows come only from the canonical projection
+      // (F6), so the timeline needs the reread to agree with the sheet.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: false,
+          },
+          turns: [askTurn],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      // The resync is a scheduled rehydrate (microtask-only drain). The
+      // pre-fix code schedules no read at all, so the controlled-read barrier
+      // cannot be used here — it would wait for a read that never comes.
+      // Flush the drain instead: a no-op when nothing was requested, and
+      // the assertions below name the stale state directly.
+      for (let i = 0; i < 25; i++) await yieldMicrotask();
+      const conv = store.getState().conversation;
+      expect(conv?.askPending).toBe(false);
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+      // Bounded reread count: exactly one resync for the flip.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+    });
+
+    it("askPending raise via a model-only status frame resyncs: the sheet's new ask gains its question row", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const askTurn = makeTurn({
+        id: "t1",
+        items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+        status: "completed",
+      });
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: false,
+          },
+          turns: [askTurn],
+        }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Not pending: the ask item renders as a settled tool activity, no
+      // question row, and the sheet is empty.
+      expect(
+        store.getState().conversation?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+      const initialReads = service.readProjectionCalls.length;
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [askTurn],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+          askPending: true,
+        },
+      } as AnyNotification);
+      for (let i = 0; i < 25; i++) await yieldMicrotask();
+      const conv = store.getState().conversation;
+      expect(conv?.askPending).toBe(true);
+      const row = conv?.items.find((i) => i.kind === "question");
+      expect(row).toBeDefined();
+      // The row matches the sheet: the same canonical refs pendingQuestions
+      // composes answers from.
+      if (row?.kind === "question") {
+        expect(row.questions).toHaveLength(1);
+        expect(row.questions[0]?.callId).toBe("ask-1");
+        expect(row.questions[0]?.question).toBe("Pick one");
+        expect(row.questions[0]?.options).toHaveLength(2);
+      }
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+    });
+
     it("malformed ask_user remains conservative — schedules reread, no question rows", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
