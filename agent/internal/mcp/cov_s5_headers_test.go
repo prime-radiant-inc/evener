@@ -7,10 +7,11 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"primeradiant.com/evener/agent/internal/mcphttp"
 	"primeradiant.com/evener/agent/mcpconfig"
 )
 
-// httpClientWithHeaders must return a client whose RoundTripper injects the
+// mcphttp.ClientWithHeaders must return a client whose RoundTripper injects the
 // configured headers into every request.
 func TestCov_HTTPClientWithHeaders_InjectsHeaders(t *testing.T) {
 	var gotAuth, gotCustom string
@@ -21,7 +22,7 @@ func TestCov_HTTPClientWithHeaders_InjectsHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := httpClientWithHeaders(map[string]string{
+	client := mcphttp.ClientWithHeaders(nil, srv.URL, map[string]string{
 		"Authorization": "Bearer tok",
 		"X-Custom":      "val",
 	})

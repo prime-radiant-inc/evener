@@ -1344,7 +1344,7 @@ test("missing credentials surface setup in the composer without opening a dialog
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "All providers" })).toBeTruthy();
+  expect(screen.getByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
@@ -1406,10 +1406,10 @@ test("connection handoff shows the actual instance models and preserves draft un
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  // team-local is not one of the curated providers the guided grid leads
-  // with, so the card shows under All providers.
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
-  await user.click(await screen.findByRole("button", { name: "Team local" }));
+  // team-local is not one of the curated providers the picker leads with, so
+  // its card shows behind the catalogue disclosure.
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(screen.getByRole("button", { name: "Team local" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
   await user.click(await screen.findByRole("button", { name: "Continue" }));
@@ -1644,22 +1644,33 @@ test("retrying missing provider setup discovers a local server started afterward
 test("successful keyless testing refreshes availability without an auth notification", async () => {
   const user = userEvent.setup();
   let available = false;
+  const keyless = {
+    name: "ollama",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    auth: "none",
+    implicit: true,
+    isDefault: true,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+    baseUrl: "http://localhost:11434/v1",
+    endpointFingerprint: "fp-ollama",
+  };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
-      instances: [
+      instances: [keyless],
+      availableProviders: [
         {
-          name: "ollama",
-          providerId: "ollama",
+          id: "ollama",
+          name: "Local endpoint",
           protocol: "openai-chat",
           auth: "none",
           implicit: true,
-          isDefault: true,
-          activeSource: "none",
-          hasStoredOAuth: false,
-          credentialRequired: false,
+          authModes: [],
+          setup: keyless,
         },
       ],
-      availableProviders: [],
     }));
     fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
     fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
@@ -1678,13 +1689,14 @@ test("successful keyless testing refreshes availability without an auth notifica
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(screen.getByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  const testConnection = await screen.findByRole("button", { name: "Test connection" });
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
+  const testConnection = await screen.findByRole("button", { name: "Check connection" });
   available = true;
   await user.click(testConnection);
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
-    { method: "evener/auth/test", params: { provider: "ollama" } },
+    { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
   expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
@@ -5430,7 +5442,7 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
 });
 
-test("the open spawn menu wires listbox roles and aria-activedescendant on the prompt", async () => {
+test("the open spawn menu wires listbox roles, aria-controls, and aria-activedescendant on the prompt", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
@@ -5447,9 +5459,69 @@ test("the open spawn menu wires listbox roles and aria-activedescendant on the p
   const activeId = promptField().getAttribute("aria-activedescendant");
   expect(activeId).toBeTruthy();
   expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
+  // aria-controls names the listbox the prompt is completing against - the
+  // other half of the activedescendant wiring, set on the same native node.
+  const controls = promptField().getAttribute("aria-controls");
+  expect(controls).toBeTruthy();
+  expect(document.getElementById(controls ?? "")).toBe(slashMenu());
 
   await user.keyboard("{Escape}");
   expect(promptField().getAttribute("aria-activedescendant")).toBeNull();
+  expect(promptField().getAttribute("aria-controls")).toBeNull();
+});
+
+test("ArrowDown/ArrowUp move the spawn menu highlight and wrap at both ends", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // Two matches: the /reasoning-effort built-in then the /review catalog
+  // command, so index 0 is the built-in.
+  expect(slashOptions()).toHaveLength(2);
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[0]?.id);
+
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("false");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[1]?.id);
+
+  await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
+  expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[0]?.id);
+
+  await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
+  expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
+  expect(promptField().getAttribute("aria-activedescendant")).toBe(slashOptions()[1]?.id);
+});
+
+test("clicking a spawn menu option commits it without ever blurring the prompt", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/spawn/slashCatalog", () => ({
+      commands: [{ name: "review", description: "review the diff" }],
+      skills: [],
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/re");
+  // index 0 is the built-in /reasoning-effort, 1 /review.
+  await user.click(slashOptions()[1] as HTMLElement);
+
+  expect((promptField() as HTMLTextAreaElement).value).toBe("/review ");
+  // The option's onMouseDown preventDefault keeps focus in the field, so the
+  // click's onSelect commits rather than racing the blur-close.
+  expect(document.activeElement).toBe(promptField());
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
 
 // --- Task 6: submit interception for pre-session builtins --------------------
@@ -5755,6 +5827,86 @@ test("an unknown /model value toasts, starts nothing, and leaves Start usable", 
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.disabled).toBe(false);
   expect(button.textContent).toBe("Start");
+});
+
+test("a known /model value starts before the pane catalog lands instead of fail-closing", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // The pane catalog settles 250ms after mount (CATALOG_SETTLE_MS). A deferred
+  // model/list holds it null for the whole test, so this reproduces that window
+  // deterministically: pre-fix, resolveSpawnModelItems(null) is [] and a known
+  // value fail-closes with a spurious "unknown value" toast.
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => f.on("model/list", () => catalog.promise));
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(getToasts()).toEqual([]);
+});
+
+test("a shapeless /model value still refuses while the pane catalog is unloaded", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // Pending catalog = the unloaded window. The value never resolves against a
+  // catalog here, so only the provider/model shape check can refuse it: an
+  // expression that regressed to matching `matched.id` (undefined) would
+  // forward `modelProvider: "foo", model: ""` and silently drop the request.
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => f.on("model/list", () => catalog.promise));
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model foo");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "foo"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("a /model value bootstraps past the required-model guard after a failed catalog load", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // The background model/list rejects, so the pane catalog never commits (null
+  // stamp). The hub also reports no default, so Start is gated on a model -
+  // and the old bootstrap, which required a catalog match, left Start disabled
+  // through this window even though thread/start would accept the value.
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+    f.on("model/list", () => {
+      throw new Error("list down");
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  await user.click(button);
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ modelProvider: "openai", model: "gpt-5" });
 });
 
 test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {

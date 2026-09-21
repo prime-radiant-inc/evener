@@ -22,9 +22,17 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { PLUGIN_MUTATION_BUSY, type PluginMutationGate } from "./pluginMutationGate";
+import {
+  PLUGIN_MUTATION_BUSY,
+  runGatedMutation,
+  type PluginMutationGate,
+} from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
-import { catalogToBrowse } from "./marketplaceBrowserModel";
+import {
+  appliedRemovalNotice,
+  catalogToBrowse,
+  refetchAfterRemoval,
+} from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -106,16 +114,27 @@ export function MarketplaceBrowser({
       setSelected(null);
   }, [selected, state.marketplaces]);
   // Every write goes through the gate; a refusal reads as busy, a throw as
-  // failure.
-  async function act(action: () => Promise<void>) {
+  // failure. A write whose rejection carries its own shape (a marketplace
+  // removal the hub can report as already applied) hands onFailed the caught
+  // error and chooses what the error slot shows - the generic write-failed
+  // copy by default.
+  async function act(
+    action: () => Promise<void>,
+    onFailed?: (error: unknown) => string | null,
+  ) {
     const version = revision.current;
     setError(null);
-    try {
-      const ran = await gate.run(action);
-      if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
-    } catch {
-      if (revision.current === version) setError(WRITE_FAILED);
-    }
+    let caught: unknown;
+    const outcome = await runGatedMutation(gate, () =>
+      action().catch((error: unknown) => {
+        caught = error;
+        throw error;
+      }),
+    );
+    if (revision.current !== version) return;
+    if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
+    else if (outcome === "failed")
+      setError(onFailed ? onFailed(caught) : WRITE_FAILED);
   }
   function install(target: PluginRefParams) {
     void act(() => plugins.installPlugin(target.plugin, target.marketplace));
@@ -138,7 +157,15 @@ export function MarketplaceBrowser({
         style: "destructive",
         onPress: () => {
           if (revision.current !== version) return;
-          void act(() => state.removeMarketplace(name));
+          // An applied removal (appliedRemovalNotice's doc) never reads as
+          // a failed write: reconcile a stale list, show at most the litter
+          // warning, never a retry hint.
+          void act(() => state.removeMarketplace(name), (error) => {
+            const notice = appliedRemovalNotice(error);
+            if (notice === undefined) return WRITE_FAILED;
+            if (refetchAfterRemoval(model, name)) void state.fetchMarketplaces();
+            return notice;
+          });
         },
       },
     ]);
@@ -321,8 +348,9 @@ export function MarketplaceBrowser({
         <AddMarketplace
           client={client}
           hubName={hubName}
+          gate={gate}
           onClose={() => setAdding(false)}
-          onAdd={(params) => gate.run(() => state.addMarketplace(params))}
+          onAdd={(params) => state.addMarketplace(params)}
         />
       )}
     </>
@@ -332,14 +360,16 @@ export function MarketplaceBrowser({
 function AddMarketplace({
   client,
   hubName,
+  gate,
   onClose,
   onAdd,
 }: {
   hubName: string;
+  gate: PluginMutationGate;
   onClose(): void;
-  /** Resolves false when the add was refused (a mutation is already
-   * running); the modal stays open and shows the busy copy. */
-  onAdd(params: MarketplaceAddParams): Promise<boolean>;
+  /** The write itself; the gate around it lives here, so a refusal keeps the
+   * modal open on the busy copy just as it does everywhere else. */
+  onAdd(params: MarketplaceAddParams): Promise<void>;
   client: ConversationClientLike;
 }) {
   const colors = useColors();
@@ -360,8 +390,8 @@ function AddMarketplace({
     setBusy(true);
     setError(null);
     const value = source.trim();
-    try {
-      const ran = await onAdd({
+    const outcome = await runGatedMutation(gate, () =>
+      onAdd({
         name: name.trim(),
         source:
           kind === "github"
@@ -369,20 +399,19 @@ function AddMarketplace({
             : kind === "directory"
               ? { kind, path: value }
               : { kind, url: value },
-      });
-      if (!ran) {
-        if (alive.current) setError(PLUGIN_MUTATION_BUSY);
-        return;
-      }
-      if (alive.current) onClose();
-    } catch {
-      if (alive.current)
-        setError(
-          "Could not confirm the marketplace was added. Check the list and source before trying again.",
-        );
-    } finally {
-      if (alive.current) setBusy(false);
+      }),
+    );
+    if (!alive.current) return;
+    setBusy(false);
+    if (outcome === "refused") {
+      setError(PLUGIN_MUTATION_BUSY);
+      return;
     }
+    if (outcome === "failed")
+      setError(
+        "Could not confirm the marketplace was added. Check the list and source before trying again.",
+      );
+    else onClose();
   }
   return (
     <Modal

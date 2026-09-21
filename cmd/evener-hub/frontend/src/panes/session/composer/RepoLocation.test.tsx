@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
@@ -132,6 +132,82 @@ test("fails soft when the hub request rejects", async () => {
   expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/repo");
   await waitFor(() => expect(client.calls).toHaveLength(1));
   expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+});
+
+// A lookup attempted while the hub is away fails soft and is cached empty.
+// Neither `client` nor `cwd` changes when the SAME client reconnects, so only a
+// connection-state transition can tell the composer the lookup is worth
+// retrying (issue #1355).
+test("retries a lookup attempted while the hub was reconnecting, once it is ready", async () => {
+  const client = new FakeClient("reconnecting");
+  client.on("evener/git/head", () => ({ head: "main", originUrl: "git@github.com:owner/repo.git" }));
+  renderLocation("/repo", client);
+
+  // The not-ready request was rejected before it was recorded, so the cwd
+  // stands alone with no branch and no link.
+  expect(screen.queryByTestId("composer-repo-ref")).toBeNull();
+
+  client.emitStateChange("ready");
+
+  expect((await screen.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#main");
+  expect(client.calls).toHaveLength(1);
+});
+
+// The same recovery must re-run a lookup that failed on the wire while the
+// connection was nominally ready (a request that died as the socket dropped).
+test("re-runs a failed lookup when the connection recovers", async () => {
+  const client = new FakeClient();
+  let attempt = 0;
+  client.on("evener/git/head", () => {
+    attempt += 1;
+    if (attempt === 1) throw new Error("hub unavailable");
+    return { head: "feature/x", originUrl: "git@github.com:owner/repo.git" };
+  });
+  renderLocation("/repo", client);
+
+  await waitFor(() => expect(client.calls).toHaveLength(1));
+  expect(screen.queryByTestId("composer-repo-ref")).toBeNull();
+
+  client.emitStateChange("reconnecting");
+  client.emitStateChange("ready");
+
+  expect((await screen.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#feature/x");
+  expect(client.calls).toHaveLength(2);
+});
+
+// A retry can start while the pre-drop lookup is still in flight; a late answer
+// from before the recovery must not overwrite the retry's fresher result.
+test("a stale pre-recovery response cannot overwrite the retry's result", async () => {
+  const client = new FakeClient();
+  const answers = gateSettlements(client, "evener/git/head");
+  renderLocation("/repo", client);
+  await waitFor(() => expect(answers).toHaveLength(1));
+
+  client.emitStateChange("reconnecting");
+  client.emitStateChange("ready");
+  await waitFor(() => expect(answers).toHaveLength(2));
+
+  answers[1]?.resolve({ head: "fresh", originUrl: "" });
+  expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("fresh");
+
+  answers[0]?.resolve({ head: "stale", originUrl: "" });
+  await waitFor(() => expect(screen.getByTestId("composer-repo-branch").textContent).toBe("fresh"));
+});
+
+// A recovered lookup that still finds no repository leaves the line on the cwd
+// alone: recovery must not invent a branch.
+test("stays on the cwd alone when a recovered lookup finds no repo", async () => {
+  const client = clientReporting({ head: "" });
+  renderLocation("/tmp/plain", client);
+
+  await waitFor(() => expect(client.calls).toHaveLength(1));
+  client.emitStateChange("reconnecting");
+  client.emitStateChange("ready");
+  await waitFor(() => expect(client.calls).toHaveLength(2));
+
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/tmp/plain");
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
 });
 
 // A response that arrives after the composer has moved to a different cwd must

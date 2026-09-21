@@ -19,6 +19,7 @@ import {
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../composerFocus";
 import { AskDock, AskDockAnnouncements } from "./AskDock";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
+import { ackAskUserCall, askArgs, ONE_QUESTION } from "./askDockTestUtils";
 
 afterEach(() => {
   cleanup();
@@ -94,47 +95,10 @@ function nextMutationPersistence(targetRef: string): Promise<void> {
   });
 }
 
-function askArgs(questions: Array<Record<string, unknown>>): string {
-  return JSON.stringify({ questions });
-}
-
-const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
-
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
     method: "turn/started",
     params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-  });
-}
-
-function ackAskUserCall(
-  fake: FakeClient,
-  ref: string,
-  turnId: string,
-  itemId: string,
-  callId: string,
-  questions: Array<Record<string, unknown>> = ONE_QUESTION,
-): void {
-  const base = {
-    threadId: `thr_${ref}`,
-    ref,
-    turnId,
-    item: {
-      type: "commandExecution",
-      id: itemId,
-      turnId,
-      toolName: "ask_user",
-      callId,
-      argumentsJson: askArgs(questions),
-    },
-  };
-  fake.emitNotification({
-    method: "item/started",
-    params: { ...base, item: { ...base.item, status: "inProgress" } },
-  });
-  fake.emitNotification({
-    method: "item/completed",
-    params: { ...base, item: { ...base.item, status: "completed" } },
   });
 }
 
@@ -270,7 +234,7 @@ test("clicking Send composes and submits through the plain send() path, then the
   render(<AskDock ref="ref_a" />);
 
   const persisted = nextMutationPersistence("ref_a");
-  const sendBatch = vi.spyOn(askDockStore.getState(), "sendBatch");
+  const sendBatch = vi.spyOn(askDockStore, "sendBatch");
   try {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /send answers/i }));
@@ -1034,7 +998,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
     await act(async () => {
       const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
       if (batchId === undefined) throw new Error("batch did not reconcile");
-      await askDockStore.getState().sendBatch("ref_a", batchId);
+      await askDockStore.sendBatch("ref_a", batchId);
     });
     await waitFor(() => expect(screen.getByTestId("ask-dock-announcements").textContent).toBe(""));
   });
@@ -1048,7 +1012,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
     const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
     if (firstKey === undefined) throw new Error("batch did not reconcile");
     act(() => {
-      askDockStore.getState().setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
+      askDockStore.setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
     });
 
     await waitFor(() =>
@@ -1114,6 +1078,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
   // pending after that message - one reconcile swaps the batch set.
   const thread = {
     ...readResponse("ref_a").thread,
+    evener: { ...readResponse("ref_a").thread.evener, askPending: true },
     turns: [
       {
         id: "turn_1",
@@ -1277,11 +1242,11 @@ test("a mid-send batch's editing controls are disabled while the open batch stay
   const sendingKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
   const openKey = askDockStore.getState().byRef.get("ref_a")?.batches[1]?.questions[0]?.key;
   if (sendingKey === undefined || openKey === undefined) throw new Error("question keys missing");
-  askDockStore.getState().setAnswer("ref_a", sendingKey, { kind: "option", labels: ["Yes"] });
-  askDockStore.getState().setNote("ref_a", sendingKey, "mid-flight edit");
+  askDockStore.setAnswer("ref_a", sendingKey, { kind: "option", labels: ["Yes"] });
+  askDockStore.setNote("ref_a", sendingKey, "mid-flight edit");
   expect(askDockStore.getState().byRef.get("ref_a")?.answers[sendingKey]?.resolution ?? null).toBeNull();
   expect(askDockStore.getState().byRef.get("ref_a")?.answers[sendingKey]?.note ?? "").toBe("");
-  act(() => askDockStore.getState().setNote("ref_a", openKey, "fine here"));
+  act(() => askDockStore.setNote("ref_a", openKey, "fine here"));
   expect(askDockStore.getState().byRef.get("ref_a")?.answers[openKey]?.note).toBe("fine here");
 });
 

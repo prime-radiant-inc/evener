@@ -340,6 +340,21 @@ func startupInterrupted(ctx context.Context, step string) error {
 	return nil
 }
 
+// armInterruptRunner arms the mutation runner and the server's cancel func in
+// the one order an accepted interrupt needs: the runner first.
+//
+// The interrupt path does not consult the server cancel func; it calls
+// cancelAndWaitMutationRunner, which reads the runner fields under
+// mutationRunnerMu and then waits for runnerDone before it finalizes the fence.
+// Armed cancel-first, a Stop accepted between the two statements finds the runner
+// fields still nil, returns without waiting, finalizes the fence and clears it --
+// and the claimed turn then runs the very turn the user stopped. One definition,
+// so the three arming sites cannot drift into three different orders.
+func armInterruptRunner(setRunner, setCancel func()) {
+	setRunner()
+	setCancel()
+}
+
 func runServeWithDeps(args []string, deps serveDeps) error {
 	fs := deps.newFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
@@ -1570,9 +1585,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
-	// /interrupt actually cancels the in-flight turn. The cancel is
-	// cleared after the turn finishes so capabilities.interrupt only
-	// reports true while a turn is in flight.
+	// /interrupt actually cancels the in-flight turn. Clearing it after the
+	// turn finishes answers "is a cancel armed right now" and nothing more:
+	// capabilities.interrupt reports the harness's support (the retry-safe
+	// turn/interrupt handler installed at startup, #1375), so a cleared cancel
+	// does not withdraw Stop.
 	inputLoopDone := make(chan struct{})
 	go func() {
 		defer close(inputLoopDone)
@@ -1601,8 +1618,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			currentCancel = cancelTurn
 			turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 			if !msg.ClientMutationStart && !msg.QueuedInput {
-				srv.SetCancelFunc(cancelTurn)
-				setMutationRunner(cancelTurn, runnerDone)
+				// The runner first, then the server cancel: the interrupt path
+				// does not read srv.SetCancelFunc, it calls
+				// cancelAndWaitMutationRunner, which reads these runner fields
+				// and waits on runnerDone before finalizing the fence. Armed the
+				// other way round, a Stop accepted between the two statements
+				// finds the fields still nil, returns without waiting, finalizes
+				// the fence and clears it -- and the turn then runs anyway.
+				armInterruptRunner(
+					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { srv.SetCancelFunc(cancelTurn) },
+				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
 					srv.SetProcessing(true)
 					srv.SetState(string(agent.SessionProcessing))
@@ -1612,19 +1638,54 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			var processErr error
 			processed := true
 			if msg.ClientMutationStart {
-				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string) {
-					srv.SetCancelFunc(cancelTurn)
-					setMutationRunner(cancelTurn, runnerDone)
-					srv.SetProcessingTurn(turnID)
-					srv.SetState(string(agent.SessionProcessing))
+				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string, phase agent.ClientMutationStartPhase) {
+					// Arm on the way in and publish on the way out: a
+					// turn/interrupt that finalizes the claimed start between
+					// the two must find the runner already armed, while a claim
+					// that refuses must never announce a running turn.
+					//
+					// The runner is armed first for the reason the interrupt path
+					// waits on it: cancelAndWaitMutationRunner reads these fields
+					// and then waits for runnerDone before finalizing the fence,
+					// and it never consults srv.SetCancelFunc.
+					armInterruptRunner(
+						func() { setMutationRunner(cancelTurn, runnerDone) },
+						func() { srv.SetCancelFunc(cancelTurn) },
+					)
+					if phase == agent.ClientMutationStartClaimed {
+						srv.SetProcessingTurn(turnID)
+						srv.SetState(string(agent.SessionProcessing))
+					}
 				})
+				if !processed {
+					// The claim refused: nothing is running, so drop the runner
+					// armed for it rather than leave a Stop pointed at a turn
+					// that will never start.
+					clearMutationRunner(runnerDone)
+					srv.SetCancelFunc(nil)
+				}
 			} else if msg.QueuedInput {
+				// Arm before the claim, the way the start path does: a queued
+				// claim sets the durable active turn inside its commit, and a
+				// turn/interrupt that lands between that commit and this publish
+				// must find a runner to cancel. Armed after the claim, the Stop
+				// finalizes the unincorporated claim with nothing to cancel and
+				// the input is lost.
+				armInterruptRunner(
+					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { srv.SetCancelFunc(cancelTurn) },
+				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
-					srv.SetCancelFunc(cancelTurn)
-					setMutationRunner(cancelTurn, runnerDone)
 					srv.SetProcessingTurn(turnID)
 					srv.SetState(string(agent.SessionProcessing))
 				})
+				if !processed {
+					// The claim refused: nothing is running, so drop the runner
+					// armed for it rather than leave a Stop pointed at a turn
+					// that will never start.
+					clearMutationRunner(runnerDone)
+					srv.SetCancelFunc(nil)
+				}
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}

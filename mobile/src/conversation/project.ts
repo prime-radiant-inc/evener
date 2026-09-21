@@ -31,7 +31,11 @@ import type {
 
 import {
   hasItemFailure,
+  hasWarningText,
+  isActiveItem,
   isInProgressStatus,
+  joinedReasoningParagraphs,
+  joinWarningParts,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -225,20 +229,6 @@ function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
 }
 
-// A live item can arrive without any status of its own while the turn that
-// contains it is still running — a sparse running tool/reasoning row would
-// otherwise read as settled. Such an item is active exactly when its turn
-// is; an item that carries its own status always keeps it. Exported so the
-// store's incremental projection applies the same rule against the turn
-// status it derives from the active turn.
-export function isActiveItem(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): boolean {
-  if (item.status !== undefined) return isInProgressStatus(item.status);
-  return isInProgressStatus(turnStatus);
-}
-
 // --- activity state ----------------------------------------------------------
 
 // Exported so the store's incremental projection settles a tool item exactly
@@ -269,7 +259,11 @@ function attachmentRows(
   return images.map((img, i) => ({ id: `${itemId}:${prefix}${i}`, ...img }));
 }
 
-function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
+// Exported for the live store (state/conversation.ts): the folded model item
+// (reducer.applyNotification's mergeItemImages) already carries the
+// "absent/empty input images means unchanged" rule projectItemAttachments
+// below cannot honor from a raw wire item alone.
+export function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
     return attachmentRows(item.id, item.images);
@@ -409,6 +403,24 @@ function projectItem(
     const state: ActivityState = isActiveItem(item, turn.status)
       ? "running"
       : "completed";
+    // Two different fields can be stale, depending on whether the item is
+    // still running. A SETTLED item's text is always authoritative
+    // (reducer.ts's mergeCompletedText) — reasoningSummaries can instead be
+    // the stale one: wireItemToModel seeds it from ANY non-empty initial
+    // wire text, and mergeReasoning keeps that seed across later merges
+    // once it's set, so a later completion's real text must not be masked
+    // by it. An ACTIVE (still-streaming) item is the other way around:
+    // appendReasoningDelta (reducer.ts) appends every live delta to
+    // reasoningSummaries ONLY, never to text, so text can be a stale
+    // partial seed from item/started while reasoningSummaries has grown
+    // well past it — preferring text there would lose the streamed growth.
+    // Comparing lengths distinguishes the two without a third model field:
+    // a settled item's text is the longer, complete value once summaries
+    // stop growing; an active item's joined summary overtakes its seed as
+    // soon as a delta arrives.
+    const joinedSummary = joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
+    const reasoningOutput =
+      state === "running" && joinedSummary.length > item.text.length ? joinedSummary : item.text || joinedSummary;
     return {
       kind: "activity",
       pre: {
@@ -419,7 +431,7 @@ function projectItem(
           label: "Reasoning",
           family: "reasoning",
           state,
-          detail: { ...activityDetail(item), output: item.text },
+          detail: { ...activityDetail(item), output: reasoningOutput },
         },
       },
     };
@@ -502,6 +514,11 @@ function projectItem(
     };
   }
 
+  // Warning — the same attention row the live applier emits (see warningItem).
+  if (item.type === "warning") {
+    return { kind: "final", item: warningItem(item) };
+  }
+
   // Unknown / forward-compatible item type — neutral collapsed activity, never
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
@@ -522,6 +539,32 @@ function projectItem(
         detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
+  };
+}
+
+// A warning's display row. It is an attention row, not an activity: the live
+// row applier (state/conversation.ts's case "warning") emits kind "failure"
+// with title as its own field and the message+hint joined as detail, and this
+// canonical projection must produce the same row for the same model item or
+// the row changes kind (and loses its attention treatment) the moment a reread
+// replaces the live row. The generic unknown-activity fallback used to swallow
+// warnings here (label "Activity", family "unknown", always shown in full by
+// mobile-native's activityMode) - the web (WarningItem.tsx) renders a warning
+// as its own attention banner, and the package transcript projector
+// (transcriptProjector.ts) routes type "warning" to a critical entry.
+// item.warning rides an untyped wire param map through the reducer's fold, so
+// hasWarningText guards a non-string runtime value the same way WarningItem.tsx
+// does before the title reaches a React Native <Copy> child.
+function warningItem(
+  item: ItemModel,
+): Extract<MobileTimelineItem, { kind: "failure" }> {
+  const rawTitle = item.warning?.title;
+  const title = hasWarningText(rawTitle) ? rawTitle : "Warning";
+  return {
+    kind: "failure",
+    id: item.id,
+    title,
+    detail: joinWarningParts([item.text, item.warning?.hint]),
   };
 }
 

@@ -36,6 +36,26 @@ export function isAtBottom(metrics: ScrollMetrics, thresholdPx: number = AT_BOTT
   return gap <= thresholdPx;
 }
 
+/**
+ * True when `current` shows content measured in BELOW a transcript that was
+ * already at the bottom, in the SAME scroll port, with the offset never moving
+ * backwards: the virtualizer correcting its own estimates, not the reader
+ * leaving. The geometry half of the bottom-hold correction, shared by the
+ * scroll listener and the no-scroll-event re-anchor paths (a late webfont
+ * swap, a ResizeObserver tick) so the two can never drift.
+ *
+ * The caller supplies the "was at bottom" and "no reader gesture" clauses,
+ * which are hook state rather than geometry.
+ */
+export function contentGrewBelowViewport(previous: ScrollMetrics, current: ScrollMetrics): boolean {
+  return (
+    !isAtBottom(current) &&
+    current.clientHeight === previous.clientHeight &&
+    current.scrollHeight > previous.scrollHeight &&
+    current.scrollTop >= previous.scrollTop
+  );
+}
+
 /** True when `scrollTop` is close enough to the top to trigger older-turn paging. */
 export function isNearTop(scrollTop: number, thresholdPx: number = NEAR_TOP_THRESHOLD_PX): boolean {
   return scrollTop < thresholdPx;

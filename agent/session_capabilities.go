@@ -112,6 +112,14 @@ type capabilityFacts struct {
 	// sets it, and a default that silently claimed readability is exactly the
 	// failure mode being closed.
 	unknownEnv bool
+
+	// fileToolConfined records that this session's file tools are confined even
+	// though no OS sandbox enforces it — the write-blocked off policy. It exists
+	// because policy above is only populated for an ENFORCED sandbox, while the
+	// scratch line's $TMPDIR label has to stay true for this shape too: a confined
+	// env keeps TMPDIR on the session scratch, an unconfined one gets a world-usable
+	// temp container instead (execenv's tmpDirNamesScratch).
+	fileToolConfined bool
 }
 
 // sandboxed reports whether an OS sandbox is in force — deliberately Enforced()
@@ -140,8 +148,23 @@ func capabilityFactsFromEnv(env execenv.ExecutionEnvironment, probe capabilityPr
 		facts.policy = le.Sandbox
 	}
 	facts.scratchDir = le.SessionScratchDir()
+	facts.fileToolConfined = le.Sandbox != nil && le.Sandbox.FileToolConfined()
 	facts.loginPATH = le.LoginPATH != ""
 	return facts
+}
+
+// tmpDirNamesScratch reports whether $TMPDIR still names the reported scratch for
+// this session. It is true for every shape that keeps the two together — a
+// sandboxed session and a write-blocked off policy — and false only for an
+// unsandboxed session with unconfined file tools, whose shell receives a
+// world-usable temp container instead of the private scratch (#495). Advertising
+// $TMPDIR as the scratch there would name a path the shell's own temp is not.
+//
+// A platform where the container cannot exist keeps the scratch for every shape
+// (execenv's tmpDirNamesScratch asks sandbox.SessionTmpSupported too, so the two
+// renderers cannot disagree about a session).
+func (f capabilityFacts) tmpDirNamesScratch() bool {
+	return f.sandboxed() || f.fileToolConfined || !sandbox.SessionTmpSupported
 }
 
 // capabilityPreambleLines renders the preamble as short "label: values" lines.
@@ -160,7 +183,11 @@ func capabilityPreambleLines(f capabilityFacts) []string {
 		lines = append(lines, "PATH: "+pathSource(f.loginPATH))
 	}
 	if f.scratchDir != "" {
-		lines = append(lines, "Scratch ($"+envvars.EVENERScratchDir.Name+", $"+envvars.TmpDir.Name+"): "+f.scratchDir)
+		label := "$" + envvars.EVENERScratchDir.Name
+		if f.tmpDirNamesScratch() {
+			label += ", $" + envvars.TmpDir.Name
+		}
+		lines = append(lines, "Scratch ("+label+"): "+f.scratchDir)
 	}
 	if f.sandboxed() {
 		lines = append(lines, "Cache: "+f.policy.CacheStrategy.String())

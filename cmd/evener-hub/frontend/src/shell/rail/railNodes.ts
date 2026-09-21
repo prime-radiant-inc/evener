@@ -10,12 +10,16 @@ import { projectNodeExpansionKey } from "@evener/appwire-client/state/navigation
 
 export type TreeTier = "current" | "recent" | "archived";
 
-/** Resource summaries adapted to the presentation contract at the rail edge. */
+/** Resource summaries adapted to the presentation contract at the rail edge.
+ *
+ * Carries NO preformatted age: a relative stamp is wall-clock-dependent, so the
+ * adapter computing one would freeze it at whatever the summary read when it
+ * arrived (the sidebar's idle "stays 'now'" bug). Rows derive it from the
+ * summary's own `updated_at` anchor against the rail clock. */
 export interface RailSession extends NavigationSessionSummary {
   row_id: string;
   tier?: string;
   pin_section_id?: string;
-  age?: string;
   model?: string;
   children: RailSession[];
   project_key?: string;

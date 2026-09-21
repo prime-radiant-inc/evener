@@ -192,6 +192,10 @@ no router (reserved).
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
+| `evener/host/add` | hub | `HostAddParams` | `HostRow` | Registers one sidecar host entry (name + SSH address + key path); validates like hub.toml loading and refuses a name hub.toml or the live set already holds. |
+| `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
+| `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here. |
 
 ## Notifications (server → client)
 
@@ -223,7 +227,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
@@ -741,6 +745,15 @@ _(no fields)_
 | `data` | `[]appwire.HarnessDescriptor` |  |  |
 
 
+### `HostAddParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `address` | `string` |  |  |
+| `keyPath` | `string` | yes |  |
+
+
 ### `HostAttachParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -768,6 +781,13 @@ _(no fields)_
 _(no fields)_
 
 
+### `HostListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hosts` | `[]appwire.HostRow` |  |  |
+
+
 ### `HostNotificationParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -777,6 +797,20 @@ _(no fields)_
 | `params` | `jsontext.Value` | yes |  |
 
 
+### `HostRemoveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostRemoveResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `appwire.HostRow` |  |  |
+
+
 ### `HostRequestParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -784,6 +818,39 @@ _(no fields)_
 | `host` | `string` |  |  |
 | `method` | `string` |  |  |
 | `params` | `jsontext.Value` | yes |  |
+
+
+### `HostRow`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `address` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `origin` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `serverName` | `string` | yes |  |
+| `serverVersion` | `string` | yes |  |
+| `hubVersion` | `string` | yes |  |
+| `os` | `string` | yes |  |
+| `arch` | `string` | yes |  |
+| `lastAttachError` | `string` | yes |  |
+| `midAttach` | `bool` |  |  |
+| `removed` | `bool` |  |  |
+
+
+### `HostStatusParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostStatusResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `appwire.HostRow` |  |  |
 
 
 ### `InitializeParams`
@@ -818,6 +885,7 @@ _(no fields)_
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
@@ -837,6 +905,8 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEntry`
@@ -863,6 +933,7 @@ _(no fields)_
 | `hasStoredOAuth` | `bool` |  |  |
 | `envVar` | `string` | yes |  |
 | `shadowedEnvVar` | `string` | yes |  |
+| `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
@@ -893,6 +964,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceRemoveParams`
@@ -901,6 +973,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`
@@ -908,6 +981,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetModelDisabledParams`
@@ -917,6 +991,7 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `ItemLifecycleParams`
@@ -1840,6 +1915,7 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `queue` | `appwire.QueueState` |  |  |
+| `consumedClientMutationIds` | `[]string` | yes |  |
 
 
 ### `ThreadReadParams`

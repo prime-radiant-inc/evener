@@ -19,6 +19,11 @@ import (
 // name today: a clone at <marketplaces>/<name> holding a catalog, plugin
 // materialized under cache/<name>/<plugin>/<sha>, and the registry entry
 // <plugin>@<name> pointing at it. It returns that install path.
+//
+// Its own saveMarketplaces/saveRegistry calls run outside any lockStore
+// session, so they mark m.pendingStoreChanged the way a real mutation would;
+// this fixture clears that flag before returning so the caller's own next
+// lockStore session reports only what it itself changed.
 func plantLegacyMarketplace(t *testing.T, m *Manager, name, plugin string) string {
 	t.Helper()
 	mk, err := m.loadMarketplaces()
@@ -49,6 +54,7 @@ func plantLegacyMarketplace(t *testing.T, m *Manager, name, plugin string) strin
 	if err := m.saveRegistry(reg); err != nil {
 		t.Fatal(err)
 	}
+	m.pendingStoreChanged = StoreChanged{}
 	return installPath
 }
 
@@ -305,6 +311,55 @@ func TestListMarketplaces_MigratesARefusedName(t *testing.T) {
 	}
 	if _, ok := onDisk["foo-bar"]; !ok || len(onDisk) != 1 {
 		t.Fatalf("%s holds %v, want foo-bar alone", marketplacesFileName, onDisk)
+	}
+}
+
+// A marker on disk names a rename or merge a run left in flight, and finishing
+// it is what the lock's recovery does. A refused name is only one way a store
+// comes with one: a rename's marketplaces write is its last step, so a run that
+// stopped between that write and the marker's removal leaves every recorded
+// name one the store accepts and the marker still there. The listing reads the
+// file without the lock, so the marker alone has to send it through — a store
+// holding one is not the store a lock holder would see, and the read drops the
+// marker the recovery finishes. The store then holds nothing to migrate and the
+// listing is lock-free again.
+func TestListMarketplaces_RecoversAPendingMarkerOnAValidStore(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "foo@bar", "widget")
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	// Where the interrupted run stopped: the rename recorded under foo-bar in
+	// both files, only the marker naming foo@bar left behind.
+	mustBeTheMigratedStore(t, m)
+	plantRenameMarker(t, m, "foo@bar", "foo-bar")
+
+	locks := 0
+	orig := marketplaceAcquireLock
+	marketplaceAcquireLock = func(ctx context.Context, lockPath string, timeout time.Duration) (func(), error) {
+		locks++
+		return orig(ctx, lockPath, timeout)
+	}
+	t.Cleanup(func() { marketplaceAcquireLock = orig })
+
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	if _, ok := mk["foo-bar"]; !ok || len(mk) != 1 {
+		t.Fatalf("ListMarketplaces = %v, want foo-bar alone", mk)
+	}
+	mustNotExist(t, renameMarkerFile(m))
+	if locks != 1 {
+		t.Fatalf("the listing took the store lock %d times, want 1 for the marker it had to recover", locks)
+	}
+
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+		t.Fatalf("second ListMarketplaces: %v", err)
+	}
+	if locks != 1 {
+		t.Fatalf("a listing over the recovered store took the store lock again; locks = %d, want 1 from the recovery alone", locks)
 	}
 }
 
@@ -2603,8 +2658,11 @@ func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *test
 		t.Fatal("expected the cache move to fail")
 	}
 	mustExist(t, renameMarkerFile(m))
-	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
-		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+	}
+	if !errors.Is(err, errRenameRollbackIncomplete) {
+		t.Fatalf("error = %v, want errors.Is(err, errRenameRollbackIncomplete)", err)
 	}
 }
 
@@ -2633,8 +2691,11 @@ func TestMarketplaceNameMigration_ARecoveryThatRollsBackRemovesTheMarker(t *test
 	}
 	// The error has to carry the save failure the rollback was recovering
 	// from; wrapping a nil here would report a cause that never happened.
-	if !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("recovery error = %v, want the failed save it rolled back from", err)
+	// saveRename scrubs the raw error (this machine's absolute plugin-store
+	// path) before it reaches this caller, so the file it names is what
+	// proves the cause is real rather than a nil silently joined in.
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("recovery error = %v, want it to name the failed save's file (%s)", err, marketplacesFileName)
 	}
 	marketplaceAtomicWriteFile = orig
 	mustNotExist(t, renameMarkerFile(m))
@@ -2752,8 +2813,11 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 		t.Fatal("expected the save to fail")
 	}
 	mustExist(t, renameMarkerFile(m))
-	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
-		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
+	}
+	if !errors.Is(err, errStoreBetweenNames) {
+		t.Fatalf("error = %v, want errors.Is(err, errStoreBetweenNames)", err)
 	}
 
 	mk, err := m.ListMarketplaces(context.Background())
@@ -3153,10 +3217,13 @@ func TestMarketplaceNameMigration_RefusesAMarkerWhoseDestinationIsTaken(t *testi
 	if err == nil {
 		t.Fatal("expected the acquisition to fail on the taken name")
 	}
-	for _, want := range []string{`"` + recorded + `"`, `"a-b"`, renameMarkerFile(m)} {
+	for _, want := range []string{`"` + recorded + `"`, `"a-b"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to name %s", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	mustExist(t, renameMarkerFile(m))
 	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
@@ -3539,10 +3606,13 @@ func TestMarketplaceNameMigration_RefusesAMergeMarkerWithNoDestination(t *testin
 	if err == nil {
 		t.Fatal("expected the acquisition to fail on the destination nothing records")
 	}
-	for _, want := range []string{`"` + duplicate + `"`, `"a-b"`, renameMarkerFile(m)} {
+	for _, want := range []string{`"` + duplicate + `"`, `"a-b"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to name %s", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	mustExist(t, renameMarkerFile(m))
 }

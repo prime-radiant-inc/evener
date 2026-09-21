@@ -57,16 +57,17 @@ const askItem = {
   id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
   argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
 };
+const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
-assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
 const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
-const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions(askModel), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
-const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions({ turns: [{ items: [askItem] }] })); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
+const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions(askModel)); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
@@ -233,7 +234,7 @@ const pathRows = client.buildPathRows({
   value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
-assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.deepEqual(client.pickablePathRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
 assert.equal(client.parseTaskListData(null), null);
 assert.deepEqual(client.parseTaskListData([]), []);
 const taskRows = client.parseTaskListData([
@@ -296,11 +297,104 @@ assert.equal(client.displayBindingFor(keybindingRegistry.getState().bindings, cl
 client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp");
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
+// The settings-hub generation core over a scripted fence and a settings
+// fields store: a defaults read publishes under one generation, a
+// replacement generation fences the in-flight read and rewires notifications,
+// and ending the generation retires the payload - a write caught mid-flight
+// keeps its unknown outcome in writeUncertain.
+const settingsFence = client.createReadyGenerationFence(() => true);
+let settingsFields = { loaded: false, saving: false, hubLoading: false, writeUncertain: false, revision: 0 };
+const wiredGenerations = [];
+const settingsGeneration = client.createSettingsHubGeneration({
+  fence: settingsFence,
+  wireNotifications: (generation) => { wiredGenerations.push(generation); return () => wiredGenerations.pop(); },
+  retirePayload: () => { settingsFields = { ...settingsFields, loaded: false, saving: false, hubLoading: false, writeUncertain: settingsFields.writeUncertain || settingsFields.saving, revision: 0 }; },
+});
+settingsGeneration.beginReadyGeneration();
+const firstSettingsGeneration = settingsFence.generation;
+const landingRead = settingsFence.claimRead();
+settingsFields = { ...settingsFields, loaded: true, revision: 3 };
+settingsGeneration.beginReadyGeneration();
+assert.equal(settingsFence.readStillMine(firstSettingsGeneration, landingRead), false);
+assert.deepEqual(wiredGenerations, [settingsFence.generation]);
+settingsFields = { ...settingsFields, saving: true };
+settingsGeneration.endReadyGeneration();
+assert.equal(settingsFence.generation, -1);
+assert.deepEqual(wiredGenerations, []);
+assert.deepEqual(settingsFields, { loaded: false, saving: false, hubLoading: false, writeUncertain: true, revision: 0 });
+// The checkpointed draft editor over a scripted in-memory checkpoint port:
+// an edit persists a fresh checkpoint, the discardable gate refuses a
+// mid-write discard, discarding removes the record and clears the draft
+// fields, and a port save failure marks storageUnavailable AND draftError.
+let editorFields = { saving: false, writeUncertain: false, storageUnavailable: false, draftUnreadable: false, draft: null, draftConflict: false, draftError: null };
+const setEditorFields = (partial) => { editorFields = { ...editorFields, ...partial }; };
+let storedDraft = null;
+let draftSaveFailure = null;
+let mintedDraftIds = 0;
+const draftRepo = {
+  createId: () => "draft-" + (mintedDraftIds += 1),
+  save: (checkpoint) => { if (draftSaveFailure) throw draftSaveFailure; storedDraft = checkpoint; return true; },
+  discardClassified: () => { const removed = storedDraft !== null; storedDraft = null; return removed; },
+};
+const savedDraft = client.persistCheckpointedDraft(draftRepo, { value: "new draft" }, () => editorFields, setEditorFields, () => ({}), "draft save failed", "review the draft again");
+assert.deepEqual(savedDraft, { id: "draft-1", value: "new draft" });
+assert.deepEqual(storedDraft, { id: "draft-1", value: "new draft" });
+setEditorFields({ draft: { value: "new draft" }, draftConflict: true });
+setEditorFields({ saving: true });
+assert.throws(() => client.assertDraftDiscardable({ disposed: false }, () => editorFields, "drafts unavailable"), /drafts unavailable/);
+setEditorFields({ saving: false });
+client.discardCheckpointedDraft(draftRepo, () => editorFields, setEditorFields, () => ({}), "draft discard failed");
+assert.equal(storedDraft, null);
+assert.deepEqual(editorFields, { saving: false, writeUncertain: false, storageUnavailable: false, draftUnreadable: false, draft: null, draftConflict: false, draftError: null });
+draftSaveFailure = new Error("port unavailable");
+assert.throws(() => client.persistCheckpointedDraft(draftRepo, { value: "second draft" }, () => editorFields, setEditorFields, () => ({}), "draft save failed", "review the draft again"), /draft save failed/);
+assert.deepEqual(editorFields, { saving: false, writeUncertain: false, storageUnavailable: true, draftUnreadable: false, draft: null, draftConflict: false, draftError: "draft save failed" });
+// The transcript display store over a scripted client port: a malformed GET
+// publishes the read error and no state, a well-formed GET publishes both
+// layouts' confirmed defaults, a change contradicting the confirmed revision
+// is fenced while a newer one lands, and dropping hub support retires the
+// payload and fences later changes.
+assert.equal(client.transcriptDisplaySupport({ transcriptDisplaySettings: true }), "supported");
+const transcriptCalls = [];
+let transcriptReply = {};
+const transcriptStore = client.createTranscriptDisplayStore({
+  client: { request: async (method) => { transcriptCalls.push(method); return transcriptReply; }, onNotification: () => () => {} },
+});
+transcriptStore.setSupport("supported");
+transcriptStore.beginReadyGeneration();
+transcriptStore.getState().refreshHubDefaults().then(() => {
+  assert.equal(transcriptStore.getState().hubError, "Hub returned malformed transcript display defaults");
+  assert.equal(transcriptStore.getState().hubLoading, false);
+  assert.equal(transcriptStore.getState().loaded, false);
+  transcriptReply = {
+    desktop: client.toWireDefault({ revision: 3, config: client.makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }) }),
+    mobile: client.toWireDefault({ revision: 2, config: client.makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }) }),
+  };
+  return transcriptStore.getState().refreshHubDefaults();
+}).then(() => {
+  assert.deepEqual(transcriptCalls, ["evener/settings/transcriptDisplay/get", "evener/settings/transcriptDisplay/get"]);
+  assert.equal(transcriptStore.getState().hubError, null);
+  assert.deepEqual(transcriptStore.getState().hubErrors, {});
+  assert.equal(transcriptStore.getState().loaded, true);
+  assert.equal(transcriptStore.getState().hub.desktop.revision, 3);
+  assert.equal(transcriptStore.getState().hub.mobile.revision, 2);
+  const changedConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  transcriptStore.getState().applyHubChange({ layout: "mobile", revision: 1, config: changedConfig });
+  assert.equal(transcriptStore.getState().hub.mobile.revision, 2);
+  transcriptStore.getState().applyHubChange({ layout: "mobile", revision: 5, config: changedConfig });
+  assert.equal(transcriptStore.getState().hub.mobile.revision, 5);
+  transcriptStore.setSupport("unsupported");
+  transcriptStore.getState().applyHubChange({ layout: "desktop", revision: 9, config: changedConfig });
+  assert.equal(transcriptStore.getState().hubSupport, "unsupported");
+  assert.deepEqual(transcriptStore.getState().hub, {});
+  assert.equal(transcriptStore.getState().loaded, false);
+}).catch((error) => { console.error(error); process.exit(1); });
 `;
-  // The eleven storage-port methods neither outbox fixture exercises: the
+  // The twelve storage-port methods neither outbox fixture exercises: the
   // type-use program and the smoke script embed this one definition and add the
   // two calls each of them actually makes (enqueueIntent, listTargetRefs).
   const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  enqueueInterruptAndCancel: () => Promise.reject(new Error("inert")),
   getOptimistic: () => Promise.resolve(undefined),
   listOptimistic: () => Promise.resolve([]),
   getRecovery: () => Promise.resolve(undefined),
@@ -640,11 +734,32 @@ const outboxStorage: MutationOutboxStorage = {
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
 ${inertOutboxStorageMethods}
 };
-const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+// A complete ready client, type-checked here: the outbox's lookup must accept
+// a full AppwireClientLike, not just a state field. The runtime smoke below
+// repeats it in plain JavaScript, where the same object cannot be annotated.
+const readyClient: NonNullable<ReturnType<MutationClientLookup>> = {
+  connect: () => Promise.resolve({} as never),
+  request: () => Promise.resolve({} as never),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({} as never),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
+const outboxOptions: MutationOutboxOptions = { getClient: () => readyClient, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
+const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
+// The dispatcher always supplies a target ref, so a consumer whose lookup
+// requires one must stay assignable to its port; the ref-less outbox lookup
+// (above) must not have loosened it.
+const requiredRefDispatcherOptions: MutationDispatcherOptions = { getClient: (targetRef: string) => { void targetRef; return null; } };
+const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason;`,
+void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher; void requiredRefDispatcherOptions; void readyClient;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -721,18 +836,35 @@ assert.deepEqual(pendingTurnsStore.pendingTurnEntries("ref-a"), []);
 // it.
 const enqueued = [];
 const discovered = [];
-const memoryOutbox = new client.MutationOutbox(
-  {
-    enqueueIntent(intent) {
-      const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
-      enqueued.push(record);
-      return Promise.resolve(record);
-    },
-    listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
-${inertOutboxStorageMethods}
+const memoryOutboxStorage = {
+  enqueueIntent(intent) {
+    const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+    enqueued.push(record);
+    return Promise.resolve(record);
   },
+  listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+${inertOutboxStorageMethods}
+};
+// A complete AppwireClientLike: the runtime consumer is plain JavaScript, so
+// the double cannot be type-annotated here, but it supplies every member so a
+// strict TypeScript consumer copying it would compile. Only its state field is
+// read by the outbox below.
+const readyClient = {
+  connect: () => Promise.resolve({}),
+  request: () => Promise.resolve({}),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.resolve({}),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "ready",
+  terminalReason: null,
+};
+const memoryOutbox = new client.MutationOutbox(
+  memoryOutboxStorage,
   {
-    isReady: () => true,
+    getClient: () => readyClient,
     onDiscover: (targetRefs, reason) => {
       discovered.push({ targetRefs, reason });
     },
@@ -759,6 +891,15 @@ memoryOutbox
       ["startup", "enqueue"],
     );
     assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
+  })
+  .then(() => {
+    // MutationDispatcher is a runtime export reachable over the same memory
+    // port as the outbox above: with no client wired, nextDispatchable's own
+    // inert undefined stops dispatchTargets before any transport attempt,
+    // proving the export resolves at all - a real attempt needs a transport,
+    // which is the unit suite's job, not qualification's.
+    const dispatcher = new client.MutationDispatcher(memoryOutboxStorage, { getClient: () => null });
+    return dispatcher.dispatchTargets(["local:thread-1"]);
   })
   .catch((err) => {
     console.error(err);

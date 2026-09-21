@@ -30,6 +30,7 @@ import type {
   ThreadTurnsListResponse,
   Turn,
   TurnCancelQueuedResponse,
+  TurnDrainAsSteerResponse,
   TurnInterruptResponse,
   TurnQueueResponse,
   TurnStartResponse,
@@ -2851,6 +2852,123 @@ describe("observed queue guards", () => {
         },
       },
     ]);
+  });
+  // A drain's receipt names the queue intents it consumed
+  // (consumedClientMutationIds, issue #1704). Wire-shaped: the daemon omits
+  // the key entirely when nothing was consumed (never an empty array), so the
+  // decoded receipt must mirror that -- present only when the daemon named it.
+  it("keeps a drain's consumedClientMutationIds on the decoded receipt when the daemon named some", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            consumedClientMutationIds: ["queued-1", "queued-2"],
+          }),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt.consumedClientMutationIds).toEqual([
+      "queued-1",
+      "queued-2",
+    ]);
+  });
+  it("omits consumedClientMutationIds from the decoded receipt when the daemon consumed nothing", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () => ({ receipt: makeReceipt("steer") }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt).not.toHaveProperty("consumedClientMutationIds");
+  });
+  it("rejects a drain receipt with an empty consumedClientMutationIds array", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            consumedClientMutationIds: [],
+          }),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
+  // #1759: a receipt may carry additive keys a shipped build has never seen;
+  // the decoder ignores them rather than rejecting the whole receipt.
+  it("ignores an additive receipt key the decoder does not know", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            futureAdditiveField: "ignored",
+          } as Partial<MutationReceipt>),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt).toMatchObject({
+      clientMutationId: "cmid-1",
+      disposition: "applied",
+      threadId: "thread-1",
+      projectionState: "pending",
+      turnId: "turn-1",
+    });
+    expect(receipt).not.toHaveProperty("futureAdditiveField");
+  });
+  it("ignores an additive receipt key on a mutation other than drain", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/queue",
+      () =>
+        ({
+          receipt: makeReceipt("queue", {
+            futureAdditiveField: "ignored",
+          } as Partial<MutationReceipt>),
+        }) as TurnQueueResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.queue(textInput("queued"))).resolves.toMatchObject({
+      clientMutationId: "cmid-1",
+      queueEntryIds: ["queue-1"],
+    });
+  });
+  it("still rejects a receipt missing a key the decoder requires", async () => {
+    const { client, service } = setup();
+    const { threadId: _omitted, ...withoutThreadId } = makeReceipt("steer");
+    client.on(
+      "turn/drainAsSteer",
+      () => ({ receipt: withoutThreadId }) as unknown as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
+  it("still rejects a known receipt key on a mutation kind that does not expect it", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/queue",
+      () =>
+        ({
+          receipt: makeReceipt("queue", {
+            turnId: "misplaced",
+          } as Partial<MutationReceipt>),
+        }) as TurnQueueResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.queue(textInput("queued"))).rejects.toThrow(
+      /ConversationService/,
+    );
   });
 });
 

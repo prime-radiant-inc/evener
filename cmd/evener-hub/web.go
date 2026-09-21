@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 // WebServer wires routes and middleware.
@@ -32,6 +33,10 @@ type WebServer struct {
 	// the sshconn attach-event path so an EventAttached rebinds a
 	// backoff-sleeping fan-out immediately.
 	hostAdmin *hubHostAdminController
+	// hostManage is the slice-1 host-management controller (add/list/status/
+	// remove). main.go binds its event recorder to the same sshconn lifecycle
+	// path, so host rows retain attach state from the manager's events.
+	hostManage *hubHostManager
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -111,6 +116,15 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if cfg.KeybindingsStore == nil {
 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
+	// One live host registry shared by every host-dependent surface. An
+	// embedder or test that threads none gets a fallback built once here —
+	// the same instance the attach, host-management, and admin handlers
+	// validate against, so a host added at runtime is never "unknown" to a
+	// sibling handler that built its own copy from the configured entries.
+	// main.go always threads the live one.
+	if cfg.RemoteHostRegistry == nil {
+		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
+	}
 	sources := newHubSourceRegistry(cfg)
 	// One resume-lock registry backs both the REST send path (lockForSession)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
@@ -123,6 +137,15 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		} else {
 			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
 		}
+	}
+	// The one *plugins.Manager every plugin surface shares: the plugin CRUD
+	// handlers, a launch's plugin-inventory resolution (thread/start,
+	// evener/spawn/slashCatalog), and the three background maintenance paths
+	// in main_background.go (hubStartUpgrade, seedHubMarketplaces,
+	// startHubPluginMaintenance's GC) all reach this same instance instead of
+	// each minting its own over a possibly different root (#1780).
+	if cfg.PluginManager == nil {
+		cfg.PluginManager = plugins.NewManager(cfg.PluginRoot)
 	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
@@ -143,9 +166,19 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin, hostManage := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.hostAdmin = hostAdmin
+	web.hostManage = hostManage
+	// The manager's remove finish phase prunes every per-name store the
+	// removal touches; lastGoodThreads lives here, on the web server, so its
+	// prune crosses the boundary as a callback wired the same way hostManage
+	// itself is: after construction, before the server can serve a remove.
+	hostManage.cfg.forgetLastGoodThreads = web.forgetLastGoodThreads
+	// Wired here, after the server exists, rather than inside the
+	// constructor: this is the one place that both built cfg.PluginManager
+	// and now has a broadcaster to give it.
+	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
@@ -159,7 +192,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 // serializing concurrent resume requests on the same session_id. It shares the
 // registry the RPC auto-resume path uses (cfg.ResumeLocks) so the two paths
 // serialize against each other.
-func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
+func (s *WebServer) lockForSession(sessionID string) *hubcore.ResumeMutex {
 	if s.cfg.ResumeLocks == nil {
 		s.cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}

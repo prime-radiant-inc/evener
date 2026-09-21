@@ -8,12 +8,12 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// output images: see appwire.MergeOutputImages; input images keep the length rule.
+// output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 
 // A clone must carry OutputImages' nilness both ways: nil (never had images)
 // stays nil, and an explicit empty list (the removal) stays non-nil and empty.
-// Input images carry no such rule -- they keep the length rule, so this test
-// does not assert their nilness.
+// Input images carry no such rule -- see appwire.MergeInputImages -- so this
+// test does not assert their nilness.
 func TestCloneCarriesImageListNilnessBothWays(t *testing.T) {
 	removed := cloneAppThreadItem(appwire.ThreadItem{
 		ID:           "item_1",

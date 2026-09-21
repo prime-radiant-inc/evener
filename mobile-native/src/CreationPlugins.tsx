@@ -13,6 +13,7 @@ import {
   type AppwireClient,
   type LaunchConfigLayer,
   type PluginSelectionState,
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   selectAllPlugins,
   selectedPluginNames,
@@ -59,10 +60,7 @@ export function CreationPlugins({
     enabled: !!cwd,
   });
   const response = preview.state.response;
-  const selection: PluginSelectionState =
-    value.enabledPlugins === undefined
-      ? { mode: "default" }
-      : { mode: "explicit", names: value.enabledPlugins };
+  const selection: PluginSelectionState = pluginSelectionFromOverrides(value);
   const names = response ? selectedPluginNames(selection, response) : [];
   const issues = response ? pluginSelectionIssues(selection, response) : [];
   const change = (next: PluginSelectionState) =>

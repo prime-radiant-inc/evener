@@ -48,6 +48,7 @@ import type {
   SessionRailNode,
   WatchRailNode,
 } from "./railNodes";
+import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
@@ -212,6 +213,12 @@ function apiNode(overrides: Partial<RailSession> = {}): RailSession {
     children: [],
     ...overrides,
   };
+}
+
+/** The updated_at anchor a fixture's relative age is measured from: an ISO
+ * instant `minutes` before now. Zero is "just updated", which reads as "now". */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
 }
 
 function apiProject(overrides: Partial<RailProject> = {}): RailProject {
@@ -760,7 +767,7 @@ describe("watch row", () => {
 // ellipsis sacrifice - and ellipsis can therefore never eat it.
 describe("watch count on the summary line", () => {
   test("shows on an otherwise-quiet watch-bearing row", () => {
-    const session = apiNode({ state: "idle", age: "2m", watches: [watchSummary()] });
+    const session = apiNode({ state: "idle", updated_at: minutesAgo(2), watches: [watchSummary()] });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
     // The watch-only line is just the count: the state word "idle" beside it
@@ -773,7 +780,7 @@ describe("watch count on the summary line", () => {
     const child = apiNode({ row_id: "child", ref: "child", state: "idle", watches: [watchSummary({ id: "c1" })] });
     const parent = apiNode({
       state: "idle",
-      age: "1m",
+      updated_at: minutesAgo(1),
       watches: [watchSummary({ id: "p1" })],
       children: [child],
     });
@@ -784,7 +791,7 @@ describe("watch count on the summary line", () => {
   test("reports the retained total with the armed count, so a fired row is still counted", () => {
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
@@ -797,7 +804,7 @@ describe("watch count on the summary line", () => {
   test("pluralizes the count", () => {
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
@@ -807,7 +814,7 @@ describe("watch count on the summary line", () => {
   test("surfaces omitted watches so the row never silently undercounts", () => {
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: [watchSummary()],
       omitted_watches: 2,
     });
@@ -822,7 +829,7 @@ describe("watch count on the summary line", () => {
     // than the retained 32.
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })),
       omitted_watches: 8,
       omitted_armed_watches: 8,
@@ -856,7 +863,7 @@ describe("watch count on the summary line", () => {
   test("renders nothing for a session with no watches", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(2) }))}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1148,7 +1155,7 @@ describe("session row", () => {
   // subagent tree - a right-aligned relative timestamp OR the Task-7 Badge,
   // whichever slot applies, plus (on a signal row) the gloss line.
   test("shows a humanized activity line and a relative timestamp", () => {
-    const session = apiNode({ state: "active", age: "2m" });
+    const session = apiNode({ state: "active", updated_at: minutesAgo(2) });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working/i);
     expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
@@ -1168,7 +1175,7 @@ describe("session row", () => {
     const session = apiNode({
       state: "idle",
       branch: "fix/thing",
-      age: "2m",
+      updated_at: minutesAgo(2),
       children: [apiNode({ state: "idle", children: [apiNode({ state: "active" })] }), apiNode({ state: "active" })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
@@ -1188,7 +1195,7 @@ describe("session row", () => {
   test("keeps a quiet row without active descendants one line", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(2) }))}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1271,7 +1278,7 @@ describe("session row", () => {
   test("a turn-ended subagent row shows no dot, no gloss - just title + age", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", age: "4m" }))}
+        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", updated_at: minutesAgo(4) }))}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1309,7 +1316,11 @@ describe("session row", () => {
     "a quiet, nested row (%s, depth > 0) is title + age on one line, with no gloss at all",
     (state) => {
       render(
-        <RailRow node={sessionRailNode(apiNode({ state, age: "3h" }))} info={info({ depth: 1 })} actions={actions()} />,
+        <RailRow
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180) }))}
+          info={info({ depth: 1 })}
+          actions={actions()}
+        />,
       );
       expect(screen.queryByTestId("rail-row-activity")).toBeNull();
       expect(screen.getByText("Fix flaky test")).toBeTruthy();
@@ -1325,7 +1336,7 @@ describe("session row", () => {
     (state) => {
       render(
         <RailRow
-          node={sessionRailNode(apiNode({ state, age: "3h", project: "prime-radiant" }))}
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180), project: "prime-radiant" }))}
           info={info({ depth: 0 })}
           actions={actions()}
         />,
@@ -1437,7 +1448,7 @@ describe("session row", () => {
   test("a dormant row says it has not started, in place of an age that would read as activity", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: true }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: true }))}
         info={info()}
         actions={actions()}
       />,
@@ -1449,7 +1460,7 @@ describe("session row", () => {
   test("a session that has run keeps its age", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: false }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: false }))}
         info={info()}
         actions={actions()}
       />,
@@ -1500,7 +1511,7 @@ describe("session row", () => {
     (state) => {
       render(
         <RailRow
-          node={sessionRailNode(apiNode({ state, age: "now", dormant: true }))}
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(0), dormant: true }))}
           info={info()}
           actions={actions()}
         />,
@@ -1515,12 +1526,39 @@ describe("session row", () => {
   test("a dormant row's tooltip keeps the age its visible line gave up", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: true }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: true }))}
         info={info()}
         actions={actions()}
       />,
     );
     expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 4m");
+  });
+
+  // ...and that age is a clock like the visible stamp, not a snapshot the model
+  // froze: the tooltip is the row's other place a time is shown.
+  test("a dormant row's tooltip age advances with the rail clock", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      const session = apiNode({
+        state: "idle",
+        dormant: true,
+        updated_at: new Date(start - 1_000).toISOString(),
+      });
+      render(
+        <RailTickProvider>
+          <RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />
+        </RailTickProvider>,
+      );
+      expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · now");
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 1m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // --- what the visible row drops stays reachable on hover --------------
@@ -1571,7 +1609,7 @@ describe("session row", () => {
   test("a needs-you count takes the right slot instead of the timestamp", () => {
     const session = apiNode({
       state: "active",
-      age: "2m",
+      updated_at: minutesAgo(2),
       children: [apiNode({ row_id: "child", ref: "local:child", state: "awaiting" })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
@@ -1580,14 +1618,38 @@ describe("session row", () => {
   });
 
   test("shows no timestamp when the session carries no age", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", age: undefined }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
+    render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("rail-row-time")).toBeNull();
+  });
+
+  // The stamp is a CLOCK, not a snapshot. An idle session produces no further
+  // navigation data, so a label derived only when its summary arrives freezes
+  // at the value it read then ("now") until a full page refresh. The row has to
+  // derive it from the summary's updated_at anchor against the rail clock.
+  test("an idle row's age advances with the rail clock, with no new data", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      // One second old at mount: the label reads "now"...
+      const session = apiNode({
+        state: "idle",
+        updated_at: new Date(start - 1_000).toISOString(),
+      });
+      render(
+        <RailTickProvider>
+          <RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />
+        </RailTickProvider>,
+      );
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+      // ...and a minute later it must have clicked forward on its own.
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("menu offers 'Pin this session…' for an unassigned top-level session, assigning through onPinSession", async () => {
@@ -1797,7 +1859,7 @@ describe("session row", () => {
   // a row. It rides the gloss line, which ellipsizes on its own; the title keeps
   // the whole main line minus the (short, fixed) age.
   test("keeps the branch out of the title's line, on the gloss line instead", () => {
-    const session = apiNode({ state: "active", branch: "main", age: "47m" });
+    const session = apiNode({ state: "active", branch: "main", updated_at: minutesAgo(47) });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/main/);

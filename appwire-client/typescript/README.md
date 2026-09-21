@@ -79,8 +79,13 @@ one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
 into the host's registry as a delta when it has one, with a checkpointed draft
 editor over an injected storage port for a host that edits offline; the host
 drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
-`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
-their hrefs off a base origin the host supplies (empty for a same-origin web
+`endReadyGeneration` and `detachHub`); the ready-generation fence that store
+fences every await on (`createReadyGenerationFence(isSupported)`: the
+generation, read-serial and write-token bookkeeping behind `liveHub`,
+`readStillMine` and `writeStillMine`, so a reply arriving after the generation
+ended, support dropped or the hub was replaced lands nothing) - and the doc-pane
+URL builders, which hang their hrefs off a base origin the host supplies (empty
+for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
@@ -182,26 +187,33 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `createSecureUUID` documents its own fallback for a source with neither
   method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
   layer also carries `MutationOutbox`, the discovery half of an outbox: a class
-  that enqueues through a `MutationOutboxStorage` port (the 13 calls this layer
+  that enqueues through a `MutationOutboxStorage` port (the 14 calls this layer
   and the dispatcher make; the web's IndexedDB adapter implements it and stays
   in the app), announces a commit to sibling clients, and re-scans when a host
   says a scan is worth doing. Every host-shaped capability is an option - the
   channel, the lifecycle and visibility targets, the timer - and none defaults
-  to a browser global, so no DOM type lives here. Its pure reconciliation
-  (`reconcilePendingEntries`) turns those durable records plus a live
-  `ThreadModel` into the `PendingTurnEntry` rows a composer's queue renders -
-  identity-based, so an authoritative projection replaces the same outbox entry
-  rather than duplicating it - and the pending-turns projection store built on
-  that reconciliation: `createPendingTurnsStore({ threads, draft, identity })`
-  is a framework-free store holding a host's own outbox/optimistic/recovery
-  records plus the submission bookkeeping (`submittingRefs`, `submittedHere`)
-  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
+  to a browser global, so no DOM type lives here. It carries
+  `MutationDispatcher` too: one attempt at a time per target ref over the same
+  port, a receipt reconciled into storage before the next attempt, a refusal
+  turned into a recovery record with the daemon's own reason, and an outcome
+  nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
+  client must not break after a lost connection. Every reaction to an outcome (a
+  blocked mutation, a clear's response, a shared note's authority) is a callback
+  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
+  rows a composer's queue renders - identity-based, so an authoritative
+  projection replaces the same outbox entry rather than duplicating it - and
+  the pending-turns projection store built on that reconciliation:
+  `createPendingTurnsStore({ threads, draft, identity })` is a framework-free
+  store holding a host's own outbox/optimistic/recovery records plus the
+  submission bookkeeping (`submittingRefs`, `submittedHere`) over a
+  `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
   `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
   clear) and the host's own `ClientIdentity` (`isOwnMutationRecord`),
   generic over the attachment type like the records above. No storage
-  adapter, scheduling policy or DOM type lives here - just the shapes, the
-  identity, the rules, the reconciliation and the store built on them.
-  Resolves to `state/mutation/index.ts`, a barrel.
+  adapter lives here either - just the shapes, the identity, the rules, the
+  attempts, the reconciliation and the store built on them. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

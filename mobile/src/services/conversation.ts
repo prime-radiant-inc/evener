@@ -277,15 +277,22 @@ const CANONICAL_MUTATION_PROJECTION: Readonly<
   clear: "reflected",
 };
 
-function exactObject(
+function requireObject(
   raw: unknown,
-  keys: readonly string[],
   label: string,
 ): Record<string, unknown> {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`ConversationService: ${label} is not an object`);
   }
-  const object = raw as Record<string, unknown>;
+  return raw as Record<string, unknown>;
+}
+
+function exactObject(
+  raw: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const object = requireObject(raw, label);
   const actual = Object.keys(object).sort();
   const expected = [...keys].sort();
   if (
@@ -302,6 +309,71 @@ function nonemptyString(raw: unknown, label: string): string {
     throw new Error(`ConversationService: ${label} is empty or invalid`);
   }
   return raw;
+}
+
+// Every receipt carries the correlation fields below, and each mutation kind
+// adds the keys its own receipt requires. A key from KNOWN_RECEIPT_KEYS that a
+// kind does not expect is a malformed receipt and is rejected; a key outside
+// that vocabulary is an additive field no shipped build has seen, and is
+// ignored. Jesse's 2026-09-17 ruling keeps additive AppWire changes on the
+// current ProtocolVersion, so an older peer must read a new optional key as no
+// information -- rejecting it would turn every additive wire field into a hard
+// failure for a phone build already in testers' hands (issue #1759). The
+// vocabulary is derived from the per-kind tables below so the two cannot drift.
+// The result envelope around a receipt stays exact via exactObject.
+const RECEIPT_CORRELATION_KEYS = [
+  "clientMutationId",
+  "disposition",
+  "threadId",
+  "projectionState",
+] as const;
+
+const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<
+  Record<MutationKind, readonly string[]>
+> = {
+  send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  drain: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
+  cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
+  clear: [...RECEIPT_CORRELATION_KEYS],
+};
+
+// Receipt keys the daemon includes only when it has something to report: a
+// drain may name the queue entries and client mutations it consumed, and any
+// kind may name the instance the receipt is bound to.
+const OPTIONAL_RECEIPT_KEYS_BY_KIND: Readonly<
+  Partial<Record<MutationKind, readonly string[]>>
+> = {
+  drain: ["queueEntryIds", "consumedClientMutationIds"],
+};
+const OPTIONAL_RECEIPT_KEYS_ANY_KIND = ["instanceId"] as const;
+
+const KNOWN_RECEIPT_KEYS: ReadonlySet<string> = new Set([
+  ...Object.values(REQUIRED_RECEIPT_KEYS_BY_KIND).flat(),
+  ...Object.values(OPTIONAL_RECEIPT_KEYS_BY_KIND).flat(),
+  ...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
+]);
+
+function decodedReceipt(
+  raw: unknown,
+  expectedKeys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const receipt = requireObject(raw, label);
+  const expected = new Set(expectedKeys);
+  for (const key of Object.keys(receipt)) {
+    if (!expected.has(key) && KNOWN_RECEIPT_KEYS.has(key)) {
+      throw new Error(`ConversationService: ${label} has unexpected keys`);
+    }
+  }
+  for (const key of expected) {
+    if (!Object.hasOwn(receipt, key)) {
+      throw new Error(`ConversationService: ${label} is missing ${key}`);
+    }
+  }
+  return receipt;
 }
 
 function decodeMutationResult(
@@ -345,35 +417,28 @@ function decodeMutationResult(
     nonemptyString((turn as Record<string, unknown>).id, "send turn id");
   }
 
-  const requiredReceiptKeys = [
-    "clientMutationId",
-    "disposition",
-    "threadId",
-    "projectionState",
-  ];
-  if (
-    kind === "send" ||
-    kind === "steer" ||
-    kind === "drain" ||
-    kind === "interrupt"
-  )
-    requiredReceiptKeys.push("turnId");
-  if (kind === "queue" || kind === "cancel")
-    requiredReceiptKeys.push("queueEntryIds");
+  const receiptObject =
+    result.receipt !== null && typeof result.receipt === "object"
+      ? (result.receipt as Record<string, unknown>)
+      : null;
+  const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
+  for (const key of [
+    ...(OPTIONAL_RECEIPT_KEYS_BY_KIND[kind] ?? []),
+    ...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
+  ]) {
+    if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
+      requiredReceiptKeys.push(key);
+    }
+  }
   const hasDrainedEntries =
     kind === "drain" &&
-    result.receipt !== null &&
-    typeof result.receipt === "object" &&
-    "queueEntryIds" in result.receipt;
-  if (hasDrainedEntries) requiredReceiptKeys.push("queueEntryIds");
-  if (
-    result.receipt !== null &&
-    typeof result.receipt === "object" &&
-    "instanceId" in result.receipt
-  ) {
-    requiredReceiptKeys.push("instanceId");
-  }
-  const receipt = exactObject(
+    receiptObject !== null &&
+    Object.hasOwn(receiptObject, "queueEntryIds");
+  const hasConsumedClientMutationIds =
+    kind === "drain" &&
+    receiptObject !== null &&
+    Object.hasOwn(receiptObject, "consumedClientMutationIds");
+  const receipt = decodedReceipt(
     result.receipt,
     requiredReceiptKeys,
     `${kind} receipt`,
@@ -403,7 +468,7 @@ function decodeMutationResult(
       `${kind} projection state`,
     ),
   };
-  if ("instanceId" in receipt) {
+  if (Object.hasOwn(receipt, "instanceId")) {
     if (receipt.instanceId !== expectedInstanceId) {
       throw new Error(`ConversationService: ${kind} receipt instance mismatch`);
     }
@@ -429,6 +494,19 @@ function decodeMutationResult(
       );
     }
     decoded.queueEntryIds = [...ids];
+  }
+  if (hasConsumedClientMutationIds) {
+    const consumed = receipt.consumedClientMutationIds;
+    if (
+      !Array.isArray(consumed) ||
+      consumed.length === 0 ||
+      consumed.some((id) => typeof id !== "string" || id.trim() === "")
+    ) {
+      throw new Error(
+        `ConversationService: ${kind} receipt consumed client mutation ids are invalid`,
+      );
+    }
+    decoded.consumedClientMutationIds = [...consumed];
   }
   return decoded;
 }

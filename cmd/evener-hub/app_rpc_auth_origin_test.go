@@ -15,7 +15,9 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,12 +57,12 @@ func newAuthOriginTestClient(t *testing.T) *appwire.Client {
 	return client
 }
 
-// waitForAuthUpdated reads notifications until evener/auth/updated arrives and
-// decodes its params. The hub is free to emit other notifications, so anything
-// else is skipped and named in the failure message rather than mistaken for the
-// broadcast under test; a mutation that broadcasts nothing at all still fails
-// here on the timeout.
-func waitForAuthUpdated(t *testing.T, client *appwire.Client) appwire.EvenerAuthUpdatedParams {
+// waitForAuthUpdatedRaw reads notifications until evener/auth/updated arrives
+// and returns its raw params. The hub is free to emit other notifications, so
+// anything else is skipped and named in the failure message rather than
+// mistaken for the broadcast under test; a mutation that broadcasts nothing
+// at all still fails here on the timeout.
+func waitForAuthUpdatedRaw(t *testing.T, client *appwire.Client) json.RawMessage {
 	t.Helper()
 	var skipped []string
 	timeout := time.After(2 * time.Second)
@@ -74,18 +76,26 @@ func waitForAuthUpdated(t *testing.T, client *appwire.Client) appwire.EvenerAuth
 				skipped = append(skipped, got.Method)
 				continue
 			}
-			var params appwire.EvenerAuthUpdatedParams
-			if err := json.Unmarshal(got.Params, &params); err != nil {
-				t.Fatalf("decode %s params %s: %v", got.Method, got.Params, err)
-			}
 			if len(skipped) > 0 {
 				t.Logf("skipped %v while waiting for %s", skipped, appwire.NotifyEvenerAuthUpdated)
 			}
-			return params
+			return got.Params
 		case <-timeout:
 			t.Fatalf("timed out waiting for an %s broadcast after the auth mutation (saw: %v)", appwire.NotifyEvenerAuthUpdated, skipped)
 		}
 	}
+}
+
+// waitForAuthUpdated is waitForAuthUpdatedRaw plus decoding, for a caller that
+// wants the typed params rather than the raw bytes.
+func waitForAuthUpdated(t *testing.T, client *appwire.Client) appwire.EvenerAuthUpdatedParams {
+	t.Helper()
+	raw := waitForAuthUpdatedRaw(t, client)
+	var params appwire.EvenerAuthUpdatedParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatalf("decode %s params %s: %v", appwire.NotifyEvenerAuthUpdated, raw, err)
+	}
+	return params
 }
 
 // TestAuthApiKeySetBroadcastEchoesOriginClientId drives evener/auth/apiKey/set
@@ -109,6 +119,45 @@ func TestAuthApiKeySetBroadcastEchoesOriginClientId(t *testing.T) {
 	if params.OriginClientId != "tab-a" {
 		t.Errorf("%s params=%+v: originClientId=%q, want %q (the caller's own id echoed back)",
 			appwire.NotifyEvenerAuthUpdated, params, params.OriginClientId, "tab-a")
+	}
+}
+
+// TestAuthLoginCompleteFailedStatusReadBroadcastsNoData drives
+// evener/auth/loginComplete through the registered handler with
+// authLoginComplete stubbed to the exact shape statusAfterWrite produces when
+// its OAuth record write applied but the status read after it failed: Status
+// carries the read's own zero-value fallback (Provider named, ActiveSource
+// never actually read), wrapped in writeApplied. The broadcast that follows
+// must be the no-data form - no provider or activeSource key at all - never
+// the fabricated pair of a real provider beside an empty activeSource a
+// naive writeDidApply(err) gate would announce as fact. It sends its own
+// OriginClientId and requires that it is NOT echoed: an id-bearing
+// provider-less broadcast would be indistinguishable from a provider-instance
+// echo, so it could consume an instance mutation's marker and turn that
+// mutation's own echo foreign.
+func TestAuthLoginCompleteFailedStatusReadBroadcastsNoData(t *testing.T) {
+	client := newAuthOriginTestClient(t)
+
+	original := authLoginComplete
+	t.Cleanup(func() { authLoginComplete = original })
+	wantFailure := errors.New("the status could not be read")
+	authLoginComplete = func(*hubAuthController, context.Context, appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+		return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "anthropic"}}, writeApplied(wantFailure)
+	}
+
+	var resp appwire.AuthLoginCompleteResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerAuthLoginComplete,
+		appwire.AuthLoginCompleteParams{Provider: "anthropic", OriginClientId: "tab-a"}, &resp)
+	if err == nil {
+		t.Fatal("evener/auth/loginComplete = nil, want the failed status read reported")
+	}
+
+	raw := waitForAuthUpdatedRaw(t, client)
+	if strings.Contains(string(raw), "provider") || strings.Contains(string(raw), "activeSource") {
+		t.Fatalf("broadcast params = %s, want the no-data form (neither key present): a failed status read must never announce a fabricated activeSource", raw)
+	}
+	if strings.Contains(string(raw), "originClientId") {
+		t.Fatalf("broadcast params = %s, want no originClientId: the no-data form must not be attributable as a provider-instance echo", raw)
 	}
 }
 

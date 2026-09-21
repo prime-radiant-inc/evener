@@ -65,7 +65,6 @@ describe("createCommandCatalog", () => {
 
     await a.getState().refresh();
     expect(a.getState().commands.map((c) => c.name)).toEqual(["one"]);
-    expect(a.getState().loaded).toBe(true);
     expect(b.getState()).toBe(b.getInitialState());
     expect(second.requests).toEqual([]);
 
@@ -90,7 +89,7 @@ describe("createCommandCatalog", () => {
     const listener = vi.fn();
     catalog.subscribe(listener);
     await catalog.getState().refresh();
-    expect(catalog.getState()).toMatchObject({ loaded: true, loading: false, error: null });
+    expect(catalog.getState()).toMatchObject({ loading: false, error: null });
     expect(catalog.getState().commands).toHaveLength(1);
 
     io.read = async () => {
@@ -98,7 +97,6 @@ describe("createCommandCatalog", () => {
     };
     await catalog.getState().refresh();
     expect(catalog.getState().commands).toHaveLength(1);
-    expect(catalog.getState().loaded).toBe(true);
     expect(catalog.getState().error).toContain("down");
     expect(listener.mock.calls.some(([state]) => state.loading)).toBe(true);
     expect(catalog.getState().loading).toBe(false);
@@ -129,6 +127,19 @@ describe("createCommandCatalog", () => {
     await pending;
     expect(requests).toHaveLength(2);
     expect(catalog.getState().commands.map((c) => c.name)).toEqual(["fresh"]);
+  });
+
+  test("an empty successful read still counts as loaded, so a plugin change re-reads it", async () => {
+    const { client, requests, notify } = boundary([]);
+    const catalog = createCommandCatalog(client);
+    catalog.watch();
+    await catalog.getState().refresh();
+    expect(catalog.getState().commands).toEqual([]);
+
+    // A length/emptiness gate would treat this authoritative-empty catalog as
+    // unread and never re-read it; the arrived-catalog gate must not.
+    notify(PLUGIN_UPDATED);
+    await vi.waitFor(() => expect(requests.filter((r) => r.method === "evener/command/list")).toHaveLength(2));
   });
 });
 

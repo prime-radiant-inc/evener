@@ -27,16 +27,28 @@
 // carries no clientMutationId, no targetRef, no payload, no sequence and no
 // persisted state, so nothing here aliases it; D25d is where native gains
 // records and this class is what notices them.
+import type { AppwireClientLike } from "../../clientLike";
 import type {
   MutationAttachmentRef,
   MutationIntent,
   MutationOptimisticRecord,
   MutationOutboxRecord,
-  MutationOutboxState,
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
 import { tryOrUndefined } from "./secureUUID";
+
+// The one readiness notion this subpath owns, shared by the outbox's discovery
+// gate and the dispatcher's per-ref loop. A host answers for a target ref, or
+// ref-less for "the runtime's current client" — the same call it wires into
+// both halves, so the two can no longer be derived from facts that drift.
+export type MutationClientLookup = (targetRef?: string) => AppwireClientLike | null | undefined;
+
+// What "ready" means for both: a live client whose state is "ready". A
+// missing client (no connection, a retired runtime) is never ready.
+export function isClientReady(client: AppwireClientLike | null | undefined): client is AppwireClientLike {
+  return client?.state === "ready";
+}
 
 // Why discovery ran, carried through to the consumer so a scan can be
 // explained (and, in tests, asserted) rather than guessed at.
@@ -50,18 +62,47 @@ export type MutationDiscoveryReason =
   | "visibility"
   | "interval";
 
+// The click-time half of a host's durable stop barrier: the ref's durable
+// stop epoch as the submitting click observed it. A host whose Stop cancels
+// rows durably bumps that epoch in the same transaction, and passes this
+// capture to the enqueue so a Stop landing while the submission was in
+// flight - after the click, before the commit - makes the record commit
+// already canceled instead of live. The comparison is commit-order, not
+// click-order: a Stop whose durable write lands after a later send's capture
+// still cancels that send, which is the conservative, retryable direction.
+export interface MutationStopBarrier {
+  stopEpoch: number;
+}
+
 // The storage this layer needs, as an interface rather than a class: the web's
 // MutationOutboxIndexedDB implements it and stays where it is (it is IndexedDB
-// through and through), and another host implements the same 13 calls over
-// whatever it has. Two of them are this class's own (enqueueIntent,
-// listTargetRefs); the rest are what the dispatcher calls, declared here so
-// one port describes the contract rather than two halves of it.
+// through and through), and another host implements the same 14 calls over
+// whatever it has. Three of them are this class's own (enqueueIntent,
+// enqueueInterruptAndCancel, listTargetRefs); the rest are what the dispatcher
+// calls, declared here so one port describes the contract rather than two
+// halves of it.
 //
 // Every method is async because durable storage is: a host with a synchronous
 // store returns resolved promises.
 export interface MutationOutboxStorage<A extends MutationAttachmentRef = MutationAttachmentRef> {
   // --- used by MutationOutbox ---
-  enqueueIntent(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
+  // The optional barrier is the host's click-time stop-epoch capture (see
+  // MutationStopBarrier): a storage that honors it commits the record
+  // canceled when a Stop landed between the capture and this transaction.
+  //
+  // The generated clientMutationId must be unique across ALL THREE active
+  // stores (outbox, optimistic, recovery), not merely within the outbox: a
+  // record that has already moved on to optimistic or recovery still owns its
+  // id, and a second active record holding it would let a settlement keyed on
+  // the id overwrite or discard that older one. An enqueue that collides with
+  // any of the three rejects in the same transaction - rolling the record's
+  // sequence allocation back with it - and never silently regenerates the id
+  // unless a host deliberately chooses that policy.
+  enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>>;
+  // Stop's combined durable write: cancel the ref's non-attempted rows and
+  // enqueue the interrupt record in one transaction — both or neither.
+  // The generated id obeys enqueueIntent's cross-store uniqueness invariant.
+  enqueueInterruptAndCancel(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
   // Every ref with a record still waiting, for a full scan.
   listTargetRefs(): Promise<string[]>;
   // --- used by the dispatcher ---
@@ -72,9 +113,14 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // The next record for one ref that is still waiting to be dispatched.
   nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined>;
   markAttempted(clientMutationId: string): Promise<boolean>;
+  // The state an uncertain-outcome write may move a record to is exactly
+  // "blockedUnknown" - the literal type is deliberate, so the type system
+  // rejects asking this method for any other state. "canceled" especially is
+  // the user's durable decision (only an explicit user Retry releases it), and
+  // "submitting" is the settle/reopen paths' verdict, never this one's.
   markUnknown(
     clientMutationId: string,
-    state: MutationOutboxState,
+    state: "blockedUnknown",
     options?: { onlyAttempted: boolean },
   ): Promise<boolean>;
   settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean>;
@@ -115,9 +161,10 @@ export interface MutationVisibilityTarget extends MutationLifecycleTarget {
 }
 
 export interface MutationOutboxOptions {
-  // Whether dispatching is possible at all right now (a live connection, this
-  // runtime still current). Discovery announces nothing while it is false.
-  isReady: () => boolean;
+  // The same client lookup the dispatcher takes. Asked ref-less, it answers
+  // with the runtime's current client, and discovery announces nothing unless
+  // that client is ready (a live connection, this runtime still current).
+  getClient: MutationClientLookup;
   onDiscover: (targetRefs: string[], reason: MutationDiscoveryReason) => void | Promise<void>;
   createBroadcastChannel?: (name: string) => MutationOutboxChannel;
   lifecycleWindow?: MutationLifecycleTarget;
@@ -148,7 +195,7 @@ function isMutationOutboxWakeup(value: unknown): value is MutationOutboxWakeup {
 // outcomes are the only callers allowed to settle or reclassify them.
 export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachmentRef> {
   readonly #storage: MutationOutboxStorage<A>;
-  readonly #isReady: () => boolean;
+  readonly #getClient: MutationClientLookup;
   readonly #onDiscover: MutationOutboxOptions["onDiscover"];
   readonly #createChannel: ((name: string) => MutationOutboxChannel) | undefined;
   readonly #lifecycleTarget: MutationLifecycleTarget | undefined;
@@ -181,7 +228,7 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
 
   constructor(storage: MutationOutboxStorage<A>, options: MutationOutboxOptions) {
     this.#storage = storage;
-    this.#isReady = options.isReady;
+    this.#getClient = options.getClient;
     this.#onDiscover = options.onDiscover;
     this.#createChannel = options.createBroadcastChannel;
     this.#lifecycleTarget = options.lifecycleWindow;
@@ -222,8 +269,25 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   async enqueueIntent(
     intent: MutationIntent<A>,
     onCommitted?: (record: MutationOutboxRecord<A>) => void,
+    barrier?: MutationStopBarrier,
   ): Promise<MutationOutboxRecord<A>> {
-    const record = await this.#storage.enqueueIntent(intent);
+    const record = await this.#storage.enqueueIntent(intent, barrier);
+    this.#announceCommit(record, onCommitted);
+    return record;
+  }
+
+  // The same announce-and-discover tail as enqueueIntent, over the storage's
+  // combined Stop write: cancellation and the interrupt record commit together.
+  async enqueueInterruptAndCancel(
+    intent: MutationIntent<A>,
+    onCommitted?: (record: MutationOutboxRecord<A>) => void,
+  ): Promise<MutationOutboxRecord<A>> {
+    const record = await this.#storage.enqueueInterruptAndCancel(intent);
+    this.#announceCommit(record, onCommitted);
+    return record;
+  }
+
+  #announceCommit(record: MutationOutboxRecord<A>, onCommitted?: (record: MutationOutboxRecord<A>) => void): void {
     onCommitted?.(record);
     // The commit owns the message. Lifecycle scans also discover it if a
     // closing client cannot broadcast; that cannot turn acceptance into failure.
@@ -234,7 +298,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
       } satisfies MutationOutboxWakeup),
     );
     if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
-    return record;
   }
 
   async connectionReady(): Promise<void> {
@@ -261,6 +324,13 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   #mayDiscover(reason: MutationDiscoveryReason): boolean {
     if (reason === "enqueue") return true;
     return this.#started && (reason === "startup" || this.#isReady());
+  }
+
+  // Whether dispatching is possible at all right now, read off the one client
+  // lookup rather than a flag a host could wire independently of the
+  // dispatcher's per-ref readiness.
+  #isReady(): boolean {
+    return isClientReady(this.#getClient());
   }
 
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {

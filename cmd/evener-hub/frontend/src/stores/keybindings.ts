@@ -10,22 +10,21 @@
 import {
   type AppwireClientLike,
   createKeybindingsStore,
-  type KeybindingsClient,
   type KeybindingsStoreState,
   keybindingsSupport,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 
 export type { KeybindingsStoreState };
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) throw new Error("keybindings store: no client connected");
-  return client;
-}
+// This store's own guard: transcriptDisplay.ts wires the same connectionStore
+// client through its own instance, so the two never contend over one shared
+// registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 
 // The client port resolves connectionStore's CURRENT client on every call.
 // Two ordering contracts make the singleton behave like one store per
@@ -35,10 +34,7 @@ function requireClient(): AppwireClientLike {
 // so each subscription lands on the client that generation belongs to; and
 // onConnectionChange publishes support BEFORE rewiring, so the refresh a
 // rewire kicks reads the connection's current feature set.
-const connectedClient: KeybindingsClient = {
-  request: async (method, params, opts) => requireClient().request(method, params, opts),
-  onNotification: (cb) => requireClient().onNotification(cb),
-};
+const connectedClient = connectedClientPort("keybindings");
 
 export const keybindingsStore = createKeybindingsStore({
   client: connectedClient,
@@ -62,7 +58,7 @@ function rewireClient(client: AppwireClientLike): void {
   // The loaded state belongs to the PREVIOUS hub: un-apply its overrides and
   // reset its payload before this client's first refresh can land.
   keybindingsStore.detachHub();
-  unwireReady = client.onReady(beginReadyGeneration);
+  unwireReady = client.onReady(readyGenerationCallback(client, () => wiredClient, beginReadyGeneration));
   if (client.state === "ready") beginReadyGeneration();
 }
 

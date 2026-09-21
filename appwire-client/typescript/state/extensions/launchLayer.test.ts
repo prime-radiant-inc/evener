@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { deferRequest, FakeClient, failing, gateFailures } from "../../testing/fakeClient";
+import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { LaunchConfigLayer } from "../../types.gen";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS } from "./launchLayer";
 
@@ -127,16 +127,16 @@ describe("layer ordering", () => {
 
   test("a failed read that lands after a newer write posts no error over it", async () => {
     const { fake, store } = storeWithFake();
-    const readFailures = gateFailures(fake, GET);
+    const readSettlements = gateSettlements(fake, GET);
     const reading = store.getState().fetchLaunchLayer();
     await Promise.resolve();
 
     fake.on(SET, () => ({ effective: {}, layers: {}, provenance: {} }));
     await store.getState().setLaunchLayer({ pluginDirs: ["/written"] });
 
-    const failRead = readFailures[0];
+    const failRead = readSettlements[0];
     if (!failRead) throw new Error("the read must be in flight");
-    failRead(new Error("boom"));
+    failRead.reject(new Error("boom"));
     await reading;
     expect(store.getState().launchLayerError).toBeNull();
     expect(store.getState().launchLayer).toEqual({ pluginDirs: ["/written"] });

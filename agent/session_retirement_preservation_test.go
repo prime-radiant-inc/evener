@@ -455,6 +455,10 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 // close commits the Released tombstone, so an aged required directory is
 // collected by the ordinary startup sweep, while an unreleased run is not.
 func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
+	// The startup sweep also visits every world-usable host temp base a session temp
+	// container may live in. This test asserts exact collection outcomes, so it must
+	// not reach the machine's real /tmp.
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
@@ -1366,6 +1370,10 @@ func sharedChildRealMintOnRestored(t *testing.T, env *execenv.LocalExecutionEnvi
 // reference, and R and C share E0/B again; then it retires, ages, sweeps and
 // restores once more. Sandbox and unsandboxed cases both run.
 func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
+	// Same confinement as TestScratchRetentionTerminalReleaseAllowsCollection: the
+	// startup sweep visits the world-usable container bases too, and this test
+	// asserts exact collection and restore outcomes.
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
 	for _, tc := range []struct {
 		name      string
 		sandboxed bool

@@ -86,13 +86,7 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 // the history being escaped, not the transcript's (see the caller's shift), so a
 // compacted fork keeps its own turns' provenance.
 func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) []schema.Turn {
-	inherited := divergenceTurn - 1
-	if inherited <= 0 {
-		return escapeNotesHistoryTurns(history, origins)
-	}
-	if inherited >= len(history) {
-		return escapeNotesHistoryTurns(history, nil)
-	}
+	inherited := steeringOriginBoundary(divergenceTurn, len(history))
 	out := escapeNotesHistoryTurns(history[:inherited], nil)
 	return append(out, escapeNotesHistoryTurns(history[inherited:], origins)...)
 }
@@ -905,17 +899,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// bound shifts by where the retained history begins.
 	divergenceTurn := meta.DivergenceTurn
 	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
-		divergenceTurn -= retainedFrom(transcriptEntries)
-		// Repair splices a synthetic result wherever an orphaned tool call was,
-		// so every insertion at or before the boundary shifts it right by one:
-		// the synthetic completes the call it repairs, which sits inside the
-		// inherited prefix (history_repair.go shifts the in-flight boundary the
-		// same way).
-		for _, idx := range repairInsertions {
-			if idx <= divergenceTurn-1 {
-				divergenceTurn++
-			}
-		}
+		// The resumed history starts at the retained window, and repair
+		// insertions before the fork boundary shift it right by one each
+		// (mapDivergenceThroughResumedHistory carries the mechanism).
+		divergenceTurn = mapDivergenceThroughResumedHistory(divergenceTurn, retainedFrom(transcriptEntries), repairInsertions)
 	}
 	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
@@ -1424,8 +1411,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// last in with nothing else pending, rests awaiting (spec §6, generalized
 	// by attention-status-model v5's resume rule; deriveRestoredState's own
 	// doc comment has the full walk). NewSession never runs this scan — a
-	// fresh session always starts idle.
-	restoredState := deriveRestoredState(s.history)
+	// fresh session always starts idle. steeringOrigins() gives the boundary
+	// its durable steering provenance, so a kindless legacy human-note turn
+	// is still read as a note rather than an answering steer.
+	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
+	// and still in the same units s.history uses since escaping never
+	// changes its length) scopes the provenance to this session's own turns
+	// alone, so a forked child's inherited prefix is never decided by a
+	// reused client mutation id in the child's OWN journal.
+	steeringProvenance := s.clientMutations.steeringOrigins()
+	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
 	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
 	// spec §2): deriveRestoredState alone only re-derives that the session
 	// rests awaiting, but every hold keyed on askPending itself — the entry
@@ -1434,7 +1429,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// isAskRound distinguishes "nothing was pending" from "an ask was pending
 	// but none of its arguments parsed"; only the latter warrants a warning,
 	// and neither may ever fail the restore.
-	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history)
+	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
 		s.emit(events.EventWarning, events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
@@ -1463,7 +1458,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// effects are all in place: an agent-last transcript with no autonomy in
 	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState()
+		s.recomputeRestoredState(divergenceTurn)
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
 		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
 		// would expose them to another session's P3 residue sweep. This is a

@@ -804,6 +804,47 @@ func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMe
 	return scanSemanticTranscriptContext(context.Background(), path, maxLineBytes, visit)
 }
 
+// narrowScan is the one read loop behind the full-transcript derived scans
+// (usage total, failure count, and their combined pass): walk the transcript
+// once, decode each entry into T with decode, and hand it and its 1-based
+// ordinal to visit. Entries before skipBefore are not decoded at all, so a
+// scan that only counts from the divergence cut pays nothing for the inherited
+// prefix; pass 1 to see every entry. It reuses scanSemanticTranscript, so the
+// format gate (v1 rejection, unknown-field strictness, header validation) is
+// exactly the one every other reader in this package applies.
+func narrowScan[T any](path string, maxLineBytes, skipBefore int, decode func(json.RawMessage) (T, error), visit func(T, int) error) error {
+	ordinal := 0
+	_, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
+		ordinal++
+		if ordinal < skipBefore {
+			return nil
+		}
+		record, err := decode(raw)
+		if err != nil {
+			return err
+		}
+		return visit(record, ordinal)
+	})
+	return err
+}
+
+// decodeNarrowEntry builds the per-line decode for one derived scan's narrow
+// entry view. scanSemanticTranscript has already strictly decoded the whole
+// entry into transcript.Entry, of which this is a field-for-field subset, so a
+// failure here is unreachable for any line it admits: it means the view has
+// drifted from schema.Turn, and skipping the record would silently undercount.
+// Reporting a wrong figure is worse than reporting none, so surface it — label
+// names the view so the error stays diagnosable.
+func decodeNarrowEntry[T any](label string) func(json.RawMessage) (T, error) {
+	return func(raw json.RawMessage) (T, error) {
+		var record T
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return record, fmt.Errorf("decode transcript entry %s: %w", label, err)
+		}
+		return record, nil
+	}
+}
+
 func scanSemanticTranscriptContext(ctx context.Context, path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
 	if err := ctx.Err(); err != nil {
 		return transcript.Header{}, err

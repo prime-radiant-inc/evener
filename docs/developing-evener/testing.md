@@ -183,9 +183,10 @@ assumptions.
 
 ### `scripts/web/web-preflight.sh`
 
-A setup prerequisite for the web, build, and browser gates rather than a gate
-in its own right: `make web-preflight` runs it directly, and `make build-web`,
-`make test-web` and `make test-web-browser` all reach it.
+A setup prerequisite for the web, build, browser, and lint gates rather than a
+gate in its own right: `make web-preflight` runs it directly, and `make
+build-web`, `make test-web`, `make test-web-browser`, and `make lint` (through
+`lint-biome`) all reach it.
 
 What it proves, what it may run, and how it fails live in the `make
 web-preflight` row of [building.md's target table](building.md#targets).
@@ -234,6 +235,21 @@ skip or a limitation, never as a pass. What each suite covers is described in
 [MCP Server E2E](#mcp-server-e2e), [OpenAI Codex Backend
 E2E](#openai-codex-backend-e2e), and [Anthropic Messages API
 E2E](#anthropic-messages-api-e2e) below.
+
+### `EVENER_TMPDIR_PRIVDROP_E2E=1` — a host privilege-drop check
+
+Not a provider suite. It proves that a child which becomes another uid can create
+temp files in the session temp container `TMPDIR` names, the field failure
+behind #495: a private `0700` scratch exported as `TMPDIR` is unwritable for such
+a child. It needs a real world-usable host temp, the external `mktemp`, and a
+`sudo` that may drop to `nobody`, so it is an explicit opt-in and never runs in
+default CI. Without the opt-in the property is still covered deterministically —
+the container and leaf mode assertions in `agent/sandbox` and `agent/execenv` are
+the mechanism the kernel uses for a foreign user.
+
+~~~sh
+EVENER_TMPDIR_PRIVDROP_E2E=1 go test ./agent/sandbox -run TestSessionTmpPrivilegeDropE2E -count=1 -v
+~~~
 
 ### Live service coverage and host sandbox parity
 
@@ -912,10 +928,22 @@ overridable (kata av1j): the lock, the run dir, the state root, and the auth
 token all derive from `cmdutil.DefaultStateRoot()` (XDG_STATE_HOME, else
 `os.UserHomeDir()`), so they only stay coherent when they move **together**.
 The blessed way to run a second, disposable hub — an e2e harness, a scratch
-verification hub — is a fresh HOME:
+verification hub — is a fresh HOME **plus** clearing every variable that can
+redirect evener away from it. Both halves matter: `HOME=$(mktemp -d)` alone
+moves nothing when `XDG_STATE_HOME` is exported (`DefaultStateRoot` prefers it
+over `$HOME`), so the "disposable" hub silently claims the real
+`$XDG_STATE_HOME/evener`; and `EVENER_PROVIDERS_CONFIG`/`EVENER_CREDENTIALS_CONFIG`
+outrank `$HOME/.config/evener`, so a stub `providers.toml` in the throwaway
+HOME is overridden and the daemon calls the real provider. The recipe below
+routes through `e2e_isolate_home` — the same helper the e2e harnesses use — so
+it cannot drift from that list:
 
-```sh
-HOME=$(mktemp -d) ./evener hub -addr 127.0.0.1:0 -evener ./evener
+```bash
+set -euo pipefail
+run_dir=$(mktemp -d "${TMPDIR:-/tmp}/evener-disposable-hub.XXXXXX")
+. scripts/lib/e2e-lib.sh
+e2e_isolate_home "$run_dir"
+./evener hub -addr 127.0.0.1:0 -evener ./evener
 ```
 
 Never point a test hub at the real HOME "just for a quick check": if the

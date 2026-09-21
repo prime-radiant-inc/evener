@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,8 +20,10 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
@@ -564,6 +568,31 @@ func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.P
 		t.Fatalf("pastEntryThread: %v", err)
 	}
 	return thread
+}
+
+// TestPastEntryThreadStampsInstanceID pins the past-session read's
+// EvenerThread.InstanceID. A session with no live daemon has no instance of its
+// own, so the read must fall back to the thread id exactly as the daemon-backed
+// read does (firstLocalNonEmpty(entry.InstanceID, threadID)). Both frontends key
+// fork and queue affordances on instanceId, and the hub advertises forkFromTurn
+// on these sessions, so the forkable past session a client trusts on the wire
+// must carry one rather than read as undefined.
+func TestPastEntryThreadStampsInstanceID(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, nil)
+	entry, ok := cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
+	if err != nil {
+		t.Fatalf("pastEntryThread: %v", err)
+	}
+	if thread.Evener.InstanceID != sessionID {
+		t.Fatalf("instanceId = %q, want the thread id fallback %q", thread.Evener.InstanceID, sessionID)
+	}
+	if thread.Evener.AskPending {
+		t.Fatalf("askPending = true for a past session with no live ask")
+	}
 }
 
 func TestThreadReadDoesNotReconcileStableDelegateFromActivationJob(t *testing.T) {
@@ -1147,9 +1176,10 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 // local thread advertises exactly the capabilities that actually succeed once
 // qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
 // (compact, clear, change model, shutdown) plus the always-available ones
-// (send, fork, goal, rename) are true; the turn-in-flight controls (steer,
-// interrupt, queue) are false because a cold exited session has no active turn
-// for them to act on.
+// (send, fork, goal, rename) are true; steer, interrupt and queue are false
+// because the hub cannot carry them out for a thread with no daemon — it
+// resumes on send alone, so a cold set advertising them would promise a turn
+// action nothing is there to take.
 func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -1215,7 +1245,7 @@ func TestMergePastThreadForReadDoesNotReadSavedTurnsWhenLiveWindowPresent(t *tes
 		ID:        entry.Meta.ID,
 		SessionID: entry.Meta.ID,
 		Turns:     liveTurns,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("merge live window with unreadable saved transcript: %v", err)
 	}
@@ -1234,7 +1264,7 @@ func TestMergePastThreadForReadUsesSavedTurnsWhenLiveResponseHasNone(t *testing.
 		t.Fatal("past thread not found")
 	}
 
-	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
+	got, err := mergePastThreadForRead(context.Background(), cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1682,5 +1712,76 @@ func TestDiscoverPastThreadSkillsCarriesPluginDiagnostics(t *testing.T) {
 	}
 	if !unreadable {
 		t.Fatalf("plugin unreadable-source diagnostic dropped: %+v", catalog.Diagnostics)
+	}
+}
+
+// TestThreadReadPastSessionSkipsFullTurnProjection pins the click path's cost
+// contract: a thread/read for a past session (a local daemon that does not own
+// the session answers empty) must serve turns from the windowed past item page
+// WITHOUT computing the full-transcript turns projection first. The full
+// projection costs O(transcript size) on every click and the handler discards
+// its turns in favor of the windowed page, so asking for them at all is pure
+// per-click waste on delegate-heavy or long sessions.
+func TestThreadReadPastSessionSkipsFullTurnProjection(t *testing.T) {
+	cfg, entry := seedPastItemPagingThread(t)
+	ref := "local:" + entry.Meta.ID
+
+	// A local daemon that does not own the session answers with an empty
+	// thread, exactly what the real daemon's snapshot does for a past session.
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{}, nil
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer upstream.Close()
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			SourceID: "local", ThreadID: entry.Meta.ID, SessionID: entry.Meta.ID,
+			WorkspaceRef: ref, Endpoint: upstream.URL, Protocol: appwire.ProtocolVersion,
+		}}}
+	}, http.DefaultClient)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(cfg, sources)
+
+	projection := pastEntryTurns
+	projected := 0
+	pastEntryTurns = func(c hubcore.WebConfig, e hubcore.PastEntry) ([]appwire.Turn, error) {
+		projected++
+		return projection(c, e)
+	}
+	t.Cleanup(func() { pastEntryTurns = projection })
+
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref: ref, IncludeTurns: true, ItemsView: "full", ItemLimit: 40,
+	})
+	if err != nil {
+		t.Fatalf("thread/read past session: %v", err)
+	}
+
+	// The windowed page still supplies the full click experience: the same
+	// 34+6 item split pastThreadReadResponse produces, with the merged metadata.
+	items := 0
+	for _, turn := range read.Thread.Turns {
+		items += len(turn.Items)
+	}
+	if items != 40 || len(read.Thread.Turns) != 2 {
+		t.Fatalf("windowed turns = %d turns %d items, want 2 turns 40 items", len(read.Thread.Turns), items)
+	}
+	if read.OlderCursor == "" {
+		t.Fatal("windowed response omitted the older cursor")
+	}
+	if read.Thread.SessionID != entry.Meta.ID || read.Thread.CWD != "/tmp/project" {
+		t.Fatalf("merged metadata missing: sessionID=%q cwd=%q", read.Thread.SessionID, read.Thread.CWD)
+	}
+	if projected != 0 {
+		t.Fatalf("thread/read computed the full past-turn projection %d times, want 0: the windowed page supplies the turns, so the O(transcript) projection is per-click waste", projected)
 	}
 }

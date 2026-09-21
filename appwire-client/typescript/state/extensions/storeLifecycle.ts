@@ -66,11 +66,12 @@
 //   left | the same recovery, for a mutation issued before anything ever read
 //     the list (a fresh screen's first install). `wantsList` alone would miss
 //     it: nothing has set the loading flag or a prior list, so there is no
-//     state field to read the intent off. Each store's own `wantsList` also
-//     asks its listRevision.hasLive() - the seam readRevisioned and
-//     writeRevisioned share (listRevision.ts), true for a write on the wire
-//     exactly as it already is for a read - so the intent is latched here the
-//     same way either way.
+//     state field to read the intent off. A store that hands the lifecycle its
+//     listRevision (the `revision` option) gets that revision's hasLive()
+//     ORed in here - the seam readRevisioned and writeRevisioned share
+//     (listRevision.ts), true for a write on the wire exactly as it already is
+//     for a read - so the intent is latched here the same way either way, and
+//     a new store cannot forget to ask.
 //
 //   the replacement is named before it is dialled | the same thing, in two
 //     calls: a host connects its fresh client and only then awaits it, so the
@@ -95,6 +96,7 @@
 
 import type { AppwireClient, ConnectionState } from "../../client";
 import type { FrameworkFreeStore } from "../../frameworkFreeStore";
+import type { ListRevision } from "./listRevision";
 
 export interface StoreLifecycleOptions<S> {
   /** The notification that says the list changed. */
@@ -107,26 +109,34 @@ export interface StoreLifecycleOptions<S> {
   store(): FrameworkFreeStore<S>;
   /** Refetches the list, once the debounce elapses. */
   refetch(state: S): unknown;
+  /** The store's list revision, when it has one. A write and a read both
+   * issue through it (listRevision.ts), so a live revision is a request
+   * something asked for even when the store's own state shows nothing - the
+   * case in which `wantsList` alone would miss it. The lifecycle ORs its
+   * hasLive() into `wantsList` and fences it with everything else a fence
+   * settles, so neither half can be forgotten by a store that wraps it. */
+  revision?: ListRevision;
   /** Applied synchronously as the notification arrives, ahead of the
    * debounced refetch: what a host may know the moment the hub says the set
    * changed (a revision the host keys derived data on, a cache the change
    * retires). */
   onNotified?(): void;
-  /** Fences whatever else the store has on the wire - its list revision, and
-   * any per-key generation beside it - and settles what the fenced requests
-   * would have answered. Nothing is on the wire once this returns, so a flag a
-   * fenced request raised has nothing left to lower it: the store lowers it
-   * here, through the guarded setter, which drops the write if the store has
-   * been disposed (nobody is listening then). */
+  /** Fences whatever else the store has on the wire - a per-key generation
+   * beside its list revision, which the lifecycle fences itself - and settles
+   * what the fenced requests would have answered. Nothing is on the wire once
+   * this returns, so a flag a fenced request raised has nothing left to lower
+   * it: the store lowers it here, through the guarded setter, which drops the
+   * write if the store has been disposed (nobody is listening then). */
   onFence?(set: FrameworkFreeStore<S>["setState"]): void;
-  /** Whether the store wants this list at all: it has one, a read failed and
-   * left its error, a read is in flight, or a list-producing write is (a
-   * mutation issued before anything ever read the list touches none of the
-   * state fields above, so an implementation also asks its own
-   * listRevision.hasLive()). Only a list something has asked for is
-   * recovered on reconnect - a store whose host never asked must not start
-   * asking on its own - and asking counts from the moment the request goes
-   * out, not from when it lands. */
+  /** State fields that survive reset without becoming a new publication. */
+  resetState?(state: S): Partial<S>;
+  /** Whether the store's OWN state wants this list: it has one, a read failed
+   * and left its error, or a read is in flight. A list-producing write issued
+   * before anything ever read the list touches none of those fields; that
+   * intent comes from `revision` above, which the lifecycle ORs in. Only a
+   * list something has asked for is recovered on reconnect - a store whose
+   * host never asked must not start asking on its own - and asking counts
+   * from the moment the request goes out, not from when it lands. */
   wantsList(state: S): boolean;
 }
 
@@ -136,8 +146,9 @@ export interface StoreLifecycle<S> {
   /** Subscribes to the notification. Idempotent, and refused after
    * dispose(). */
   start(): void;
-  /** Back to the initial state; requests still in flight publish nothing when
-   * they land. The notification subscription, if started, stays. */
+  /** Back to the reset state; fields selected by resetState may survive while
+   * requests still in flight publish nothing when they land. The notification
+   * subscription, if started, stays. */
   reset(): void;
   /** Tells the lifecycle which connection the list belongs to now, and what
    * state it is in - the host calls it for every transition its connection
@@ -184,6 +195,7 @@ export function createStoreLifecycle<S>(
   let guardedSet: FrameworkFreeStore<S>["setState"] | undefined;
 
   function fenceInFlight(): void {
+    options.revision?.fence();
     if (guardedSet) options.onFence?.(guardedSet);
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
@@ -234,7 +246,7 @@ export function createStoreLifecycle<S>(
       wanted = false;
       fenceInFlight();
       const store = options.store();
-      store.setState(store.getInitialState());
+      store.setState({ ...store.getInitialState(), ...options.resetState?.(store.getState()) });
     },
     connectionChanged(client, state) {
       const previous = connection;
@@ -252,7 +264,7 @@ export function createStoreLifecycle<S>(
       // than used here and forgotten: a host names its fresh client before it
       // dials it, so the call that sees the interrupted read is usually NOT
       // the call that can re-issue it.
-      wanted = wanted || options.wantsList(options.store().getState());
+      wanted = wanted || options.wantsList(options.store().getState()) || (options.revision?.hasLive() ?? false);
       connection = { client, state };
       // A read scheduled on the connection that is changing has nothing left
       // to say: on the way down it would fire against a socket that is gone

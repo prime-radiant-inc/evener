@@ -420,38 +420,52 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// the WebServer below, after the SSH manager, and it is only ever invoked
 	// once the background loops start attaching hosts.
 	var hostAttachedWakeup func(host string)
+	// hostManageEvents is late-bound the same way: the host-management
+	// controller is constructed with the WebServer below, after the SSH
+	// manager, and its event recorder is only ever invoked once the
+	// background loops start attaching hosts.
+	var hostManageEvents func(sshconn.Event)
 	sshManager := sshconn.New(hostRegistry, sshconn.Options{
 		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		OnEvent: hubSSHStateInvalidation(
-			func() {
-				if sshStateInvalidatedNavigation != nil {
-					sshStateInvalidatedNavigation()
-				}
-			},
-			// An attach is not only a liveness change: a host that was dormant
-			// contributes no fresh rows to the snapshot walk (it is skipped
-			// attached-only), so its threads stay absent from the navigation tree
-			// until the next ~30s tick. Poke the remote-thread refresher on the
-			// same transition so an explicit evener/host/attach populates the tree
-			// immediately. remotePoke is buffered 1 and this send is non-blocking,
-			// so the sshconn event loop never blocks on a refresh already pending.
-			func(host string) {
-				select {
-				case remotePoke <- struct{}{}:
-				default:
-				}
-				// The same transition wakes the host-notification fan-out: a
-				// fan-out sleeping in backoff would otherwise wait up to 30s
-				// before subscribing while the new client's notification buffer
-				// fills undrained. The wakeup carries no client — the fan-out
-				// still resolves the fresh client through ClientIfAttached —
-				// and the send below is non-blocking for the same reason the
-				// poke above is: the sshconn event loop must never block.
-				if hostAttachedWakeup != nil {
-					hostAttachedWakeup(host)
-				}
-			},
-		),
+		OnEvent: func(ev sshconn.Event) {
+			hubSSHStateInvalidation(
+				func() {
+					if sshStateInvalidatedNavigation != nil {
+						sshStateInvalidatedNavigation()
+					}
+				},
+				// An attach is not only a liveness change: a host that was dormant
+				// contributes no fresh rows to the snapshot walk (it is skipped
+				// attached-only), so its threads stay absent from the navigation tree
+				// until the next ~30s tick. Poke the remote-thread refresher on the
+				// same transition so an explicit evener/host/attach populates the tree
+				// immediately. remotePoke is buffered 1 and this send is non-blocking,
+				// so the sshconn event loop never blocks on a refresh already pending.
+				func(host string) {
+					select {
+					case remotePoke <- struct{}{}:
+					default:
+					}
+					// The same transition wakes the host-notification fan-out: a
+					// fan-out sleeping in backoff would otherwise wait up to 30s
+					// before subscribing while the new client's notification buffer
+					// fills undrained. The wakeup carries no client — the fan-out
+					// still resolves the fresh client through ClientIfAttached —
+					// and the send below is non-blocking for the same reason the
+					// poke above is: the sshconn event loop must never block.
+					if hostAttachedWakeup != nil {
+						hostAttachedWakeup(host)
+					}
+				},
+			)(ev)
+			// The host-management surface records per-host attach state from
+			// the same lifecycle events (midAttach, lastAttachError). The
+			// recorder only writes its own map: OnEvent runs with the
+			// per-host lock held, so it must never call back into the manager.
+			if hostManageEvents != nil {
+				hostManageEvents(ev)
+			}
+		},
 	})
 	// The manager owns every live SSH channel; tie their lifetime to this
 	// process so they die with the hub.
@@ -491,6 +505,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
 		RemoteHosts:               hostEntries,
+		// The one live registry the SSH manager dials through, shared with the
+		// attach handler and the host-management surface, and the selected
+		// hub.toml path the UI's host sidecar persists beside.
+		RemoteHostRegistry:   hostRegistry,
+		RemoteHostSSHManager: sshManager,
+		RemoteHostConfigPath: opts.configPath,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -532,14 +552,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if web.hostAdmin != nil {
 		hostAttachedWakeup = web.hostAdmin.hostAttached
 	}
-	// Drain the AppWire RPC server on every exit path, tracing or not (round
-	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
-	// and Shutdown is what cancels it, so a hub that only stopped its HTTP
-	// server left one fan-out goroutine per remote host subscribed to the
-	// previous server's sources — a leak, and duplicate host notifications once
-	// a replacement server subscribed too. This drain used to be registered
-	// only with --appwire-trace, where it existed to close the trace's
-	// connections.
+	// Bind the host-management event recorder the same way: the sshconn
+	// manager fires lifecycle events, and the host rows retain attach state
+	// from them.
+	if web.hostManage != nil {
+		hostManageEvents = web.hostManage.observeEvent
+	}
+	// Drain the AppWire RPC server on every exit path, tracing or not: the
+	// remote-admin fan-out is bound to appserver.Server.Lifetime(), and
+	// Shutdown is what cancels it, so a hub that only stopped its HTTP server
+	// would leave one fan-out goroutine per remote host subscribed to the
+	// previous server's sources — a leak, and duplicate host notifications
+	// once a replacement server subscribed too.
 	//
 	// It is registered after the SSH manager's teardown, so it runs first: the
 	// fan-outs stop while the transports they read from are still open, rather
@@ -633,7 +657,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// that never did, so a fresh install whose first interaction is the web
 	// UI (Settings → Marketplaces & Plugins) saw zero marketplaces until a
 	// session happened to spawn and seed them first.
-	seedHubMarketplaces(ctx)
+	seedHubMarketplaces(ctx, web)
 
 	// Plugin auto-upgrade daemon (design doc §9.1): refreshes every known
 	// marketplace, then upgrades every installed, git-backed plugin with
@@ -649,7 +673,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
-	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
+	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
 	// Live-model prefetch: fetch every instance's /models listing into the
 	// held registry once at startup and every livePrefetchInterval after,
 	// so the Providers sheet reads cached inventory instead of fetching on
@@ -660,7 +684,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Through deps so hermetic runMain tests stay offline: the default
 	// warms the live cache from real provider endpoints.
 	deps.startLivePrefetch(ctx, hubReg, livePrefetchInterval, startBackground, func() {
-		notifyInstanceUpdated(web.appRPC)
+		// A server-initiated pass has no originating client, so the broadcast
+		// names none: every client, including the one that may have just asked
+		// for the prefetch, reads it as an unowned list change and refetches.
+		notifyInstanceUpdated(web.appRPC, "")
 	})
 
 	srv := &listenerHTTPServer{

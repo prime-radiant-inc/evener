@@ -972,9 +972,11 @@ describe("ConversationStore", () => {
       }
     });
 
-    // A genuine failure ends as turn/completed{status: "failed"} with no
-    // status frame behind it, so the store settles idle on that frame.
-    it("settles idle when the active turn fails", async () => {
+    // A genuine failure ends as turn/completed{status: "failed"} followed by
+    // its own thread/status/changed(idle) frame (the agent's failure exit,
+    // agent/session_lifecycle.go endInputAtTurnFailure, kata hen0); the status
+    // frame owns the settle, exactly as it does for a completed turn.
+    it("settles idle on the status frame when the active turn fails", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
       const store = createConversationStore();
@@ -987,14 +989,101 @@ describe("ConversationStore", () => {
           turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status.type).toBe("idle");
+      // The failed completion ends the turn; its status frame has not arrived.
+      expect(store.getState().conversation?.status.type).toBe("active");
       expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status.type).toBe("idle");
+    });
+
+    // A failure that leaves a message queued is not a rest: the daemon resumes
+    // the queued message and its turn_failed input-end emission reports the
+    // session active (WireState reads active while pendingQueueDepth > 0), not
+    // the idle a settled turn would reach. The client must hold the session
+    // active at the failed frame and at the authoritative thread/status/changed
+    // frame behind it -- so Send stays closed and the queued entry is still
+    // there to run -- and follow the hand-off as the queued message becomes the
+    // next turn and leaves the queue.
+    it("keeps active through a failed turn that resumes a queued message", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        status: { type: "active" },
+        activeTurnId: "t1",
+        queue: {
+          revision: 1,
+          depth: 1,
+          preview: ["queued"],
+          ids: ["q1"],
+          texts: ["queued"],
+        },
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+
+      // t1 fails; its queued message has not started yet.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
+        },
+      } as AnyNotification);
+      const failed = store.getState().conversation;
+      if (failed === null) throw new Error("conversation gone");
+      expect(failed.status.type).toBe("active");
+      const controls = sessionControls(failed.status.type, failed.capabilities, failed.queue?.depth ?? 0);
+      expect({ send: controls.send, queue: controls.queue }).toEqual({ send: false, queue: true });
+      expect(failed.queue?.depth).toBe(1);
+      expect(failed.queue?.texts).toEqual(["queued"]);
+
+      // The failure exit's own status frame is the authority. With work still
+      // queued it announces active, so the session stays active and Send stays
+      // closed with the entry still waiting to run.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+      } as AnyNotification);
+      const announced = store.getState().conversation;
+      if (announced === null) throw new Error("conversation gone");
+      expect(announced.status.type).toBe("active");
+      expect(announced.queue?.depth).toBe(1);
+      expect(announced.queue?.texts).toEqual(["queued"]);
+      const afterStatus = sessionControls(announced.status.type, announced.capabilities, announced.queue?.depth ?? 0);
+      expect(afterStatus.send).toBe(false);
+
+      // The queue drains before the queued turn opens: the drain claims the
+      // entry and emits thread/queueChanged (agent/session_queue.go
+      // popQueueHead -> reflectDurableInputQueue), and the next iteration's
+      // EventUserInput opens the turn. Assert each boundary rather than only
+      // the final state, so an ordering regression is caught.
+      store.getState().applyNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thread-1", ref: "ref-1", queue: { revision: 2, depth: 0 } },
+      } as AnyNotification);
+      const drained = store.getState().conversation;
+      expect(drained?.status.type).toBe("active");
+      expect(drained?.queue?.depth).toBe(0);
+      expect(drained?.activeTurnId).toBeUndefined();
+
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t2", itemsView: "default", status: "running" } },
+      } as AnyNotification);
+      const resumed = store.getState().conversation;
+      expect(resumed?.status.type).toBe("active");
+      expect(resumed?.activeTurnId).toBe("t2");
+      expect(resumed?.queue?.depth).toBe(0);
     });
 
     // The status is authoritative and the turn id can be absent while the
-    // session is active (a read cut between turns); a failed completion then
-    // still settles idle, while one for a superseded turn is left alone.
-    it("settles idle on a failed completion with no active turn id, not on a superseded one", async () => {
+    // session is active (a read cut between turns); the failed completion's
+    // own status frame settles idle, while one for a superseded turn is left
+    // alone.
+    it("settles idle on a failed completion's status frame, not on a superseded turn", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: undefined });
       const store = createConversationStore();
@@ -1002,6 +1091,11 @@ describe("ConversationStore", () => {
       store.getState().applyNotification({
         method: "turn/completed",
         params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t-x", itemsView: "", status: "failed", error: { message: "boom" } } },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status.type).toBe("active");
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
       } as AnyNotification);
       expect(store.getState().conversation?.status.type).toBe("idle");
 
@@ -1588,10 +1682,38 @@ describe("ConversationStore", () => {
       }
     });
 
-    it("replaces same transcriptKey across wire IDs and removes obsolete images", async () => {
+    // The replacement carries the transcript key, so it IS the same message
+    // under a new wire id — and it says nothing about images, so the ones
+    // already known stay with it (mergeItemImages, the hub's own rule: an
+    // absent or empty input-images list is not a removal signal).
+    //
+    // The surviving row MUST be the one folded from conv.turns (the model
+    // item, which retains the image) and re-keyed to the new wire id — not the
+    // pre-existing companion row still sitting under the old id. The two
+    // sources carry deliberately different images so the assertion can tell
+    // them apart: a regression that leaves the stale row in place, or that
+    // rebuilds the row from the raw wire item instead of the folded model item
+    // (findFoldedItem/itemAttachments), fails here.
+    it("replaces the same transcriptKey across wire IDs, folding images onto the new id", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
+        turns: [
+          {
+            id: "t1",
+            status: "inProgress",
+            items: [
+              {
+                id: "wire-old",
+                turnId: "t1",
+                type: "userMessage",
+                transcriptKey: "stable-message",
+                text: "old",
+                images: [{ src: "https://hub.test/folded" }],
+              },
+            ],
+          },
+        ],
         items: [
           {
             kind: "user",
@@ -1603,7 +1725,7 @@ describe("ConversationStore", () => {
             kind: "attachments",
             id: "wire-old:attachments",
             sourceTranscriptKey: "stable-message",
-            items: [{ id: "image", src: "https://hub.test/image" }],
+            items: [{ id: "image", src: "https://hub.test/stale" }],
           },
         ],
       });
@@ -1629,7 +1751,15 @@ describe("ConversationStore", () => {
       expect(
         items.find((item) => item.transcriptKey === "stable-message")?.id,
       ).toBe("wire-new");
-      expect(items.some((item) => item.kind === "attachments")).toBe(false);
+      // One attachment row, re-keyed to the replacement and carrying the
+      // image the fold retained ("folded"), never the stale row's image.
+      const attachments = items.filter((item) => item.kind === "attachments");
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]).toMatchObject({
+        id: "wire-new:attachments",
+        sourceTranscriptKey: "stable-message",
+        items: [{ id: "wire-new:0", src: "https://hub.test/folded" }],
+      });
     });
   });
 
@@ -2457,6 +2587,61 @@ describe("ConversationStore", () => {
         store.getState().getTruncatedItemIds().has("reason-truncated-1"),
       ).toBe(false);
     });
+
+    it("preserves existing attachments when item/completed for the same user message carries no images field", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        turns: [
+          {
+            id: "t1",
+            status: "inProgress",
+            items: [
+              {
+                id: "msg-1",
+                turnId: "t1",
+                type: "userMessage",
+                text: "hello",
+                images: [{ src: "https://hub.test/image" }],
+              },
+            ],
+          },
+        ],
+        items: [
+          { kind: "user", id: "msg-1", text: "hello" },
+          {
+            kind: "attachments",
+            id: "msg-1:attachments",
+            items: [{ id: "image", src: "https://hub.test/image" }],
+          },
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "msg-1",
+            text: "hello",
+            status: "completed",
+            // No images field: an absent input-image list means "unchanged",
+            // not "removed" (the same rule the package reducer's
+            // mergeItemImages already applies).
+          },
+        },
+      } as AnyNotification);
+      const items = store.getState().conversation?.items ?? [];
+      expect(
+        items.find(
+          (item): item is Extract<MobileTimelineItem, { kind: "attachments" }> =>
+            item.kind === "attachments" && item.id === "msg-1:attachments",
+        )?.items,
+      ).toEqual([{ id: "msg-1:0", src: "https://hub.test/image" }]);
+    });
   });
 
   describe("assistant delta appends to item", () => {
@@ -2721,6 +2906,86 @@ describe("ConversationStore", () => {
         expect(decoded).toBe(item.markdown);
         expect(item.markdown.endsWith("… truncated")).toBe(true);
       }
+    });
+  });
+
+  describe("attachment names stop at 64 KiB UTF-8 while src passes through", () => {
+    it("bounds an oversized attachment name and leaves src byte-for-byte intact", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const largeName = "n".repeat(MAX_ITEM_BYTES + 100);
+      // src is not display text: cutting a data URI (or a fetch URL) yields
+      // something that cannot decode, so it must survive verbatim.
+      const src = `data:image/png;base64,${"A".repeat(200)}`;
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "attachments",
+            id: "msg-1:attachments",
+            sourceTranscriptKey: "msg-1",
+            items: [{ id: "image-1", src, name: largeName }],
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      const item = store
+        .getState()
+        .conversation?.items.find((candidate) => candidate.id === "msg-1:attachments");
+      expect(item?.kind).toBe("attachments");
+      if (item?.kind !== "attachments") return;
+      const attachment = item.items[0];
+      expect(attachment).toBeDefined();
+      if (!attachment) return;
+      const encoder = new TextEncoder();
+      expect(encoder.encode(attachment.name ?? "").length).toBeLessThanOrEqual(
+        MAX_ITEM_BYTES,
+      );
+      expect(attachment.name?.endsWith("… truncated")).toBe(true);
+      const markerCount = (attachment.name?.split("… truncated").length ?? 1) - 1;
+      expect(markerCount).toBe(1);
+      // src is never bounded — byte-for-byte identical to the input.
+      expect(attachment.src).toBe(src);
+      expect(encoder.encode(attachment.src).length).toBe(
+        encoder.encode(src).length,
+      );
+    });
+
+    it("bounds an oversized attachment name arriving on a live item/started", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      const largeName = "n".repeat(MAX_ITEM_BYTES + 100);
+      const src = "https://hub.test/live.png";
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "msg-live",
+            text: "hi",
+            images: [{ url: src, name: largeName }],
+          },
+        },
+      } as AnyNotification);
+      const item = store
+        .getState()
+        .conversation?.items.find((candidate) => candidate.id === "msg-live:attachments");
+      expect(item?.kind).toBe("attachments");
+      if (item?.kind !== "attachments") return;
+      const attachment = item.items[0];
+      expect(attachment).toBeDefined();
+      if (!attachment) return;
+      const encoder = new TextEncoder();
+      expect(encoder.encode(attachment.name ?? "").length).toBeLessThanOrEqual(
+        MAX_ITEM_BYTES,
+      );
+      expect(attachment.name?.endsWith("… truncated")).toBe(true);
+      // src is never bounded — byte-for-byte identical to the input.
+      expect(attachment.src).toBe(src);
     });
   });
 
@@ -6940,6 +7205,263 @@ describe("ConversationStore", () => {
       const conv = store.getState().conversation;
       expect(conv?.turns.flatMap((turn) => turn.items).filter((item) => item.type === "warning")).toEqual([]);
       expect(conv?.items.filter((row) => row.kind === "failure")).toHaveLength(1);
+    });
+
+    // The live row must show the reducer-folded warning item's text/hint,
+    // not just params.message — a title/hint-only frame (no top-level
+    // message) folds to a non-blank text in the model (the hint), but the
+    // row applier was building its failure row from params.message alone
+    // and losing it.
+    it("shows the reducer-folded hint text for a title/hint-only warning with an active turn", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, title: "Provider warning", hint: "slow down" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({
+        kind: "failure",
+        title: "Provider warning",
+        detail: "slow down",
+      });
+    });
+
+    // A warning carrying both a message and a hint must show both, the same
+    // as the web and TUI renderers — the live row must not drop the hint
+    // just because a message is also present.
+    it("composes both message and hint in the live row's detail", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, message: "rate limit approaching", hint: "slow down" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({
+        kind: "failure",
+        detail: "rate limit approaching — slow down",
+      });
+    });
+
+    // A whitespace-only stored title is not real content, the same reading
+    // hasWarningText gives everywhere else — it must fall back to the
+    // generic "Warning" label rather than rendering a blank chip.
+    it("falls back to the generic Warning label for a whitespace-only title with an active turn", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, title: "   ", message: "careful" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({ kind: "failure", title: "Warning" });
+    });
+
+    // Decision 2 in the model: a warning with no active turn has nowhere
+    // wire-true to land, so the reducer drops it and this row is the ONLY
+    // place the frame folds through. It must run the same validated shape
+    // as the reducer's own fold, not copy params.title/params.message raw —
+    // a malformed object value must never reach a string-typed timeline
+    // field (mobile-native's TimelineItem.tsx renders title/detail as React
+    // Native text and would crash on a non-string).
+    it("sanitizes a malformed warning without an active turn instead of copying params raw", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          ...target,
+          title: { nested: "object" } as unknown as string,
+          message: { nested: "object" } as unknown as string,
+        },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow?.kind).toBe("failure");
+      if (failureRow?.kind === "failure") {
+        expect(typeof failureRow.title).toBe("string");
+        expect(typeof failureRow.detail).toBe("string");
+        expect(failureRow.title).toBe("Warning");
+      }
+    });
+
+    // The polymorphic `warning` field (a bare string, or an object with its
+    // own `message`) is a supported wire shape (warningMessage's own
+    // contract) that the no-active-turn path must honor too, not just
+    // top-level `message`.
+    it("reads a polymorphic warning field without an active turn", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, warning: "provider hiccup" },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toMatchObject({ kind: "failure", detail: "provider hiccup" });
+    });
+
+    // A message-less warning frame's text is the up-to-2000-char raw JSON
+    // fallback (rawWarningFrame), and the live id used to embed the
+    // sanitized title directly (`warning:${title}:${serial}`), which
+    // foldWarningParams only bounds to 2000 code points — far short of
+    // "short". Neither case's row id must ever embed folded.text or the
+    // title; that bloats timeline ids and the ownership keys they feed. The
+    // serial alone is already unique, so the id never needs either.
+    it.each<[string, Record<string, unknown>]>([
+      // No message/title/hint anywhere: folded.text is the bounded raw JSON
+      // fallback (up to 2000 chars) — the `extra` field forces it long
+      // enough that reusing folded.text for the id would be obvious.
+      ["a message-less warning with no active turn", { extra: "x".repeat(500) }],
+      ["an oversized title", { title: "T".repeat(2000) }],
+    ])("keeps the live row id short for %s", async (_case, warningFields) => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, ...warningFields },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow?.kind).toBe("failure");
+      if (failureRow?.kind === "failure") {
+        expect(failureRow.id.length).toBeLessThan(30);
+        expect(failureRow.id.startsWith("warning:")).toBe(true);
+      }
+    });
+
+    // The live row applier (case "warning" above) and the canonical projector
+    // (projectConversation, applied on every reread) must produce the SAME row
+    // for the same warning: an attention row — kind "failure", title as its own
+    // field, message+hint joined as detail. The canonical projector used to
+    // route type "warning" through its generic unknown-activity fallback, so
+    // the row changed kind, lost its attention treatment, and regressed to a
+    // collapsed "Activity" row labelled "unknown" the moment a reread replaced
+    // the live one.
+    it("projects the same warning to the same failure row live and canonically", async () => {
+      const store = await openProjectedThread(withActiveTurn([]));
+      const warning = {
+        method: "warning",
+        params: {
+          ...target,
+          title: "Provider warning",
+          message: "rate limit approaching",
+          hint: "slow down",
+        },
+      } as AnyNotification;
+      store.getState().applyNotification(warning);
+      const live = store.getState().conversation;
+      expect(live).not.toBeNull();
+      const liveRow = live?.items.find((row) => row.kind === "failure");
+      const canonicalRow = projectConversation(live!).items.find(
+        (row) => row.kind === "failure",
+      );
+      const expected = {
+        kind: "failure",
+        title: "Provider warning",
+        detail: "rate limit approaching — slow down",
+      };
+      expect(liveRow).toMatchObject(expected);
+      expect(canonicalRow).toMatchObject(expected);
+      expect(canonicalRow?.kind).toBe(liveRow?.kind);
+      // One identity, not just one shape: timelineIdentity is
+      // transcriptKey ?? id, and a reread dedupes on exactly that, so the two
+      // rows must agree here or the warning survives the reread twice.
+      const identity = (row: MobileTimelineItem | undefined) =>
+        row === undefined ? undefined : (row.transcriptKey ?? row.id);
+      expect(identity(canonicalRow)).toBe(identity(liveRow));
+    });
+
+    // The identity the live row shares with the canonical one is what keeps a
+    // reread from showing the warning twice. The reread projection here is the
+    // canonical projection of the same model (what a hub that carries the
+    // warning frame in a snapshot — or a future projection path — serves); the
+    // live-owned row must be recognized as that identity and dropped, leaving
+    // exactly one failure row.
+    it("merges a warning to one failure row across a reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(withActiveTurn([]));
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          ...target,
+          title: "Provider warning",
+          message: "rate limit approaching",
+          hint: "slow down",
+        },
+      } as AnyNotification);
+      const liveRows = (store.getState().conversation?.items ?? []).filter(
+        (row) => row.kind === "failure",
+      );
+      expect(liveRows).toHaveLength(1);
+      const liveIdentity = liveRows[0]!.transcriptKey ?? liveRows[0]!.id;
+
+      const reread = projectConversation(store.getState().conversation!);
+      service.readProjectionResult = {
+        conversation: reread,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+
+      const rows = (store.getState().conversation?.items ?? []).filter(
+        (row) => row.kind === "failure",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.transcriptKey ?? rows[0]!.id).toBe(liveIdentity);
+    });
+
+    // Warning → reread without the warning → warning. A hub's snapshot does
+    // not carry the non-persisted warning item, so the reread drops it from
+    // the model while the live-owned row stays; the model's per-turn warning
+    // count is back to zero, so the second warning is handed the same
+    // `item_warning_live_<turn>_0` id as the first. The retained row must not
+    // hand that id to a second row (duplicate timeline ids), and the second
+    // warning must still land as its own row.
+    it("keeps warning rows unique through a reread that drops the warning model item", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(withActiveTurn([]));
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, message: "first warning" },
+      } as AnyNotification);
+      const firstIds = (store.getState().conversation?.items ?? [])
+        .filter((row) => row.kind === "failure")
+        .map((row) => row.id);
+      expect(firstIds).toHaveLength(1);
+
+      // Reread serves the same thread with no warning item in its turn.
+      service.readProjectionResult = makeReadProjectionResult(withActiveTurn([]));
+      await store.getState().rehydrate(service, sink);
+      const afterReread = (store.getState().conversation?.items ?? [])
+        .filter((row) => row.kind === "failure")
+        .map((row) => row.id);
+      expect(afterReread).toEqual(firstIds);
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, message: "second warning" },
+      } as AnyNotification);
+      const rows = (store.getState().conversation?.items ?? []).filter(
+        (row) => row.kind === "failure",
+      );
+      expect(rows).toHaveLength(2);
+      expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+      expect(rows.map((row) => row.detail)).toEqual([
+        "first warning",
+        "second warning",
+      ]);
     });
   });
 

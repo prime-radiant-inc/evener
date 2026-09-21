@@ -18,7 +18,7 @@ import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@
 import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore } from "./connection";
+import { connectedClientPort } from "./connection";
 
 export interface DaemonResidentsStoreState {
   /** Latest successful list response; null until first successful load. */
@@ -47,17 +47,9 @@ export function residentRowKey(identity: DaemonIdentity): string {
   return identity.generation ? `gen:${identity.generation}` : `ref:${identity.ref}`;
 }
 
-// requireClient reads the currently wired client from connectionStore — the
-// same pattern as settingsOverview.ts and threads.ts.
-function requireClient() {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error(
-      "daemonResidents store: no client connected; call connectionStore.getState().connect(client) first",
-    );
-  }
-  return client;
-}
+// requireClient resolves connectionStore's CURRENT client, labelled by this
+// store - the shared port (stores/connection.ts), not a hand-rolled twin.
+const { requireClient } = connectedClientPort("daemonResidents");
 
 // Module-private inflight dedup: at most one refresh request runs at a time;
 // concurrent callers join the same promise.

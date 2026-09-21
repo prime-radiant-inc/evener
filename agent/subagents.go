@@ -427,6 +427,13 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// automatic compaction to run unsteered. The untyped surface already
 		// keeps it (deny-list path), so listing tools: must not take it away.
 		allowed = appendUniqueStrings(allowed, "compact_context")
+		// use_skill is the skill-activation capability, not an agent-type
+		// opt-in: a brief that directs a delegate to run a skill
+		// (`use_skill("...")`) cannot be followed literally without it, and the
+		// only substitute is the untracked read_file fallback. The untyped
+		// surface already keeps it (deny-list path), so a typed role's tools:
+		// list must not silently take it away.
+		allowed = appendUniqueStrings(allowed, "use_skill")
 		// Root-only job and delegation tools in a typed role's list are
 		// allowance-gated: granted, the role keeps them and gains job_watch
 		// to supervise its delegates; a leaf loses them, on every spawn

@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
+import { collectConfig, type LaunchFormState } from "./launchSchema";
 import { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 import type { LaunchOption } from "./types.gen";
 
@@ -90,6 +91,62 @@ describe("collectAdvancedOverrides (floor §1.11, spawn.js:1077-1120)", () => {
       env: { FOO: "bar" },
       mcps: [{ name: "srv", command: "run", args: ["--x"] }],
     });
+  });
+
+  test("delegates its scalar arm to launchSchema.collectScalar (trimmed text, dropped non-integer integers)", () => {
+    const options = [
+      option({ wireField: "agent", kind: "text" }),
+      option({ wireField: "maxSubagentDepth", kind: "integer" }),
+      option({ wireField: "maxRounds", kind: "integer" }),
+      option({ wireField: "noProjectPrompts", kind: "boolean" }),
+      option({ wireField: "contextStrategy", kind: "select" }),
+    ];
+    const raw = {
+      agent: "  evener  ",
+      maxSubagentDepth: "12abc",
+      maxRounds: "12.5",
+      noProjectPrompts: "true",
+      contextStrategy: "   ",
+    };
+    const advanced = collectAdvancedOverrides(options, {
+      agent: { value: raw.agent },
+      maxSubagentDepth: { value: raw.maxSubagentDepth },
+      maxRounds: { value: raw.maxRounds },
+      noProjectPrompts: { value: raw.noProjectPrompts },
+      contextStrategy: { value: raw.contextStrategy },
+    });
+    const state: LaunchFormState = { scalars: raw, lists: {}, envMaps: {}, mcpLists: {}, explicitEmpty: {} };
+    // The spawn pane's advanced collector and the settings form's collectConfig
+    // must agree on every scalar shape - that shared rule is the whole point of
+    // routing both through launchSchema.collectScalar (#1444). A fractional
+    // "12.5" is dropped (not sent as 12.5) because the Go wire type is *int.
+    expect(advanced).toEqual(collectConfig(options, state));
+    expect(advanced).toEqual({ agent: "evener", noProjectPrompts: true });
+  });
+
+  test("drops an unsafe or rounding integer magnitude on both paths (Go wire type is *int)", () => {
+    const options = [option({ wireField: "maxRounds", kind: "integer" })];
+    // A high-precision decimal rounds to 1 if you Number() the string first; the
+    // exact-decimal rule drops it in both callers.
+    const rounded = collectAdvancedOverrides(options, { maxRounds: { value: "1.0000000000000000001" } });
+    // "1e21" is exponent notation, so it is rejected as an unsafe magnitude.
+    const unsafe = collectAdvancedOverrides(options, { maxRounds: { value: "1e21" } });
+    const boundary = collectAdvancedOverrides(options, { maxRounds: { value: "9007199254740991" } });
+    const state: LaunchFormState = {
+      scalars: { maxRounds: "1e21" },
+      lists: {},
+      envMaps: {},
+      mcpLists: {},
+      explicitEmpty: {},
+    };
+    expect(unsafe).toEqual({});
+    expect(rounded).toEqual({});
+    expect(boundary).toEqual({ maxRounds: 9007199254740991 });
+    expect(unsafe).toEqual(collectConfig(options, state));
+    state.scalars.maxRounds = "1.0000000000000000001";
+    expect(collectConfig(options, state)).toEqual({});
+    state.scalars.maxRounds = "9007199254740991";
+    expect(collectConfig(options, state)).toEqual({ maxRounds: 9007199254740991 });
   });
 
   test("drops any field flagged invalid by path validation (floor §1.11, data-launch-invalid)", () => {

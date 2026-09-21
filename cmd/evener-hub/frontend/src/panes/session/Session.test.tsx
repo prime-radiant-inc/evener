@@ -36,7 +36,12 @@ import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import {
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  subscribeMutationPersistence,
+  threadsStore,
+} from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -44,6 +49,7 @@ import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css"
 import ReadOnlyTranscript from "../transcript/Transcript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
+import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
@@ -2148,6 +2154,7 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
       method: "item/completed",
       params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
     });
+    fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
 
   let dock: HTMLElement | null = null;
@@ -2219,6 +2226,7 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
         method: "item/completed",
         params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
       });
+      fake.emitNotification(askPendingStatusChanged("ref_a"));
     });
 
     // The dock row is on screen (placement contract), and the last options
@@ -2421,7 +2429,7 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(0);
   expect(hydration).toHaveBeenCalledWith(stableRef);
   expect(hydration).toHaveBeenCalledWith(currentRef);
-  expect(refresh).toHaveBeenCalledWith(currentRef);
+  expect(refresh).toHaveBeenCalledWith(currentRef, expect.any(Function));
   await act(async () => {
     await Promise.all(hydration.mock.results.map((result) => result.value));
     await Promise.all(refresh.mock.results.map((result) => result.value));
@@ -2429,7 +2437,13 @@ test("explicit Resume follows the returned identity through transcript and new s
     await flushPendingTurnsProjectionForTests();
   });
   expect(await mutationStorage.listOutbox(stableRef)).toEqual([
-    expect.objectContaining({ clientMutationId: uncertain, state: "blockedUnknown" }),
+    // The Force stop above owns this row now: it was never attempted (the
+    // seed wrote blockedUnknown directly onto an undispatched record), so the
+    // write-first stop cancels it durably before the RPC
+    // (stop-cancellation-outbox §4/§5) instead of leaving it delivery-uncertain.
+    // The row still proves the test's own point: Resume cannot resend it - a
+    // canceled row only ever leaves storage through an explicit user Retry.
+    expect.objectContaining({ clientMutationId: uncertain, state: "canceled" }),
   ]);
   expect(await mutationStorage.listOutbox(currentRef)).toHaveLength(0);
   await user.type(screen.getByRole("textbox", { name: /^message$/i }), "Follow up on current transcript");
@@ -2439,6 +2453,222 @@ test("explicit Resume follows the returned identity through transcript and new s
     expect.objectContaining({ ref: currentRef }),
   );
   await flushPendingTurnsProjectionForTests();
+});
+
+// RoboRev finding on the reduced branch: the explicit Resume passed
+// resumeStopFence(sessionRef) to refreshThread(refreshedRef) even though resume
+// can return a different identity (the line below the call already handles
+// refreshedRef !== sessionRef). That fence watches the OLD ref's generation,
+// so a Stop issued against the NEW ref while its post-resume hydration is on
+// the wire could not cancel the stale publish. A second fence for the
+// refreshed ref must join it.
+test("a Stop on the resumed identity cancels the stale post-resume publish", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  let currentReadStarted!: () => void;
+  const readStarted = new Promise<void>((resolve) => {
+    currentReadStarted = resolve;
+  });
+  let holdNext = false;
+  let resolveHeld!: (response: ThreadReadResponse) => void;
+  const held = new Promise<ThreadReadResponse>((resolve) => {
+    resolveHeld = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) {
+      if (holdNext) {
+        holdNext = false;
+        currentReadStarted();
+        return held;
+      }
+      return readResponse(currentRef, { status: { type: "idle" } });
+    }
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(currentRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already held by a pane somewhere (another tab, or
+  // the ref that this pane will resolve to), so its ref is tracked and the
+  // post-resume refreshThread really does hydrate it.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  holdNext = true;
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await readStarted;
+  });
+  // The Stop lands against the resumed identity while its hydration is held.
+  await act(async () => {
+    await threadsStore.getState().shutdown(currentRef);
+    resolveHeld(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+});
+
+// RoboRev finding on the reduced branch: refreshedStopFence baselines the new
+// identity AFTER resumeThread returns, so a Stop recorded against the resumed
+// ref while the resume RPC is still in flight becomes that fence's baseline
+// and can never cancel the post-resume hydration. The resumed identity can be
+// named during that window by any surface already tracking it (here the tab
+// holds currentRef from a prior load), so the new ref must be fenced against
+// its pre-resume Stop generation, not a post-resume one.
+//
+// Staging note (RoboRev Low on fee4eb8): this is the RPC-IN-FLIGHT window -
+// the Stop is issued only after the thread/resume handler runs, so
+// beforeRequest has already passed and the post-resume identityFence is the
+// one that cancels. The reconnect window BEFORE beforeRequest is covered by
+// "a Stop on the resumed identity before the resume RPC leaves suppresses
+// the RPC" below.
+test("a Stop on the resumed identity while the resume RPC is in flight cancels the post-resume hydration", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) return readResponse(currentRef, { status: { type: "idle" } });
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return resumeHeld;
+  });
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already tracked by this tab (a prior load, a list
+  // row), so a Stop surface can name it before resumeThread resolves.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await requested;
+  });
+  // The Stop lands against the resumed identity while the resume RPC is still
+  // on the wire. Only then does the resume response arrive.
+  await act(async () => {
+    await threadsStore.getState().shutdown(currentRef);
+    resolveResume(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+});
+
+// RoboRev Medium on fee4eb8 (PR 1393): beforeRequest fenced only sessionRef,
+// so a Stop recorded against the resumed identity during the PRE-RPC
+// reconnect window never canceled the RPC - the post-resume identityFence
+// still caught the hydration, but the resume was already sent after the Stop
+// and won server-side. The resumed identity is unknowable before the RPC
+// returns, so the pre-resume baseline now fences GLOBALLY for the
+// beforeRequest check: any ref's acknowledged Stop in the window suppresses
+// the resume RPC.
+test("a Stop on the resumed identity before the resume RPC leaves suppresses the RPC", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) return readResponse(currentRef, { status: { type: "idle" } });
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(currentRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already tracked by this tab (a prior load, a list
+  // row), so a Stop surface can name it before resumeThread resolves.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  // The Stop lands in the reconnect window AFTER the click but BEFORE the
+  // resume RPC leaves: resumeThread's reconnect await (fakeClient's microtask
+  // hop) has not settled, so beforeRequest has not run yet. shutdown records
+  // its Stop synchronously, ahead of that guard - fireEvent, not userEvent,
+  // so the two calls share one synchronous turn. The action's own completion
+  // is still awaited below: write-first ordering (stop-cancellation-outbox §4)
+  // makes shutdown's durable cancel write precede its RPC, so a fire-and-
+  // forget call would complete past this test's own client and fake.
+  let shutdownCompletion!: Promise<void>;
+  act(() => {
+    fireEvent.click(resume);
+    shutdownCompletion = threadsStore.getState().shutdown(currentRef);
+  });
+  await act(async () => {});
+  // The guarded-out resume never sent the RPC - the guard's whole point.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+  await shutdownCompletion;
 });
 
 test("offers explicit resume after restart even without pending messages", async () => {
@@ -2463,7 +2693,7 @@ test("offers explicit resume after restart even without pending messages", async
   fireEvent.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(resumeTransport).toHaveBeenCalledWith("ref_a");
+  expect(resumeTransport).toHaveBeenCalledWith("ref_a", { beforeRequest: expect.any(Function) });
 });
 
 test.each(["success", "refused"])(
@@ -2950,11 +3180,23 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     await act(async () => {
       await threadsStore.getState().refreshThread(ref);
     });
+    // setInterval is frozen to control discovery, so waitFor cannot poll a
+    // storage-only update. Observe its real committed persistence edge instead.
+    const blockedWritten = new Promise<void>((resolve, reject) => {
+      const unsubscribe = subscribeMutationPersistence((refs) => {
+        if (!refs.includes(ref) || !mutationId) return;
+        void mutationStorage.getOutbox(mutationId).then((record) => {
+          if (record?.state === "blockedUnknown") resolve();
+        }, reject);
+      });
+      onTestFinished(unsubscribe);
+    });
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
       await flushPendingTurnsProjectionForTests();
     });
-    await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+    await blockedWritten;
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();
     await act(async () => {
@@ -3198,12 +3440,9 @@ test.each(["idle", "active"])(
   },
 );
 
-// Regression for the review finding on the footer-button removal: a FENCED
-// notLoaded snapshot (resumeRequired -> Send=false) renders no composer card
-// at all, which used to leave the ⋯ menu - the only force-stop surface -
-// unmounted. Session.tsx now mounts SessionChrome's menu-only placement in
-// the footer for exactly this state. This drives the REAL Session + Composer
-// tree (no slot stubs) to prove the menu is reachable there.
+// A fenced notLoaded snapshot must retain both a writable composer and its
+// force-stop menu. Drive the REAL Session + Composer tree (no slot stubs),
+// preserving menu confirmation, activity hydration, and passive no-resume.
 test("a fenced notLoaded session keeps force stop reachable in the pane footer", async () => {
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   vi.mocked(ComposerModule.Composer).mockRestore();
@@ -3216,9 +3455,8 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = !stopped;
     response.thread.evener.mutationStateAuthoritative = false;
-    // pastThreadCapabilities advertises Send for a saved snapshot; the hub's
-    // resume fence (applyThreadResumeRequirement) takes it away - which is
-    // what kills the composer's follow-up card and its chrome mount.
+    // The wire capability remains fenced; explicit user intent owns resume,
+    // not passive rendering of the writable draft and its chrome.
     if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
     return response;
   });
@@ -3238,12 +3476,18 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
-  // The fence kills the composer card entirely - no invitation, no chrome.
+  // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
   expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
-  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  // The composer's editor is a contenteditable div, which carries neither
+  // `disabled` nor `readOnly`; `contenteditable="true"` is the one writable
+  // state those two textarea assertions pinned (jsdom implements no
+  // contentEditable IDL property, so the attribute is the only faithful read).
+  expect(editor.getAttribute("contenteditable")).toBe("true");
   const user = userEvent.setup();
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
@@ -3259,4 +3503,52 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     ]),
   );
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});
+
+// RoboRev finding on the reduced branch (Medium): the composer's
+// `followUpEngaged = localNotLoaded || ...` mounts its placement="composer"
+// discoverActivity for every local:notLoaded snapshot, and Session.tsx mounts
+// its placement="menu" fallback for !controlsFor(model).send. The `!restartPending`
+// precondition on that fallback is what keeps the two from co-mounting: a
+// recovery-fenced stopped session is owned by the composer card (whose menu is
+// how force stop stays reachable), and only a local snapshot with no card is
+// owned by the footer. This pins the exactly-one-owner invariant the Composer
+// comment relies on across every local:notLoaded shape.
+test.each([
+  { label: "a recovery-fenced stopped session", send: false, resumeRequired: true },
+  { label: "an unfenced snapshot with no Send", send: false, resumeRequired: false },
+  { label: "an unfenced snapshot that advertises Send", send: true, resumeRequired: false },
+])("exactly one activity-discovery owner mounts for $label", async ({ send, resumeRequired }) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:owner-invariant";
+  setNavigationTitle(ref, "Owner invariant");
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.capabilities = { ...CAPABILITIES, send };
+    response.thread.evener.resumeRequired = resumeRequired;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  // One menu trigger, one mounted chrome, and exactly one discovery request:
+  // a second owner would double any of them.
+  expect(screen.queryAllByRole("button", { name: /session actions/i })).toHaveLength(1);
+  const chromeMounts =
+    screen.queryAllByTestId("session-chrome-menu").length + screen.queryAllByTestId("session-chrome-inline").length;
+  expect(chromeMounts).toBe(1);
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
 });

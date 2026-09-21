@@ -4,7 +4,7 @@ import type {
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
-import { toWireConfig } from "@evener/appwire-client";
+import { toWireConfig, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -149,6 +149,26 @@ describe("NativePreferences", () => {
 				(request) => request.method === "evener/settings/keybindings/patch",
 			),
 		).toHaveLength(1);
+	});
+
+	it("projects the keybindings draft without the store's internal generation stamp", async () => {
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		client.handlers.set(
+			"evener/settings/transcriptDisplay/get",
+			() => transcript,
+		);
+		const model = new NativePreferences(client, features);
+		await model.refresh();
+		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
+		await model.editKeybindings(rules);
+		const draft = model.getSnapshot().keybindings.draft;
+		expect(draft).toMatchObject({ version: 1, revision: 3, rules });
+		// The store's own KeybindingsDraft carries a `generation` stamp
+		// (staleness bookkeeping - see readyGenerationFence); the projected
+		// PreferenceState<ConfirmedKeybindings> type has no such field, and
+		// the projection must not leak it through structurally.
+		expect(draft).not.toHaveProperty("generation");
 	});
 
 	it("ignores stale reads and notifications after disposal", async () => {
@@ -327,6 +347,13 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	});
 	await model.refresh();
 	await expect(model.saveKeybindings([])).rejects.toThrow();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draftError: null,
+		hubError: "unreadable settings",
+		loadError: "unreadable settings",
+		error:
+			"The hub could not load its saved shortcuts. Repair the hub settings file before editing.",
+	});
 	expect(client.requests.map((x) => x.method)).toEqual([
 		"evener/settings/keybindings/get",
 	]);
@@ -335,26 +362,46 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	);
 });
 
-import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
-import type { TranscriptDraftCheckpoint } from "./preferenceDraftRepository";
+it("preserves the hub diagnostic when draft recovery clears its own error", async () => {
+	const client = fakeClient();
+	client.handlers.set("evener/settings/keybindings/get", () => {
+		throw new Error("hub request failed");
+	});
+	const backend = fakeDraftBackend();
+	backend.store.set("evener.native.keybinding-draft.hub", "{not json");
+	const model = new NativePreferences(
+		client,
+		{ keybindingsSettings: true, transcriptDisplaySettings: false },
+		undefined,
+		nativeKeybindingDrafts("hub", backend),
+	);
+	await model.refresh();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draftError: expect.any(String),
+		hubError: "hub request failed",
+		loadError: null,
+		error: expect.any(String),
+	});
+
+	await model.discardKeybindingsDraft();
+	expect(model.getSnapshot().keybindings).toMatchObject({
+		draft: null,
+		draftError: null,
+		hubError: "hub request failed",
+		loadError: null,
+		error: "The hub request could not be confirmed.",
+	});
+	model.dispose();
+});
+
+import { fakeDraftBackend } from "./draftBackend.testkit";
+import {
+	nativeKeybindingDrafts,
+	nativeTranscriptDrafts,
+} from "./nativePreferenceDrafts";
 
 function draftStorage() {
-	const values = new Map<string, unknown>();
-	let id = 0;
-	const backend = {
-		get: (key: string) => values.get(key),
-		set: (key: string, value: unknown) => {
-			values.set(key, structuredClone(value));
-		},
-		delete: (key: string) => {
-			values.delete(key);
-		},
-		createId: () => String(++id),
-		deleteIf: (key: string, value: TranscriptDraftCheckpoint) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
-		},
-	};
+	const backend = fakeDraftBackend();
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
 }
 function persistedPreferences(storage = draftStorage().storage) {
@@ -525,6 +572,69 @@ it("an uncertain write cannot be discarded or replayed until an authoritative re
 	expect(f.storage.load()?.writeUncertain).toBe(false);
 	await f.model.discardTranscriptDraft();
 	expect(f.storage.load()).toBeNull();
+});
+
+it("resolves a post-apply PATCH failure by adopting the applied value, without blocking further edits", async () => {
+	// The hub already published the new revision before a follow-up durable
+	// step failed (hubcore.TranscriptDisplayPostApplyError): the write
+	// applied, so saveTranscript must reconcile from it rather than treat
+	// the write as rejected - mirrors keybindingsStore.ts's handling of
+	// KeybindingsPostRenameError for the sibling store.
+	const f = persistedPreferences();
+	await f.model.refresh();
+	const applied = { ...config, content: { kind: "preset" as const, level: "full" as const } };
+	f.client.handlers.set(transcriptPatch, () => {
+		throw new WireError(
+			"transcript display applied then a follow-up step failed",
+			-32603,
+			{
+				evenerErrorInfo: "transcriptDisplayPostApply",
+				layout: "mobile",
+				applied: { revision: 5, config: toWireConfig(applied) },
+			},
+		);
+	});
+	await f.model.saveTranscript(proposedConfig);
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: false,
+		writeUncertain: false,
+		draft: null,
+		confirmed: { revision: 5, config: applied },
+	});
+	expect(f.storage.load()).toBeNull();
+	// A blocked write would reject further edits (as the writeUncertain
+	// test above does); this one applied, so editing is not blocked.
+	await f.model.editTranscript(config);
+});
+
+it("rejects a post-apply error when the layout does not match", async () => {
+	// The postApplyPatch reply is only valid when layout matches the
+	// receiving client's own layout. A desktop error received by the mobile
+	// store must be treated as an unconfirmed write, retaining the draft.
+	const f = persistedPreferences();
+	await f.model.refresh();
+	f.client.handlers.set(transcriptPatch, () => {
+		throw new WireError(
+			"transcript display applied then a follow-up step failed",
+			-32603,
+			{
+				evenerErrorInfo: "transcriptDisplayPostApply",
+				layout: "desktop",
+				applied: { revision: 5, config: toWireConfig(proposedConfig) },
+			},
+		);
+	});
+	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow();
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: true,
+		writeUncertain: true,
+		draft: { config: proposedConfig },
+		error: "The hub request could not be confirmed.",
+	});
+	expect(f.storage.load()).toMatchObject({
+		writeUncertain: true,
+		config: proposedConfig,
+	});
 });
 
 it("a corrupt local draft blocks writes until it can be restored", async () => {

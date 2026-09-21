@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import type { Thread } from "@evener/appwire-client";
 import {
@@ -10,6 +9,7 @@ import { DraftRepository } from "./draftRepository";
 import { ForkActions } from "./forkActions";
 import { forkCheckpoints } from "./forkCheckpointRepository";
 import { LocationRepository, restoredStack } from "./location";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 function savedLocations() {
 	let value: string | null = null;
@@ -35,7 +35,7 @@ function savedLocations() {
 
 const target = { instanceId: "instance", entryIndex: 7, preview: "selected" };
 async function boundary() {
-	const db = new DatabaseSync(":memory:");
+	const { database: db, port } = openSqliteSyncDouble();
 	let failDraft = false,
 		failJournal = false,
 		current = true,
@@ -56,13 +56,11 @@ async function boundary() {
 		},
 	});
 	const repository = new DraftRepository({
-		execSync: (sql) => db.exec(sql),
+		...port,
 		runSync: (sql, ...params) => {
 			if (failDraft) throw Error("draft storage failure");
 			return db.prepare(sql).run(...params);
 		},
-		getFirstSync: <T>(sql: string, ...params: string[]) =>
-			(db.prepare(sql).get(...params) as T | undefined) ?? null,
 	});
 	const drafts = new DraftLibrary(() => repository);
 	const parent: Thread = {

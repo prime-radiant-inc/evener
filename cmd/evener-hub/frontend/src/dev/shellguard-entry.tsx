@@ -586,7 +586,6 @@ function measureMobileSidebar() {
       panelText.includes("focus the composer") ||
       panelText.includes("next session needing you") ||
       panelText.includes("shows all shortcuts"),
-    orientation: panelText.includes("read and edit the repository"),
     errors,
   };
 }

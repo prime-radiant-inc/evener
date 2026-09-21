@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/afero"
 
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -361,6 +360,13 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return queuedInput{}, false, err
 	}
+	if s.cfg.testOnly.clientMutationStartClaiming != nil {
+		s.cfg.testOnly.clientMutationStartClaiming()
+	}
+	// The writer is sampled under s.mu here, before the serializer takes
+	// clientMutations.mu; the refusal is read inside using only the writer's
+	// own lock, so the serializer never waits on s.mu.
+	writer := s.attachedTranscript()
 	var claimed queuedInput
 	claimedQueue := false
 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
@@ -375,6 +381,16 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			record, ok := snapshot.Journal[id]
 			if !ok {
 				return fmt.Errorf("accepted client start %q has no journal record", id)
+			}
+			// The refusal is decided where a candidate is selected and a claimed
+			// input is about to be returned -- never before claimability is
+			// known, so a store with nothing to claim stays quiet. It covers an
+			// incorporated recovery entry as well as a fresh claim: both are
+			// announced as a running turn, and one announced on a poisoned
+			// transcript is refused by the turn gate behind a phantom running
+			// notification.
+			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+				return refusal
 			}
 			if pending.ExecutionState == "accepted" {
 				record.ExecutionState = "claimed"
@@ -404,6 +420,11 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 				snapshot.ActiveTurnID != pending.TurnID {
 				continue
 			}
+			// Same refusal as the start branch: this incorporated queued turn
+			// would be announced as running too.
+			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+				return refusal
+			}
 			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
 			if len(pending.QueueEntryIDs) == 1 {
 				claimed.ID = pending.QueueEntryIDs[0]
@@ -422,6 +443,9 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			record.StableTurnID == "" ||
 			snapshot.ActiveTurnID != record.StableTurnID {
 			return nil
+		}
+		if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			return refusal
 		}
 		record.ExecutionState = "claimed"
 		record.ProjectionState = acceptedClientMutationProjection(record.Method)
@@ -454,9 +478,30 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	return claimed, claimed.ClientMutationID != "", nil
 }
 
+// ClientMutationStartPhase says which side of the durable claim a
+// ProcessClientMutationStart callback is reporting.
+type ClientMutationStartPhase int
+
+const (
+	// ClientMutationStartArmed reports that the turn is about to be claimed.
+	// The daemon wires cancellation here, so a turn/interrupt that finalizes
+	// the claimed start before it is published still finds a runner to cancel.
+	ClientMutationStartArmed ClientMutationStartPhase = iota
+	// ClientMutationStartClaimed reports that the claim committed. The daemon
+	// may now publish the running turn.
+	ClientMutationStartClaimed
+)
+
 // ProcessClientMutationStart claims and processes the next durable start using
 // the payload and identity stored by AcceptClientMutationStart.
-func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+//
+// onRunnable, when non-nil, is called twice: once with
+// ClientMutationStartArmed before the claim, so the daemon can wire
+// cancellation to a turn that is about to exist, and once with
+// ClientMutationStartClaimed after the claim commits, when publishing the
+// running turn is safe. It is never called with ClientMutationStartClaimed for
+// a claim that refused, so a refused claim never announces a running turn.
+func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func(turnID string, phase ClientMutationStartPhase)) (string, bool, error) {
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
 		return "", false, admissionErr
@@ -466,15 +511,45 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	if !runnable {
 		return "", false, nil
 	}
-	if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
+	if err := s.refuseBeforeClaimingOnUnhealthyTranscript(); err != nil {
 		return "", false, err
 	}
+	// Arm before the claim. Publishing is what must wait for the claim, but
+	// cancellation cannot: a Stop that finalizes the claimed start in the
+	// window before publication has nothing to cancel otherwise, and the start
+	// then runs despite having been stopped.
 	if onRunnable != nil {
-		onRunnable(turnID)
+		onRunnable(turnID, ClientMutationStartArmed)
 	}
 	claimed, ok, err := s.claimClientMutationStart()
 	if err != nil || !ok {
 		return "", ok, err
+	}
+	// Announce only once the claim has committed. A poisoning that lands
+	// between the pre-check above and the claim makes the claim refuse, and a
+	// turn announced for it is a phantom: the daemon has published a running
+	// turn and wired cancellation to an id that will never run.
+	//
+	// The claim's own refusal is decided before its commit, so a poisoning can
+	// still land between the two. The announcement is therefore made under the
+	// transcript's write door rather than after a check outside it: a poisoning
+	// append records the poison while holding that door, so the announce is
+	// ordered against every poisoning -- either it is already visible and
+	// nothing is announced, or it lands after the announce and the turn meets
+	// the ordinary mid-run refusal, with the claim handed back below.
+	announceRefusal := s.attachedTranscript().WhileHealthy(func() {
+		if onRunnable != nil {
+			onRunnable(claimed.StableTurnID, ClientMutationStartClaimed)
+		}
+	})
+	if announceRefusal != nil {
+		if giveBackErr := s.returnUnrunStartClaim(claimed); giveBackErr != nil {
+			return "", false, errors.Join(errWhileHealthyRefuses(announceRefusal), fmt.Errorf("return claimed input: %w", giveBackErr))
+		}
+		return "", false, errWhileHealthyRefuses(announceRefusal)
+	}
+	if s.cfg.testOnly.clientMutationStartAnnounced != nil {
+		s.cfg.testOnly.clientMutationStartAnnounced()
 	}
 	ctx = withQueuedClientMutation(ctx, claimed)
 	// Prepare the claimed input's skill selection at actual consumption: one
@@ -486,15 +561,16 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	// refuse after it, when poisoning lands in between. Give the claim back
 	// rather than leave it spent on a turn that never ran.
 	//
-	// Keyed on the poisoned error alone, deliberately. Every other
-	// pre-incorporation failure either unwinds where it happened or is reclaimed
-	// by startup recovery, and a wider key would return a claim whose turn is
-	// already recorded in the transcript — an incorporation marking that fails
-	// after the entry is durable would run the start twice.
-	if errors.Is(err, transcript.ErrWriterPoisoned) &&
-		!s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
-		if returnErr := s.returnClaimedClientMutationStart(claimed.ClientMutationID); returnErr != nil {
-			err = errors.Join(err, fmt.Errorf("return claimed client start: %w", returnErr))
+	// Keyed on the transcript's own refusals -- poisoned or closed -- and nothing
+	// wider, deliberately. Every other pre-incorporation failure either unwinds
+	// where it happened or is reclaimed by startup recovery, and a wider key
+	// would return a claim whose turn is already recorded in the transcript — an
+	// incorporation marking that fails after the entry is durable would run the
+	// start twice. A close can land after the claim and announce, so it owes the
+	// same give-back the poisoned case gets.
+	if transcriptRefusedClaim(err) {
+		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
+			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
 		}
 	}
 	return result, true, err
@@ -664,10 +740,16 @@ func (s *Session) InterruptClientMutation(
 	// s.mu, which the store serializer must not wait on. cancelAndWait has
 	// returned, so no turn of this session is appending.
 	recordedIDs, recorded := s.recordedSteeringAwaitingMark()
+	// Sampled here, outside the serializer below: the transcript scan takes
+	// Session.mu, and the store serializer must never wait on it.
+	claimedRecorded := s.claimedQueuedRecordedInTranscript()
+	returnedClaim := false
 	if err := s.clientMutations.update(lookup.Lease, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if err := finalizeClientMutationInterrupt(snapshot, s.ID(), recorded); err != nil {
-			return err
+		returned, finalizeErr := finalizeClientMutationInterrupt(snapshot, s.ID(), recorded, claimedRecorded)
+		if finalizeErr != nil {
+			return finalizeErr
 		}
+		returnedClaim = returned
 		terminal, ok := snapshot.Journal[record.ClientMutationID]
 		if !ok {
 			return fmt.Errorf("interrupt mutation %q has no terminal journal record", record.ClientMutationID)
@@ -684,6 +766,13 @@ func (s *Session) InterruptClientMutation(
 	}
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 	s.steeringMarked(recordedIDs)
+	if returnedClaim {
+		// The durable queue grew a claimed-but-unrun message back. QueueDepth,
+		// QueuePreview and WireState read the process-local copy, so without this
+		// the message is durably present and invisible. No wake: this Stop parks
+		// the queue, so the returned message waits for the user's next run.
+		s.reflectDurableInputQueue()
+	}
 	// No queued-input wake here, deliberately: the hold above parks the queue
 	// until the user asks for something to run, so a kick would find nothing
 	// claimable. The steering wake stays; a Stop with pending steering still
@@ -717,14 +806,28 @@ func interruptResponseFromRecord(
 // carrier claim it landed on before the carrier drained it or an append that
 // failed under it, is still accepted in the store and waits for the user's
 // next run. Steering entries are never retired here.
-func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string, recorded func(string) string) error {
+// It reports whether it put a claimed queue entry back on the queue. The caller
+// owns the reflection that makes that message visible, because only the caller
+// knows whether the queue may be woken: a Stop parks the queue, so the interrupt
+// path reflects the returned message without waking it.
+//
+// It is a pure function of the snapshot: everything it needs from the session is
+// sampled by the caller BEFORE the store serializer, and handed in. The
+// serializer never waits on Session.mu, and the transcript scan that would take
+// it is exactly such a wait.
+func finalizeClientMutationInterrupt(
+	snapshot *clientMutationSnapshot,
+	threadID string,
+	recorded func(string) string,
+	claimedRecorded map[string]bool,
+) (returned bool, err error) {
 	fence := snapshot.InterruptFence
 	if fence == nil {
-		return nil
+		return false, nil
 	}
 	record, ok := snapshot.Journal[fence.ClientMutationID]
 	if !ok {
-		return fmt.Errorf("interrupt fence %q has no journal record", fence.ClientMutationID)
+		return false, fmt.Errorf("interrupt fence %q has no journal record", fence.ClientMutationID)
 	}
 	reconcileClientSteering(snapshot, recorded, true)
 	for id, pending := range snapshot.PendingExecutions {
@@ -736,7 +839,33 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 		}
 		target, ok := snapshot.Journal[id]
 		if !ok {
-			return fmt.Errorf("interrupt target %q has no journal record", id)
+			return false, fmt.Errorf("interrupt target %q has no journal record", id)
+		}
+		// A queue entry claimed and never incorporated did not run: the Stop
+		// cancelled a turn that recorded nothing. Retiring it as interrupted
+		// would drop a durably accepted message (and its turn id would pin
+		// ActiveTurnID), so it goes back to the queue the way
+		// completeClientMutationTurnWithState returns a claimed queue turn a
+		// cancellation ended. The queue is held by this Stop, so the returned
+		// message waits rather than auto-running.
+		//
+		// "claimed" alone does not mean "never recorded": the user-input turn is
+		// written to the transcript before its incorporation mark, so a mark that
+		// failed leaves a claimed execution whose turn is already on disk.
+		// Requeueing that one would append and run it twice. The transcript
+		// itself decides -- not the store's mark, which is exactly what failed --
+		// and a recorded claim falls through to the interrupted retirement below.
+		// The fact is sampled by the caller, outside this serializer.
+		if pending.Method == clientMutationMethodQueue && pending.ExecutionState == "claimed" &&
+			!claimedRecorded[id] {
+			if returnErr := returnClaimedQueuedMutation(snapshot, id, pending, &target); returnErr != nil {
+				return false, returnErr
+			}
+			target.ExecutionState = "accepted"
+			snapshot.Journal[id] = target
+			snapshot.QueueRevision++
+			returned = true
+			continue
 		}
 		target.OperationState = clientMutationOperationTerminal
 		target.ExecutionState = "interrupted"
@@ -761,7 +890,7 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 	}
 	result, err := json.Marshal(response)
 	if err != nil {
-		return err
+		return returned, err
 	}
 	record.OperationState = clientMutationOperationTerminal
 	record.ExecutionState = "interrupted"
@@ -775,7 +904,7 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 	snapshot.Journal[fence.ClientMutationID] = record
 	snapshot.ActiveTurnID = ""
 	snapshot.InterruptFence = nil
-	return nil
+	return returned, nil
 }
 
 func (s *Session) recoverClientMutationInterrupt() error {
@@ -786,11 +915,22 @@ func (s *Session) recoverClientMutationInterrupt() error {
 		return nil
 	}
 	recordedIDs, recorded := s.recordedSteeringAwaitingMark()
+	claimedRecorded := s.claimedQueuedRecordedInTranscript()
+	returnedClaim := false
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		return finalizeClientMutationInterrupt(snapshot, s.ID(), recorded)
+		returned, finalizeErr := finalizeClientMutationInterrupt(snapshot, s.ID(), recorded, claimedRecorded)
+		returnedClaim = returned
+		return finalizeErr
 	})
 	if err == nil {
 		s.steeringMarked(recordedIDs)
+		if returnedClaim {
+			// Recovery is not a Stop, so a message it returns may run: reflect
+			// it and wake the runner rather than leave it durably present and
+			// invisible.
+			s.reflectDurableInputQueue()
+			s.wakeForPendingQueuedInput()
+		}
 	}
 	return err
 }
@@ -819,6 +959,26 @@ func (s *Session) returnClaimedClientMutationStart(clientMutationID string) erro
 		s.wakeClientMutationStart()
 	}
 	return err
+}
+
+// returnUnrunStartClaim gives back a claim ProcessClientMutationStart took for a
+// turn it will not run, by the mutation's own method: a start's claim goes back
+// through the start path, and a queued claim -- which claimClientMutationStart
+// also serves, from the head of the input queue -- goes back to the queue
+// through the queue path. An incorporated entry is left alone: its transcript
+// entry already landed, so it is neither spent nor stranded and restart recovery
+// owns it. Leaving any other claim in place spends its budget slot and pins the
+// active turn until the next restart, out of the queue the turn gate would have
+// returned it to.
+func (s *Session) returnUnrunStartClaim(claimed queuedInput) error {
+	if claimed.ClientMutationID == "" ||
+		s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
+		return nil
+	}
+	if pending := s.clientMutations.snapshot().PendingExecutions[claimed.ClientMutationID]; pending.Method == clientMutationMethodQueue {
+		return s.completeClientMutationTurn(claimed.ClientMutationID)
+	}
+	return s.returnClaimedClientMutationStart(claimed.ClientMutationID)
 }
 
 // SetClientMutationStartWakeFunc installs the runner wake seam. Accepted work

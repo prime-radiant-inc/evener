@@ -58,18 +58,17 @@ make build-web
 go build -o "$run/evener" ./cmd/evener
 go build -o "$run/evener" ./cmd/evener
 
-# 3. Isolate. A throwaway $HOME keeps hub.lock, auth-token, and session
-#    history off Jesse's real ~/.local/state/evener, and credentials.toml/
-#    providers.toml off his real ~/.config/evener — unsetting both
-#    XDG_STATE_HOME and XDG_CONFIG_HOME too, in case the ambient shell
-#    already points either somewhere real (DefaultStateGlob prefers
-#    XDG_STATE_HOME over $HOME/.local/state when it's set, and
-#    cmdutil.DefaultConfigRoot prefers XDG_CONFIG_HOME over $HOME/.config
-#    the same way).
-export HOME="$run/home"
-mkdir -p "$HOME"
-unset XDG_STATE_HOME
-unset XDG_CONFIG_HOME
+# 3. Isolate through the shared helper. A throwaway $HOME keeps hub.lock,
+#    auth-token, and session history off the real ~/.local/state/evener, and
+#    credentials.toml/providers.toml off the real ~/.config/evener —
+#    e2e_isolate_home also clears every variable that can redirect evener
+#    away from it: the XDG roots, the state/run dirs, the hub rendezvous
+#    vars, and EVENER_PROVIDERS_CONFIG/EVENER_CREDENTIALS_CONFIG, which
+#    outrank $HOME/.config/evener. Hand-rolling the unsets is how #2040's
+#    EVENER_PROVIDERS_CONFIG leak happened; the helper cannot drift from the
+#    e2e harnesses' list.
+. scripts/lib/e2e-lib.sh
+e2e_isolate_home "$run"
 
 # 4. Start the hub with -addr 127.0.0.1:0 — never a hardcoded or
 #    dispatch-assigned port. evener hub binds the listener itself and
@@ -134,10 +133,9 @@ re-derives the rest:
 export EVENER_E2E_RUN="$run"
 
 # Sibling card — works in the owning shell or a fresh one:
-run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
-export HOME="$run/home"
-unset XDG_STATE_HOME
-unset XDG_CONFIG_HOME
+run=${EVENER_E2E_RUN:?run the Pre-state in ask-web-answer.md first, then export EVENER_E2E_RUN}
+. scripts/lib/e2e-lib.sh
+e2e_isolate_home "$run"
 PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
 HUB=http://127.0.0.1:$PORT
 TOKEN=$(cat "$HOME/.local/state/evener/auth-token")

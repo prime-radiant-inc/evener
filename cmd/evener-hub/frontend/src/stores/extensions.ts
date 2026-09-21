@@ -2,7 +2,7 @@
 // cluster (Marketplaces & Plugins, Plugins/Skills directories, MCP servers -
 // panes/settings/sections/{marketplacesPlugins,dirListSetting,pluginsDirs,
 // skillsDirs,mcp}). It rides the single AppwireClientLike connection.ts wires
-// via useConnectionStore.getState().connect(client), same as threads.ts/
+// via connectionStore.getState().connect(client), same as threads.ts/
 // tree.ts - this store has no connect() of its own.
 //
 // Split, deliberately, into two halves with different failure conventions,
@@ -18,7 +18,7 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type { AnyNotification, AppwireClientLike, PathValidateResponse } from "@evener/appwire-client";
+import type { AnyNotification, PathValidateResponse } from "@evener/appwire-client";
 import {
   createLaunchLayerStore,
   createMarketplacesStore,
@@ -32,7 +32,12 @@ import {
 } from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
+import {
+  type ConnectionStoreState,
+  connectedClientPort,
+  connectionStore,
+  onConnectionNotification,
+} from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { launchConfigStore } from "./launchConfig";
 
@@ -46,13 +51,9 @@ export interface ExtensionsStoreState extends MarketplacesState, PluginsState, L
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("extensions store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
-}
+// The shared port's `request` forwards to connectionStore's CURRENT client on
+// every call; only the notification side is extensions-specific (see below).
+const { request } = connectedClientPort("extensions");
 
 // The marketplaces, installed-plugins and global launch-layer stores proper
 // live in the package; these are the app's one instance of each, over a
@@ -83,7 +84,7 @@ function onHubConfigNotification(handler: (n: AnyNotification) => void): () => v
 }
 
 const hubClient = {
-  request: (method, params, opts) => requireClient().request(method, params, opts),
+  request,
   onNotification: onHubConfigNotification,
 } satisfies MarketplacesClient & PluginsClient & LaunchLayerClient;
 const marketplaces = createMarketplacesStore(hubClient);
@@ -184,7 +185,8 @@ onConnectionNotification((n) => {
 });
 
 // resetExtensionsStoreForTests resets the store and every core behind it to
-// their initial state. extensions.ts is a singleton store shared by the whole app, so
+// their reset state. Core fields explicitly retained across reset, such as the
+// marketplace publication version, survive here too. extensions.ts is a singleton store shared by the whole app, so
 // extensions.test.ts must reset it between tests to keep them isolated - no
 // production code should ever call this (mirrors threads.ts/tree.ts's own
 // reset*StoreForTests precedent).
@@ -198,6 +200,7 @@ export function resetExtensionsStoreForTests(): void {
   // would otherwise survive the reset.
   extensionsStore.setState({
     ...marketplaces.getInitialState(),
+    marketplacesPublicationVersion: marketplaces.getState().marketplacesPublicationVersion,
     ...plugins.getInitialState(),
     ...launchLayer.getInitialState(),
   });

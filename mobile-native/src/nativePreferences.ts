@@ -13,6 +13,7 @@ import {
 	normalizeConfig,
 	toWireConfig,
 	type TranscriptDisplayConfigV1,
+	WireError,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import {
@@ -35,6 +36,11 @@ export interface PreferenceState<T> {
 	conflict: boolean;
 	writeUncertain: boolean;
 	storageUnavailable: boolean;
+	/** The port answered but what it held could not be read - see
+	 * keybindingsStore's own field of the same name. Always false for
+	 * transcriptMobile: the pre-migration transcript design has no
+	 * unreadable-record recovery path of its own. */
+	draftUnreadable: boolean;
 }
 
 /** The confirmed payload as the shared store holds it: its rule list is the
@@ -43,8 +49,14 @@ export type ConfirmedKeybindings = Omit<KeybindingsOverrides, "rules"> & {
 	rules: readonly KeybindingsRule[];
 };
 
+export type KeybindingsPreferenceState = PreferenceState<ConfirmedKeybindings> & {
+	draftError: string | null;
+	hubError: string | null;
+	loadError: string | null;
+};
+
 export interface NativePreferencesSnapshot {
-	keybindings: PreferenceState<ConfirmedKeybindings>;
+	keybindings: KeybindingsPreferenceState;
 	transcriptMobile: PreferenceState<{
 		revision: number;
 		config: TranscriptDisplayConfigV1;
@@ -61,6 +73,7 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	conflict: false,
 	writeUncertain: false,
 	storageUnavailable: false,
+	draftUnreadable: false,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -97,14 +110,45 @@ function decodeTranscriptPatch(value: unknown): {
 	return { revision: value.revision, config };
 }
 
+// postApplyPatch extracts the applied {revision, config} from a
+// transcriptDisplayPostApply WireError (appwire.ErrorTranscriptDisplayPostApply,
+// hubcore.TranscriptDisplayPostApplyError): the patch APPLIED on the hub
+// before a follow-up durable step failed, and the hub already broadcast the
+// applied revision to every other client. Mirrors keybindingsStore.ts's
+// rejectionPayload for the sibling store's KeybindingsPostRenameError.
+// Returns undefined for any other rejection, which saveTranscript then
+// treats as an unconfirmed write as before.
+function postApplyPatch(
+	error: unknown,
+): { revision: number; config: TranscriptDisplayConfigV1 } | undefined {
+	if (
+		!(error instanceof WireError) ||
+		error.evenerErrorInfo !== "transcriptDisplayPostApply"
+	)
+		return undefined;
+	const data = error.data;
+	if (!isRecord(data)) return undefined;
+	if (data.layout !== "mobile") return undefined;
+	try {
+		return decodeTranscriptPatch(data.applied);
+	} catch {
+		return undefined;
+	}
+}
+
 const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
 
 const KEYBINDINGS_LOAD_ERROR_MESSAGE =
 	"The hub could not load its saved shortcuts. Repair the hub settings file before editing.";
 
-function hubErrorMessage(state: KeybindingsStoreState): string | null {
-	if (state.loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
-	return state.hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
+export function keybindingsErrorMessage(
+	draftError: string | null,
+	hubError: string | null,
+	loadError: string | null,
+): string | null {
+	if (draftError !== null) return draftError;
+	if (loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
+	return hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
 }
 
 // The keybinding domain is a projection of the shared store's state: the
@@ -116,7 +160,7 @@ function hubErrorMessage(state: KeybindingsStoreState): string | null {
 // unconfirmed write is the `writeUncertain` fact, rendered as its own notice.
 function keybindingsDomain(
 	state: KeybindingsStoreState,
-): PreferenceState<ConfirmedKeybindings> {
+): KeybindingsPreferenceState {
 	return {
 		support: state.hubSupport,
 		loading: state.hubLoading,
@@ -129,11 +173,25 @@ function keybindingsDomain(
 					...(state.loadError === null ? {} : { loadError: state.loadError }),
 				}
 			: null,
-		draft: state.draft,
-		error: state.draftError ?? hubErrorMessage(state),
+		// state.draft carries its own `generation` staleness stamp (see
+		// readyGenerationFence.ts), which PreferenceState<ConfirmedKeybindings>
+		// has no field for - stripped here rather than forwarded structurally.
+		draft:
+			state.draft === null
+				? null
+				: { version: state.draft.version, revision: state.draft.revision, rules: state.draft.rules },
+		error: keybindingsErrorMessage(
+			state.draftError,
+			state.hubError,
+			state.loadError,
+		),
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
+		draftUnreadable: state.draftUnreadable,
+		draftError: state.draftError,
+		hubError: state.hubError,
+		loadError: state.loadError,
 	};
 }
 
@@ -387,16 +445,25 @@ export class NativePreferences {
 				}),
 			);
 		} catch (error) {
-			this.publish({
-				transcriptMobile: {
-					...this.state.transcriptMobile,
-					saving: false,
-					error: HUB_UNCONFIRMED_MESSAGE,
-					conflict: true,
-					writeUncertain: true,
-				},
-			});
-			throw error;
+			// The patch APPLIED before a follow-up durable step failed: the hub
+			// already published the applied revision and will broadcast it to
+			// every other client (app_rpc_transcript_display.go). Reconcile
+			// from it below the same way a successful response does, instead
+			// of treating this write as rejected and blocking further edits.
+			const applied = postApplyPatch(error);
+			if (applied === undefined) {
+				this.publish({
+					transcriptMobile: {
+						...this.state.transcriptMobile,
+						saving: false,
+						error: HUB_UNCONFIRMED_MESSAGE,
+						conflict: true,
+						writeUncertain: true,
+					},
+				});
+				throw error;
+			}
+			value = applied;
 		}
 		const latest = this.state.transcriptMobile.confirmed;
 		const conflict =

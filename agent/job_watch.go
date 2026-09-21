@@ -105,8 +105,10 @@ const (
 )
 
 // delegateQuietWindow is how long a running delegate may emit no
-// parent-observable activity before the quiet-job watchdog fires one owner
-// notification. delegateQuietCheckInterval is how often the watchdog goroutine
+// parent-observable activity before the quiet-job watchdog fires an owner
+// notification, and the cadence on which that notification repeats while the
+// delegate stays silent-and-running (one wake per further window, never a
+// burst). delegateQuietCheckInterval is how often the watchdog goroutine
 // re-evaluates quiet duration. Both are package vars ONLY so tests can scale
 // watchdog timing down; they are not config knobs. The production window is the
 // 10 minutes the model-facing message names.
@@ -2484,6 +2486,38 @@ func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiver
 	return formatWatchListInspectResult(pending, history)
 }
 
+// watchListToolResultForReceiverShapes returns the receiver-keyed list rows for
+// both receiver-key shapes: the delegate-keyed
+// (receiverSessionID, receiverDelegateID) pair, and — when a delegate id is
+// present — the session-keyed (receiverSessionID, "") pair that
+// configureDescendantReceiverWatch installs. A config's receiverDelegateID is
+// either empty or the delegate, never both, so the two row sets are disjoint.
+// It matches both shapes in ONE snapshot pass: the history ring is walked
+// latest-first, and formatting each shape separately before concatenating would
+// interleave an older entry ahead of a newer one.
+func (jm *jobManager) watchListToolResultForReceiverShapes(receiverSessionID, receiverDelegateID string) jobWatchListToolResult {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
+	if receiverSessionID == "" {
+		return jobWatchListToolResult{}
+	}
+	matches := func(sessionID, delegateID string) bool {
+		if sessionID != receiverSessionID {
+			return false
+		}
+		return delegateID == receiverDelegateID || (receiverDelegateID != "" && delegateID == "")
+	}
+	pending, history := jm.watchInspectSnapshots(
+		func(cfg *watchConfig) bool {
+			return cfg != nil && matches(cfg.receiverSessionID, cfg.receiverDelegateID)
+		},
+		func(h watchHistoryEntry) bool {
+			return matches(h.receiverSessionID, h.receiverDelegateID)
+		},
+	)
+	return formatWatchListInspectResult(pending, history)
+}
+
 // watchInspectMatch is one inspected watch, copied under jm.mu, plus which of
 // the three sources it came from so the caller can format it after the lock is
 // released.
@@ -2560,6 +2594,19 @@ func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, recei
 		return match.result(), true
 	}
 	return jobWatchInspectToolResult{}, false
+}
+
+// inspectReceiverWatchByIDShapes is inspectReceiverWatchByID over both
+// receiver-key shapes, for the same reason
+// watchListToolResultForReceiverShapes queries both.
+func (jm *jobManager) inspectReceiverWatchByIDShapes(watchID, receiverSessionID, receiverDelegateID string) (jobWatchInspectToolResult, bool) {
+	if inspect, ok := jm.inspectReceiverWatchByID(watchID, receiverSessionID, receiverDelegateID); ok {
+		return inspect, true
+	}
+	if strings.TrimSpace(receiverDelegateID) == "" {
+		return jobWatchInspectToolResult{}, false
+	}
+	return jm.inspectReceiverWatchByID(watchID, receiverSessionID, "")
 }
 
 func inspectResultFromWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
@@ -3070,12 +3117,16 @@ func watchListEntryLess(entries []watchListEntry) func(i, j int) bool {
 func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
 	receiverSessionID = strings.TrimSpace(receiverSessionID)
 	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
-	if receiverSessionID == "" || receiverDelegateID == "" {
+	if receiverSessionID == "" {
 		return nil
 	}
-	return formatWatchSummaries(jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
+	entries := formatWatchSummaries(jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
 		return watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID)
 	}))
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries
 }
 
 func watchConfigMatchesReceiver(cfg *watchConfig, receiverSessionID, receiverDelegateID string) bool {

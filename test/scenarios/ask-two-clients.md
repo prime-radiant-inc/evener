@@ -18,11 +18,11 @@ this card is rebuilt around, because they invert what it used to say:
   field now, not a client convention.
 - **The losing tab does NOT drop text into the composer.** `sendAskAnswers` /
   `dropComposedTextIntoComposer` are gone with the vanilla frontend (`660376f78`).
-  `askDockStore.sendBatch` (`composer/askDock/askDockStore.ts:243-269`) awaits only the
+  `askDockStore.sendBatch` (`appwire-client/typescript/askDock.ts:418-449`) awaits only the
   **durable outbox enqueue**, then removes the batch and records its keys in
-  `excludedKeys` forever (`:113-138`) — so the dock clears in both tabs before either
+  `excludedKeys` forever (`:269-296`) — so the dock clears in both tabs before either
   `turn/start` has been answered. The rejection surfaces later, through the durable
-  recovery path (`stores/mutationDispatcher.ts:104-108` →
+  recovery path (`appwire-client/typescript/state/mutation/dispatcher.ts:202-206` →
   `Composer.tsx:271-297` / `composer/queue/QueueStrip.tsx:345-393`), never as an inline
   composer drop. `sendBatch`'s own `catch` + toast (`AskDock.tsx:295-306`) is for a
   **local enqueue** failure only; a lost race does not reach it.
@@ -42,12 +42,12 @@ and assert what each tab converges to.
   Pre-state first. The handoff is its run directory, not a port
   (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"):
   ```bash
-  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
-  export HOME="$run/home"
-  unset XDG_STATE_HOME
+  run=${EVENER_E2E_RUN:?run the Pre-state in ask-web-answer.md first, then export EVENER_E2E_RUN}
+  . scripts/lib/e2e-lib.sh
+  e2e_isolate_home "$run"
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.evener/auth-token")
+  TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```

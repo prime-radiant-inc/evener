@@ -565,6 +565,18 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending []askQuestion
 
+	// steeringCarrierClaimClientMutationID is the client mutation id of the
+	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is
+	// currently draining, set for the duration of that one call. It tells
+	// recordFailedSteeringSelection (session_queue.go) that a selection
+	// failure for THIS client mutation id is the carrier's own claimed steer
+	// — whose mere acceptance already cleared askPending, so the TurnFailure
+	// it records must be tagged schema.TurnFailureInfo.SteeringCarrier too.
+	// turnResolvesAskBoundary reads that tag as a resolution boundary on
+	// restore.
+	// Guarded by mu, like askPending above.
+	steeringCarrierClaimClientMutationID string
+
 	// pendingEscalations holds one waiter per in-flight sandbox-exemption escalation
 	// (M7), keyed by its opaque id — the channel its tool-exec goroutine parks on
 	// plus the redacted card payload. The tool-exec goroutine registers a waiter,
@@ -2032,6 +2044,24 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
 }
 
+// tombstoneLastPairPersistedLocked replaces the most recently logged pair with
+// an empty marker turn. The caller has just learned that pair's write recorded
+// nothing, and the pair log feeds publishFoldTransaction's post-marker
+// rewrite: a canceled round's unrecorded results riding that rewrite would
+// become durable state a restart derives from. The replacement is a tombstone
+// rather than a removal because a fold may hold a positional snapshot of this
+// log taken under s.mu while the write was still in flight: removing the
+// entry would shift every later pair into the dropped position, so a pair
+// recorded after the failed one would fall below the snapshot's rewrite
+// boundary and vanish from the resumed history. The tombstone is safe
+// because the caller holds s.mu inside the same attentionMu hold that
+// logged the pair, so the last entry is that pair's own.
+func (s *Session) tombstoneLastPairPersistedLocked() {
+	if n := len(s.persistedAppendLog); n > 0 {
+		s.persistedAppendLog[n-1] = schema.Turn{}
+	}
+}
+
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
 }
@@ -2078,6 +2108,17 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
 	err := s.writeTranscriptLocked(persisted)
+	if err != nil {
+		// The write recorded nothing: the ordinary Append door returns an
+		// error only when no complete line was recorded (a whole line that
+		// landed but did not sync returns nil and is retained), so the pair
+		// just logged must not ride the fold rewrite tail back in after the
+		// markers as durable state the live side never settled. The live
+		// turn stays for the caller's own failure handling.
+		s.mu.Lock()
+		s.tombstoneLastPairPersistedLocked()
+		s.mu.Unlock()
+	}
 	s.attentionMu.Unlock()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

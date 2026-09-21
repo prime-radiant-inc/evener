@@ -20,7 +20,11 @@
 import { create } from "zustand";
 import {
   applyNotification,
+  foldWarningParams,
+  isActiveItem,
   isStaleCursorError,
+  itemIdentityMatches,
+  joinWarningParts,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -28,6 +32,7 @@ import {
 import type {
   AnyNotification,
   InputItem,
+  ItemModel,
   MutationReceipt,
   ThreadItem,
 } from "@evener/appwire-client";
@@ -40,7 +45,7 @@ import type {
 import {
   activityState,
   clusterActivities,
-  isActiveItem,
+  itemAttachments,
   projectItemAttachments,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
@@ -585,6 +590,20 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   switch (item.kind) {
     case "assistant":
       return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
+    case "attachments":
+      // Only the display name is bounded — it is plain display text the
+      // renderer inserts into accessibility labels and modal copy. src is a
+      // data URI or a resolved fetch URL, and cutting it yields something the
+      // renderer cannot decode, so it passes through verbatim.
+      return {
+        ...item,
+        items: item.items.map((attachment) => ({
+          ...attachment,
+          name: attachment.name
+            ? truncateText(attachment.name, MAX_ITEM_BYTES)
+            : attachment.name,
+        })),
+      };
     case "activity":
       return {
         ...item,
@@ -746,6 +765,25 @@ function containingTurnStatus(
   return "inProgress";
 }
 
+// The reducer's own item/started and item/completed folds (applyNotification,
+// via mergeItemImages) already resolved this item's images against whatever
+// the model held before it — a raw wire item carrying no images field means
+// "unchanged", never "removed" (the same rule imagesToItemImagesForSession
+// documents). Finds that folded ItemModel in conv (already updated by
+// applyThreadNotification before this call) using the package's own
+// identity rule (itemIdentityMatches: transcriptKey when both sides carry
+// one, else id) rather than a local copy of it.
+function findFoldedItem(
+  conv: MobileConversation,
+  item: ThreadItem,
+): ItemModel | undefined {
+  for (const turn of conv.turns) {
+    const found = turn.items.find((candidate) => itemIdentityMatches(candidate, item));
+    if (found) return found;
+  }
+  return undefined;
+}
+
 // Project a wire ThreadItem into a mobile timeline item for insertion from
 // item/started and item/completed notifications. This reuses the same field
 // mapping as the full projection but handles a single item in isolation.
@@ -864,7 +902,7 @@ export function createConversationStore() {
     conversation: MobileConversation,
     n: AnyNotification,
   ): MobileConversation {
-    return applyNotification(conversation, n, Date.now()) as MobileConversation;
+    return applyNotification(conversation, n, Date.now());
   }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
@@ -2516,7 +2554,12 @@ export function createConversationStore() {
               : projected;
             if (projectedWithReasoning !== null) {
               // Lifecycle events replace the whole source item, including any
-              // companion attachment row. An empty image list removes it.
+              // companion attachment row — but an empty or absent input-image
+              // list is unchanged, never a removal (mergeItemImages,
+              // imagesToItemImagesForSession; closes #1656), so the
+              // replacement below reads attachments from the reducer-folded
+              // item (findFoldedItem/itemAttachments), which already carries
+              // forward whatever images the fold kept.
               if (!preservesReasoningOutput) {
                 truncatedItemIds.delete(timelineIdentity(projectedWithReasoning));
               }
@@ -2524,19 +2567,27 @@ export function createConversationStore() {
                 truncateAndRecordSingle(projectedWithReasoning),
               ];
               const attachmentId = `${params.item.id}:attachments`;
-              const attachments = projectItemAttachments(params.item);
+              const foldedItem = findFoldedItem(conv, params.item);
+              const attachments = foldedItem
+                ? itemAttachments(foldedItem)
+                : projectItemAttachments(params.item);
               markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
-                replacement.push({
-                  kind: "attachments",
-                  id: attachmentId,
-                  items: attachments,
-                  ...(params.item.transcriptKey
-                    ? { sourceTranscriptKey: params.item.transcriptKey }
-                    : projectedWithReasoning.kind === "activity"
-                      ? { sourceTranscriptKey: params.item.id }
-                      : {}),
-                });
+                // The companion row is built from wire images, not projected
+                // here, so it takes the same per-item bound the authoritative
+                // install paths apply (truncateItem) — src passes through.
+                replacement.push(
+                  truncateItem({
+                    kind: "attachments",
+                    id: attachmentId,
+                    items: attachments,
+                    ...(params.item.transcriptKey
+                      ? { sourceTranscriptKey: params.item.transcriptKey }
+                      : projectedWithReasoning.kind === "activity"
+                        ? { sourceTranscriptKey: params.item.id }
+                        : {}),
+                  }),
+                );
                 markLiveOwned(attachmentId);
               }
               const items: MobileTimelineItem[] = [];
@@ -2808,13 +2859,64 @@ export function createConversationStore() {
           }
 
           case "warning": {
-            const params = n.params as { message?: string; title?: string };
-            const id = `warning:${params.title ?? params.message ?? "warning"}:${++liveNoticeSerial}`;
+            // The reducer's own "warning" fold (applyThreadNotification,
+            // above) computes this from n.params too — foldWarningParams is
+            // a pure function of params alone, so calling it here again
+            // gives the exact value the reducer stored on the model when
+            // there was an active turn to store it on, without reading that
+            // value back off the model. When there's no active turn the
+            // reducer drops the frame (nowhere wire-true to put it), so
+            // this row is the only place it folds through either way.
+            const folded = foldWarningParams(n.params);
+            const title = folded.title ?? "Warning";
+            // Compose every non-blank part rather than picking one with ||:
+            // a warning carrying both a message and a hint shows both, the
+            // same as the web and TUI renderers. title stays its own field
+            // here, matching the canonical projector's row
+            // (project.ts's warningItem), which also carries title as its own
+            // field; both join message+hint into this same detail string.
+            const detail = joinWarningParts([folded.text, folded.hint]);
+            // Share the canonical row's identity. The reducer's warning fold
+            // (applyThreadNotification, above) has already appended this
+            // frame's warning item to the active turn as `conv` was built, so
+            // the item it just created is that turn's last warning item, and
+            // projectConversation's warningItem (project.ts) keys the
+            // canonical row on that same item.id. Distinct ids would leave a
+            // reread seeing this live-owned row as an omitted tail beside the
+            // canonical row — the warning shown twice, and an identity remount
+            // for good measure. (A frame the reducer dropped — no active turn —
+            // has no model item and no canonical row either, so it takes the
+            // synthetic serial id below.)
+            const activeTurn = conv.turns.find(
+              (turn) => turn.id === conv.activeTurnId,
+            );
+            const modelWarning = activeTurn?.items
+              .filter((item) => item.type === "warning")
+              .at(-1);
+            // The model's warning ids are per-turn counts
+            // (`item_warning_live_<turn>_<count>`), and warnings are not
+            // transcript-persisted: a reread drops the model's warning items
+            // while this live-owned row stays, so the next warning in the same
+            // turn is handed the count-0 id again. Adopting it a second time
+            // would put two rows under one id (and one identity) — so only
+            // take the model id while no retained row already holds it, and
+            // fall back to the unique serial otherwise. The serial is unique;
+            // embedding the title (as an earlier round did) merely bloated
+            // this id, and the model id never carries it either.
+            const canonicalId = modelWarning?.id;
+            const id =
+              canonicalId !== undefined &&
+              !liveOwnedRevs.has(canonicalId) &&
+              !conv.items.some(
+                (row) => timelineIdentity(row) === canonicalId,
+              )
+                ? canonicalId
+                : `warning:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,
-              title: params.title ?? "Warning",
-              detail: params.message ?? "",
+              title,
+              detail,
             };
             // Residual 2: Mark as live-owned — created by an actual live
             // notification.

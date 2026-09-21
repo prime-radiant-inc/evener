@@ -530,6 +530,17 @@ test("a continuation for a removed branch cannot change the retained tree", () =
   expect(graftContinuationTree(current, "session:missing", tree([shell("foreign")]))).toBe(current);
 });
 
+test("a continuation page from a different revision is not grafted", () => {
+  const current = tree([shell("a")], "next");
+  const newer = { ...tree([shell("b")]), revision: current.revision + 1 };
+  // The page's cursor names a position in a revision the retained tree no
+  // longer reflects, so its entries must not be spliced in and the retained
+  // revision must not advance to claim it holds a newer tree.
+  expect(graftContinuationTree(current, "session:root", newer)).toBe(current);
+  expect(graftContinuationTree(current, "session:root", newer).revision).toBe(current.revision);
+  expect(ids(current.root)).toEqual(["job:a"]);
+});
+
 test("a nested page cannot replace or add coverage on an unrelated branch", () => {
   const current = tree([delegate(session("child", [shell("a")], "child-next"))], "root-next");
   const patch = tree([delegate(session("child", [shell("b")]))]);

@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from "vitest";
 import type {
+  AnyNotification,
   EvenerThread,
   InputItem,
   QueueState,
@@ -22,7 +23,7 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "./project";
-import { hydrateThread } from "@evener/appwire-client";
+import { applyNotification, hydrateThread } from "@evener/appwire-client";
 import { projectConversation } from "./project";
 
 // The oracle drives the shim exactly as the service does: hydrate the wire
@@ -433,6 +434,144 @@ describe("projectThread", () => {
       expect(a?.kind).toBe("activity");
       if (a?.kind === "activity") expect(a.state).toBe("running");
     });
+
+    // Live reasoning deltas accumulate in reasoningSummaries (reducer.ts's
+    // appendReasoningDelta), never in item.text — a mid-stream reread
+    // projects a model whose reasoning item has real content in
+    // reasoningSummaries but an empty text, which must still show that
+    // content instead of an empty row.
+    it("projects live reasoning deltas (reasoningSummaries) even when the settled item.text is empty", () => {
+      let model = hydrateThread(
+        { thread: thread([turn("t1", [], { status: "inProgress" })]) },
+        "ref-1",
+        0,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "inProgress" },
+          },
+        } as AnyNotification,
+        1000,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "r1", summaryIndex: 0, delta: "thinking hard" },
+        } as AnyNotification,
+        1001,
+      );
+      const c = projectConversation(model);
+      const a = c.items.find((row) => row.kind === "activity" && row.id === "r1");
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.detail.output).toBe("thinking hard");
+      }
+    });
+
+    // reducer.ts's wireItemToModel seeds reasoningSummaries from ANY
+    // non-empty initial wire text (item/started, or a replayed item on
+    // hydrate), and mergeReasoning then keeps that seeded summary across
+    // later merges once it's set. A later completion carrying different,
+    // authoritative text must not be masked by the stale seeded summary.
+    it("shows the completion's authoritative text over a stale seeded reasoningSummaries entry", () => {
+      let model = hydrateThread(
+        { thread: thread([turn("t1", [], { status: "inProgress" })]) },
+        "ref-1",
+        0,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "inProgress", text: "draft thought" },
+          },
+        } as AnyNotification,
+        1000,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "completed", text: "final thought" },
+          },
+        } as AnyNotification,
+        1001,
+      );
+      const c = projectConversation(model);
+      const a = c.items.find((row) => row.kind === "activity" && row.id === "r1");
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.detail.output).toBe("final thought");
+      }
+    });
+
+    // reducer.ts's appendReasoningDelta appends ONLY to reasoningSummaries,
+    // never to item.text — so an ACTIVE item whose item/started carried a
+    // non-empty partial seed keeps that stale seed in item.text while later
+    // deltas grow reasoningSummaries past it. Preferring item.text
+    // unconditionally (as a settled item correctly does) loses the
+    // streamed growth for an item that is still running.
+    it("shows the growing joined summary over a stale partial seed for an ACTIVE item", () => {
+      let model = hydrateThread(
+        { thread: thread([turn("t1", [], { status: "inProgress" })]) },
+        "ref-1",
+        0,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "inProgress", text: "partial seed" },
+          },
+        } as AnyNotification,
+        1000,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            itemId: "r1",
+            summaryIndex: 0,
+            // wireItemToModel already seeded reasoningSummaries[0] from
+            // item/started's "partial seed" text; this delta is the
+            // CONTINUATION appended after it (appendReasoningDelta), not a
+            // restatement, so the joined chunk list reads as one growing
+            // whole: "partial seed" + this delta.
+            delta: " continues growing well past the seed",
+          },
+        } as AnyNotification,
+        1001,
+      );
+      const c = projectConversation(model);
+      const a = c.items.find((row) => row.kind === "activity" && row.id === "r1");
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.detail.output).toBe("partial seed continues growing well past the seed");
+      }
+    });
   });
 
   describe("shell/tool/MCP call items", () => {
@@ -769,7 +908,7 @@ describe("projectThread", () => {
             status: "completed",
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       // ask_user is a question item, not clustered with surrounding tools.
       expect(kinds(c)).toEqual(["activity", "question", "activity"]);
@@ -1187,7 +1326,7 @@ describe("projectThread", () => {
             argumentsJson: args,
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       expect(kinds(c)).toEqual(["user", "question"]);
       const q = c.items.find((i) => i.kind === "question");
@@ -1231,7 +1370,7 @@ describe("projectThread", () => {
             text: "[answers]\n1. [H] → A",
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       // A later userMessage resolves the pending ask, so no question item.
       expect(kinds(c)).not.toContain("question");
@@ -1259,7 +1398,7 @@ describe("projectThread", () => {
             argumentsJson: args,
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       expect(kinds(c)).not.toContain("question");
     });
@@ -1353,6 +1492,98 @@ describe("projectThread", () => {
       ]);
       const c = projectThread(t);
       expect(kinds(c)).toEqual(["activity"]);
+    });
+
+    // A live "warning" notification is the only way an ItemModel ever carries
+    // type "warning" (reducer.ts's case "warning" fold; there is no wire
+    // ThreadItem.warning field, so hydrateThread alone can never produce one) -
+    // these tests drive that fold directly rather than a static fixture. A
+    // warning projects to the same attention row the live applier emits (kind
+    // "failure", title as its own field, message+hint joined as detail), not
+    // the generic unknown-activity fallback: the row changed kind the moment a
+    // reread replaced the live one. Each case asserts the same contract - every
+    // non-blank part appears, as title or in the detail - for a different
+    // combination of parts present, including the generic "Warning" title when
+    // the frame carries none.
+    it.each<[string, Record<string, unknown>, string, string[]]>([
+      [
+        "a message-less frame",
+        { title: "Sandbox blocked", hint: "retry later" },
+        "Sandbox blocked",
+        ["Sandbox blocked", "retry later"],
+      ],
+      [
+        "a message with a hint, no title",
+        { message: "disk is nearly full", hint: "retry later" },
+        "Warning",
+        ["disk is nearly full", "retry later"],
+      ],
+      [
+        "a title together with a message and hint",
+        { title: "Sandbox blocked", message: "disk is nearly full", hint: "retry later" },
+        "Sandbox blocked",
+        ["Sandbox blocked", "disk is nearly full", "retry later"],
+      ],
+    ])("projects a warning as the live attention row, composing every part (%s)", (_case, warningParams, expectedTitle, expectedSubstrings) => {
+      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
+        evener: evenerThread({ activeTurnId: "t1" }),
+      });
+      let model = hydrateThread({ thread: t }, "ref-1", 1000);
+      model = applyNotification(
+        model,
+        {
+          method: "warning",
+          params: { threadId: "thread-1", ref: "ref-1", ...warningParams },
+        } as AnyNotification,
+        2000,
+      );
+      const c = projectConversation(model);
+      const row = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
+      expect(row?.kind).toBe("failure");
+      if (row?.kind === "failure") {
+        expect(row.title).toBe(expectedTitle);
+        const shown = `${row.title}\n${row.detail}`;
+        for (const substring of expectedSubstrings) expect(shown).toContain(substring);
+      }
+    });
+
+    // item.warning rides an untyped wire param map, so title can be any JSON
+    // value at runtime despite ItemModel declaring it string — WarningItem.tsx
+    // and transcriptProjector.ts's itemSummary both guard with hasWarningText
+    // before touching it. The reducer's fold normalizes a live frame's
+    // non-string title away, but a hand-built or future model can still carry
+    // one, so warningItem guards it too and must fall back to the generic
+    // "Warning" label rather than hand a non-string to a React Native <Copy>
+    // child.
+    it("falls back to the generic Warning title for a non-string title on the canonical path", () => {
+      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])]);
+      const base = hydrateThread({ thread: t }, "ref-1", 0);
+      const turnModel = base.turns[0]!;
+      const model = {
+        ...base,
+        turns: [
+          {
+            ...turnModel,
+            items: [
+              ...turnModel.items,
+              {
+                id: "warning-raw",
+                turnId: "t1",
+                type: "warning",
+                text: "careful",
+                status: "completed",
+                warning: { title: 42 as unknown as string, hint: "slow down" },
+              },
+            ],
+          },
+        ],
+      };
+      const row = projectConversation(model).items.find((entry) => entry.id === "warning-raw");
+      expect(row).toMatchObject({
+        kind: "failure",
+        title: "Warning",
+        detail: "careful — slow down",
+      });
     });
   });
 
