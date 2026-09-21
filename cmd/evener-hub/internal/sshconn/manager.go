@@ -138,9 +138,12 @@ type Options struct {
 	// contender has reached a gate the test holds before another one does.
 	beforeHostGate func(name string)
 	// beforeUpdateHostSwap, when set, runs inside UpdateHost's gate hold after the
-	// pre-swap capture and before the registry Update. Tests use it to drive a
-	// directly driven registry insert into the Get/Update window, so an update can
-	// be observed swapping an entry it did not capture.
+	// retired channel's teardown and before the registry Update. That is exactly
+	// the window a gate-free reader would see: the retired channel is already
+	// unmapped while the registry still holds the pre-edit entry. Tests use it to
+	// drive a directly driven registry insert into the teardown/Update window, so
+	// an update can be observed swapping an entry it did not capture, and to
+	// assert the state a gate-free row build would observe in that window.
 	beforeUpdateHostSwap func(name string)
 	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
 	// the link drop and before it contends for the host gate. Tests use it to park
@@ -1214,10 +1217,33 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 }
 
 // UpdateHost replaces name's registry entry with entry and tears the host's
-// channel down as one atomic step, under the per-host gate: the swap and the
-// teardown of the identity it retires happen inside the same hold, so a
-// concurrent Ensure cannot publish a channel for the captured pre-update entry
-// after the swap, and the host's live resources never straddle two identities.
+// channel down as one atomic step, under the per-host gate. Inside the one
+// hold the order is fixed: validate, then tear the retired channel down, then
+// swap the registry, then release.
+//
+// The teardown comes BEFORE the swap because a gate-free reader must never pair
+// the new entry with the retired channel. The row build behind host/list and
+// host/status takes no host gate: it snapshots the registry and then resolves
+// the channel by name alone (ClientIfAttached/ChannelIfAttached compare no
+// registrations). If the swap landed first, such a reader could take the new
+// entry inside that window and pair it with the still-mapped channel of the
+// identity this call is retiring, record the retired host's handshake and facts
+// under the new generation — which is above the generation fence the swap
+// itself advances — and render the retired host's server facts for the new
+// identity until the next successful attach. Unmapping the channel before the
+// new generation becomes visible makes that pairing impossible. The reverse
+// window, the old entry observed with no channel, is harmless: it can only make
+// a row render offline, and the retire leaves that clean.
+//
+// Validation comes before the teardown because the caller's contract is that an
+// error from this method means nothing live changed. hostreg.ValidateEntry is
+// the side-effect-free half of the same Normalize+validateEntry pass
+// Registry.Update runs, so checking it here lets the teardown stay
+// unconditional — a shape refusal returns before the channel is touched, and
+// the swap below cannot refuse for a shape reason. Only a directly driven
+// registry can still refuse the swap (the name dropped from under the gate);
+// that path returns the error with the retired channel already gone, and the
+// host reattaches on the next Ensure.
 //
 // Every update tears the channel down, whether or not the edit changed a field
 // the dial reads. The reason is the fence, not the dial: a supervisor captures
@@ -1274,10 +1300,14 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// hadCaptured is false even then; it keeps teardownHostChannel's own
 	// contract explicit and gates the caller's hook.
 	before, hadCaptured := m.reg.Get(name)
-	if m.opts.beforeUpdateHostSwap != nil {
-		m.opts.beforeUpdateHostSwap(name)
-	}
-	if err := m.reg.Update(entry); err != nil {
+	// Validate before anything live moves. The caller's contract is that an
+	// error from this method means nothing live changed, so a refused update
+	// must not have torn the host's channel down on its way out. ValidateEntry
+	// is the side-effect-free half of the same Normalize+validateEntry pass
+	// Registry.Update runs below; doing it here, ahead of the teardown, is what
+	// lets the teardown stay unconditional — the swap below can then refuse only
+	// for a reason independent of the entry's shape.
+	if err := hostreg.ValidateEntry(entry); err != nil {
 		lock.Unlock()
 		return err
 	}
@@ -1291,7 +1321,30 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	if hadCaptured {
 		teardownName = before.Name
 	}
+	// Tear the retired channel down BEFORE the swap becomes visible. A gate-free
+	// row build resolves a name through the registry and then looks the channel
+	// up by name alone, so a swap that landed first would let it pair the new
+	// entry with this retired channel; unmapping first closes that window. See
+	// the method comment.
 	ch := m.teardownHostChannel(teardownName, before, hadCaptured)
+	if m.opts.beforeUpdateHostSwap != nil {
+		m.opts.beforeUpdateHostSwap(name)
+	}
+	if err := m.reg.Update(entry); err != nil {
+		// Validation above already passed, so this refusal is not a shape
+		// refusal: only a directly driven registry — one whose name was dropped
+		// from under the gate — can reach it. The entry is unchanged and the
+		// retired channel is already gone; the host reattaches on the next
+		// Ensure, which finds no channel under the name and dials fresh. Reap
+		// the channel this call did retire — the close blocks on the ssh child's
+		// exit, so it happens after the gate is released, as everywhere else —
+		// and report the refusal.
+		lock.Unlock()
+		if ch != nil {
+			_ = ch.Close()
+		}
+		return err
+	}
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
 	// cannot acquire the gate until it is released below. It receives the entry

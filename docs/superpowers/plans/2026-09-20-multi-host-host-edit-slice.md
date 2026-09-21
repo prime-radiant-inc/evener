@@ -4,7 +4,7 @@
 
 **Goal:** Make editing a remote host the supported path: one `evener/host/update` mutation that replaces a live sidecar entry durably and live, a wire shape that carries every mutable `HostConfig` field, and an Add/Edit dialog over all of them.
 
-**Architecture:** Four layers, each with its own identity rule. `hostreg.Registry.Update` replaces an entry in place and stamps a fresh registry-wide generation, which is the identity fence every capture-compare consumer already reads. `sshconn.Manager.UpdateHost` performs the swap and the retire-the-channel teardown in one hold of the per-host gate, so live state never straddles two identities. The hub's `hubHostManager.Update` mirrors `Remove`'s commit/live/finish phases: validate before anything is written, persist durable-first with an in-place replace, swap live with the mutation mutex released, then reconcile the derived state (the attach record always; the source's rows and retention only when `roots` changed) and roll the file back if the live phase failed. The pane grows one Add/Edit dialog over the entry shape the wire now carries.
+**Architecture:** Four layers, each with its own identity rule. `hostreg.Registry.Update` replaces an entry in place and stamps a fresh registry-wide generation, which is the identity fence every capture-compare consumer already reads. `sshconn.Manager.UpdateHost` performs the retire-the-channel teardown and the swap in one hold of the per-host gate — validating first, then tearing the channel down, then committing the swap — so live state never straddles two identities and a gate-free row build can never pair the new entry with the retired channel. The hub's `hubHostManager.Update` mirrors `Remove`'s commit/live/finish phases: validate before anything is written, persist durable-first with an in-place replace, swap live with the mutation mutex released, then reconcile the derived state (the attach record always; the source's rows and retention only when `roots` changed) and roll the file back if the live phase failed. The pane grows one Add/Edit dialog over the entry shape the wire now carries.
 
 **Tech Stack:** Go (`appwire`, `internal/hostreg`, `internal/sshconn`, `internal/appsource`, `internal/hubcore`, `cmd/evener-hub`), React + TypeScript + zustand + vitest (frontend settings pane), and the repo's own AppWire generation (`make generate` → `appwire-client/typescript/types.gen.ts`, `docs/appwire-protocol.md`).
 
@@ -261,7 +261,7 @@ git commit -m "feat(hosts): add Registry.Update, the identity-fenced in-place en
 
 **Interfaces:**
 - Consumes: `hostreg.Registry.Update` (Task 1), `Manager.hostLock`/`releaseHostLock`, `Manager.teardownHostChannel`, `Manager.reg` — all existing.
-- Produces: `func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error` — one hold of the per-host gate around the registry swap and the pre-swap identity's teardown; `onRetire`, when non-nil, runs inside that same hold, after the swap and teardown, receiving the entry the swap retired (its generation included) so callers retire per-identity state by generation; never dials; a nil registry is an error. Task 5's live phase calls it.
+- Produces: `func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error` — one hold of the per-host gate, in order: validate the entry, tear the pre-swap identity's channel down, commit the registry swap; `onRetire`, when non-nil, runs inside that same hold, after the teardown and the swap, receiving the entry the swap retired (its generation included) so callers retire per-identity state by generation; never dials; a nil registry is an error. Task 5's live phase calls it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -502,10 +502,29 @@ Add to `cmd/evener-hub/internal/sshconn/manager.go`, directly after `AddHost`:
 
 ```go
 // UpdateHost replaces name's registry entry with entry and tears the host's
-// channel down as one atomic step, under the per-host gate: the swap and the
-// teardown of the identity it retires happen inside the same hold, so a
-// concurrent Ensure cannot publish a channel for the captured pre-update entry
-// after the swap, and the host's live resources never straddle two identities.
+// channel down as one atomic step, under the per-host gate. Inside the one
+// hold the order is fixed: validate, then tear the retired channel down, then
+// swap the registry, then release.
+//
+// The teardown comes BEFORE the swap because a gate-free reader must never pair
+// the new entry with the retired channel. The row build behind host/list and
+// host/status takes no host gate: it snapshots the registry and then resolves
+// the channel by name alone (ClientIfAttached/ChannelIfAttached compare no
+// registrations). If the swap landed first, such a reader could take the new
+// entry inside that window and pair it with the still-mapped channel of the
+// identity this call is retiring, record the retired host's handshake and facts
+// under the new generation — which is above the generation fence the swap
+// itself advances — and render the retired host's server facts for the new
+// identity until the next successful attach. Unmapping the channel before the
+// new generation becomes visible makes that pairing impossible. The reverse
+// window, the old entry observed with no channel, is harmless: it can only make
+// a row render offline, and the retire leaves that clean.
+//
+// Validation comes before the teardown because the caller's contract is that an
+// error from this method means nothing live changed. hostreg.ValidateEntry is
+// the side-effect-free half of the same Normalize+validateEntry pass
+// Registry.Update runs, so checking it here lets the teardown stay
+// unconditional — a shape refusal returns before the channel is touched.
 //
 // Every update tears the channel down, whether or not the edit changed a field
 // the dial reads. The reason is the fence, not the dial: a supervisor captures
@@ -553,16 +572,27 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// capture is present whenever the swap succeeded; hadCaptured keeps
 	// teardownHostChannel's own contract explicit.
 	before, hadCaptured := m.reg.Get(name)
-	if err := m.reg.Update(entry); err != nil {
+	if err := hostreg.ValidateEntry(entry); err != nil {
 		lock.Unlock()
 		return err
 	}
-	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	teardownName := name
+	if hadCaptured {
+		teardownName = before.Name
+	}
+	ch := m.teardownHostChannel(teardownName, before, hadCaptured)
+	if err := m.reg.Update(entry); err != nil {
+		lock.Unlock()
+		if ch != nil {
+			_ = ch.Close()
+		}
+		return err
+	}
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
 	// cannot acquire the gate until it is released below. It receives the entry
 	// the swap replaced, so the caller retires by identity, not by timing.
-	if onRetire != nil {
+	if onRetire != nil && hadCaptured {
 		onRetire(before)
 	}
 	lock.Unlock()

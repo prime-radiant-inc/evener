@@ -115,9 +115,24 @@ deviation and what the pipeline slice inherits.
 
 ### 3.3 `sshconn.Manager.UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error`
 
-- One hold of the per-host gate: the registry `Update`, then the same teardown
-  body `RemoveHost` and `DetachHost` already share (stop the supervisor, drop
-  the channel, clear the per-host caches), with the gate released last.
+- One hold of the per-host gate, in a fixed order: **validate** the entry
+  (`hostreg.ValidateEntry`, the side-effect-free half of the pass the registry's
+  own `Update` runs), then **tear the retired identity's channel down** through
+  the same teardown body `RemoveHost` and `DetachHost` already share (stop the
+  supervisor, drop the channel, clear the per-host caches), then **commit the
+  registry `Update`**, with the gate released last. The teardown must precede
+  the swap: the gate-free row build behind `host/list` and `host/status` takes
+  no host gate, snapshots the registry, and then resolves the channel **by name
+  alone**, so a swap that became visible first would let a row pair the new
+  entry with the still-mapped retired channel, read that channel's
+  handshake/facts, and record them under the new generation — above the
+  generation fence the swap itself advances — so the new identity would render
+  the retired host's server facts until the next attach. Unmapping the channel
+  before the new generation is visible makes that pairing impossible; the
+  reverse window (the old entry seen with no channel) only makes the row render
+  offline, which the retire leaves clean. Validation likewise precedes the
+  teardown: the caller's contract is that an error means nothing live changed,
+  so a refused entry returns before the channel is touched.
 - `onRetire`, when non-nil, runs **inside that same gate hold**, after the
   registry swap and the retired identity's teardown (its `Detached` included)
   and immediately before the gate is released — never when the call refuses.

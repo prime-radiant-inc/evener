@@ -407,3 +407,112 @@ func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
 		t.Fatalf("registry after the update = %+v, want the swapped entry", after)
 	}
 }
+
+// TestUpdateHostUnmapsTheChannelBeforeTheSwapIsVisible pins the order the gate
+// hold must use: the retired channel is unmapped BEFORE the new generation is
+// visible in the registry. A row build — host/list's and host/status's, which
+// take no host gate — resolves a name through the registry and then looks the
+// channel up by name alone (ClientIfAttached/ChannelIfAttached compare no
+// registrations). If the swap landed first, such a reader could snapshot the
+// new entry inside this window and pair it with the still-mapped channel of
+// the retired identity, recording the retired host's handshake and facts under
+// the new generation — above the fence the swap itself advances — so the new
+// identity would render the retired host's server facts until its next attach.
+// The beforeUpdateHostSwap seam is that window exactly: it runs inside the gate
+// hold, after the teardown and before the registry swap.
+func TestUpdateHostUnmapsTheChannelBeforeTheSwapIsVisible(t *testing.T) {
+	reg := testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"})
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	before, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("alpha not registered before the update")
+	}
+	seamRan := false
+	var (
+		channelLive   bool
+		channelLiveCh *Channel
+		clientLive    bool
+		entryAtSeam   hostreg.Host
+		entryPresent  bool
+	)
+	var m *Manager
+	m = newTestManager(t, reg, fr, Options{
+		beforeUpdateHostSwap: func(name string) {
+			seamRan = true
+			// The gate-free reader's two lookups, taken while the gate is held.
+			// Recorded rather than failed here: this seam runs inside the gate
+			// hold, and a t.Fatalf would Goexit out of UpdateHost without
+			// releasing the gate it holds, hanging the cleanup. The assertions
+			// read these after UpdateHost returns.
+			channelLiveCh, channelLive = m.ChannelIfAttached(name)
+			_, clientLive = m.ClientIfAttached(name)
+			// The registry must still hold the pre-edit identity: only the
+			// teardown has run, not the swap.
+			entryAtSeam, entryPresent = reg.Get(name)
+		},
+	})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if !m.Attached("alpha") {
+		t.Fatal("the fixture host is not attached")
+	}
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
+		t.Fatalf("UpdateHost = %v, want nil", err)
+	}
+	if !seamRan {
+		t.Fatal("beforeUpdateHostSwap did not run; the window assertion proved nothing")
+	}
+	if channelLive {
+		t.Fatalf("ChannelIfAttached in the swap window = live channel %p, want false: the retired channel is still reachable", channelLiveCh)
+	}
+	if clientLive {
+		t.Fatal("ClientIfAttached in the swap window = true, want false: the retired channel is still reachable")
+	}
+	if !entryPresent || !entryAtSeam.Equal(before) || entryAtSeam.Generation != before.Generation {
+		t.Fatalf("registry in the swap window = %+v (present %v), want the pre-edit entry %+v", entryAtSeam, entryPresent, before)
+	}
+	after, ok := reg.Get("alpha")
+	if !ok || after.SSH != "alpha2.example" {
+		t.Fatalf("registry after the update = %+v, want the swapped entry", after)
+	}
+	if m.Attached("alpha") {
+		t.Fatal("Attached after UpdateHost = true, want false")
+	}
+}
+
+// TestUpdateHostRefusedEntryLeavesTheLiveChannelAttached pins the validate-first
+// guard the teardown-before-swap order needs: a refused update must change
+// nothing live, so the entry is validated before the channel is touched. With
+// the teardown moved ahead of the swap, a validation that ran after it would
+// have torn an attached host's channel down and then answered an error, leaving
+// the caller told nothing changed while its live channel was gone.
+func TestUpdateHostRefusedEntryLeavesTheLiveChannelAttached(t *testing.T) {
+	m, events := detachHostFixture(t)
+	if !m.Attached("alpha") {
+		t.Fatal("Attached before the refused update = false, want true")
+	}
+	before, ok := m.reg.Get("alpha")
+	if !ok {
+		t.Fatal("alpha not registered before the refused update")
+	}
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: ""}, nil); !errors.Is(err, hostreg.ErrMissingSSH) {
+		t.Fatalf("UpdateHost(invalid entry) = %v, want ErrMissingSSH", err)
+	}
+	if !m.Attached("alpha") {
+		t.Fatal("Attached after the refused update = false, want true: a refusal must change nothing live")
+	}
+	if _, ok := m.ClientIfAttached("alpha"); !ok {
+		t.Fatal("ClientIfAttached after the refused update = false, want the still-live channel")
+	}
+	if _, ok := m.ChannelIfAttached("alpha"); !ok {
+		t.Fatal("ChannelIfAttached after the refused update = false, want the still-live channel")
+	}
+	after, ok := m.reg.Get("alpha")
+	if !ok || !after.Equal(before) || after.Generation != before.Generation {
+		t.Fatalf("registry after the refused update = %+v, want the unedited entry", after)
+	}
+	if kinds := detachHostKinds(events); detachHostCount(kinds, EventDetached) != 0 {
+		t.Fatalf("the refused update emitted %v, want no Detached", kinds)
+	}
+}
