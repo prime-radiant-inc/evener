@@ -2,7 +2,7 @@
 # gate-roots.sh — the durable per-worktree roots the Go test streams run in.
 #
 # Sourced, never executed, and POSIX sh so a test can drive it through `sh -c`.
-# It defines five functions and touches nothing until a caller asks.
+# It defines six functions and touches nothing until a caller asks.
 #
 # Why these roots are durable rather than minted per run: Go's test cache keys
 # on the *values* of the environment variables a test consults. The test binary
@@ -70,41 +70,50 @@ evener_remove_gate_root() {
 
 # evener_reset_gate_root ROOT — empty ROOT and make it private, creating it if
 # absent. 0700 is what satisfies the temp-root trust check above, whatever the
-# caller's umask would otherwise produce.
+# caller's umask would otherwise produce; mkdir -m sets it without the second
+# fork chmod would cost.
 evener_reset_gate_root() {
 	evener_gate_root_dir=$1
 	evener_remove_gate_root "$evener_gate_root_dir" || return 1
-	mkdir -p "$evener_gate_root_dir" || return 1
-	chmod 0700 "$evener_gate_root_dir" || return 1
+	mkdir -p -m 0700 "$evener_gate_root_dir" || return 1
+}
+
+# evener_take_gate_root_lock LOCK — create LOCK, holding this shell's pid, if it
+# does not already exist. Returns 0 when this shell created it, 1 when it was
+# already there. That creation is the moment ownership passes, which is why it
+# is the single place the pid is written.
+evener_take_gate_root_lock() {
+	(set -C; printf '%s\n' "$$" >"$1") 2>/dev/null
 }
 
 # evener_claim_gate_root ROOT — claim ROOT for this run.
 #
 # Returns 0 when claimed, 1 when another live gate run in this worktree already
 # holds it; the caller must then fall back to a per-run root, which is correct
-# but cannot reuse Go's test cache, and should say so. The claim is a lock file
-# beside ROOT holding this shell's pid, so a run killed outright leaves a lock
-# whose pid no longer answers, which a later run reclaims.
+# but cannot reuse Go's test cache, and should say so. A run killed outright
+# leaves a lock whose pid no longer answers, which a later run reclaims.
 evener_claim_gate_root() {
 	evener_gate_root_dir=$1
 	evener_gate_root_lock="$1.lock"
 	evener_gate_root_base=$(dirname -- "$evener_gate_root_dir")
 	mkdir -p "$evener_gate_root_base" || return 1
 	chmod 0700 "$evener_gate_root_base" || return 1
-	if (set -C; printf '%s\n' "$$" >"$evener_gate_root_lock") 2>/dev/null; then
-		evener_reset_gate_root "$evener_gate_root_dir" || return 1
-		return 0
-	fi
-	evener_gate_root_owner=$(cat "$evener_gate_root_lock" 2>/dev/null || :)
-	if [ -n "$evener_gate_root_owner" ] && kill -0 "$evener_gate_root_owner" 2>/dev/null; then
-		return 1
-	fi
-	rm -f "$evener_gate_root_lock" || return 1
-	if (set -C; printf '%s\n' "$$" >"$evener_gate_root_lock") 2>/dev/null; then
-		evener_reset_gate_root "$evener_gate_root_dir" || return 1
-		return 0
-	fi
-	return 1
+	evener_gate_root_attempt=0
+	while :; do
+		if evener_take_gate_root_lock "$evener_gate_root_lock"; then
+			evener_reset_gate_root "$evener_gate_root_dir" || return 1
+			return 0
+		fi
+		# One retry: the lock may belong to a run that was killed outright. A
+		# live owner is contention and is reported, not overridden.
+		evener_gate_root_attempt=$((evener_gate_root_attempt + 1))
+		[ "$evener_gate_root_attempt" -ge 2 ] && return 1
+		evener_gate_root_owner=$(cat "$evener_gate_root_lock" 2>/dev/null || :)
+		if [ -n "$evener_gate_root_owner" ] && kill -0 "$evener_gate_root_owner" 2>/dev/null; then
+			return 1
+		fi
+		rm -f "$evener_gate_root_lock" || return 1
+	done
 }
 
 # evener_release_gate_root ROOT KEEP_DIR — give ROOT back.

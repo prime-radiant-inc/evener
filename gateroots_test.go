@@ -17,6 +17,14 @@ import (
 // exercise.
 const gateRootsLib = "scripts/lib/gate-roots.sh"
 
+// The invariant shell prefixes the cases below build on. gateRootsClaim also
+// writes a marker inside the root, which doubles as the proof that a claimed
+// root is writable.
+const (
+	gateRootsClaim = ". " + gateRootsLib + "\nevener_claim_gate_root \"$1\""
+	gateRootsReset = ". " + gateRootsLib + "\nevener_reset_gate_root \"$1\""
+)
+
 // runShSource runs script in one POSIX shell with args as $1.., after asserting
 // the library exists. The child gets a minimal environment so an ambient
 // TMPDIR or HOME cannot decide the result.
@@ -44,6 +52,29 @@ func runShSource(t *testing.T, script string, env []string, args ...string) (str
 // directory rather than the caller's TMPDIR.
 func gateRootUnder(under string, parts ...string) string {
 	return filepath.Join(append([]string{under, "evener-gate-roots-0123456789abcdef"}, parts...)...)
+}
+
+// mustRunShSource is runShSource for the cases that must succeed.
+func mustRunShSource(t *testing.T, script string, args ...string) string {
+	t.Helper()
+	out, code := runShSource(t, script, nil, args...)
+	if code != 0 {
+		t.Fatalf("sh source exited %d:\n%s", code, out)
+	}
+	return out
+}
+
+// claimGateRoot claims root for this test and writes a marker inside it.
+func claimGateRoot(t *testing.T, root string) {
+	t.Helper()
+	mustRunShSource(t, gateRootsClaim+"\nprintf x >\"$1/scratch\"\n", root)
+}
+
+// releaseGateRoot releases root, retaining its scratch under keepDir when that
+// is non-empty (a red run) and removing it when it is empty (a green run).
+func releaseGateRoot(t *testing.T, root, keepDir string) {
+	t.Helper()
+	mustRunShSource(t, ". "+gateRootsLib+"\nevener_release_gate_root \"$1\" \"$2\"", root, keepDir)
 }
 
 // TestDurableGateRootIsStablePerWorktree pins the property the whole change
@@ -165,14 +196,8 @@ func TestReleaseGateRootRemovesOnGreenAndRetainsOnRed(t *testing.T) {
 	tmpHome := t.TempDir()
 	root := gateRootUnder(tmpHome, "root")
 
-	claim := ". " + gateRootsLib + "\nevener_claim_gate_root \"$1\"\nprintf x >\"$1/scratch\"\n"
-
-	if out, code := runShSource(t, claim, nil, root); code != 0 {
-		t.Fatalf("claim exited %d:\n%s", code, out)
-	}
-	if out, code := runShSource(t, ". "+gateRootsLib+"\nevener_release_gate_root \"$1\" \"\"", nil, root); code != 0 {
-		t.Fatalf("green release exited %d:\n%s", code, out)
-	}
+	claimGateRoot(t, root)
+	releaseGateRoot(t, root, "")
 	if _, err := os.Stat(root); err == nil {
 		t.Errorf("a green release left the root behind")
 	}
@@ -185,12 +210,8 @@ func TestReleaseGateRootRemovesOnGreenAndRetainsOnRed(t *testing.T) {
 	}
 
 	keep := filepath.Join(tmpHome, "retained-logs")
-	if out, code := runShSource(t, claim, nil, root); code != 0 {
-		t.Fatalf("re-claim exited %d:\n%s", code, out)
-	}
-	if out, code := runShSource(t, ". "+gateRootsLib+"\nevener_release_gate_root \"$1\" \"$2\"", nil, root, keep); code != 0 {
-		t.Fatalf("red release exited %d:\n%s", code, out)
-	}
+	claimGateRoot(t, root)
+	releaseGateRoot(t, root, keep)
 	if _, err := os.Stat(filepath.Join(keep, "root", "scratch")); err != nil {
 		t.Errorf("a red release did not retain the run's scratch under the keep directory: %v", err)
 	}
@@ -226,8 +247,7 @@ func TestResetGateRootRefusesUnsafePaths(t *testing.T) {
 		"/definitely-not-a-gate-root/child",
 		parentNaming,
 	} {
-		script := ". " + gateRootsLib + "\nevener_reset_gate_root \"$1\""
-		if out, code := runShSource(t, script, nil, bad); code == 0 {
+		if out, code := runShSource(t, gateRootsReset, nil, bad); code == 0 {
 			t.Errorf("evener_reset_gate_root %q succeeded; it must refuse:\n%s", bad, out)
 		}
 	}
@@ -256,8 +276,8 @@ func TestRunModuleTestsRetainsDurableRootsOnFailure(t *testing.T) {
 		"HOME="+filepath.Join(tmp, "home"),
 		"TMPDIR="+filepath.Join(tmp, "tmp"),
 		// The Go caches stay ambient so this does not recompile the world.
-		"GOCACHE="+strings.TrimSpace(goEnvOutput(t, "GOCACHE")),
-		"GOPATH="+strings.TrimSpace(goEnvOutput(t, "GOPATH")),
+		"GOCACHE="+goEnv(t, "GOCACHE"),
+		"GOPATH="+goEnv(t, "GOPATH"),
 		"MODULES=this-module-does-not-exist",
 		"WEB=0")
 	out, err := cmd.CombinedOutput()
@@ -279,14 +299,4 @@ func TestRunModuleTestsRetainsDurableRootsOnFailure(t *testing.T) {
 		t.Errorf("a red run did not retain the stream's durable root under the log directory "+
 			"(%s): %v\nrunner output:\n%s", retained, err, out)
 	}
-}
-
-// goEnvOutput returns one `go env` value, failing the test if go cannot answer.
-func goEnvOutput(t *testing.T, name string) string {
-	t.Helper()
-	out, err := exec.Command("go", "env", name).Output()
-	if err != nil {
-		t.Fatalf("go env %s: %v", name, err)
-	}
-	return string(out)
 }

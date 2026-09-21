@@ -325,12 +325,15 @@ scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()
 
-logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
-tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
-# gate_root_path MODULE — this stream's durable per-worktree root. The module
-# name is mangled exactly as tmppath mangles it, so a root retained after a
-# failure keeps a name the next run's claim recognizes.
-gate_root_path() { printf '%s/%s' "$gate_roots_dir" "$(printf '%s' "$1" | tr '/.' '__')"; }
+# module_stream_name MODULE — the module name mangled into a single path
+# component. Every per-module path below goes through it, so a module name can
+# never contribute a separator or a parent to a path that later gets deleted.
+module_stream_name() { printf '%s' "$1" | tr '/.' '__'; }
+
+logpath() { printf '%s/%s.log' "$logdir" "$(module_stream_name "$1")"; }
+tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(module_stream_name "$1")"; }
+# gate_root_path MODULE — this stream's durable per-worktree root.
+gate_root_path() { printf '%s/%s' "$gate_roots_dir" "$(module_stream_name "$1")"; }
 
 # run_bounded_timeout_diagnostic <what> <bound> <module> <log-file> — the
 # cache-stall diagnostic run_bounded (scripts/lib/gate-bounded.sh) calls on a
@@ -474,21 +477,20 @@ run_module() {
 run_wave() {
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
-	local m log extra tmp root
+	local m log extra root
 	for m in "$@"; do
 		log="$(logpath "$m")"
 		extra="$(gate_module_flags "$m")"
-		tmp="$(tmppath "$m")"
 		# The durable root is what lets this stream's packages reuse Go's test
 		# cache; a stream that gets the per-run fallback is still isolated, it
 		# just re-runs. Either way the root is this stream's TMPDIR with its
 		# private HOME and XDG roots beneath it.
 		root="$(gate_root_path "$m")"
 		if evener_claim_gate_root "$root"; then
-			owned_gate_roots=(${owned_gate_roots[@]+"${owned_gate_roots[@]}"} "$root")
+			owned_gate_roots+=("$root")
 		else
 			printf 'NOTE  %-8s durable test root held by another run; using a per-run root (uncached)\n' "$m"
-			root="$tmp"
+			root="$(tmppath "$m")"
 		fi
 		( mkdir -p "$root" && export TMPDIR="$root" && evener_prepare_private_go_home "$root" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
