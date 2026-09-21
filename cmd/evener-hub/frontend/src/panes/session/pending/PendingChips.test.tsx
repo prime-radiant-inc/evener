@@ -45,6 +45,7 @@ async function seedPending(
     steer: "turn/steer",
     queue: "turn/queue",
     drain: "turn/drainAsSteer",
+    promote: "turn/promoteQueuedAsSteer",
   }[method];
   const input = [
     ...(text ? [{ type: "text", text }] : []),
@@ -96,6 +97,13 @@ test("chips send only: steer/drain are the ghost stack's surface, never a chip",
   expect(screen.queryByText("a steer")).toBeNull();
   expect(screen.queryByText("a drain")).toBeNull();
   expect(screen.queryByText("a queued one")).toBeNull();
+});
+
+test("a pending promote never chips (the ghost stack owns it)", async () => {
+  await seedPending("promote", "a promote");
+  const { container } = render(<PendingChips sessionRef="ref_a" />);
+  expect(screen.queryByText("a promote")).toBeNull();
+  expect(container.innerHTML).toBe(""); // the strip renders null with no send entries
 });
 
 test("blocked unknown is owned by QueueStrip rather than PendingChips", async () => {

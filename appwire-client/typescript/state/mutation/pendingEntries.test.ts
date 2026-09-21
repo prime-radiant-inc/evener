@@ -244,3 +244,25 @@ test("an outbox record whose originClientId names this client is its own", () =>
     expect.objectContaining({ id: "mutation_2", fromThisClient: false }),
   ]);
 });
+
+test("promote maps to its own PendingMethod, not folded into steer", () => {
+  expect(
+    reconcilePendingEntries(
+      "ref_a",
+      [outbox("mutation_1", "turn/promoteQueuedAsSteer", "hello")],
+      model(),
+      NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toEqual([expect.objectContaining({ id: "mutation_1", method: "promote", text: "hello" })]);
+});
+
+test("a promote's display input previews in the entry", () => {
+  const record: MutationOutboxRecord = {
+    ...outbox("mutation_1", "turn/promoteQueuedAsSteer", ""),
+    optimisticDisplay: { method: "turn/promoteQueuedAsSteer", input: [{ type: "text", text: "promoted body" }] },
+  };
+  expect(
+    reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY),
+  ).toEqual([expect.objectContaining({ id: "mutation_1", method: "promote", text: "promoted body" })]);
+});

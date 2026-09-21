@@ -3,7 +3,7 @@ import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
 
-export type PendingMethod = "send" | "steer" | "queue" | "drain";
+export type PendingMethod = "send" | "steer" | "queue" | "drain" | "promote";
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -33,11 +33,15 @@ export interface PendingTurnEntry {
   fromThisClient: boolean;
 }
 
+// The wire-method → PendingMethod mapping that names the entry method family:
+// promote is its own method so labels and tests stay honest (spec §3), never
+// folded into `steer`.
 function pendingMethod(method: string): PendingMethod | undefined {
   if (method === "turn/start") return "send";
   if (method === "turn/steer") return "steer";
   if (method === "turn/queue") return "queue";
   if (method === "turn/drainAsSteer") return "drain";
+  if (method === "turn/promoteQueuedAsSteer") return "promote";
   return undefined;
 }
 
