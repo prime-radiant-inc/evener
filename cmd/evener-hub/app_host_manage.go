@@ -1496,20 +1496,30 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// host/status, and host/add. The mark fences the window instead.
 	var liveErr error
 	if m.cfg.manager != nil {
-		if err := m.cfg.manager.UpdateHost(entry); err != nil {
+		// The retiring identity's name-keyed attach record is cleared from inside
+		// the manager's own gate hold, in the same hold as the swap: UpdateHost
+		// runs this hook after it has replaced the registry entry and torn down the
+		// retired identity's channel, and still before it releases the gate. The
+		// retired identity's Detached is emitted earlier in that same hold, and no
+		// lifecycle event for the new identity can interleave between the swap and
+		// the clear, because every event is delivered synchronously with the gate
+		// held. A pre-swap row built from the still-current old entry is fenced out
+		// by the generation advance, so it cannot repopulate the record after the
+		// swap either. The hook must not call back into the manager (the gate is
+		// non-reentrant) and must not take the mutation mutex (another goroutine
+		// may hold it while parked on this gate) — it only touches the record
+		// state's own lock.
+		if err := m.cfg.manager.UpdateHost(entry, func() { m.cfg.state.remove(name) }); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
 	} else if err := m.cfg.hosts.Update(entry); err != nil {
 		liveErr = err
-	}
-	if liveErr == nil {
-		// Clear the retiring identity's name-keyed attach record only after the
-		// registry swap. While UpdateHost waits for the per-host gate, the old entry
-		// is still current and a concurrent row can legitimately record its facts
-		// again. Once the swap advances the generation, that row fails
-		// hostEntryCurrent and cannot repopulate the record; the new entry has no
-		// channel until a later attach. This also clears an offline host's retained
-		// error and facts when an address edit has no channel to tear down.
+	} else {
+		// No sshconn manager is wired (tests, embedders), so no lifecycle event can
+		// exist for the new identity: clearing inline on the successful swap gives
+		// the same guarantee the manager path's hook holds, and this also clears an
+		// offline host's retained error and facts when an address edit has no
+		// channel to tear down.
 		m.cfg.state.remove(name)
 	}
 

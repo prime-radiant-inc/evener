@@ -1004,3 +1004,205 @@ func TestHostManageRootsEditCannotResurrectOldRetention(t *testing.T) {
 		})
 	}
 }
+
+// serveUpdateInitialize answers the AppWire initialize handshake on a runner's
+// in-memory stream, so Manager.Ensure can publish a real channel without a
+// process or a listener.
+func serveUpdateInitialize(server net.Conn) {
+	transport := appwire.NewStreamTransport(server)
+	defer transport.Close()
+	for {
+		msg, err := transport.Recv(context.Background())
+		if err != nil {
+			return
+		}
+		if msg.Request != nil && msg.Request.Method == appwire.MethodInitialize {
+			resp := appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+			if err := transport.Send(context.Background(), appwire.ResponseMessage(msg.Request.ID, resp)); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// reapParkingStdio is one in-memory SSH child whose exit (Wait) parks on a test
+// channel: Channel.Close kills it and then waits on the child's exit, so the
+// reap runs to completion only when the test releases it. Kill signals entered,
+// which UpdateHost reaches only after it has released the per-host gate.
+type reapParkingStdio struct {
+	conn        net.Conn
+	done        chan struct{}
+	once        sync.Once
+	entered     chan struct{}
+	waitRelease <-chan struct{}
+}
+
+func (s *reapParkingStdio) Stdin() io.WriteCloser { return s.conn }
+func (s *reapParkingStdio) Stdout() io.ReadCloser { return s.conn }
+func (s *reapParkingStdio) Kill() error {
+	s.once.Do(func() {
+		close(s.entered)
+		_ = s.conn.Close()
+		close(s.done)
+	})
+	return nil
+}
+func (s *reapParkingStdio) Wait() error {
+	<-s.done
+	<-s.waitRelease
+	return nil
+}
+
+// reapParkingRunner drives the update-versus-attach race deterministically. Its
+// first Start attaches a real in-memory channel and parks that channel's reap
+// on reapRelease, so the update's teardown is observed with the per-host gate
+// already released but UpdateHost not yet returned. A later Start parks the
+// attach itself (after the manager has emitted StateAttaching) and keeps holding
+// the per-host gate, so a new-identity Ensure stays mid-attach.
+type reapParkingRunner struct {
+	attachedUpdateRunner
+	mu          sync.Mutex
+	starts      int
+	newOnce     sync.Once
+	reapEntered chan struct{}
+	reapRelease chan struct{}
+	newEntered  chan struct{}
+	newRelease  chan struct{}
+}
+
+func (r *reapParkingRunner) Start(_ context.Context, _ []string, _ io.Writer) (sshconn.Stdio, error) {
+	r.mu.Lock()
+	r.starts++
+	n := r.starts
+	r.mu.Unlock()
+	if n == 1 {
+		client, server := net.Pipe()
+		stdio := &reapParkingStdio{
+			conn: client, done: make(chan struct{}),
+			entered: r.reapEntered, waitRelease: r.reapRelease,
+		}
+		go serveUpdateInitialize(server)
+		return stdio, nil
+	}
+	r.newOnce.Do(func() { close(r.newEntered) })
+	<-r.newRelease
+	return nil, errors.New("reapParkingRunner: released")
+}
+
+// TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold is the RED/GREEN
+// test for the update-versus-attach race. The record clear is handed to the
+// manager and runs inside the swap's own gate hold, so it happens before a
+// new-identity attach can start. Pre-fix, the clear ran after UpdateHost
+// returned — a window in which the new registration can already have attached
+// and recorded its own mid-attach state — and erased that fresh state. The test
+// holds UpdateHost in its reap (the gate provably free), drives a real
+// new-identity Ensure into its attach so it records midAttach, then releases the
+// reap and asserts the record still carries the new identity's state.
+func TestHostManageUpdateRetiresTheAttachRecordInsideTheSwapHold(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	runner := &reapParkingRunner{
+		reapEntered: make(chan struct{}),
+		reapRelease: make(chan struct{}),
+		newEntered:  make(chan struct{}),
+		newRelease:  make(chan struct{}),
+	}
+	sources := appsource.NewRegistry()
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, reg, nil)
+	manager := sshconn.New(reg, sshconn.Options{
+		Runner:  runner,
+		OnEvent: func(ev sshconn.Event) { m.observeEvent(ev) },
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	// The reap and the parked new-identity attach are released independently;
+	// one sync.Once each, so releasing the reap cannot swallow the later release.
+	// Registered after the manager's Close cleanup so it runs first (LIFO): Close
+	// waits for the parked Ensure, so the parks must be released ahead of it.
+	var reapOnce, newOnce sync.Once
+	t.Cleanup(func() {
+		reapOnce.Do(func() { close(runner.reapRelease) })
+		newOnce.Do(func() { close(runner.newRelease) })
+	})
+	m.cfg.manager = manager
+
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	// Attach the original identity: the update must have a channel to reap.
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+	if !manager.Attached("side") {
+		t.Fatal("host is offline before Update; the test did not establish the channel")
+	}
+
+	updateDone := make(chan updateOutcome, 1)
+	go func() {
+		resp, err := m.Update(context.Background(), appwire.HostUpdateParams{
+			Name:  "side",
+			Entry: appwire.HostEntry{Address: "edited.example"},
+		})
+		updateDone <- updateOutcome{resp: resp, err: err}
+	}()
+
+	// The update has swapped the entry, emitted the retired identity's Detached,
+	// and released the gate: it is now parked in the reap.
+	select {
+	case <-runner.reapEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never reached its reap; the runner did not park the channel close")
+	}
+
+	// With the gate free, attach the NEW registration. The runner parks the
+	// attach, so this Ensure stays mid-attach holding the gate and has recorded
+	// StateAttaching's midAttach for the name.
+	newEnsureDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Ensure(context.Background(), "side")
+		newEnsureDone <- err
+	}()
+	select {
+	case <-runner.newEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the new-identity Ensure never reached its attach; the gate was not free")
+	}
+
+	// Release the reap: UpdateHost returns, and its post-return clear (pre-fix)
+	// would wipe the just-recorded state.
+	reapOnce.Do(func() { close(runner.reapRelease) })
+	select {
+	case done := <-updateDone:
+		if done.err != nil {
+			t.Fatalf("Update: %v", done.err)
+		}
+		if !done.resp.Host.MidAttach {
+			t.Fatalf("update row = %+v, want the new identity's in-progress attach retained", done.resp.Host)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the update never returned after its reap was released")
+	}
+	row, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "side"})
+	if err != nil {
+		t.Fatalf("Status after Update: %v", err)
+	}
+	if !row.Host.MidAttach {
+		t.Fatalf("row = %+v, want the new identity's in-progress attach retained after Update", row.Host)
+	}
+	if row.Host.Address != "edited.example" {
+		t.Fatalf("row = %+v, want the edited entry", row.Host)
+	}
+
+	newOnce.Do(func() { close(runner.newRelease) })
+	if err := <-newEnsureDone; err == nil {
+		t.Fatal("the parked new-identity Ensure succeeded; the runner must fail the released attach")
+	}
+}

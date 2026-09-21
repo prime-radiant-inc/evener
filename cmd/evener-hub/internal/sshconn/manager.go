@@ -1227,7 +1227,19 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 // ErrUnknownHost, and a nil registry is an error rather than a silent no-op,
 // mirroring AddHost and RemoveHost: an update that committed nothing must not
 // report success.
-func (m *Manager) UpdateHost(entry hostreg.Host) error {
+//
+// onRetire, when non-nil, runs while the per-host gate is still held, in the
+// same hold as the swap: after the registry already holds the new entry and the
+// retired identity's teardown (its Detached included) has been emitted, and
+// immediately before the gate is released. That placement is the contract, not
+// an implementation detail. Every lifecycle event is delivered synchronously
+// with the gate held, so a concurrent attach can only start for the new
+// generation once the gate is free; a caller's per-identity state retired from
+// this hook therefore cannot have a new-generation event interleave between the
+// swap and the retirement and be erased by it. The hook must not call back into
+// Manager — the gate is non-reentrant — and must not take a lock another
+// goroutine may hold while parked on this gate.
+func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error {
 	if m.reg == nil {
 		return errors.New("sshconn: UpdateHost with no registry")
 	}
@@ -1249,6 +1261,12 @@ func (m *Manager) UpdateHost(entry hostreg.Host) error {
 		return err
 	}
 	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	// The caller's retirement runs under the gate, in the same hold as the swap,
+	// so no new-identity lifecycle event can interleave before it: an attach
+	// cannot acquire the gate until it is released below.
+	if onRetire != nil {
+		onRetire()
+	}
 	lock.Unlock()
 	// The reap runs after the lock is released, exactly as DetachHost's and
 	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.

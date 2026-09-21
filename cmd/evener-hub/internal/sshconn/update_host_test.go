@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,7 +24,7 @@ func TestUpdateHostDropsTheChannel(t *testing.T) {
 	if !ok {
 		t.Fatal("alpha not registered before the update")
 	}
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost = %v, want nil", err)
 	}
 	after, ok := m.reg.Get("alpha")
@@ -71,7 +72,7 @@ func TestEnsureAfterUpdateDialsTheEditedEntry(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example", KeyPath: "/keys/new"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example", KeyPath: "/keys/new"}, nil); err != nil {
 		t.Fatalf("UpdateHost: %v", err)
 	}
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
@@ -111,7 +112,7 @@ func TestUpdateHostDoesNotDial(t *testing.T) {
 	mu.Lock()
 	before := len(dialed)
 	mu.Unlock()
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost: %v", err)
 	}
 	mu.Lock()
@@ -129,7 +130,7 @@ func TestUpdateHostUnknownNameIsUnknownHost(t *testing.T) {
 	events := make(chan Event, 64)
 	m := newTestManager(t, reg, fr, Options{OnEvent: func(ev Event) { events <- ev }})
 	before, _ := reg.Get("alpha")
-	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}); !errors.Is(err, hostreg.ErrUnknownHost) {
+	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}, nil); !errors.Is(err, hostreg.ErrUnknownHost) {
 		t.Fatalf("UpdateHost(unknown) = %v, want ErrUnknownHost", err)
 	}
 	after, ok := reg.Get("alpha")
@@ -146,7 +147,7 @@ func TestUpdateHostUnknownNameIsUnknownHost(t *testing.T) {
 func TestUpdateHostNilRegistry(t *testing.T) {
 	m := New(nil, Options{Runner: &fakeRunner{}})
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha.example"}); err == nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha.example"}, nil); err == nil {
 		t.Fatal("UpdateHost with no registry = nil, want an error")
 	}
 }
@@ -177,7 +178,7 @@ func TestUpdateHostRacesEnsureAtGate(t *testing.T) {
 		done <- ensureResult{ch, err}
 	}()
 	gate.wait(t, "the parked Ensure")
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost: %v", err)
 	}
 	gate.open()
@@ -205,7 +206,7 @@ func TestUpdateHostClearsPerHostCaches(t *testing.T) {
 	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
 	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost = %v, want nil", err)
 	}
 	waitForEvent(t, events, EventDetached)
@@ -217,5 +218,90 @@ func TestUpdateHostClearsPerHostCaches(t *testing.T) {
 	}
 	if m.pendingRestart("alpha") != (pendingRestartState{}) {
 		t.Fatal("pendingRestart survived UpdateHost")
+	}
+}
+
+// TestUpdateHostRetireHookRunsAfterTheSwap pins the hook's position in the gate
+// hold: when it runs, the registry already holds the new entry, so a caller's
+// per-identity retirement observes the swap it belongs to.
+func TestUpdateHostRetireHookRunsAfterTheSwap(t *testing.T) {
+	reg := testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"})
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	var (
+		called  bool
+		saw     hostreg.Host
+		present bool
+	)
+	m := newTestManager(t, reg, fr, Options{})
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, func() {
+		called = true
+		saw, present = reg.Get("alpha")
+	}); err != nil {
+		t.Fatalf("UpdateHost = %v, want nil", err)
+	}
+	if !called {
+		t.Fatal("the retire hook did not run on a successful update")
+	}
+	if !present || saw.SSH != "alpha2.example" {
+		t.Fatalf("inside the hook the registry = %+v (present %v), want the new entry", saw, present)
+	}
+}
+
+// TestUpdateHostRetireHookRunsAfterDetached pins the hook's order against the
+// retired identity's own lifecycle event: the teardown emits Detached first, and
+// the hook runs after it — both inside the same gate hold, deterministically, so
+// no sleeps are needed to observe the order.
+func TestUpdateHostRetireHookRunsAfterDetached(t *testing.T) {
+	reg := testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"})
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	var (
+		mu    sync.Mutex
+		order []string
+	)
+	m := newTestManager(t, reg, fr, Options{OnEvent: func(ev Event) {
+		if ev.Kind == EventDetached {
+			mu.Lock()
+			order = append(order, "detached")
+			mu.Unlock()
+		}
+	}})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, func() {
+		mu.Lock()
+		order = append(order, "retire")
+		mu.Unlock()
+	}); err != nil {
+		t.Fatalf("UpdateHost = %v, want nil", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(order, []string{"detached", "retire"}) {
+		t.Fatalf("event/hook order = %v, want [detached retire]", order)
+	}
+}
+
+// TestUpdateHostRetireHookNotRunOnRefusal pins the negative half of the hook
+// contract: a refused update never runs it, so a caller cannot retire live
+// per-identity state for a swap that did not happen.
+func TestUpdateHostRetireHookNotRunOnRefusal(t *testing.T) {
+	reg := testRegistry(t, hostreg.Host{Name: "alpha", SSH: "alpha.example"})
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, reg, fr, Options{})
+	called := 0
+	hook := func() { called++ }
+	// An unknown name: the registry's Update reports ErrUnknownHost before the
+	// teardown or the hook.
+	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}, hook); !errors.Is(err, hostreg.ErrUnknownHost) {
+		t.Fatalf("UpdateHost(unknown) = %v, want ErrUnknownHost", err)
+	}
+	// A known name with an entry the registry's own validation refuses: the swap
+	// never happens, so the hook must not either.
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: ""}, hook); err == nil {
+		t.Fatal("UpdateHost with an invalid entry = nil, want the registry's validation refusal")
+	}
+	if called != 0 {
+		t.Fatalf("the retire hook ran %d times across refused updates, want 0", called)
 	}
 }

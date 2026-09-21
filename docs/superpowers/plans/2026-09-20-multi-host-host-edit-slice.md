@@ -261,7 +261,7 @@ git commit -m "feat(hosts): add Registry.Update, the identity-fenced in-place en
 
 **Interfaces:**
 - Consumes: `hostreg.Registry.Update` (Task 1), `Manager.hostLock`/`releaseHostLock`, `Manager.teardownHostChannel`, `Manager.reg` — all existing.
-- Produces: `func (m *Manager) UpdateHost(entry hostreg.Host) error` — one hold of the per-host gate around the registry swap and the pre-swap identity's teardown; never dials; a nil registry is an error. Task 5's live phase calls it.
+- Produces: `func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error` — one hold of the per-host gate around the registry swap and the pre-swap identity's teardown; `onRetire`, when non-nil, runs inside that same hold, after the swap and teardown; never dials; a nil registry is an error. Task 5's live phase calls it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -293,7 +293,7 @@ func TestUpdateHostDropsTheChannel(t *testing.T) {
 	if !ok {
 		t.Fatal("alpha not registered before the update")
 	}
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost = %v, want nil", err)
 	}
 	after, ok := m.reg.Get("alpha")
@@ -341,7 +341,7 @@ func TestEnsureAfterUpdateDialsTheEditedEntry(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example", KeyPath: "/keys/new"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example", KeyPath: "/keys/new"}, nil); err != nil {
 		t.Fatalf("UpdateHost: %v", err)
 	}
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
@@ -381,7 +381,7 @@ func TestUpdateHostDoesNotDial(t *testing.T) {
 	mu.Lock()
 	before := len(dialed)
 	mu.Unlock()
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost: %v", err)
 	}
 	mu.Lock()
@@ -399,7 +399,7 @@ func TestUpdateHostUnknownNameIsUnknownHost(t *testing.T) {
 	events := make(chan Event, 64)
 	m := newTestManager(t, reg, fr, Options{OnEvent: func(ev Event) { events <- ev }})
 	before, _ := reg.Get("alpha")
-	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}); !errors.Is(err, hostreg.ErrUnknownHost) {
+	if err := m.UpdateHost(hostreg.Host{Name: "nope", SSH: "n.example"}, nil); !errors.Is(err, hostreg.ErrUnknownHost) {
 		t.Fatalf("UpdateHost(unknown) = %v, want ErrUnknownHost", err)
 	}
 	after, ok := reg.Get("alpha")
@@ -416,7 +416,7 @@ func TestUpdateHostUnknownNameIsUnknownHost(t *testing.T) {
 func TestUpdateHostNilRegistry(t *testing.T) {
 	m := New(nil, Options{Runner: &fakeRunner{}})
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha.example"}); err == nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha.example"}, nil); err == nil {
 		t.Fatal("UpdateHost with no registry = nil, want an error")
 	}
 }
@@ -447,7 +447,7 @@ func TestUpdateHostRacesEnsureAtGate(t *testing.T) {
 		done <- ensureResult{ch, err}
 	}()
 	gate.wait(t, "the parked Ensure")
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost: %v", err)
 	}
 	gate.open()
@@ -475,7 +475,7 @@ func TestUpdateHostClearsPerHostCaches(t *testing.T) {
 	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
 	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
-	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}); err != nil {
+	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost = %v, want nil", err)
 	}
 	waitForEvent(t, events, EventDetached)
@@ -520,7 +520,19 @@ Add to `cmd/evener-hub/internal/sshconn/manager.go`, directly after `AddHost`:
 // ErrUnknownHost, and a nil registry is an error rather than a silent no-op,
 // mirroring AddHost and RemoveHost: an update that committed nothing must not
 // report success.
-func (m *Manager) UpdateHost(entry hostreg.Host) error {
+//
+// onRetire, when non-nil, runs while the per-host gate is still held, in the
+// same hold as the swap: after the registry already holds the new entry and the
+// retired identity's teardown (its Detached included) has been emitted, and
+// immediately before the gate is released. That placement is the contract, not
+// an implementation detail. Every lifecycle event is delivered synchronously
+// with the gate held, so a concurrent attach can only start for the new
+// generation once the gate is free; a caller's per-identity state retired from
+// this hook therefore cannot have a new-generation event interleave between the
+// swap and the retirement and be erased by it. The hook must not call back into
+// Manager — the gate is non-reentrant — and must not take a lock another
+// goroutine may hold while parked on this gate.
+func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func()) error {
 	if m.reg == nil {
 		return errors.New("sshconn: UpdateHost with no registry")
 	}
@@ -542,6 +554,12 @@ func (m *Manager) UpdateHost(entry hostreg.Host) error {
 		return err
 	}
 	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	// The caller's retirement runs under the gate, in the same hold as the swap,
+	// so no new-identity lifecycle event can interleave before it: an attach
+	// cannot acquire the gate until it is released below.
+	if onRetire != nil {
+		onRetire()
+	}
 	lock.Unlock()
 	// The reap runs after the lock is released, exactly as DetachHost's and
 	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
@@ -2022,7 +2040,7 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// host/status, and host/add. The mark fences the window instead.
 	var liveErr error
 	if m.cfg.manager != nil {
-		if err := m.cfg.manager.UpdateHost(entry); err != nil {
+		if err := m.cfg.manager.UpdateHost(entry, nil); err != nil {
 			liveErr = fmt.Errorf("update host %q: %w", name, err)
 		}
 	} else if err := m.cfg.hosts.Update(entry); err != nil {
@@ -2111,7 +2129,7 @@ git commit -m "feat(hosts): add the hub's evener/host/update flow over commit/li
 
 **Interfaces:**
 - Consumes: everything Task 5 produced, plus `hostAttachState.remove`/`recordKnown`/`apply`, `remoteCache.RemoveSource`, `forgetLastGoodThreads`, `sources.Remove`, `registerSource`, `hubcore.RemoteThreadCache.SourceGeneration`.
-- Produces: no new exported surface — `Update`'s live phase clears the attach record after the successful swap, and its finish phase re-registers the source only when the edit changed the host's roots.
+- Produces: no new exported surface — `Update`'s live phase clears the attach record inside the swap's own gate hold, and its finish phase re-registers the source only when the edit changed the host's roots.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2253,19 +2271,37 @@ func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
 Run: `go test ./cmd/evener-hub/ -run 'TestHostManageUpdateClears|TestHostManageUpdateReregisters' -v`
 Expected: FAIL — the record survives the edit, and neither the source nor the cache generation changes on a roots edit (`hostFactsValidity`/`appsource`/`hubcore` imports may need adding to the test file).
 
-- [ ] **Step 3: Clear the attach record after the live swap**
+- [ ] **Step 3: Retire the attach record inside the swap's gate hold**
 
-In `Update`, after the manager or registry update succeeds:
+In `Update`, hand the clear to the manager so it runs inside the swap's own gate hold, and clear inline only on the no-manager fallback — with no manager no lifecycle event can exist:
 
 ```go
-	if liveErr == nil {
-		// Clear the retiring identity's name-keyed attach record only after the
-		// registry swap. While UpdateHost waits for the per-host gate, the old entry
-		// is still current and a concurrent row can legitimately record its facts
-		// again. Once the swap advances the generation, that row fails
-		// hostEntryCurrent and cannot repopulate the record; the new entry has no
-		// channel until a later attach. This also clears an offline host's retained
-		// error and facts when an address edit has no channel to tear down.
+	var liveErr error
+	if m.cfg.manager != nil {
+		// The retiring identity's name-keyed attach record is cleared from inside
+		// the manager's own gate hold, in the same hold as the swap: UpdateHost
+		// runs this hook after it has replaced the registry entry and torn down the
+		// retired identity's channel, and still before it releases the gate. The
+		// retired identity's Detached is emitted earlier in that same hold, and no
+		// lifecycle event for the new identity can interleave between the swap and
+		// the clear, because every event is delivered synchronously with the gate
+		// held. A pre-swap row built from the still-current old entry is fenced out
+		// by the generation advance, so it cannot repopulate the record after the
+		// swap either. The hook must not call back into the manager (the gate is
+		// non-reentrant) and must not take the mutation mutex (another goroutine
+		// may hold it while parked on this gate) — it only touches the record
+		// state's own lock.
+		if err := m.cfg.manager.UpdateHost(entry, func() { m.cfg.state.remove(name) }); err != nil {
+			liveErr = fmt.Errorf("update host %q: %w", name, err)
+		}
+	} else if err := m.cfg.hosts.Update(entry); err != nil {
+		liveErr = err
+	} else {
+		// No sshconn manager is wired (tests, embedders), so no lifecycle event can
+		// exist for the new identity: clearing inline on the successful swap gives
+		// the same guarantee the manager path's hook holds, and this also clears an
+		// offline host's retained error and facts when an address edit has no
+		// channel to tear down.
 		m.cfg.state.remove(name)
 	}
 ```

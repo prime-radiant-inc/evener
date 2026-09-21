@@ -113,11 +113,21 @@ deviation and what the pipeline slice inherits.
   `ErrReservedName`, `ErrMissingSSH`, `ErrAmbiguousSSHUser`, `ErrEmptyRoot`,
   `ErrHostCycle`).
 
-### 3.3 `sshconn.Manager.UpdateHost(entry hostreg.Host) error`
+### 3.3 `sshconn.Manager.UpdateHost(entry hostreg.Host, onRetire func()) error`
 
 - One hold of the per-host gate: the registry `Update`, then the same teardown
   body `RemoveHost` and `DetachHost` already share (stop the supervisor, drop
   the channel, clear the per-host caches), with the gate released last.
+- `onRetire`, when non-nil, runs **inside that same gate hold**, after the
+  registry swap and the retired identity's teardown (its `Detached` included)
+  and immediately before the gate is released — never when the call refuses.
+  The placement is the contract: every lifecycle event is delivered
+  synchronously with the gate held, so a concurrent attach can start only for
+  the new generation, after the gate is free; a caller's per-identity state
+  retired from the hook therefore cannot have a new-generation event interleave
+  between the swap and the retirement and be erased by it. The hook must not
+  call back into `Manager` (the gate is non-reentrant) and must not take a lock
+  another goroutine may hold while parked on this gate.
 - **Every update tears the channel down**, not only the edits that change a
   field the dial reads. The reason is the fence, not the dial: a supervisor
   captures the entry it supervises when it starts, and `reconnectOnce` refuses
@@ -154,24 +164,28 @@ and the compensation paths in one shape:
   rename already committed compensates back to the live contents exactly as add
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
-- **Live, mutex-free, in this order.** Call `manager.UpdateHost(entry)` when a
-  manager is wired; otherwise call the registry's
-  own `Update`, mirroring how remove falls back when no manager is wired
-  (tests, embedders). The registry re-runs the same validation under its own
-  lock; the commit phase's check is what keeps an invalid or unnormalized entry
-  out of the file, and is not a substitute for it. The manager's swap is atomic
-  under the host gate — the registry entry is replaced and the channel retired,
-  or neither — so an error from it means nothing live changed. After a successful
-  swap, clear the name's attach record on every update. §4 requires the
-  name-keyed resolved state to be cleared wholesale, and the record is exactly
-  that: the retiring identity's last-known facts and attach error, which an edit
-  otherwise leaves lying about an entry that no longer exists (most visibly on
-  an offline host whose address changed, where no channel exists to tear down).
-  The post-swap placement is load-bearing: while the manager waits for the gate,
-  the old registry entry is still current and a concurrent row can legitimately
-  record its facts again. Once the swap advances the generation, that old row
-  fails the `hostEntryCurrent` fence and cannot repopulate the record; the new
-  entry has no channel until a later attach, so the clear sticks.
+- **Live, mutex-free, in this order.** Call `manager.UpdateHost(entry, onRetire)`
+  when a manager is wired, handing it an `onRetire` that clears the name's
+  attach record; otherwise call the registry's own `Update` and clear the record
+  inline after a successful swap, mirroring how remove falls back when no
+  manager is wired (tests, embedders) and safe because with no manager no
+  lifecycle event can exist. The registry re-runs the same validation under its
+  own lock; the commit phase's check is what keeps an invalid or unnormalized
+  entry out of the file, and is not a substitute for it. The manager's swap is
+  atomic under the host gate — the registry entry is replaced and the channel
+  retired, or neither — so an error from it means nothing live changed, and the
+  hook never runs on a refusal, so the still-live identity's record survives
+  one. §4 requires the name-keyed resolved state to be cleared wholesale on
+  every update, and the record is exactly that: the retiring identity's
+  last-known facts and attach error, which an edit otherwise leaves lying about
+  an entry that no longer exists (most visibly on an offline host whose address
+  changed, where no channel exists to tear down). The clear runs inside the
+  swap's own gate hold (§3.3), so neither a pre-swap row nor a post-swap
+  new-identity lifecycle event can defeat it: while the manager waits for the
+  gate the old registry entry is still current, but once the swap advances the
+  generation that old row fails the `hostEntryCurrent` fence and cannot
+  repopulate the record, and any new-identity event is delivered only after the
+  hook has already cleared it.
 - **Finish, under the mutex.** Clear the mark. On success:
   - when `roots` changed, retire both old identities first — the remote-thread
     cache's source entry and the source registration — then clear the last-good
@@ -375,9 +389,10 @@ Every item is pinned by a test in this slice's PR.
     events describe — its configured values come from the edited entry, which
     is what criterion 1 asserts.
 16. A failed live phase leaves the file, the in-memory store row and the live
-    registry all describing the old entry — the row's attach-derived facts are
-    the one part deliberately not compensated, so they may be cleared — and a
-    retry of the same edit then succeeds.
+    registry all describing the old entry, and leaves the still-live identity's
+    attach-derived facts intact — the clear is gated on a successful swap, so a
+    refused live phase never touches the record — and a retry of the same edit
+    then succeeds.
 17. `Registry.Update` preserves the name's upstream edges, and the file's order
     is unchanged: the edit replaced one entry rather than moving it.
 
