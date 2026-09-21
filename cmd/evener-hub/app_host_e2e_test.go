@@ -21,9 +21,11 @@ const hostE2EName = "e2e"
 
 // The bounds on the add-then-attach wait. The attach RPC is synchronous — it
 // returns only once sshconn.Manager.Ensure has probed, maybe bootstrapped the
-// host's hub, and installed the bridge — so the generous whole-step timeout is
-// the real bound and the poll interval only decides how often the row is
-// re-read.
+// host's hub, and installed the bridge — so a single call can spend the whole
+// four-minute step itself. awaitHostAttached derives a context with this
+// deadline and drives both the attach request and the status polls under it,
+// so the bound holds inside one long RPC and not merely between them; the poll
+// interval only decides how often the row is re-read.
 const (
 	hostAttachTimeout  = 4 * time.Minute
 	hostAttachPollWait = 10 * time.Second
@@ -48,11 +50,13 @@ const (
 // overrides the host's evener path (default ~/.local/bin/evener).
 //
 // The provenance half of the positive check needs EVENER_SSH_E2E_REMOTE_DIR: a
-// directory that exists on the host and NOT on this controller. The forwarded
-// evener/paths/complete over that prefix must list the host's own entries, and
-// the same prefix asked of this hub directly must find none. Only the host can
-// see that directory, so the pair pins the answer's origin where the forwarded
-// call alone could still have been served locally.
+// directory that exists on the host and NOT on this controller and holds at
+// least one visible child entry (a file or a subdirectory). The forwarded
+// evener/paths/complete over that prefix, with IncludeFiles set so files count
+// too, must list the host's own entries, and the same prefix asked of this hub
+// directly must find none. Only the host can see that directory, so the pair
+// pins the answer's origin where the forwarded call alone could still have been
+// served locally.
 //
 // The host must already carry a matching evener build at that path: a test hub
 // has no BuildSource, so the version-match ladder refuses to attach a host whose
@@ -72,7 +76,7 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 	}
 	remoteDir := os.Getenv("EVENER_SSH_E2E_REMOTE_DIR")
 	if remoteDir == "" {
-		t.Skip("set EVENER_SSH_E2E_REMOTE_DIR to a directory that exists on the host and not on this controller to run the live host add/attach/forward test")
+		t.Skip("set EVENER_SSH_E2E_REMOTE_DIR to a directory that exists on the host and not on this controller and holds at least one visible child entry (a file or a directory) to run the live host add/attach/forward test")
 	}
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
@@ -154,9 +158,11 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 	// list just as readily. EVENER_SSH_E2E_REMOTE_DIR names a directory only the
 	// host has, so the pair below pins the origin: the forwarded completion over
 	// that prefix must see the host's entries, and the same prefix asked of this
-	// hub directly must find none.
+	// hub directly must find none. IncludeFiles makes the completion list a
+	// directory's regular files too, so a host directory holding only files is
+	// as valid a subject as one holding only subdirectories.
 	remotePrefix := strings.TrimRight(remoteDir, "/") + "/"
-	forwardedParams, err := json.Marshal(appwire.PathsCompleteParams{Prefix: remotePrefix})
+	forwardedParams, err := json.Marshal(appwire.PathsCompleteParams{Prefix: remotePrefix, IncludeFiles: true})
 	if err != nil {
 		t.Fatalf("marshal %s params for the host-only prefix %q: %v", appwire.MethodEvenerPathsComplete, remotePrefix, err)
 	}
@@ -176,7 +182,7 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 	// against the controller's filesystem, where that host's directory does not
 	// exist. An empty answer here is what makes the non-empty forwarded answer
 	// above evidence of the host rather than of a local read.
-	directPaths, err := clientRequest[appwire.PathsCompleteResponse](ctx, client, appwire.MethodEvenerPathsComplete, appwire.PathsCompleteParams{Prefix: remotePrefix})
+	directPaths, err := clientRequest[appwire.PathsCompleteResponse](ctx, client, appwire.MethodEvenerPathsComplete, appwire.PathsCompleteParams{Prefix: remotePrefix, IncludeFiles: true})
 	if err != nil {
 		t.Fatalf("direct %s for the host-only prefix %q: %v (the local hub must answer the unforwarded call, not refuse it)", appwire.MethodEvenerPathsComplete, remotePrefix, err)
 	}
@@ -221,24 +227,28 @@ func forwardHostMethod(ctx context.Context, client *appwire.Client, host, method
 // awaitHostAttached drives evener/host/attach until the host's row reports
 // attached, and returns that row. The attach RPC is idempotent and synchronous,
 // so it is retried while the row is still offline: a transient ssh start failure
-// recovers on the next attempt instead of failing the run, and the whole-step
-// timeout stays the bound. A failure names the step and the row's own
-// lastAttachError, which is what the settings pane would render.
+// recovers on the next attempt instead of failing the run. Each request runs
+// under a context carrying hostAttachTimeout, so the bound holds inside one
+// long-running attach or status RPC — not merely between them, where the wider
+// run context would otherwise let a single call exceed the advertised step. A
+// failure names the step and the row's own lastAttachError, which is what the
+// settings pane would render.
 func awaitHostAttached(ctx context.Context, t *testing.T, client *appwire.Client, name string) appwire.HostRow {
 	t.Helper()
-	deadline := time.Now().Add(hostAttachTimeout)
+	attachCtx, cancel := context.WithTimeout(ctx, hostAttachTimeout)
+	defer cancel()
 	var lastAttachErr error
 	for {
-		if resp, err := clientRequest[appwire.HostAttachResponse](ctx, client, appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: name}); err != nil {
+		if resp, err := clientRequest[appwire.HostAttachResponse](attachCtx, client, appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: name}); err != nil {
 			lastAttachErr = err
 		} else if resp.Attached {
 			lastAttachErr = nil
 		}
-		row, rowErr := clientRequest[appwire.HostStatusResponse](ctx, client, appwire.MethodEvenerHostStatus, appwire.HostStatusParams{Name: name})
+		row, rowErr := clientRequest[appwire.HostStatusResponse](attachCtx, client, appwire.MethodEvenerHostStatus, appwire.HostStatusParams{Name: name})
 		if rowErr == nil && row.Host.Attached {
 			return row.Host
 		}
-		if time.Now().After(deadline) {
+		if attachCtx.Err() != nil {
 			if rowErr != nil {
 				t.Fatalf("step evener/host/attach: host %q did not report attached within %s and its row could not be read: %v (last attach error: %v)", name, hostAttachTimeout, rowErr, lastAttachErr)
 			}
@@ -246,8 +256,8 @@ func awaitHostAttached(ctx context.Context, t *testing.T, client *appwire.Client
 				name, hostAttachTimeout, row.Host.LastAttachErr, row.Host.MidAttach, row.Host.Attached, lastAttachErr)
 		}
 		select {
-		case <-ctx.Done():
-			t.Fatalf("step evener/host/attach: context ended before host %q reported attached: %v (last attach error: %v)", name, ctx.Err(), lastAttachErr)
+		case <-attachCtx.Done():
+			t.Fatalf("step evener/host/attach: context ended before host %q reported attached: %v (last attach error: %v)", name, attachCtx.Err(), lastAttachErr)
 		case <-time.After(hostAttachPollWait):
 		}
 	}

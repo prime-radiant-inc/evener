@@ -176,7 +176,7 @@ among the gates is told where its row lives. `ROOT_FULL=1 make test` is the
 `test` target under an environment override, which no generated row can
 carry.
 
-All five follow the same rules as the rest: test assertions stay deterministic
+All six follow the same rules as the rest: test assertions stay deterministic
 when the live opt-ins are unset, and dependency installation, disk capacity,
 browser availability, and CI tool setup are explicit prerequisites rather than
 assumptions.
