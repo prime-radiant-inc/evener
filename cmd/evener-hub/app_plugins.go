@@ -294,7 +294,10 @@ var hubPluginsReconcileAfterAppliedRemove = func() {}
 // removal applied; that must never drop the typed outcome back to a plain
 // error indistinguishable from an ordinary failure, so it sets
 // Data.AppliedUnavailable instead and keeps the same WireError shape. The
-// success path's own re-list can fail the same way, after an unregister and a
+// discarded read's own text is logged to the hub's stderr - the same
+// server-side diagnostic the success path's failed re-list uses (#1951) - so
+// the secondary failure leaves a trace. The success path's own re-list can
+// fail the same way, after an unregister and a
 // clone cleanup that both completed; it too must never read as "removal
 // failed" (a retry would land on ErrMarketplaceNotFound), so it answers with
 // its own post-apply outcome, ErrorMarketplaceRemoveApplied - the same
@@ -310,6 +313,12 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 			}
 			hubPluginsReconcileAfterCloneLitter()
 			if applied, listErr := c.listMarketplaces(ctx); listErr != nil {
+				// The read failure must leave a diagnostic behind: the wire
+				// error deliberately keeps only the path-scrubbed
+				// clone-litter text, so without this line the discarded
+				// listErr would vanish - the same server-side log the
+				// success path's failed re-list already uses.
+				fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after unregistration failed: %v\n", params.Name, listErr)
 				data.AppliedUnavailable = true
 			} else {
 				data.Applied = applied
