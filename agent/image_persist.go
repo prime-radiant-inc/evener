@@ -56,6 +56,18 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	}
+	// MkdirAll's Stat follows a symlink planted at the final component, so
+	// a link there would succeed and be written through — and the mode
+	// tightening below would reach the link's target. The store's directory
+	// leaf gets the same no-follow treatment as the attachment files: what
+	// sits at the path must be a real directory, not a link to one.
+	if info, err := os.Lstat(dir); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
+		return images
+	} else if !info.IsDir() {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %q is not a directory", dir)})
+		return images
+	}
 	// MkdirAll's mode applies only at creation: an attachments directory
 	// that already exists (a buggy predecessor, a restore) keeps whatever
 	// mode it landed with, and the attachments are private to the session's
@@ -107,9 +119,12 @@ func writeAttachmentContents(f *os.File, data []byte) error {
 // which dedupes to a no-op; anything else there — a planted file, a symlink,
 // a non-regular entry — is a write failure the caller reports like any
 // other. A failed content write removes the partial file so the
-// content-addressed name is never poisoned for a retry. A fresh create is
-// flushed all the way out: the file's contents, then the directory entry
-// naming it, before the caller can record the path.
+// content-addressed name is never poisoned for a retry. Both success paths
+// flush the directory entries that make the file reachable by name — its
+// directory and that directory's parent, which held the directory's own
+// first creation — before the caller can record the path; the dedupe path
+// flushing too means a retry after a failed flush completes it rather than
+// masking it.
 func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) error, syncDir func(string) error) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -127,7 +142,7 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 		if !bytes.Equal(existing, data) {
 			return fmt.Errorf("existing file at %q holds different content", path)
 		}
-		return nil
+		return syncAttachmentDirs(path, syncDir)
 	}
 	if err := write(f, data); err != nil {
 		_ = f.Close()
@@ -146,14 +161,25 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 		_ = os.Remove(path)
 		return err
 	}
-	// The directory entry is what makes the synced bytes reachable by name;
-	// flush it before the caller can record the path in the transcript, or a
-	// crash can leave the model holding a promised path whose name never
-	// landed. A filesystem that cannot sync a directory at all reports the
-	// same unsupported-sync errors the client-mutation store tolerates; the
-	// file's own contents are already flushed there.
-	if err := syncDir(filepath.Dir(path)); err != nil && !clientMutationSyncUnsupported(err) {
-		return err
+	return syncAttachmentDirs(path, syncDir)
+}
+
+// syncAttachmentDirs flushes the directory entries that make a stored
+// attachment reachable by name: the directory holding the file, and that
+// directory's parent, which held the directory's own first creation (the
+// persist path creates the attachments directory itself; the session
+// directory above it belongs to the session's own construction, the
+// transcript writer's contract). Both paths flush — a fresh create and a
+// dedupe hit — because a create whose dir sync failed leaves the file in
+// place (the jobs-store posture) and the retry must complete the flush
+// instead of masking it. A filesystem that cannot sync a directory at all
+// reports the same unsupported-sync errors the client-mutation store
+// tolerates; the file's own contents are already flushed there.
+func syncAttachmentDirs(path string, syncDir func(string) error) error {
+	for _, dir := range []string{filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
+		if err := syncDir(dir); err != nil && !clientMutationSyncUnsupported(err) {
+			return err
+		}
 	}
 	return nil
 }

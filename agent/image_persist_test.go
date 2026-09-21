@@ -822,17 +822,100 @@ func TestWriteAttachmentFileSyncsParentDirAfterCreate(t *testing.T) {
 
 	var synced []string
 	if err := writeAttachmentFile(path, png, writeAttachmentContents, func(d string) error {
-		if d != dir {
-			t.Errorf("dir sync named %q, want the parent %q", d, dir)
-		}
 		synced = append(synced, d)
 		return nil
 	}); err != nil {
 		t.Fatalf("writeAttachmentFile: %v", err)
 	}
-	if len(synced) != 1 {
-		t.Errorf("parent dir synced %d times after create, want 1", len(synced))
+	// The create flushes the entry naming the file (its directory) and the
+	// entry naming that directory (its parent, which held the directory's
+	// own creation).
+	want := []string{dir, filepath.Dir(dir)}
+	if !slices.Equal(synced, want) {
+		t.Errorf("dir syncs after create = %v, want %v", synced, want)
 	}
+}
+
+// TestWriteAttachmentFileSyncsDirectoryChainOnDedupe pins the retry half of
+// the flush: the dedupe no-op must flush the same directory chain, because a
+// fresh create whose dir sync failed leaves the file in place (the
+// jobs-store posture) and the next paste of the same bytes reaches this
+// branch — the flush it never completed happens here instead of being
+// masked by a dedupe success.
+func TestWriteAttachmentFileSyncsDirectoryChainOnDedupe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	png := validPNGFixture(t)
+
+	var synced []string
+	sync := func(d string) error {
+		synced = append(synced, d)
+		return nil
+	}
+	if err := writeAttachmentFile(path, png, writeAttachmentContents, sync); err != nil {
+		t.Fatalf("first writeAttachmentFile: %v", err)
+	}
+	synced = synced[:0]
+	if err := writeAttachmentFile(path, png, writeAttachmentContents, sync); err != nil {
+		t.Fatalf("dedupe writeAttachmentFile: %v", err)
+	}
+	want := []string{dir, filepath.Dir(dir)}
+	if !slices.Equal(synced, want) {
+		t.Errorf("dir syncs on dedupe = %v, want %v (the dedupe must retry the flush a failed create left incomplete)", synced, want)
+	}
+}
+
+// TestProcessInput_PlantedAttachmentsDirSymlink_Refused pins the store's
+// directory leaf to the same no-follow guarantee the attachment files have:
+// MkdirAll's Stat follows a symlink planted at the attachments path, so
+// without a gate the batch succeeds, the mode tightening reaches the link's
+// target, and the bytes are written through it. The plant requires the
+// state-dir owner's own hand, but the store refuses the leaf where the
+// write lands, exactly as it refuses a symlink at the file's name.
+func TestProcessInput_PlantedAttachmentsDirSymlink_Refused(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	wantDir := filepath.Join(stateDir, "sessions", sess.ID(), "attachments")
+	if err := os.MkdirAll(filepath.Dir(wantDir), 0o700); err != nil {
+		t.Fatalf("MkdirAll session dir: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Chmod(outside, 0o777); err != nil {
+		t.Fatalf("Chmod outside: %v", err)
+	}
+	if err := os.Symlink(outside, wantDir); err != nil {
+		t.Fatalf("plant attachments-dir symlink: %v", err)
+	}
+	warnCh := collectWarnings(sess)
+
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("ReadDir outside: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("attachment bytes were written through the planted symlink: %v", entries)
+	}
+	if info, err := os.Stat(outside); err != nil {
+		t.Fatalf("Stat outside: %v", err)
+	} else if perm := info.Mode().Perm(); perm != 0o777 {
+		t.Errorf("the mode tightening reached the symlink target: mode = %o, want it untouched at 777", perm)
+	}
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	if !hasImagePart(turn.Message) {
+		t.Error("image must still ride the turn inline")
+	}
+	if _, ok := findSystemNotificationPart(turn.Message); ok {
+		t.Errorf("a refused attachments dir must not yield an announced path: %+v", turn.Message.Content)
+	}
+	awaitWarningNaming(t, warnCh, "attachments")
 }
 
 // TestFsyncAttachmentDirSyncsRealDir exercises the production dir-sync step
