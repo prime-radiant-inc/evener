@@ -2024,9 +2024,11 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		// resident runtime subtree can be released: keeping it warm holds its
 		// process-local resources — stdio MCP server processes above all — for
 		// the life of the daemon. Durable identity survives for cold restore.
-		// The warm-supervision fixtures opt out; see the seam's field comment.
+		// The release waits out the follow-up grace period first, and the
+		// warm-supervision fixtures opt out entirely; see the seam's field
+		// comment.
 		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
-			a.sess.releaseIdleRuntimeAfterFinalize()
+			a.sess.scheduleIdleRuntimeRelease()
 		}
 	}
 }

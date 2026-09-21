@@ -502,6 +502,13 @@ type testConfig struct {
 	// fixture's root session covers its whole delegate tree.
 	disableDelegateIdleRelease bool
 
+	// delegateIdleReleaseDelay overrides the production idle-release grace
+	// (delegateIdleReleaseDelayDefault) for tests: the idle-release contract
+	// test shrinks it to exercise the scheduled release deterministically, and
+	// zero makes the release synchronous. Nil keeps the production default.
+	// Inherited by child configs like every testOnly field.
+	delegateIdleReleaseDelay *time.Duration
+
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,
 	// so routing it through a separate scripted client keeps its draw off the

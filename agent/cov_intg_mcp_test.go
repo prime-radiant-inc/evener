@@ -428,11 +428,15 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 	}
 
 	cfg := SessionConfig{
-		StateDir:        t.TempDir(),
-		PluginDirs:      []string{dir},
+		StateDir:         t.TempDir(),
+		PluginDirs:       []string{dir},
 		MaxSubagentDepth: 1,
 	}
 	cfg.testOnly.childClientFactory = factory
+	// Shrink the follow-up grace so the scheduled release fires within the
+	// poll window below; production keeps the default grace.
+	shortGrace := 100 * time.Millisecond
+	cfg.testOnly.delegateIdleReleaseDelay = &shortGrace
 
 	sess, err := NewSession(parentClient, withTestSessionNamer(parentClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
@@ -477,8 +481,8 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 		t.Fatalf("delegate run did not finish: %v", ctx.Err())
 	}
 
-	// The release runs on the finalize tail right after close(done), so poll
-	// for the child's MCP server to exit rather than assuming ordering.
+	// The release runs on a timer after the (here tiny) follow-up grace, so
+	// poll for the child's MCP server to exit rather than assuming ordering.
 	markerDeadline := time.Now().Add(15 * time.Second)
 	for {
 		if _, statErr := os.Stat(marker); statErr == nil {

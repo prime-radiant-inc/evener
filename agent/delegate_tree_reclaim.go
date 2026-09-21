@@ -11,6 +11,18 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
+// delegateIdleReleaseDelayDefault is how long a stable delegate stays warm
+// after its generation finalizes before its resident runtime subtree is
+// released non-terminally. The grace exists because the warm follow-up is a
+// documented, load-bearing pattern: a completed delegate is routinely driven
+// delegate_send steering note), and "a caller that needs a drivable child
+// must wait for quiescence first" would be meaningless if quiescence itself
+// released the runtime. Thirty seconds covers those bursts while still
+// bounding the leak this release exists for — a daemon's retained stdio MCP
+// server processes previously lived as long as the daemon did (days), not
+// half a minute. Tests override it via testOnly.delegateIdleReleaseDelay.
+const delegateIdleReleaseDelayDefault = 30 * time.Second
+
 type delegateRuntimeReclamationEntry struct {
 	delegateID     string
 	childSessionID string
@@ -583,6 +595,34 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 		_ = teardownChildSessionWithPolicy(context.Background(), entry.runtime, retainChildScratch, releaseRetirement)
 	}
 	return true
+}
+
+// scheduleIdleRuntimeRelease arms the idle release for this just-finalized
+// stable delegate: after the grace period (delegateIdleReleaseDelayDefault,
+// or the testOnly override), the resident runtime subtree releases
+// non-terminally. A zero override makes the release synchronous, which the
+// idle-release contract test uses to observe it deterministically.
+//
+// The timer is deliberately NOT tracked by any WaitGroup a session's Close
+// joins: Close's bounded joins must never wait out a grace period, and a
+// timer that fires after the session or tree has closed is harmless — the
+// release claim refuses on a closing controller, a re-running generation, or
+// an already-released runtime, and every gate re-checks state at fire time.
+// A delegate that runs again within the grace simply finds the release
+// refused on its current state (the claim requires terminal-idle members),
+// so no cancellation path is needed.
+func (s *Session) scheduleIdleRuntimeRelease() {
+	delay := delegateIdleReleaseDelayDefault
+	if override := s.cfg.testOnly.delegateIdleReleaseDelay; override != nil {
+		delay = *override
+	}
+	if delay <= 0 {
+		s.releaseIdleRuntimeAfterFinalize()
+		return
+	}
+	time.AfterFunc(delay, func() {
+		_ = s.releaseIdleRuntimeAfterFinalize()
+	})
 }
 
 // idleReleasePregatesClear reports whether every precondition that must hold
