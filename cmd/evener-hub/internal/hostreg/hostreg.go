@@ -255,6 +255,42 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	return nil
 }
 
+// Update replaces the entry registered under entry.Name in place and stamps it
+// with a fresh generation from the registry-wide counter — the identity fence
+// every capture-compare consumer reads (the SSH manager's pre-publish rechecks
+// and the hub's row fence), so a capture taken before an update stops matching
+// once the update lands.
+//
+// It normalizes and validates exactly as an add does — Normalize, then the same
+// validateEntry — so an update can never store what an add would refuse, and a
+// refusal leaves the registry untouched. It runs no host-count cap: the
+// registry has none, config load has none, and the slice that owns the cap
+// (the design document's [03] follow-up) is where it arrives.
+//
+// Unlike AddWithUpstreams it never inserts: update targets a live entry, so a
+// name the registry does not hold is ErrUnknownHost rather than a create. The
+// name's upstream edges are preserved verbatim, which is why the cycle check is
+// not rerun — the edges are unchanged, and the graph they describe is the one
+// that was already acyclic.
+func (r *Registry) Update(entry Host) error {
+	entry = Normalize(entry)
+	if err := validateEntry(entry); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[entry.Name]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, entry.Name)
+	}
+	// The generation is assigned under the lock from the registry-wide counter,
+	// exactly as AddWithUpstreams does, so an update is as much a new identity
+	// as a remove/re-add: no generation a capture can hold is ever reused.
+	entry.Generation = r.gen + 1
+	r.gen = entry.Generation
+	r.hosts[entry.Name] = entry
+	return nil
+}
+
 // SetUpstreams attaches or replaces the upstream edges of an already registered
 // host, applying the same cycle check as AddWithUpstreams. New registers
 // config-loaded hosts without edges, so this — not AddWithUpstreams — is how
