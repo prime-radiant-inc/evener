@@ -434,7 +434,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	// assume the finalize tail has fully settled. TRIPWIRE: settle normally
 	// takes milliseconds; 15s only bounds a deadlock.
 	waitForCondition(t, 15*time.Second, "terminal subtree of "+parentRes.DelegateID+" to become claimable", func() bool {
-		claim, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
+		claim, _, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
 		if err != nil {
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
@@ -496,6 +496,78 @@ func TestDelegateIdleReleaseGenerationGuard(t *testing.T) {
 	}
 	if c.idleReleaseGenerationCurrent("dlg_missing", 1) {
 		t.Fatal("guard accepted a missing delegate")
+	}
+}
+
+// TestDelegateIdleRelease_RefusesSharedTaskStoreOwner: releasing a subtree
+// that owns a shared task store would strand the resolver's next cold
+// restore on the owner-residency check, so the claim must refuse —
+// terminally, with no retry.
+func TestDelegateIdleRelease_RefusesSharedTaskStoreOwner(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	seedDelegateReclaimRuntime(t, c, "dlg_owner", "", time.Unix(10, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_resolver", "", time.Unix(5, 0).UTC(), false, false)
+	c.mu.Lock()
+	c.durable["dlg_resolver"].Descriptor.SharedTaskStoreOwnerSessionID = c.durable["dlg_owner"].Descriptor.ChildSessionID
+	c.mu.Unlock()
+	claim, retryable, err := c.ClaimIdleRuntimeRelease("dlg_owner")
+	if err != nil {
+		t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
+	}
+	if claim != nil {
+		t.Fatal("claim admitted a subtree owning a shared task store")
+	}
+	if retryable {
+		t.Fatal("shared-task-store refusal must be terminal, not retried")
+	}
+}
+
+// TestDelegateIdleRelease_RefusesWhileManagerChildRuns: a manager child the
+// durable subtree never tracked must not be abandoned mid-run by an
+// opportunistic release of its owner — the pre-gate refuses while it runs,
+// and once it finishes, the release settles the child with the member
+// instead of leaving the record to outlive the runtime that held it.
+func TestDelegateIdleRelease_RefusesWhileManagerChildRuns(t *testing.T) {
+	root, tree, _ := newRetirementDelegateController(t)
+	defer root.Close()
+	result := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	live := tree.live[result.DelegateID]
+	tree.mu.Unlock()
+	if live == nil || live.runtime == nil {
+		t.Fatal("fixture delegate is not resident before the release")
+	}
+	runtime := live.runtime
+
+	// The manager-only child: a record no durable delegate backs, still
+	// running. No production spawn creates these today — every manager
+	// insertion is the stable-delegate machinery — so this pins the
+	// invariant a stray one cannot violate.
+	legacyDone := make(chan struct{})
+	legacy := &subagent{id: "legacy-child-sentinel", sess: newSession(t), done: legacyDone}
+	runtime.subagents.mu.Lock()
+	runtime.subagents.subs[legacy.id] = legacy
+	runtime.subagents.mu.Unlock()
+
+	if runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release succeeded while a manager child was still running")
+	}
+	tree.mu.Lock()
+	stillResident := tree.live[result.DelegateID].runtime
+	tree.mu.Unlock()
+	if stillResident != runtime {
+		t.Fatal("refused release changed residency")
+	}
+
+	close(legacyDone)
+	if !runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release refused after the manager child finished")
+	}
+	if err := legacy.sess.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("manager child was not settled with the release: err = %v, want errRetirementTeardownSpent", err)
+	}
+	if err := runtime.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("owner runtime teardown pass after release: err = %v, want errRetirementTeardownSpent", err)
 	}
 }
 

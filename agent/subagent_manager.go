@@ -269,6 +269,22 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
+// hasRunningChildren reports whether any tracked child's runner has not
+// finished. An opportunistic release of the owning runtime must refuse while
+// a child is still executing instead of abandoning it.
+func (m *subagentManager) hasRunningChildren() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sub := range m.subs {
+		select {
+		case <-sub.done:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // countsTowardCap reports whether a record occupies a retention slot: a terminal
 // record (completed|failed|cancelled) whose close has not timed out. running
 // children and close-timed-out records never count, so they cannot deadlock

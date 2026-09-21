@@ -481,6 +481,16 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 		t.Fatalf("delegate run did not finish: %v", ctx.Err())
 	}
 
+	// Bracket continuity, part one: the parent's own server shares the
+	// child's plugin config and therefore its marker path, so the marker
+	// alone proves only that SOME server exited. A parent echo alive on both
+	// sides of the wait attributes the exit to the child; the parent has no
+	// shutdown path in this test, and its echo after the wait closes the
+	// bracket.
+	if out := intg_mcpEcho(t, sess, "plugin_mcpplug_svc__echo", "parent-alive-before"); out != "echo: parent-alive-before" {
+		t.Fatalf("parent MCP echo before the release wait = %q, want %q", out, "echo: parent-alive-before")
+	}
+
 	// The release runs on a timer after the (here tiny) follow-up grace, so
 	// poll for the child's MCP server to exit rather than assuming ordering.
 	// TRIPWIRE: the release normally fires well inside a second of the 100ms
@@ -497,7 +507,14 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 
 	// Resumability: a send to the idle delegate must restore it cold (a fresh
 	// child client) and complete another generation.
-	send := (delegateRuntime{owner: sess}).send(ctx, delegateID, "run again", 0).result
+	// A fresh bound for the restore phase: the release-wait context's 30s is
+	// mostly spent by the marker poll, and the send must not inherit a
+	// nearly-expired context under load.
+	// TRIPWIRE: the scripted send and restore complete in well under a
+	// second; 30s only bounds a genuine hang.
+	restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer restoreCancel()
+	send := (delegateRuntime{owner: sess}).send(restoreCtx, delegateID, "run again", 0).result
 	if send.Err != nil {
 		t.Fatalf("delegate_send after idle release: %+v", send)
 	}
@@ -513,8 +530,8 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 	restored.mu.Unlock()
 	select {
 	case <-rdone:
-	case <-ctx.Done():
-		t.Fatalf("restored run did not finish: %v", ctx.Err())
+	case <-restoreCtx.Done():
+		t.Fatalf("restored run did not finish: %v", restoreCtx.Err())
 	}
 	// The cold restore reuses the restoring parent's client — the same
 	// binding a post-restart restore gets — so the spawn factory must have

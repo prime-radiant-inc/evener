@@ -468,37 +468,46 @@ func (s *Session) reclaimDelegateRuntimeCapacity(required int) (err error) {
 // flags, waiters, or a shared task store owned inside the subtree — that must
 // settle first. Callers skip without forcing; the delegate's next finalize or
 // the capacity reclamation backstop will retry.
-func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*delegateRuntimeReclamationClaim, error) {
+//
+// The second return, retryable, splits that nil-claim class: transient
+// refusals — a member holds process work, recovery flags, waiters, steering
+// debt, or a descendant is still running, all of which settle on their own —
+// tell the caller to re-arm one more grace window; terminal refusals — the
+// delegate missing, not terminal-idle, already released, or a shared task
+// store owner — wait for the next finalize or the capacity backstop.
+func (c *delegateTreeController) ClaimIdleRuntimeRelease(delegateID string) (*delegateRuntimeReclamationClaim, bool, error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
-		return nil, retirementErr
+		return nil, false, retirementErr
 	}
 	defer retirementRelease()
 	if c == nil {
-		return nil, errors.New("delegate controller is unavailable")
+		return nil, false, errors.New("delegate controller is unavailable")
 	}
 	if delegateID == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
-		return nil, errDelegateTargetBusy
+		return nil, false, errDelegateTargetBusy
 	}
 	aggregate := c.durable[delegateID]
 	if aggregate == nil || !c.isResidentTerminalRuntimeLocked(delegateID, aggregate) {
-		return nil, nil
+		return nil, false, nil
 	}
 	entries, ok := c.claimableRuntimeSubtreeLocked(delegateID)
 	if !ok {
-		return nil, nil
+		return nil, true, nil
 	}
 	if c.subtreeOwnsSharedTaskStoreLocked(entries) {
-		return nil, nil
+		return nil, false, nil
 	}
 	// Leaf-first ordering puts the named root last among the entries, so the
-	// claim's roots entry is the entries' final element already.
-	return c.armRuntimeReclamationClaimLocked(entries[len(entries)-1:], entries), nil
+	// claim's roots entry is the entries' final element already. Copy it so
+	// the claim's slices never alias a backing array both could append to.
+	roots := append([]delegateRuntimeReclamationEntry(nil), entries[len(entries)-1])
+	return c.armRuntimeReclamationClaimLocked(roots, entries), false, nil
 }
 
 // subtreeOwnsSharedTaskStoreLocked reports whether releasing the claim's
@@ -538,20 +547,24 @@ func (c *delegateTreeController) subtreeOwnsSharedTaskStoreLocked(entries []dele
 // would leave a half-settled runtime that can never be warm-resumed.
 //
 // It returns false — leaving the runtime warm — when any gate fails, and
-// never forces. Eligibility refusals (a nil claim) retry only at the
-// delegate's next finalize or through the capacity reclamation backstop;
-// the transient kinds — pre-gate residue that has not settled, a whole-tree
-// retirement that has not decided — re-arm one more grace window so a
-// one-shot refusal cannot lose the release. A closing controller is final
-// and never retried. A root session (no owning delegate identity) hosts the
-// tree and must stay resident; a non-stable child has no cold-restore path,
-// so it is out of scope by construction (its parent is a stable delegate,
-// and releasing that parent drains it as a subtree member).
+// never forces. Terminal refusals — the delegate missing, not resident, or
+// a shared task store owner — retry only at the next finalize or through the
+// capacity reclamation backstop; the transient kinds — subtree members
+// holding process work or a descendant still running, pre-gate residue that
+// has not settled, a whole-tree retirement that has not decided — re-arm one
+// more grace window so a one-shot refusal cannot lose the release. A closing
+// controller is final and never retried. A root session (no owning delegate
+// identity) hosts the tree and must stay resident; a non-stable child has no
+// cold-restore path, so it is out of scope by construction (its parent is a
+// stable delegate, and releasing that parent drains it as a subtree member).
+// Manager records the durable subtree never tracked — no production spawn
+// creates them today — settle with their member's teardown instead of
+// outliving it.
 func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
 		return false
 	}
-	claim, err := s.delegateController.ClaimIdleRuntimeRelease(s.owningDelegateID)
+	claim, retryable, err := s.delegateController.ClaimIdleRuntimeRelease(s.owningDelegateID)
 	if err != nil {
 		switch {
 		case errors.Is(err, errDelegateTargetBusy):
@@ -570,6 +583,12 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 		return false
 	}
 	if claim == nil {
+		// Transient refusals settle on their own, so one more grace window
+		// bounds the retry; terminal ones wait for the next finalize or the
+		// capacity backstop.
+		if retryable {
+			s.rescheduleIdleRuntimeReleaseRetry()
+		}
 		return false
 	}
 	completed := false
@@ -627,6 +646,17 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	completed = true
 
 	for _, entry := range claim.entries {
+		// A released runtime's manager can hold children the durable
+		// subtree never tracked. No production spawn creates such records
+		// today — every manager insertion is the stable-delegate machinery —
+		// but a record landing there by any other route must not outlive the
+		// release: settle it the way this runtime's own close would have,
+		// terminal teardown with the scratch retained for the handoff.
+		if entry.runtime.subagents != nil {
+			for _, sub := range entry.runtime.subagents.drainForClose() {
+				teardownChildSession(context.Background(), sub.sess, retainChildScratch)
+			}
+		}
 		// A teardown error after the pre-gates leaves the pass spent — this
 		// runtime instance can never be warm-resumed — so unhooking is the
 		// consistent outcome either way: durable state and scratch pins survive
@@ -711,15 +741,18 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 
 // idleReleasePregatesClear reports whether every precondition that must hold
 // BEFORE a non-terminal teardown holds for this session: no queued
-// notifications, no pending watch sends, and no job-manager runtime
-// obligations (running jobs or a pending terminal flush) that
-// releaseQuiescentRuntime would refuse on mid-release, after the single
-// teardown pass was already spent.
+// notifications, no pending watch sends, no job-manager runtime obligations
+// (running jobs or a pending terminal flush) that releaseQuiescentRuntime
+// would refuse on mid-release, and no manager child still running — an
+// opportunistic release must not abandon a subagent mid-execution.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
 		return false
 	}
 	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {
+		return false
+	}
+	if s.subagents != nil && s.subagents.hasRunningChildren() {
 		return false
 	}
 	return true
