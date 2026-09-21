@@ -137,6 +137,11 @@ type Options struct {
 	// for the host gate. Tests use it to establish, without a sleep, that one
 	// contender has reached a gate the test holds before another one does.
 	beforeHostGate func(name string)
+	// beforeUpdateHostSwap, when set, runs inside UpdateHost's gate hold after the
+	// pre-swap capture and before the registry Update. Tests use it to drive a
+	// directly driven registry insert into the Get/Update window, so an update can
+	// be observed swapping an entry it did not capture.
+	beforeUpdateHostSwap func(name string)
 	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
 	// the link drop and before it contends for the host gate. Tests use it to park
 	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
@@ -1236,7 +1241,11 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 // with the gate held, so a concurrent attach can only start for the new
 // generation once the gate is free; a caller's per-identity state retired from
 // this hook therefore cannot have a new-generation event interleave between the
-// swap and the retirement and be erased by it.
+// swap and the retirement and be erased by it. The hook runs only when the
+// pre-swap capture was present: never on a refusal, and never when the swap
+// replaced nothing this call captured (a directly driven registry can insert
+// the name between the capture and the swap, and the new entry is no identity
+// of this call's to retire).
 //
 // The hook receives the entry the swap actually retired — the pre-swap capture,
 // its Generation included — so a caller can retire per-identity state by
@@ -1259,21 +1268,37 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	// The identity this call retires is resolved under the gate, and so is the
 	// swap: a remove/re-add that took the name while this call waited is not
 	// this call's to tear down, and the teardown below is scoped to the entry
-	// the update actually replaced. Update refuses an unknown name, so the
-	// capture is present whenever the swap succeeded; hadCaptured keeps
-	// teardownHostChannel's own contract explicit.
+	// the update actually replaced. The capture is normally present whenever
+	// the swap succeeded — Update refuses an unknown name — but a directly
+	// driven registry can insert the name inside the window below, so
+	// hadCaptured is false even then; it keeps teardownHostChannel's own
+	// contract explicit and gates the caller's hook.
 	before, hadCaptured := m.reg.Get(name)
+	if m.opts.beforeUpdateHostSwap != nil {
+		m.opts.beforeUpdateHostSwap(name)
+	}
 	if err := m.reg.Update(entry); err != nil {
 		lock.Unlock()
 		return err
 	}
-	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	// The teardown never targets the empty name. When the pre-swap capture was
+	// absent — a directly driven registry inserted the name inside the window
+	// above — the swap still replaced the entry now under the gate key, so the
+	// teardown falls back to name; before.Name would be "", which is never a
+	// host, and tearing down under it would sweep whatever "" holds while
+	// leaving the replaced host's own channel and caches untouched.
+	teardownName := name
+	if hadCaptured {
+		teardownName = before.Name
+	}
+	ch := m.teardownHostChannel(teardownName, before, hadCaptured)
 	// The caller's retirement runs under the gate, in the same hold as the swap,
 	// so no new-identity lifecycle event can interleave before it: an attach
 	// cannot acquire the gate until it is released below. It receives the entry
-	// the swap replaced (the capture above, present whenever the swap succeeded),
-	// so the caller retires by identity rather than by timing.
-	if onRetire != nil {
+	// the swap replaced (the capture above, when there was one), so the caller
+	// retires by identity rather than by timing; with no capture there is no
+	// identity this call retired to hand over, and it does not run.
+	if onRetire != nil && hadCaptured {
 		onRetire(before)
 	}
 	lock.Unlock()

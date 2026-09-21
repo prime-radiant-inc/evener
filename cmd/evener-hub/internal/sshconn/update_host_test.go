@@ -361,3 +361,49 @@ func TestUpdateHostRetireHookNotRunOnRefusal(t *testing.T) {
 		t.Fatalf("the retire hook ran %d times across refused updates, want 0", called)
 	}
 }
+
+// TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName pins the teardown's
+// target and the hook's negative contract when a directly driven registry
+// inserts the name between the pre-swap capture and the swap: the capture is
+// absent, the swap still succeeds, and there is no identity this call captured
+// to key the teardown to or to hand the hook. The devDeployed sentinel under
+// the empty name is state a teardown keyed to "" would sweep — and "" is never
+// a host, so its survival proves the empty name was not the target. Pre-fix the
+// teardown targeted the capture's empty name and the hook ran with a
+// zero-generation entry, which would clear a caller's record without advancing
+// its fence.
+func TestUpdateHostAppearedEntryIsNotTornDownUnderTheEmptyName(t *testing.T) {
+	reg := testRegistry(t)
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, reg, fr, Options{
+		beforeUpdateHostSwap: func(name string) {
+			// The directly driven insert: the name appears after the capture and
+			// before the swap, so hadCaptured is false while Update succeeds.
+			if err := reg.Add(hostreg.Host{Name: name, SSH: "late.example"}); err != nil {
+				t.Fatalf("direct registry insert: %v", err)
+			}
+		},
+	})
+	m.mu.Lock()
+	m.devDeployed[""] = true
+	m.mu.Unlock()
+
+	called := 0
+	if err := m.UpdateHost(hostreg.Host{Name: "ghost", SSH: "ghost.example"}, func(hostreg.Host) {
+		called++
+	}); err != nil {
+		t.Fatalf("UpdateHost = %v, want nil", err)
+	}
+	if called != 0 {
+		t.Fatalf("the retire hook ran %d times with no pre-swap capture, want 0", called)
+	}
+	m.mu.Lock()
+	_, emptySurvived := m.devDeployed[""]
+	m.mu.Unlock()
+	if !emptySurvived {
+		t.Fatal("the teardown ran under the empty name, want it keyed to the gate key")
+	}
+	if after, ok := reg.Get("ghost"); !ok || after.SSH != "ghost.example" {
+		t.Fatalf("registry after the update = %+v, want the swapped entry", after)
+	}
+}

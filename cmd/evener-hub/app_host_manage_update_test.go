@@ -262,6 +262,47 @@ func TestHostManageUpdateAdvancesTheRegistryGeneration(t *testing.T) {
 	}
 }
 
+// TestHostManageUpdateMintsOneGenerationWithNoManager pins the invariant the
+// hub-level generation test missed: with no sshconn manager wired, a single edit
+// swaps the registry entry exactly once, so the entry advances by exactly one
+// generation and the retired mark is the pre-swap generation. A double swap
+// mints two generations — and marks the intermediate one, not the identity the
+// swap actually replaced — so the exact step and the exact mark are both
+// asserted.
+func TestHostManageUpdateMintsOneGenerationWithNoManager(t *testing.T) {
+	f := newUpdateFixture(t)
+	if f.m.cfg.manager != nil {
+		t.Fatal("the fixture wired a manager; this test pins the no-manager path")
+	}
+	before, ok := f.hosts.Get("side")
+	if !ok {
+		t.Fatal("side not registered before the update")
+	}
+	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "edited.example"},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	after, ok := f.hosts.Get("side")
+	if !ok {
+		t.Fatal("the update dropped the registry entry")
+	}
+	if after.Generation != before.Generation+1 {
+		t.Fatalf("generation = %d after editing %d, want exactly one advance to %d", after.Generation, before.Generation, before.Generation+1)
+	}
+	f.m.cfg.state.mu.Lock()
+	rec := f.m.cfg.state.records["side"]
+	var mark uint64
+	if rec != nil {
+		mark = rec.retiredThrough
+	}
+	f.m.cfg.state.mu.Unlock()
+	if mark != before.Generation {
+		t.Fatalf("retired mark = %d, want the pre-swap generation %d", mark, before.Generation)
+	}
+}
+
 // TestHostManageUpdateRollsBackWhenTheLivePhaseFails pins criterion 16: a failed
 // live phase leaves the file, the store row, and the live registry describing the
 // old entry, and a retry of the same edit then succeeds.

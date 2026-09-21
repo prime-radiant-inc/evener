@@ -1965,9 +1965,11 @@ Add to `cmd/evener-hub/app_host_manage.go`, after `Remove`:
 //     section, set the mark, release the mutex.
 //   - Live, mutex-free: with a manager wired, manager.UpdateHost replaces the
 //     registry entry and retires the channel under the per-host gate as one
-//     atomic step; without one the registry's own Update is the whole story,
-//     exactly as remove falls back. An error means nothing live changed: the
-//     registry refuses ahead of its own swap.
+//     atomic step; without one, read the pre-swap entry, call the registry's own
+//     Update, and retire the name's retained attach record by that entry's
+//     generation — the generation-scoped clear the manager path's hook performs,
+//     so a stale row racing the clear is still fenced. An error means nothing
+//     live changed: the registry refuses ahead of its own swap.
 //   - Finish, under the mutex: clear the mark, compensate a failed live phase
 //     by rolling the sidecar back to the live set as it stands now — not a
 //     pre-commit copy, so a concurrent add or removal that committed in this
