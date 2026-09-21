@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -104,14 +105,11 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 		if !errors.Is(err, os.ErrExist) {
 			return err
 		}
-		info, lerr := os.Lstat(path)
-		if lerr != nil || !info.Mode().IsRegular() {
-			// A symlink must not satisfy the dedupe even when its target holds
-			// the same bytes, and a non-regular entry (a FIFO) must never be
-			// opened — reading one can block the turn.
-			return fmt.Errorf("existing entry at %q is not a regular file", path)
-		}
-		existing, rerr := os.ReadFile(path)
+		// One descriptor, validated before any read: a symlink at the leaf is
+		// refused without its target ever being opened, a FIFO never blocks
+		// the open, and the bytes are read from the same regular file that was
+		// validated — nothing can be swapped between the check and the read.
+		existing, rerr := readAttachmentForDedupe(path)
 		if rerr != nil {
 			return rerr
 		}
@@ -130,6 +128,19 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 		return err
 	}
 	return nil
+}
+
+// readAttachmentForDedupe reads the existing entry at the content-addressed
+// path through the execenv no-follow open, so the dedupe compare never
+// follows a planted symlink (even a same-bytes one) and never blocks opening
+// a non-regular entry.
+func readAttachmentForDedupe(path string) ([]byte, error) {
+	f, err := execenv.OpenRegularNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
 
 // fileToolsCanRead reports whether the session's in-process file tools — the
