@@ -455,6 +455,9 @@ func TestSanitizeAttachmentName(t *testing.T) {
 		{name: long + ".png", media: "image/png", want: strings.Repeat("a", 64) + ".png"},
 		{name: "anim.gif", media: "image/gif", want: "anim.gif"},
 		{name: "pic.webp", media: "image/webp", want: "pic.webp"},
+		{name: "bitmap.bmp", media: "image/bmp", want: "bitmap.bmp"},
+		{name: "scan.tiff", media: "image/tiff", want: "scan.tif"},
+		{name: "scan.tiff", media: "image/tif", want: "scan.tif"},
 		{name: "mystery.bin", media: "", want: "mystery.png"},
 	}
 	for _, tc := range cases {

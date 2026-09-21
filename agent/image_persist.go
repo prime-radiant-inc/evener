@@ -103,6 +103,10 @@ func attachmentExtensionForMediaType(mediaType string) string {
 		return ".gif"
 	case "image/webp":
 		return ".webp"
+	case "image/bmp":
+		return ".bmp"
+	case "image/tiff", "image/tif":
+		return ".tif"
 	default:
 		return ".png"
 	}
