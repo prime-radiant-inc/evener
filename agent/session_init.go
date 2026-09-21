@@ -78,15 +78,22 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 }
 
 // canonicalStateDir anchors a relative --state-dir to the process working
-// directory at session construction, so every path the session records under
-// it — attachment paths named to the model, transcript locations — resolves
-// identically for a later reader whose working directory differs (the model's
-// file tools resolve paths against their own working directory). Empty means
-// "no state directory" and stays empty; an unresolvable path (Getwd failure)
-// passes through unchanged rather than failing construction.
+// directory at session construction and resolves it to its physical path: a
+// state dir reached through a symlink keeps that component in an Abs-only
+// resolution, and the sandbox's file tools refuse symlinked ancestors on some
+// hosts (macOS's /tmp, /var), which would turn a path the session records —
+// attachment paths named to the model, transcript locations — into a
+// deterministic refusal for a later reader whose working directory differs.
+// Empty means "no state directory" and stays empty; a not-yet-created or
+// otherwise unresolvable path falls back to the anchored absolute form.
 func canonicalStateDir(dir string) string {
 	if dir == "" {
 		return dir
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		if abs, aerr := filepath.Abs(resolved); aerr == nil {
+			return abs
+		}
 	}
 	if abs, err := filepath.Abs(dir); err == nil {
 		return abs

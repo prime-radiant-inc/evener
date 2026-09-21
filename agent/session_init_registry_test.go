@@ -118,6 +118,34 @@ func TestNewSessionCanonicalizesRelativeStateDir(t *testing.T) {
 	}
 }
 
+// TestNewSessionResolvesSymlinkedStateDirToPhysicalPath: a state dir reached
+// through a symlink keeps that component in an Abs-only resolution, and the
+// sandbox's file tools refuse symlinked ancestors on some hosts (macOS's
+// /tmp, /var), which would turn an announced attachment path into a
+// deterministic refusal. The anchored state dir must be the physical path.
+func TestNewSessionResolvesSymlinkedStateDirToPhysicalPath(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	real := filepath.Join(work, "real-state")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	link := filepath.Join(work, "link-state")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: link})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if sess.stateDir != real {
+		t.Fatalf("session stateDir=%q, want the physical path %q (a symlinked StateDir must resolve at construction)", sess.stateDir, real)
+	}
+}
+
 // TestRestoreSessionCanonicalizesRelativeStateDir pins the restore-side half
 // of the same contract: `evener serve --resume` threads a --state-dir
 // through RestoreSessionFromMetaWithConfig, and a restored session must carry
