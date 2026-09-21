@@ -3954,6 +3954,46 @@ test("mergeTurnHistory does not count an older field a fresh alias chain replace
   expect(merged.transcriptOverlap).toBe(true);
 });
 
+test("mergeTurnHistory does not count a field a later older fragment clears", () => {
+  const newer: TurnModel[] = [
+    {
+      id: "turn-f",
+      status: "completed",
+      items: [{ id: "a", turnId: "turn-f", type: "agentMessage", text: "", status: "completed" }],
+    },
+  ];
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          { id: "a", turnId: "turn-1", type: "agentMessage", text: "", status: "completed", transcriptEntryIndex: 5 },
+        ],
+      },
+      {
+        id: "turn-2",
+        status: "completed",
+        items: [
+          {
+            id: "a",
+            turnId: "turn-2",
+            type: "agentMessage",
+            text: "",
+            status: "completed",
+            transcriptEntryIndex: undefined,
+          },
+        ],
+      },
+    ],
+    newer,
+  );
+
+  expect(merged.turns).toBe(newer);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [

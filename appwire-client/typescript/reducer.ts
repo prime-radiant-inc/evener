@@ -1245,6 +1245,26 @@ function freshContributorItems(
   return matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, older)));
 }
 
+// Every item the merge combined into the host, in merge order: a group turn
+// folds its older fragments before its fresh ones, and every provenance edge
+// keeps the earlier side on the left, so the leaves read in the order the
+// merges applied. A contributor can only discard a field for everything
+// merged before it, so a claim survives coalescing exactly while every LATER
+// contributor leaves the field alone — a fresh item supplying it, or a later
+// older fragment owning the property with an explicit undefined, both erase
+// the value the earlier item claimed.
+function contributorChain(
+  host: ItemModel,
+  older: ItemModel,
+  matches: ItemModel[],
+  context?: ToolItemMergeContext,
+): ItemModel[] {
+  const olderLeaves = context ? membershipLeaves(context.provenance.get(host)?.older) : [];
+  const freshLeaves = context ? membershipLeaves(context.provenance.get(host)?.fresh) : [];
+  if (olderLeaves.length === 0 && freshLeaves.length === 0) return [older, ...matches];
+  return [...olderLeaves, ...freshLeaves];
+}
+
 // Whether a claimed field on a matched item outlives the fold. The host keeps
 // every field when the fold neither removes it nor rewrites it as a call; a
 // rewritten call keeps non-toolResultFields through the spread and takes
@@ -1268,7 +1288,10 @@ function olderItemAddsCoverage(
 ): boolean {
   if (matches.length === 0) return !fullySupersededToolResult(older, view);
   const host = matchedItemHost(older, groupTurn, context);
-  if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
+  const chain = contributorChain(host, older, matches, context);
+  const selfIndex = chain.indexOf(older);
+  const later = selfIndex === -1 ? chain : chain.slice(selfIndex + 1);
+  if (itemTextPresence(older) === "provided" && later.every((item) => itemTextPresence(item) === "omitted")) {
     // The fold carries no text onto a surviving call: the older text counts
     // only while the merged item hosting it survives. A discarded result can
     // still contribute surviving fields, so keep walking instead of returning.
@@ -1280,14 +1303,14 @@ function olderItemAddsCoverage(
     // Status merges by rank and falls back to the older side on an undefined
     // fresh value, so its absence still reads the value. Every other field the
     // walk reaches outside the ?? list merges by spread ({ ...older, ...newer }:
-    // the fresh side's own property wins, even when its value is undefined), so
-    // a match that OWNS the property blocks the claim however undefined its
-    // value reads — the spread discards the older value, and coverage must not
-    // report history the merge throws away.
+    // the later side's own property wins, even when its value is undefined),
+    // so a later contributor that OWNS the property blocks the claim however
+    // undefined its value reads — the spread discards the older value, and
+    // coverage must not report history the merge throws away.
     const presenceMerged = !nullishMerged && field !== "status";
     const olderValue = (older as unknown as Record<string, unknown>)[field];
     if (absentForCoverage(olderValue, nullishMerged)) return false;
-    const freshLacks = matches.every((item) => {
+    const freshLacks = later.every((item) => {
       if (presenceMerged) return !Object.hasOwn(item, field);
       return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
     });
