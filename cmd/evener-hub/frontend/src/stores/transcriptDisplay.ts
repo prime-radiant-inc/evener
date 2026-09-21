@@ -101,6 +101,14 @@ let unsubscribeMirror: (() => void) | null = null;
 // dropped when a newer package write on their own layout supersedes them or
 // the store is detached or replaced.
 let restoredPreviews: ConfigByLayout = {};
+// The adapter-side lifecycle fence for the malformed-preview restore below:
+// the old web's write error paths checked isCurrentReady(client, epoch)
+// before touching drafts, so a rejection whose store was replaced, whose
+// client detached, or whose ready generation ended and restarted must not
+// restore anything. Bumped at every package-store creation, detach, and
+// ready-generation begin/end - whichever of those a pending write outlived,
+// its restore is dead.
+let lifecycleEpoch = 0;
 
 // The web's PATCH reply contract is stricter than the package's decoder: the
 // web-owned decoder it replaces treated a reply with any unexpected key as
@@ -241,15 +249,18 @@ function disposePackageStore(): void {
 // transitions, so without this sync whatever the replaced client last
 // published would survive in the web store indefinitely - most visibly a
 // stale hubError from its failed read, which would keep the settings UI
-// disabled while the replacement client loads successfully. Support is
-// deliberately not synced: setSupportFromConnection publishes the
-// connection's real support immediately after the rewire.
+// disabled while the replacement client loads successfully. Every mirrored
+// field is anchored, support included: setSupportFromConnection publishes
+// the connection's real support right after the rewire, so the anchor's
+// "unknown" only survives where the connection genuinely does not know.
 function syncMirrorToStore(store: TranscriptDisplayStore): void {
+  lifecycleEpoch += 1;
   restoredPreviews = {};
   const next = store.getState();
   for (const layout of ["desktop", "mobile"] as const) applyMirroredHubDefault(layout, next.hub[layout]);
   const web = transcriptDisplayStore.getState();
   const changed: Partial<TranscriptDisplayStoreState> = {};
+  if (web.hubSupport !== next.hubSupport) changed.hubSupport = next.hubSupport;
   if (web.hubLoading !== next.hubLoading) changed.hubLoading = next.hubLoading;
   if (web.hubError !== next.hubError) changed.hubError = next.hubError;
   if (web.hubErrors !== next.hubErrors) changed.hubErrors = next.hubErrors;
@@ -268,6 +279,7 @@ function beginPackageGeneration(client: AppwireClientLike): void {
   const store = packageStore;
   if (store === null || client !== wiredClient) return;
   store.beginReadyGeneration();
+  lifecycleEpoch += 1;
   void store.getState().refreshHubDefaults();
   setSupportFromConnection();
 }
@@ -279,6 +291,7 @@ function beginPackageGeneration(client: AppwireClientLike): void {
 function detachPackageStore(): void {
   const store = packageStore;
   packageStore = null;
+  lifecycleEpoch += 1;
   restoredPreviews = {};
   unwireReady?.();
   unwireReady = null;
@@ -325,6 +338,7 @@ function onConnectionChange(
     // Ready loss ends the generation. Confirmed defaults stay presented and
     // late reads/writes fence, exactly as the package's retirement specifies.
     packageStore?.endReadyGeneration();
+    lifecycleEpoch += 1;
   }
   if (state.client === null && wiredClient !== null) {
     detachPackageStore();
@@ -337,7 +351,11 @@ function restoreMalformedPreview(
   layout: ViewportClass,
   preview: TranscriptDisplayConfigV1 | undefined,
   error: unknown,
+  epoch: number,
 ): void {
+  // The write outlived its store, client, or ready generation: the restore is
+  // dead, exactly like the old web's isCurrentReady-fenced error paths.
+  if (epoch !== lifecycleEpoch) return;
   if (preview === undefined) return;
   if (error instanceof WireError || !(error instanceof Error)) return;
   if (error.message !== MALFORMED_PATCH_MESSAGE) return;
@@ -428,6 +446,9 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         });
         throw new Error(error);
       }
+      // Captured before the write starts: any rewire, detach, or ready
+      // generation change past this point fences the restore below.
+      const restoreEpoch = lifecycleEpoch;
       const write = store.getState().patchHubDefault(layout, input);
       // The package published this write's optimistic preview synchronously
       // above; capture it before awaiting so a malformed reply can restore it.
@@ -435,7 +456,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       try {
         return await write;
       } catch (error) {
-        restoreMalformedPreview(store, layout, preview, error);
+        restoreMalformedPreview(store, layout, preview, error, restoreEpoch);
         throw error;
       }
     },
