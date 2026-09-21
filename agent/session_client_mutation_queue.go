@@ -1535,6 +1535,11 @@ func (s *Session) recordClientMutationFailure(
 		if err := s.appendEnvironmentContext(publishEnvironment); err != nil {
 			return fmt.Errorf("append environment context: %w", err)
 		}
+		// Persist the failed start's attachments before its turn is built so
+		// the message can name their durable paths (agent/image_persist.go);
+		// idempotent by content, so a first attempt that already wrote the
+		// bytes rewrites the same path.
+		queued.Images = s.persistInputImages(queued.Images)
 		turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(queued.Text, queued.Images, queued.SkillNames))
 		turn.ClientMutationID = clientMutationID
 		turn.StableTurnID = pending.TurnID

@@ -77,6 +77,46 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
+// canonicalStateDir anchors a relative --state-dir to the process working
+// directory at session construction and resolves it to its physical path: a
+// state dir reached through a symlink keeps that component in an Abs-only
+// resolution, and the sandbox's file tools refuse symlinked ancestors on some
+// hosts (macOS's /tmp, /var), which would turn a path the session records —
+// attachment paths named to the model, transcript locations — into a
+// deterministic refusal for a later reader whose working directory differs.
+// Empty means "no state directory" and stays empty. A path that does not
+// resolve — most commonly a state dir that has not been created yet —
+// resolves its deepest existing ancestor instead, with the missing tail
+// joined back unchanged, so a fresh state dir behind a symlinked parent
+// records the physical path it will occupy rather than the symlinked form.
+func canonicalStateDir(dir string) string {
+	if dir == "" {
+		return dir
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		if abs, aerr := filepath.Abs(resolved); aerr == nil {
+			return abs
+		}
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	// Walk upward to the deepest ancestor that exists, resolving it, and join
+	// the missing tail back unchanged. The walk always terminates: the
+	// filesystem root resolves.
+	var tail []string
+	for cur := abs; ; cur = filepath.Dir(cur) {
+		if resolved, rerr := filepath.EvalSymlinks(cur); rerr == nil {
+			return filepath.Join(resolved, filepath.Join(tail...))
+		}
+		if parent := filepath.Dir(cur); parent == cur {
+			return abs // the filesystem root itself did not resolve
+		}
+		tail = append([]string{filepath.Base(cur)}, tail...)
+	}
+}
+
 // escapeHistoryWithSessionProvenance escapes a restored history for the model
 // copy. Turns before the session's divergence point came from a parent, whose
 // journal this session does not hold -- and a child mutation may reuse a parent's
@@ -288,6 +328,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		jobClock = newJobActivityClock(sessionID)
 	}
 	cfg.spawn.jobActivityClock = jobClock
+	cfg.StateDir = canonicalStateDir(cfg.StateDir)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -761,7 +802,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.ReasoningEffort = ""
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
-	cfg.StateDir = restoreCfg.StateDir
+	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
