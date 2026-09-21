@@ -378,6 +378,12 @@ function rewireClient(client: AppwireClientLike): void {
   packageStore = store;
   unsubscribeMirror = store.subscribe((next, previous) => mirrorPackageState(store, next, previous));
   syncMirrorToStore(store);
+  // The anchor publishes synchronously, and a subscriber can replace the
+  // client inside that window - the replacement's own rewire then owns the
+  // module slots (store, mirror, ready handle). Registering THIS client's
+  // ready callback after that would overwrite the replacement's handle with
+  // this superseded client's, leaking one listener and losing the live one.
+  if (packageStore !== store || wiredClient !== client) return;
   unwireReady = client.onReady(
     readyGenerationCallback(
       client,
