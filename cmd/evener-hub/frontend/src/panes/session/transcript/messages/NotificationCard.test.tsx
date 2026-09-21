@@ -188,13 +188,13 @@ const TONE_KINDS = {
   neutral: "info",
 } as const;
 
-function renderedIconPath(container: HTMLElement): string | null {
-  return container.querySelector("path")?.getAttribute("d") ?? null;
+function renderedIconPath(root: ParentNode | null): string | null {
+  return root?.querySelector("path")?.getAttribute("d") ?? null;
 }
 
 test("the head leads with a status icon mapped from the tone, before any chip or title text", () => {
   for (const [tone, kind] of Object.entries(TONE_KINDS)) {
-    const { unmount } = render(<NotificationCard notification={notif({ tone: tone as ParsedNotification["tone"] })} />);
+    render(<NotificationCard notification={notif({ tone: tone as ParsedNotification["tone"] })} />);
     const head = screen.getByTestId("notification-card");
     const statusIcon = head.querySelector('[data-testid="notification-status-icon"]');
     expect(statusIcon, `tone ${tone} rendered no status icon`).toBeTruthy();
@@ -202,9 +202,9 @@ test("the head leads with a status icon mapped from the tone, before any chip or
     expect(head.firstElementChild).toBe(statusIcon);
     // The glyph is the tone's kind, drawn by the shared line-art widget.
     const kindProbe = render(<ToolIcon kind={kind} />);
-    expect(statusIcon?.querySelector("path")?.getAttribute("d")).toBe(renderedIconPath(kindProbe.container));
-    kindProbe.unmount();
-    unmount();
+    expect(renderedIconPath(statusIcon)).toBe(renderedIconPath(kindProbe.container));
+    // One cleanup unmounts every root rendered this iteration (card + probe);
+    // without it the next iteration's queries would match two cards.
     cleanup();
   }
 });

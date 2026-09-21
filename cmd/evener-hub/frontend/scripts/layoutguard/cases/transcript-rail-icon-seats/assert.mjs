@@ -32,19 +32,16 @@ export default function assert(measurement) {
   }
   for (const m of measurement) {
     const { mode, turn, probe, think, loader, notification } = m;
-    const slots = [
-      { row: "think", slot: think.slot },
-      { row: "loader", slot: loader.slot },
-      { row: "notification", slot: notification.slot },
-    ];
-    const texts = [
-      { row: "think", text: think.text },
-      { row: "loader", text: loader.text },
-      { row: "notification", text: notification.text },
+    // One row per seat, slot and text together: the pairing is structural,
+    // not positional, so adding a fourth row is a one-line change.
+    const rows = [
+      { row: "think", slot: think.slot, text: think.text },
+      { row: "loader", slot: loader.slot, text: loader.text },
+      { row: "notification", slot: notification.slot, text: notification.text },
     ];
 
     // No seat escapes the turn's box, in either regime.
-    for (const { row, slot } of slots) {
+    for (const { row, slot } of rows) {
       if (slot.left < turn.left - 1) {
         return { pass: false, reason: `${mode}: the ${row} row's slot escapes the turn's box (slot.left=${slot.left.toFixed(1)} < turn.left=${turn.left.toFixed(1)}) - a pull is eating padding that does not exist` };
       }
@@ -52,25 +49,25 @@ export default function assert(measurement) {
 
     if (mode === "desktop") {
       // The rail: every slot starts at the turn's left edge.
-      for (const { row, slot } of slots) {
+      for (const { row, slot } of rows) {
         if (Math.abs(slot.left - turn.left) > 1) {
           return { pass: false, reason: `${mode}: the ${row} row's slot does not sit at the rail's origin (slot.left=${slot.left.toFixed(1)}, turn.left=${turn.left.toFixed(1)}) - its gutter pull is off` };
         }
       }
       // One column: all three slot centres coincide.
-      const centres = slots.map((s) => s.slot.left + s.slot.width / 2);
+      const centres = rows.map((r) => r.slot.left + r.slot.width / 2);
       const spread = Math.max(...centres) - Math.min(...centres);
       if (spread > 1) {
         return { pass: false, reason: `${mode}: the three icon seats do not share one avatar column (slot centres ${centres.map((c) => c.toFixed(1)).join(", ")}, spread ${spread.toFixed(1)}px)` };
       }
       // Text at the content edge on every row.
-      for (const { row, text } of texts) {
+      for (const { row, text } of rows) {
         if (Math.abs(text.left - probe.left) > 1) {
           return { pass: false, reason: `${mode}: the ${row} row's text starts at ${text.left.toFixed(1)}, not the content edge ${probe.left.toFixed(1)} - its pull/slot arithmetic has drifted` };
         }
       }
       // The slot-to-text gap is the speaker gap (10px) on every row.
-      for (const { row, slot, text } of slots.map((s, i) => ({ ...s, text: texts[i].text }))) {
+      for (const { row, slot, text } of rows) {
         const gap = text.left - slot.right;
         if (gap < 9 || gap > 11) {
           return { pass: false, reason: `${mode}: the ${row} row's slot-to-text gap is ${gap.toFixed(1)}px, not the speaker gap's 10px - the margin-right/gap netting is off` };
@@ -78,13 +75,13 @@ export default function assert(measurement) {
       }
     } else {
       // Phone: no pull. Every slot leads its line inline at the content edge.
-      for (const { row, slot } of slots) {
+      for (const { row, slot } of rows) {
         if (Math.abs(slot.left - probe.left) > 1) {
           return { pass: false, reason: `${mode}: the ${row} row's slot is not leading the line inline at the content edge (slot.left=${slot.left.toFixed(1)}, content edge=${probe.left.toFixed(1)}) - the gutter pull must not apply below the breakpoint` };
         }
       }
       // The text follows one full gutter (slot + margin + gap = 34px).
-      for (const { row, slot, text } of slots.map((s, i) => ({ ...s, text: texts[i].text }))) {
+      for (const { row, slot, text } of rows) {
         const lead = text.left - slot.left;
         if (Math.abs(lead - 34) > 1) {
           return { pass: false, reason: `${mode}: the ${row} row's text leads its slot by ${lead.toFixed(1)}px, not the one-gutter 34px (slot 24px + margin + gap)` };

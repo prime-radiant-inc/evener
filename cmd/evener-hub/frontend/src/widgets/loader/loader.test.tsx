@@ -6,6 +6,38 @@ import { afterEach, expect, test, vi } from "vitest";
 import { Loader } from "./index";
 import styles from "./loader.module.css";
 
+// One read of the CSS module's source, shared by every declaration-level
+// test below (the same module-scope read notificationStatusIcon.contract.
+// test.ts uses for its module).
+const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "loader.module.css"), "utf8");
+
+// Splits the stylesheet at ONE media query into what sits inside its block
+// and what sits outside it, by counting braces from the block's opening one
+// (nesting included). Throws when the query is absent, so a deleted gate
+// fails the tests that depend on it instead of silently passing them.
+function mediaBlock(query: string): { inside: string; outside: string } {
+  const mediaStart = css.indexOf(query);
+  if (mediaStart === -1) throw new Error(`no such media query in loader.module.css: ${query}`);
+  const blockOpen = css.indexOf("{", mediaStart);
+  let depth = 0;
+  let blockEnd = -1;
+  for (let i = blockOpen; i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        blockEnd = i;
+        break;
+      }
+    }
+  }
+  if (blockEnd === -1) throw new Error(`unbalanced braces in loader.module.css from ${query}`);
+  return {
+    inside: css.slice(blockOpen, blockEnd),
+    outside: css.slice(0, mediaStart) + css.slice(blockEnd + 1),
+  };
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -93,34 +125,9 @@ test("never re-renders on its own - no internal timers (now is fully prop-driven
 // declaration is nested inside that one media block, the same source-reading
 // technique token-contract.test.ts and skeleton.test.tsx already use.
 test("its CSS module gates all animation behind prefers-reduced-motion: no-preference", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "loader.module.css"), "utf8");
-
-  const mediaStart = css.indexOf("@media (prefers-reduced-motion: no-preference)");
-  expect(mediaStart).toBeGreaterThan(-1);
-
-  // Find the media block's matching closing brace by counting braces from
-  // its opening one.
-  const blockOpen = css.indexOf("{", mediaStart);
-  let depth = 0;
-  let blockEnd = -1;
-  for (let i = blockOpen; i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}") {
-      depth--;
-      if (depth === 0) {
-        blockEnd = i;
-        break;
-      }
-    }
-  }
-  expect(blockEnd).toBeGreaterThan(-1);
-
-  const outsideMediaBlock = css.slice(0, mediaStart) + css.slice(blockEnd + 1);
-  expect(outsideMediaBlock).not.toMatch(/@keyframes|animation\s*:/);
-
-  const insideMediaBlock = css.slice(blockOpen, blockEnd);
-  expect(insideMediaBlock).toMatch(/@keyframes|animation\s*:/);
+  const { inside, outside } = mediaBlock("@media (prefers-reduced-motion: no-preference)");
+  expect(outside).not.toMatch(/@keyframes|animation\s*:/);
+  expect(inside).toMatch(/@keyframes|animation\s*:/);
 });
 
 // --- rail mode: the transcript's icon-rail seating ---------------------------
@@ -138,8 +145,6 @@ test("rail sets the variant class on the row; the default loader does not", () =
 });
 
 test("rail seats the grid in the standard icon slot: avatar-size, centred, speaker-gap net of the row gap", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "loader.module.css"), "utf8");
   // The slot is the avatar column, and the 15px grid centres inside it.
   expect(css).toMatch(/\.rail \.grid\s*\{[^}]*width:\s*var\(--speaker-avatar-size\)/);
   expect(css).toMatch(/\.rail \.grid\s*\{[^}]*justify-content:\s*center/);
@@ -151,30 +156,11 @@ test("rail seats the grid in the standard icon slot: avatar-size, centred, speak
 });
 
 test("the rail gutter pull exists only inside the 700px breakpoint, never unconditionally", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "loader.module.css"), "utf8");
-  // Same brace-counted extraction as the motion test above, for the one
-  // media block the pull may live in. Below 700px there is no reserved
-  // gutter padding to eat (runContent collapses), so an unconditional
-  // negative margin would push the glyph out of the pane.
-  const mediaStart = css.indexOf("@media (min-width: 700px)");
-  expect(mediaStart).toBeGreaterThan(-1);
-  const blockOpen = css.indexOf("{", mediaStart);
-  let depth = 0;
-  let blockEnd = -1;
-  for (let i = blockOpen; i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}") {
-      depth--;
-      if (depth === 0) {
-        blockEnd = i;
-        break;
-      }
-    }
-  }
-  expect(blockEnd).toBeGreaterThan(-1);
-  const outsideMediaBlock = css.slice(0, mediaStart) + css.slice(blockEnd + 1);
-  const insideMediaBlock = css.slice(blockOpen, blockEnd);
-  expect(insideMediaBlock).toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
-  expect(outsideMediaBlock).not.toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1/);
+  // Same brace-counted split as the motion test above, for the one media
+  // block the pull may live in. Below 700px there is no reserved gutter
+  // padding to eat (runContent collapses), so an unconditional negative
+  // margin would push the glyph out of the pane.
+  const { inside, outside } = mediaBlock("@media (min-width: 700px)");
+  expect(inside).toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--speaker-gutter\)\)/);
+  expect(outside).not.toMatch(/\.rail\s*\{[^}]*margin-left:\s*calc\(-1/);
 });

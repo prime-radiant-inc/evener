@@ -52,7 +52,12 @@ export type ToolIconKind =
 // One path string per kind, all on the 16x16 grid. Subpaths within a kind are
 // space-separated M-commands in the same string, so the record stays one
 // entry per glyph.
-const PATHS: Record<ToolIconKind, string> = {
+// Exported so the widget's own test can enumerate every kind from the one
+// source of truth: the Record's type demands a path per union member, so a
+// kind added to the union without a path fails the typecheck, and a path
+// without a union member fails it too - a derived test list can therefore
+// never silently drop a kind the way a hand-maintained one could.
+export const PATHS: Record<ToolIconKind, string> = {
   // A terminal frame with a `>_` prompt.
   terminal: "M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.8 L7.5 8.8 L5 10.8 M8.6 10.8 H11.2",
   // A document with a folded corner.

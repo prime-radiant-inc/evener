@@ -35,6 +35,11 @@ const BASE_CLASS = {
   elapsed: requireClass(styles.elapsed, "loader.module.css", "elapsed"),
 };
 
+// Both operands are module constants fixed at init, so the joined name is
+// built once too - requireClass's own rule for class lookups: build them at
+// module scope, never inside render.
+const RAIL_CLASS_NAME = `${BASE_CLASS.loader} ${BASE_CLASS.rail}`;
+
 function formatElapsed(startedAt: number, now: number): string {
   const clampedMs = Math.max(0, now - startedAt); // clock-skew guard, same stance as Cadence's ticksFor
   const totalSeconds = Math.floor(clampedMs / 1000);
@@ -66,11 +71,7 @@ export function Loader({ label, rail, startedAt, now }: LoaderProps) {
   const showElapsed = startedAt !== undefined && now !== undefined;
 
   return (
-    <span
-      className={rail ? `${BASE_CLASS.loader} ${BASE_CLASS.rail}` : BASE_CLASS.loader}
-      role="status"
-      aria-label={accessibleLabel}
-    >
+    <span className={rail ? RAIL_CLASS_NAME : BASE_CLASS.loader} role="status" aria-label={accessibleLabel}>
       <span data-testid="loader-grid" aria-hidden="true" className={BASE_CLASS.grid}>
         {Array.from({ length: CELL_COUNT }, (_, i) => (
           // Interchangeable, content-free, decorative cells - same
