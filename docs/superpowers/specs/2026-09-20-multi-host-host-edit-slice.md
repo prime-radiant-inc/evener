@@ -204,9 +204,24 @@ and the compensation paths in one shape:
   that committed in this window must survive — which puts the file and the
   in-memory sidecar store back on the same entries in the same order, clear the
   mark, and return the error. A live-phase refusal happens before the swap and
-  leaves the retiring identity's attach record intact. If a directly driven
-  registry instead drops the entry after a successful live phase, remove the
-  committed store row and write that live snapshot before returning not found.
+  leaves the retiring identity's attach record intact. When the live set no
+  longer holds the name — only a directly driven registry can drop it while the
+  live phase runs, because the mark fences this manager's own paths — the
+  un-commit is a **removal**: drop the committed store row before taking the
+  snapshot, so the rollback writes the live set without the name and the file
+  does not keep an edit for a name that is not live, which a later add would
+  duplicate and the next sidecar load would reject.
+  If the live phase instead succeeded and a directly driven registry drops the
+  entry before the finish-phase reread, the name is likewise removed: drop the
+  committed store row and write that live snapshot, then retire the derived
+  state exactly as `Remove`'s finish phase does and in that same order — the
+  source registration, the name-keyed attach record, the remote-thread cache
+  entry, and the retained last-known-good list. The order is load-bearing for
+  the same reason the roots case gives: an in-flight walk must fail its
+  cache-generation sweep or its source-ownership check, so it cannot re-store
+  obsolete rows after the cache drop. Removing the row alone would leave the
+  source, the cache and the retention rendering sessions for a name the live
+  registry no longer has.
   The caller may retry, because nothing is half-applied: the entry, the file,
   the store row and the live registry agree on the old entry, the new one, or
   its absence.

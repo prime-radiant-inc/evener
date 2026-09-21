@@ -75,8 +75,12 @@ test("the host entry's wire spellings are the ones refusals and inputs share", (
   // The dialog's inputs and a refusal's field are the same strings because both
   // are HostEntry's json names; this pins that vocabulary against the Go tags so
   // a rename on one side cannot leave the other looking for a missing input.
-  for (const name of ["address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
-    expect(appwireTypesGo).toContain(`json:"${name}`);
+  // Each name is matched as a whole json tag — the name followed by a closing
+  // quote or an omitempty comma — not as a prefix, so "addr" cannot be satisfied
+  // by the "address" tag. "name" is the field hostEntryField blames for an
+  // invalid or reserved host name, so it belongs in the pinned set too.
+  for (const name of ["name", "address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
+    expect(appwireTypesGo).toMatch(new RegExp(`json:"${name}("|,)`));
   }
 });
 

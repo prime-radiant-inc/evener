@@ -390,6 +390,153 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 	}
 }
 
+// TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes pins the
+// live-failure arm's absent-entry case, which only a directly driven registry
+// reaches: the edit's commit has landed, its live phase is parked on the gate a
+// supervisor holds, and the registry drops the name before UpdateHost runs. The
+// live phase then fails with hostreg.ErrUnknownHost *and* the live set has no
+// entry to restore, so the un-commit must be a removal — the committed store
+// row and the file entry go too. Restoring the edited row instead leaves an edit
+// for a name that is not live, which a later Add duplicates and the next sidecar
+// load rejects.
+func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.T) {
+	pu := startParkedUpdate(t, "side")
+	// The commit landed (the helper waited on the file) and the live phase is
+	// parked on the gate the Ensure holds. Drive the registry directly, bypassing
+	// the hub's mark, so UpdateHost's own update observes the vanished entry.
+	pu.m.cfg.mu.Lock()
+	_, present := pu.m.cfg.hosts.Get("side")
+	pu.m.cfg.mu.Unlock()
+	if !present {
+		t.Fatal("the live entry vanished before the test could drop it")
+	}
+	if err := pu.m.cfg.hosts.Remove("side"); err != nil {
+		t.Fatalf("direct registry removal: %v", err)
+	}
+	pu.release()
+	if err := <-pu.ensureDone; err == nil {
+		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
+	}
+	done := pu.waitUpdateDone(t)
+	if done.err == nil {
+		t.Fatal("Update whose live entry vanished succeeded, want the un-commit")
+	}
+	if _, ok := pu.m.cfg.hosts.Get("side"); ok {
+		t.Fatal("the directly removed live entry reappeared")
+	}
+	// The store holds the other names the window committed ("keep"); the vanished
+	// name must be gone, not just restored to its edit.
+	for _, e := range pu.m.cfg.sidecar.snapshot() {
+		if e.Name == "side" {
+			t.Fatalf("store still holds %q after the failed edit = %+v", e.Name, pu.m.cfg.sidecar.snapshot())
+		}
+	}
+	onDisk, err := loadHostSidecar(sidecarPathFor(pu.configPath))
+	if err != nil {
+		t.Fatalf("reload sidecar after the failed edit: %v", err)
+	}
+	for _, e := range onDisk {
+		if e.Name == "side" {
+			t.Fatalf("sidecar still holds %q after the failed edit = %+v", e.Name, onDisk)
+		}
+	}
+}
+
+// TestHostManageUpdateVanishedEntryRetiresDerivedState pins the finish-phase
+// vanished arm's cleanup: when a directly driven registry drops the name after a
+// successful live phase, the committed store row and file entry go — and so does
+// the name's derived state, exactly as Remove retires it: the source
+// registration, the name-keyed attach record, the remote-thread cache entry
+// (generation included), and the retained last-known-good list. Pre-fix the arm
+// dropped only the store row, so the tree kept rendering sessions for a name the
+// live registry no longer had.
+func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	sources := appsource.NewRegistry()
+	// The cache and the retention hook are the fixture's own seams: a real
+	// RemoteThreadCache records a generation per source and lets RemoveSource
+	// drop it, and forgetLastGoodThreads is the web server's retention seam.
+	cache := &hubcore.RemoteThreadCache{}
+	var forgotten []string
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
+	m.cfg.forgetLastGoodThreads = func(sourceID string) { forgotten = append(forgotten, sourceID) }
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
+	}); err != nil {
+		t.Fatalf("Add(side): %v", err)
+	}
+	if _, ok := sources.Source("side"); !ok {
+		t.Fatal("the added host has no source")
+	}
+	if _, ok := cache.SourceGeneration("side"); !ok {
+		t.Fatal("the added host's source has no cache generation")
+	}
+	// Retain an attach record the way a lifecycle event and an attached row do.
+	m.cfg.mu.Lock()
+	m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+	}, hostFactsValidity{handshake: true})
+	m.cfg.mu.Unlock()
+
+	// Drive the finish-phase vanished arm: the live phase swaps successfully, then
+	// its synchronous Detached observer removes the new entry directly, bypassing
+	// the hub mutation mark, before the hub can reread it.
+	removed := make(chan error, 1)
+	manager := sshconn.New(hosts, sshconn.Options{
+		Runner: &attachedUpdateRunner{},
+		OnEvent: func(ev sshconn.Event) {
+			m.observeEvent(ev)
+			if ev.Host == "side" && ev.Kind == sshconn.EventDetached {
+				removed <- hosts.Remove(ev.Host)
+			}
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	m.cfg.manager = manager
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+
+	_, err = m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "edited.example"},
+	})
+	if err == nil {
+		t.Fatal("Update whose live entry vanished succeeded, want the defensive refusal")
+	}
+	assertWireCode(t, err, appwire.CodeInvalidParams)
+	if removeErr := <-removed; removeErr != nil {
+		t.Fatalf("direct registry removal: %v", removeErr)
+	}
+	if stored := m.cfg.sidecar.snapshot(); len(stored) != 0 {
+		t.Fatalf("store rows after the vanished edit = %+v, want the empty live set", stored)
+	}
+	// The derived state is retired exactly as Remove retires it.
+	if _, ok := sources.Source("side"); ok {
+		t.Fatal("the vanished host still has a source registration")
+	}
+	if _, ok := cache.SourceGeneration("side"); ok {
+		t.Fatal("the vanished host's remote-thread cache entry survived")
+	}
+	if !slices.Equal(forgotten, []string{"side"}) {
+		t.Fatalf("forgotten = %v, want the vanished host's own last-known-good drop", forgotten)
+	}
+	m.cfg.state.mu.Lock()
+	_, hasRecord := m.cfg.state.records["side"]
+	m.cfg.state.mu.Unlock()
+	if hasRecord {
+		t.Fatal("the vanished host's attach record survived")
+	}
+}
+
 // updateOutcome carries the parked Update's result back to the test.
 type updateOutcome struct {
 	resp appwire.HostUpdateResponse

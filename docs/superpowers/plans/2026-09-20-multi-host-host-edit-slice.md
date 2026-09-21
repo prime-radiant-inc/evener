@@ -1966,8 +1966,10 @@ Add to `cmd/evener-hub/app_host_manage.go`, after `Remove`:
 //   - Finish, under the mutex: clear the mark, compensate a failed live phase
 //     by rolling the sidecar back to the live set as it stands now — not a
 //     pre-commit copy, so a concurrent add or removal that committed in this
-//     window survives — and build the response row from the entry the registry
-//     now holds.
+//     window survives; an absent live entry makes that un-commit a removal, and
+//     a vanished entry after a successful live phase retires the name's derived
+//     state exactly as Remove does — and build the response row from the entry
+//     the registry now holds.
 //
 // An edit never dials, deploys, or attaches: its live effects are exactly the
 // registry replacement and the teardown.
@@ -2057,8 +2059,18 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		// follows it. The rollback saves the live snapshot, not a pre-commit
 		// copy: concurrent Adds and Removes may have committed in the window,
 		// and their entries must survive.
+		//
+		// An absent live entry makes the un-commit a removal, exactly as the
+		// finish phase's vanished arm below: a directly driven registry can drop
+		// the name while this edit runs (the mutation mark only fences this
+		// manager's own paths), and restoring the committed row would then write
+		// the edit for a name that is not live — an edit a later Add duplicates
+		// and the next sidecar load rejects. The committed row is dropped before
+		// the snapshot is taken, so the rollback writes the live set without it.
 		if live, ok := m.cfg.hosts.Get(name); ok {
 			m.cfg.sidecar.replace(live)
+		} else {
+			m.cfg.sidecar.remove(name)
 		}
 		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), liveErr)
 		m.cfg.mu.Unlock()
@@ -2070,9 +2082,29 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		// impossible for the same name through this manager (the mark fences it),
 		// but a directly driven registry could still have dropped it: the entry
 		// is gone, so there is no row to render. Remove the committed store row
-		// and save that live snapshot before refusing.
+		// and save that live snapshot before refusing; otherwise a later Add would
+		// append beside the stale edit and poison the next sidecar load as a
+		// duplicate name.
 		refusal := appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 		m.cfg.sidecar.remove(name)
+		// The name's derived state goes with it, exactly as Remove's finish
+		// phase retires it and in the same order: the source registration, the
+		// name-keyed attach record, then the remote-thread cache entry, then the
+		// retained last-known-good list. The order is load-bearing for the same
+		// reason Remove's comment gives: an in-flight walk must fail its
+		// cache-generation sweep or its source-ownership check, so it cannot
+		// re-store obsolete rows after the cache drop. The store row is already
+		// gone, so nothing renders this name again.
+		if m.cfg.sources != nil {
+			m.cfg.sources.Remove(name)
+		}
+		m.cfg.state.remove(name)
+		if m.cfg.remoteCache != nil {
+			m.cfg.remoteCache.RemoveSource(name)
+		}
+		if m.cfg.forgetLastGoodThreads != nil {
+			m.cfg.forgetLastGoodThreads(name)
+		}
 		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), refusal)
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, err
