@@ -663,15 +663,23 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * `saving`, leaving writeUncertain) before this read's reply lands, with no
    * newer write ever claiming a token - by reply time `saving` reads false
    * and the token still matches, but a read whose own snapshot predates that
-   * write's outcome must not settle it. */
+   * write's outcome must not settle it. `draftAtReadStart` covers the case
+   * neither check sees: an adoption that replaced the draft mid-read (a
+   * failed edit adopting another window's replacement) claims no token and
+   * holds no `saving`, yet its uncertainty left for the hub after this
+   * read's snapshot - the read says nothing about THAT write's outcome
+   * either, and only a later read that postdates the adoption may settle
+   * it. */
   function settledWrite(
     writeSerialAtStart: number,
     savingAtReadStart: boolean,
+    draftAtReadStart: TranscriptDraft | null,
     finalHub: HubDefaultsByLayout,
   ): Partial<TranscriptDisplayStoreFields> {
     const { draft, writeUncertain, saving } = getState();
     if (writeSerialAtStart !== fence.writeToken || saving || savingAtReadStart) return {};
     if (draft !== null && writeUncertain) {
+      if (draft !== draftAtReadStart) return {};
       let replaced: boolean;
       try {
         // A fresh id: settledWrite has no checkpoint reference to reuse one
@@ -777,6 +785,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const serial = fence.claimRead();
     const writeSerialAtStart = fence.writeToken;
     const savingAtReadStart = getState().saving;
+    const draftAtReadStart = getState().draft;
     const stillMine = () => fence.readStillMine(generation, serial);
     setState({ hubLoading: true, hubError: null });
     if (!stillMine()) return;
@@ -785,7 +794,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (!stillMine()) return;
       const defaults = fromWireDefaults(result);
       if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
-      applyHubDefaults(defaults, (hub) => settledWrite(writeSerialAtStart, savingAtReadStart, hub));
+      applyHubDefaults(defaults, (hub) => settledWrite(writeSerialAtStart, savingAtReadStart, draftAtReadStart, hub));
       if (!stillMine()) return;
       successfulHubReads += 1;
       if (missedChangeNotification) {

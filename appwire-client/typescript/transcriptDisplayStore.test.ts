@@ -1673,6 +1673,50 @@ describe("the checkpointed draft editor", () => {
     expect(await store.getState().patchHubDefault("mobile", desktopConfig)).toEqual(hubDefault(3, desktopConfig));
   });
 
+  test("a read cannot settle an uncertainty adopted behind its back", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+
+    // A read leaves; then another window persists an UNCERTAIN write, and
+    // this store's next edit loses its compare-and-swap to it, adopting it
+    // while the read is still outstanding.
+    const reply = deferred<TranscriptDisplayDefaults>();
+    client.on(getMethod, () => reply.promise);
+    const refresh = store.getState().refreshHubDefaults();
+    drafts.storage.save({
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: true,
+    });
+    expect(() => store.getState().editDraft("mobile", desktopConfig)).toThrow(/changed again/);
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // That write left for the hub AFTER this read's snapshot, so the read
+    // says nothing about its outcome: neither the record on the port nor
+    // the published state may be settled by it.
+    reply.resolve({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    });
+    await refresh;
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toMatchObject({ id: "other", writeUncertain: true });
+
+    // A read that postdates the adoption settles it and unblocks editing.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
+    expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
+  });
+
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",
