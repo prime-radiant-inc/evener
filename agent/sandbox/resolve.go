@@ -201,8 +201,14 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 	if !rp.FileToolConfined() {
 		return true
 	}
+	// Containment is lexical (pathUnder) and both sides must be absolute:
+	// a relative path cannot be proved inside any root, and a relative
+	// root grants nothing.
+	if !filepath.IsAbs(path) {
+		return false
+	}
 	for _, masked := range rp.MaskedPaths {
-		if rootContainsPath(masked, path) {
+		if filepath.IsAbs(masked) && pathUnder(path, masked) {
 			return false
 		}
 	}
@@ -210,25 +216,11 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 		return true
 	}
 	for _, root := range rp.FileTool.ReadRoots {
-		if rootContainsPath(root, path) {
+		if filepath.IsAbs(root) && pathUnder(path, root) {
 			return true
 		}
 	}
 	return false
-}
-
-// rootContainsPath reports whether the absolute path is the absolute root or
-// falls beneath it. Both sides must be absolute and are compared lexically;
-// a non-absolute side can never be contained.
-func rootContainsPath(root, path string) bool {
-	if !filepath.IsAbs(root) || !filepath.IsAbs(path) {
-		return false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool
