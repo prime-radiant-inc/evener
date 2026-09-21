@@ -123,6 +123,11 @@ test("WelcomeContent does not render example prompts", () => {
   expect(screen.queryByText("Try a task to get started")).toBeNull();
 });
 
+test("WelcomeContent does not render the removed orientation copy", () => {
+  render(<WelcomeContent showNewSession showHints />);
+  expect(screen.queryByText(/read and edit the repository/i)).toBeNull();
+});
+
 test("WelcomeContent renders New session only when showNewSession is true", () => {
   const { rerender } = render(<WelcomeContent />);
   expect(screen.queryByRole("button", { name: "New session" })).toBeNull();
