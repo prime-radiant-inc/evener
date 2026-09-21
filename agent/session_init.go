@@ -77,6 +77,23 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
+// canonicalStateDir anchors a relative --state-dir to the process working
+// directory at session construction, so every path the session records under
+// it — attachment paths named to the model, transcript locations — resolves
+// identically for a later reader whose working directory differs (the model's
+// file tools resolve paths against their own working directory). Empty means
+// "no state directory" and stays empty; an unresolvable path (Getwd failure)
+// passes through unchanged rather than failing construction.
+func canonicalStateDir(dir string) string {
+	if dir == "" {
+		return dir
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
+
 // escapeHistoryWithSessionProvenance escapes a restored history for the model
 // copy. Turns before the session's divergence point came from a parent, whose
 // journal this session does not hold -- and a child mutation may reuse a parent's
@@ -288,6 +305,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		jobClock = newJobActivityClock(sessionID)
 	}
 	cfg.spawn.jobActivityClock = jobClock
+	cfg.StateDir = canonicalStateDir(cfg.StateDir)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -761,7 +779,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.ReasoningEffort = ""
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
-	cfg.StateDir = restoreCfg.StateDir
+	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership

@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -77,6 +80,89 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 			t.Error("child with delegationAllowance=0: registry is missing job_watch — a session that can run jobs must be able to watch its own jobs")
 		}
 	})
+}
+
+// TestNewSessionCanonicalizesRelativeStateDir pins the path contract of a
+// relative --state-dir: attachment paths recorded into transcripts name an
+// absolute location, and the model's file tools resolve paths against their
+// own working directory, so the session must anchor a relative state dir to
+// the process working directory once, at construction — writes and announced
+// paths then resolve identically no matter who reads them back. No
+// t.Parallel: chdir is process-global.
+func TestNewSessionCanonicalizesRelativeStateDir(t *testing.T) {
+	work := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore Chdir: %v", err)
+		}
+	})
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: "state"})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	want := filepath.Join(work, "state")
+	if sess.stateDir != want {
+		t.Fatalf("session stateDir=%q, want %q (a relative StateDir must resolve against the process working directory at construction)", sess.stateDir, want)
+	}
+}
+
+// TestRestoreSessionCanonicalizesRelativeStateDir pins the restore-side half
+// of the same contract: `evener serve --resume` threads a --state-dir
+// through RestoreSessionFromMetaWithConfig, and a restored session must carry
+// the same absolute anchor the original session recorded, so state paths
+// written before the restart and reads after it agree. The setup uses an
+// absolute state dir, so only the restore path exercises the relative form.
+// No t.Parallel: chdir is process-global.
+func TestRestoreSessionCanonicalizesRelativeStateDir(t *testing.T) {
+	work := t.TempDir()
+	stateDir := filepath.Join(work, "state")
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(work), SessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	id := sess.ID()
+	sess.Close()
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore Chdir: %v", err)
+		}
+	})
+
+	meta, err := schema.LoadSessionMeta("state", id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(work), meta, RestoreSessionConfig{StateDir: "state"})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if restored.stateDir != stateDir {
+		t.Fatalf("restored stateDir=%q, want %q (a relative restore StateDir must resolve against the process working directory at construction)", restored.stateDir, stateDir)
+	}
 }
 
 // TestLeafDelegateWatchesItsOwnJobsOnly: a session that can run jobs can watch
