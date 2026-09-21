@@ -84,8 +84,11 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 // hosts (macOS's /tmp, /var), which would turn a path the session records —
 // attachment paths named to the model, transcript locations — into a
 // deterministic refusal for a later reader whose working directory differs.
-// Empty means "no state directory" and stays empty; a not-yet-created or
-// otherwise unresolvable path falls back to the anchored absolute form.
+// Empty means "no state directory" and stays empty. A path that does not
+// resolve — most commonly a state dir that has not been created yet —
+// resolves its deepest existing ancestor instead, with the missing tail
+// joined back unchanged, so a fresh state dir behind a symlinked parent
+// records the physical path it will occupy rather than the symlinked form.
 func canonicalStateDir(dir string) string {
 	if dir == "" {
 		return dir
@@ -95,10 +98,23 @@ func canonicalStateDir(dir string) string {
 			return abs
 		}
 	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		return abs
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
 	}
-	return dir
+	// Walk upward to the deepest ancestor that exists, resolving it, and join
+	// the missing tail back unchanged. The walk always terminates: the
+	// filesystem root resolves.
+	var tail []string
+	for cur := abs; ; cur = filepath.Dir(cur) {
+		if resolved, rerr := filepath.EvalSymlinks(cur); rerr == nil {
+			return filepath.Join(resolved, filepath.Join(tail...))
+		}
+		if parent := filepath.Dir(cur); parent == cur {
+			return abs // the filesystem root itself did not resolve
+		}
+		tail = append([]string{filepath.Base(cur)}, tail...)
+	}
 }
 
 // escapeHistoryWithSessionProvenance escapes a restored history for the model

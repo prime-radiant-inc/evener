@@ -146,6 +146,38 @@ func TestNewSessionResolvesSymlinkedStateDirToPhysicalPath(t *testing.T) {
 	}
 }
 
+// TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath pins the
+// not-yet-created half of the same contract: EvalSymlinks cannot resolve a
+// path whose final components do not exist (a fresh --state-dir on first
+// launch), and an Abs-only fallback would record the symlinked form — on the
+// hosts whose file tools refuse symlinked ancestors, every attachment path
+// announced from that session would be a deterministic read refusal. The
+// deepest existing ancestor must resolve, with the missing tail joined back
+// unchanged.
+func TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	physical := filepath.Join(work, "real-state")
+	if err := os.Mkdir(physical, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	link := filepath.Join(work, "link-state")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	fresh := filepath.Join(link, "never", "created")
+	want := filepath.Join(physical, "never", "created")
+	if got := canonicalStateDir(fresh); got != want {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (a symlinked ancestor must resolve even when the state dir does not exist yet)", fresh, got, want)
+	}
+	// The same branch without any symlink must keep the anchored absolute form.
+	plain := filepath.Join(work, "plain-missing", "state")
+	if got := canonicalStateDir(plain); got != plain {
+		t.Fatalf("canonicalStateDir(%q) = %q, want the anchored absolute form unchanged", plain, got)
+	}
+}
+
 // TestRestoreSessionCanonicalizesRelativeStateDir pins the restore-side half
 // of the same contract: `evener serve --resume` threads a --state-dir
 // through RestoreSessionFromMetaWithConfig, and a restored session must carry
