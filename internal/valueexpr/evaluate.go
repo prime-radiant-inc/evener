@@ -228,8 +228,7 @@ func realRunCommand(command string) (string, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}
 		}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", &CommandError{Status: exit.ExitCode(), Detail: firstLine(stderr.String())}
 		}
 		return "", &CommandError{Detail: firstLine(err.Error())}
@@ -244,10 +243,9 @@ func realRunCommand(command string) (string, error) {
 // stream ran past the cap, so a runaway command cannot balloon memory and a
 // capped stdout is refused rather than silently truncated into a credential.
 type cappedBuffer struct {
-	buf    bytes.Buffer
-	max    int
-	over   bool
-	capped bool
+	buf  bytes.Buffer
+	max  int
+	over bool
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {

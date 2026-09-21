@@ -110,7 +110,7 @@ func TestEvaluateFailureIsNotCached(t *testing.T) {
 	runs := 0
 	RunCommand = func(string) (string, error) {
 		runs++
-		return "", fmt.Errorf("command exited with status 1: boom")
+		return "", errors.New("command exited with status 1: boom")
 	}
 	for range 2 {
 		if _, err := evaluate("get-token"); err == nil {
@@ -136,13 +136,11 @@ func TestEvaluateSharesOneMintAcrossConcurrentCallers(t *testing.T) {
 	results := make([]string, 4)
 	errs := make([]error, 4)
 	for i := range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			res, err := evaluate("get-token")
 			results[i] = res.Value
 			errs[i] = err
-		}()
+		})
 	}
 	<-entered
 	close(release)

@@ -161,7 +161,10 @@ func expandEnvVars(s string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid $ expression: %w", err)
 	}
-	for _, u := range unresolved {
+	if len(unresolved) > 0 {
+		// The first unresolved expression names the failure; Expand reports
+		// every one, but one reason is all an author needs to fix the value.
+		u := unresolved[0]
 		if u.Command != "" {
 			return "", fmt.Errorf("command expression failed: %w", u.Err)
 		}
