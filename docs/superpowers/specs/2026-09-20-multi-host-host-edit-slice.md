@@ -171,12 +171,14 @@ and the compensation paths in one shape:
   under the host gate — the registry entry is replaced and the channel retired,
   or neither — so an error from it means nothing live changed.
 - **Finish, under the mutex.** Clear the mark. On success:
-  - when `roots` changed, drop the host's derived rows **first** — the
-    remote-thread cache's source entry and the last-good retention, the two
-    things the source's identity owns — and then re-register the source
-    (`sources.Remove`, then the existing `registerSource`), which assigns a
-    fresh cache generation. The order is load-bearing: dropping after
-    re-registering would delete the generation the registration just minted.
+  - when `roots` changed, retire both old identities first — the remote-thread
+    cache's source entry and the source registration — then clear the last-good
+    retention, and only then re-register the source, which assigns a fresh cache
+    generation. The order is load-bearing: retiring the identities first makes
+    an in-flight old-source walk fail its cache-generation fence or its
+    source-instance ownership check, so it cannot re-store obsolete rows after
+    the retention clear. The cache drop still precedes re-registration, so it
+    cannot delete the generation the registration just minted.
   - when `roots` did not change, leave both alone: it is the same source, its
     cache generation still owns its rows, and the retained list is still this
     host's. An edit that changes only the SSH address or a path must not blank

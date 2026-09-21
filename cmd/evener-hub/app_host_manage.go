@@ -1423,9 +1423,10 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 //     pre-commit copy, so a concurrent add or removal that committed in this
 //     window survives — and, on success, compare the roots this call replaced
 //     with the stored entry's. A roots edit drops the remote-thread cache entry,
-//     retained last-known-good list, and old source, then registers the source
-//     afresh before building the response row from the entry the registry now
-//     holds.
+//     retires the old source, clears its retained last-known-good list, then
+//     registers the source afresh before building the response row from the
+//     entry the registry now holds. Retiring both identities before the clear
+//     fences any in-flight old-source walk out of re-storing obsolete rows.
 //
 // An edit never dials, deploys, or attaches: its live effects are exactly the
 // registry replacement, the teardown, and the derived-state reconciliation.
@@ -1545,12 +1546,13 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// The source's identity owns its derived rows, so a roots edit changes what
 	// the source addresses and everything keyed to the old roots goes with it:
 	// the remote-thread cache entry (its per-source generation included), the
-	// web server's retained last-known-good list, and the source itself, which is
-	// then registered afresh under the new roots. The drop must come FIRST —
-	// registerSource leaves an existing source alone, so re-registering before
-	// dropping would leave the old source and its rows in place, and dropping the
-	// cache entry after re-registering would delete the generation the
-	// registration just minted.
+	// source itself, and the web server's retained last-known-good list, after
+	// which the source is registered afresh under the new roots. Both identities
+	// must retire before retention is cleared: an in-flight old-source walk then
+	// fails either its cache-generation fence or its source-instance ownership
+	// check and cannot re-store obsolete rows after the clear. The cache drop also
+	// stays before registerSource, so it cannot delete the generation the fresh
+	// registration mints.
 	//
 	// A non-roots edit changes nothing the source's identity owns: it is the same
 	// source, its cache generation still owns its rows, and the retained list is
@@ -1560,11 +1562,11 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		if m.cfg.remoteCache != nil {
 			m.cfg.remoteCache.RemoveSource(name)
 		}
-		if m.cfg.forgetLastGoodThreads != nil {
-			m.cfg.forgetLastGoodThreads(name)
-		}
 		if m.cfg.sources != nil {
 			m.cfg.sources.Remove(name)
+		}
+		if m.cfg.forgetLastGoodThreads != nil {
+			m.cfg.forgetLastGoodThreads(name)
 		}
 		m.registerSource(stored)
 	}

@@ -2292,12 +2292,13 @@ In `Update`'s finish phase, after the failure arm and the `stored` reread, befor
 	// The source's identity owns its derived rows, so a roots edit changes what
 	// the source addresses and everything keyed to the old roots goes with it:
 	// the remote-thread cache entry (its per-source generation included), the
-	// web server's retained last-known-good list, and the source itself, which is
-	// then registered afresh under the new roots. The drop must come FIRST —
-	// registerSource leaves an existing source alone, so re-registering before
-	// dropping would leave the old source and its rows in place, and dropping the
-	// cache entry after re-registering would delete the generation the
-	// registration just minted.
+		// source itself, and the web server's retained last-known-good list, after
+		// which the source is registered afresh under the new roots. Both identities
+		// must retire before retention is cleared: an in-flight old-source walk then
+		// fails either its cache-generation fence or its source-instance ownership
+		// check and cannot re-store obsolete rows after the clear. The cache drop also
+		// stays before registerSource, so it cannot delete the generation the fresh
+		// registration mints.
 	//
 	// A non-roots edit changes nothing the source's identity owns: it is the same
 	// source, its cache generation still owns its rows, and the retained list is
@@ -2307,12 +2308,12 @@ In `Update`'s finish phase, after the failure arm and the `stored` reread, befor
 		if m.cfg.remoteCache != nil {
 			m.cfg.remoteCache.RemoveSource(name)
 		}
-		if m.cfg.forgetLastGoodThreads != nil {
-			m.cfg.forgetLastGoodThreads(name)
-		}
 		if m.cfg.sources != nil {
 			m.cfg.sources.Remove(name)
 		}
+			if m.cfg.forgetLastGoodThreads != nil {
+				m.cfg.forgetLastGoodThreads(name)
+			}
 		m.registerSource(stored)
 	}
 ```

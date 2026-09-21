@@ -793,8 +793,9 @@ func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
 		t.Fatalf("a non-roots edit dropped retained rows for %v, want nothing", forgotten)
 	}
 
-	// A roots edit: a fresh registration, the retention dropped first, and the
-	// generation the re-registration minted still in place afterwards.
+	// A roots edit: a fresh registration, the old identities and retention
+	// dropped first, and the generation the re-registration minted still in place
+	// afterwards.
 	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
 		Name:  "side",
 		Entry: appwire.HostEntry{Address: "side2.example", Roots: []string{"/two"}},
@@ -817,5 +818,99 @@ func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
 	}
 	if !slices.Equal(forgotten, []string{"side"}) {
 		t.Fatalf("forgotten = %v, want exactly the roots edit's own drop", forgotten)
+	}
+}
+
+// TestHostManageRootsEditCannotResurrectOldRetention holds the finish phase in
+// the exact window after its retention clear and asks a completed old-source
+// walk to store real rows. Both ownership configurations must reject the stale
+// store: a cache generation when RemoteThreadCache is wired, and the source
+// instance when it is absent. The channels hold the window deterministically;
+// no scheduling sleep manufactures the race.
+func TestHostManageRootsEditCannotResurrectOldRetention(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		withCache bool
+	}{
+		{name: "cache_wired", withCache: true},
+		{name: "cache_absent", withCache: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "hub.toml")
+			if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+				t.Fatalf("write hub.toml: %v", err)
+			}
+			hosts, err := hostreg.New(nil)
+			if err != nil {
+				t.Fatalf("hostreg.New: %v", err)
+			}
+			sources := appsource.NewRegistry()
+			var cache *hubcore.RemoteThreadCache
+			if tt.withCache {
+				cache = &hubcore.RemoteThreadCache{}
+			}
+			webCfg := hubcore.WebConfig{RemoteThreadCache: cache}
+			m := newHubHostManager(sources, nil, webCfg, configPath, hosts, nil)
+			if _, err := m.Add(context.Background(), appwire.HostAddParams{
+				Entry: appwire.HostEntry{Name: "side", Address: "side.example", Roots: []string{"/old-root"}},
+			}); err != nil {
+				t.Fatalf("Add(side): %v", err)
+			}
+
+			oldSource, ok := sources.Source("side")
+			if !ok {
+				t.Fatal("the added host has no source")
+			}
+			var oldGeneration uint64
+			capturedGeneration := false
+			if cache != nil {
+				oldGeneration, capturedGeneration = cache.SourceGeneration("side")
+				if !capturedGeneration {
+					t.Fatal("the added host's source has no cache generation")
+				}
+			}
+			web := &WebServer{cfg: webCfg, sources: sources}
+			oldRows := []appwire.Thread{{ID: "retired-root-session", Source: "side", CWD: "/old-root"}}
+			web.storeLastGoodThreadsIfCurrent(oldSource, oldGeneration, capturedGeneration, oldRows)
+			if got := web.lastGoodThreadsForSource("side"); len(got) != 1 || got[0].ID != oldRows[0].ID || got[0].CWD != oldRows[0].CWD {
+				t.Fatalf("seeded retention = %+v, want the old source's real row %+v", got, oldRows)
+			}
+
+			forgotten := make(chan struct{})
+			releaseFinish := make(chan struct{})
+			var releaseOnce sync.Once
+			t.Cleanup(func() { releaseOnce.Do(func() { close(releaseFinish) }) })
+			m.cfg.forgetLastGoodThreads = func(sourceID string) {
+				web.forgetLastGoodThreads(sourceID)
+				close(forgotten)
+				<-releaseFinish
+			}
+
+			updateDone := make(chan error, 1)
+			go func() {
+				_, err := m.Update(context.Background(), appwire.HostUpdateParams{
+					Name:  "side",
+					Entry: appwire.HostEntry{Address: "side.example", Roots: []string{"/new-root"}},
+				})
+				updateDone <- err
+			}()
+			<-forgotten
+			if got := web.lastGoodThreadsForSource("side"); len(got) != 0 {
+				t.Fatalf("retention at the held post-forget window = %+v, want none", got)
+			}
+
+			// Complete the old walk while the finish phase is held. The retirement
+			// that makes this store stale must already have happened, or this write
+			// can recreate rows that no later step clears.
+			web.storeLastGoodThreadsIfCurrent(oldSource, oldGeneration, capturedGeneration, oldRows)
+			releaseOnce.Do(func() { close(releaseFinish) })
+			if err := <-updateDone; err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if got := web.lastGoodThreadsForSource("side"); len(got) != 0 {
+				t.Fatalf("old-root retention survived the completed roots edit: %+v", got)
+			}
+		})
 	}
 }
