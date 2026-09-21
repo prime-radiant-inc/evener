@@ -47,6 +47,7 @@ type ConfigSnapshot struct {
 	ObservationPacking          bool                       `json:"observation_packing,omitempty"`           // archive tool results over 10 KiB and pack them into artifact handles after two full request looks
 	ActionFusion                bool                       `json:"action_fusion,omitempty"`                 // optional run_after shell command fused into file-mutation tool calls
 	CheckpointReminder          bool                       `json:"checkpoint_reminder,omitempty"`           // cost-gated compaction-available steering reminder at task step completion boundaries
+	LogReducer                  bool                       `json:"log_reducer,omitempty"`                   // archive large build/test shell logs and replace the model-facing observation with a verified cheap-model receipt
 }
 
 // Clone returns an independently mutable copy of the persisted configuration.

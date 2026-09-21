@@ -243,13 +243,24 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 	}()
 	// Aggregate all tool results into a single TurnToolResults turn.
 	var parts []llm.ContentPart
-	for _, r := range results {
+	for i := range results {
+		r := results[i]
+		content := r.Output
+		// Evidence-Preserving Reducer: an eligible build/test log's
+		// model-facing observation becomes its verified receipt (the
+		// transcript keeps the original — projectToolResultsForTranscript
+		// restores it from results). Any reducer decline keeps r.Output.
+		if i < len(calls) {
+			if receipt := s.reduceLogObservation(ctx, calls[i], r); receipt != "" {
+				content = receipt
+			}
+		}
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{
 				ToolCallID:     r.CallID,
 				Name:           r.ToolName,
-				Content:        r.Output,
+				Content:        content,
 				IsError:        r.IsError,
 				PrevalOnly:     r.PrevalOnly,
 				DurationMS:     r.DurationMS,

@@ -170,8 +170,11 @@ func observationExcerptLine(line string) string {
 // in the returned message list, copy-on-write over the shared
 // *ToolResultData payloads (the same discipline maskObservations documents).
 //
-// Results at or under observationPackThresholdBytes and non-string results
-// pass through untouched. With ObservationPacking off the input returns
+// Results at or under observationPackThresholdBytes, non-string results, and
+// Evidence-Preserving Reducer receipts pass through untouched: a receipt is
+// already the small, verified view of a log (isLogReceiptContent recognizes
+// the rendered prefix), so packing one would double-process a result the
+// reducer already reduced. With ObservationPacking off the input returns
 // unchanged, byte-identical to a session without the mechanism.
 func (s *Session) packRequestObservations(history []llm.Message) []llm.Message {
 	if !s.cfg.ObservationPacking {
@@ -202,7 +205,7 @@ func (s *Session) packRequestObservations(history []llm.Message) []llm.Message {
 				continue
 			}
 			content, ok := part.ToolResult.Content.(string)
-			if !ok || len(content) <= observationPackThresholdBytes {
+			if !ok || isLogReceiptContent(content) || len(content) <= observationPackThresholdBytes {
 				continue
 			}
 			view, packed, warning := s.obsPack.decide(s.artifactStore, callID, content)

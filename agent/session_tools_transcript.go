@@ -144,7 +144,12 @@ type apiLogTranscriptResultIdentity struct {
 }
 
 // projectToolResultsForTranscript replaces only explicit private API-log reads
-// with a bounded re-read handle. The live history retains the complete output.
+// with a bounded re-read handle, and restores the full original log behind
+// every Evidence-Preserving Reducer receipt. The live history retains the
+// complete output for API-log reads, and the verified receipt for reduced
+// logs: the durable transcript always keeps the original evidence (the
+// receipt's archive is process-scoped; the transcript is the durable record,
+// and restored sessions replay from it).
 func projectToolResultsForTranscript(calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) []llm.ContentPart {
 	var projected []llm.ContentPart
 	for i := range parts {
@@ -152,15 +157,29 @@ func projectToolResultsForTranscript(calls []llm.ToolCallData, results []tool.Ex
 			continue
 		}
 		placeholder, ok := apiLogResultTranscriptPlaceholder(calls[i], results[i])
-		if !ok || parts[i].ToolResult == nil {
+		if parts[i].ToolResult == nil {
 			continue
 		}
-		if projected == nil {
-			projected = append([]llm.ContentPart(nil), parts...)
+		switch {
+		case ok:
+			if projected == nil {
+				projected = append([]llm.ContentPart(nil), parts...)
+			}
+			toolResult := *parts[i].ToolResult
+			toolResult.Content = placeholder
+			projected[i].ToolResult = &toolResult
+		default:
+			content, isString := parts[i].ToolResult.Content.(string)
+			if !isString || !isLogReceiptContent(content) || content == results[i].Output {
+				continue
+			}
+			if projected == nil {
+				projected = append([]llm.ContentPart(nil), parts...)
+			}
+			toolResult := *parts[i].ToolResult
+			toolResult.Content = results[i].Output
+			projected[i].ToolResult = &toolResult
 		}
-		toolResult := *parts[i].ToolResult
-		toolResult.Content = placeholder
-		projected[i].ToolResult = &toolResult
 	}
 	if projected == nil {
 		return parts
