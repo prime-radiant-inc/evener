@@ -2649,6 +2649,15 @@ func (c *Channel) Host() hostreg.Host {
 	return h
 }
 
+// MatchesRegistration reports whether entry is the registration this channel
+// was built from: content and generation both, the same predicate
+// hostreg.SameRegistration wraps. It compares the channel's captured host in
+// place, so a caller pairing a live channel with the entry it renders — and
+// only comparing — need not clone the host and its roots.
+func (c *Channel) MatchesRegistration(entry hostreg.Host) bool {
+	return hostreg.SameRegistration(c.host, entry)
+}
+
 // Close kills the ssh child and closes the stream. It is idempotent and
 // terminal.
 func (c *Channel) Close() error {

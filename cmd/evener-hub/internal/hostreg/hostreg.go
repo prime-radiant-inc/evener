@@ -401,6 +401,19 @@ func (r *Registry) Get(name string) (Host, bool) {
 	return cloneHost(host), true
 }
 
+// SameRegistration reports whether two captures describe the same insert: equal
+// configured content and the same generation. It is the one predicate an
+// identity recheck states, wrapped here by Registry.SameRegistration and
+// applied by sshconn's channels to pair a live channel with an entry. Content
+// equality alone cannot tell a removed entry from its byte-identical re-add
+// (Equal excludes Generation, and a re-add takes a fresh generation from the
+// registry-wide counter); generation equality alone cannot refuse a hand-built
+// capture whose generation is current but whose content is stale, even though
+// the registry never mutates an inserted entry. Both are needed.
+func SameRegistration(a, b Host) bool {
+	return a.Equal(b) && a.Generation == b.Generation
+}
+
 // SameRegistration reports whether name is currently registered as the same
 // insert captured describes: present, carrying the same configured content,
 // and stamped with the same generation. It is the identity recheck for
@@ -415,7 +428,7 @@ func (r *Registry) Get(name string) (Host, bool) {
 // pass for the live registration.
 func (r *Registry) SameRegistration(name string, captured Host) bool {
 	current, ok := r.Get(name)
-	return ok && current.Equal(captured) && current.Generation == captured.Generation
+	return ok && SameRegistration(current, captured)
 }
 
 // Remove deletes the host registered under name along with its upstream edges.

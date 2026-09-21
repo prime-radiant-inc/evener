@@ -70,7 +70,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	other := live
 	other.Generation = live.Generation + 1
 	row = f.m.hostRow(context.Background(), other, hostOriginSidecar)
-	if row.Attached || row.ServerName != "" || row.ServerVersion != "" || row.HubVersion != "" || row.OS != "" || row.Arch != "" {
+	if rowHasLiveState(row) {
 		t.Fatalf("row for another registration = %+v, want offline with none of the installed channel's state", row)
 	}
 
@@ -80,7 +80,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	other = live
 	other.SSH = "elsewhere.example"
 	row = f.m.hostRow(context.Background(), other, hostOriginSidecar)
-	if row.Attached || row.OS != "" || row.Arch != "" {
+	if rowHasLiveState(row) {
 		t.Fatalf("row for changed content = %+v, want offline with no facts", row)
 	}
 }
@@ -120,7 +120,7 @@ func TestHostRowAcrossTheUpdateWindowDoesNotAdoptTheNewGenerationsChannel(t *tes
 	// The stale row resolves while the new generation's channel is installed: it
 	// must not read that channel's live state.
 	stale := f.m.hostRow(context.Background(), preSwap, hostOriginSidecar)
-	if stale.Attached || stale.ServerName != "" || stale.ServerVersion != "" || stale.HubVersion != "" || stale.OS != "" || stale.Arch != "" {
+	if rowHasLiveState(stale) {
 		t.Fatalf("row built from the pre-swap entry = %+v, want offline with none of the new channel's state", stale)
 	}
 
@@ -130,4 +130,13 @@ func TestHostRowAcrossTheUpdateWindowDoesNotAdoptTheNewGenerationsChannel(t *tes
 	if !fresh.Attached || fresh.OS != "linux" || fresh.Arch != "amd64" {
 		t.Fatalf("row for the edited identity = %+v, want attached with its channel's facts", fresh)
 	}
+}
+
+// rowHasLiveState reports whether row carries any live attached state: the
+// attached flag or any field the attached-only lookups fill. An offline row
+// must carry none of it, so the offline assertions state that one predicate
+// here rather than repeating the field list.
+func rowHasLiveState(row appwire.HostRow) bool {
+	return row.Attached || row.ServerName != "" || row.ServerVersion != "" ||
+		row.HubVersion != "" || row.OS != "" || row.Arch != ""
 }
