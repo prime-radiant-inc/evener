@@ -164,7 +164,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 		p.pinSectionIDs[section.ID] = true
 	}
 
-	buckets := navigationProjectBuckets(p.inputs.Tree)
+	buckets := navigationUniqueProjectBuckets(navigationProjectBuckets(p.inputs.Tree))
 	if err := ctx.Err(); err != nil {
 		return navigationProjection{}, err
 	}
@@ -312,6 +312,52 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	maps.Copy(out, in)
 	return out
+}
+
+// navigationUniqueProjectBuckets collapses tree projects that present the same
+// wire Key onto the single catalog entry that Key can address.
+//
+// A project's Key is its address on the wire: the client reads the project
+// detail, and archives, favorites, or deletes the project, by (source, Key).
+// The tree groups sessions by canonical project identity, but its Key is the
+// canonical identifier.Project.ID only when the working directory resolved;
+// sessions that resolve to no project all present the shared "no-project" key
+// while keeping their own grouping path, so one tree can hand the catalogs
+// several distinct projects that present one Key. Two catalog rows with one
+// Key collapse onto a single entity key, and hubapi.NavigationSnapshot.Validate
+// then rejects the graph with "duplicate navigation entity key" (the root
+// container's repeated child would read as multiple parents next), which
+// validateNavigationResourceSnapshot reports as the "graph" category. Live,
+// that is what one attached host triggered: the host's threads live in
+// directories the controller cannot resolve, each minting a "no-project" group,
+// so the manifest read succeeded while archived_projects answered an internal
+// error.
+//
+// Only the buckets' derivation is wrong, not the tree: the tree keeps the
+// per-path groups for presentation, while a catalog row exists to be addressed
+// by exactly one Key. Every Key is therefore claimed once, in the tree's own
+// deterministic order (active, then archived, then test runs), so the project
+// map below describes the same entry the retained catalog row addresses. This
+// is the general "one addressable project per Key" rule, not a branch on how
+// many sources exist.
+func navigationUniqueProjectBuckets(buckets navigationProjectBucket) navigationProjectBucket {
+	seen := make(map[string]bool, len(buckets.active)+len(buckets.archived)+len(buckets.testRuns))
+	unique := func(projects []hubcore.TreeProject) []hubcore.TreeProject {
+		out := make([]hubcore.TreeProject, 0, len(projects))
+		for _, project := range projects {
+			if seen[project.Key] {
+				continue
+			}
+			seen[project.Key] = true
+			out = append(out, project)
+		}
+		return out
+	}
+	return navigationProjectBucket{
+		active:   unique(buckets.active),
+		archived: unique(buckets.archived),
+		testRuns: unique(buckets.testRuns),
+	}
 }
 
 func cloneNavigationNodesContext(ctx context.Context, nodes []hubcore.TreeNode) ([]hubcore.TreeNode, error) {
