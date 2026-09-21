@@ -12,6 +12,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/w
 import { navigationStore } from "../../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { ToolIcon } from "../../../../widgets/toolicon";
 import { NotificationCard } from "./NotificationCard";
 import type { ParsedNotification } from "./steeringClassify";
 
@@ -173,6 +174,44 @@ test("renders the title and tags the tone", () => {
   render(<NotificationCard notification={notif()} />);
   expect(screen.getByText("Job completed")).toBeTruthy();
   expect(screen.getByTestId("notification-card").getAttribute("data-tone")).toBe("success");
+});
+
+// The head leads with a status glyph seated in the transcript's icon rail
+// (the same seat ToolRow's kind icon and ThinkBlock's bulb occupy). Shape
+// carries the status; the chip keeps spending colour on warning/error, and
+// success/neutral stay quiet by the card's color-is-attention law - so the
+// assertion set pins the tone->glyph mapping, not any hue.
+const TONE_KINDS = {
+  success: "check",
+  error: "cross",
+  warning: "alert",
+  neutral: "info",
+} as const;
+
+function renderedIconPath(root: ParentNode | null): string | null {
+  return root?.querySelector("path")?.getAttribute("d") ?? null;
+}
+
+test("the head leads with a status icon mapped from the tone, before any chip or title text", () => {
+  for (const [tone, kind] of Object.entries(TONE_KINDS)) {
+    render(<NotificationCard notification={notif({ tone: tone as ParsedNotification["tone"] })} />);
+    const head = screen.getByTestId("notification-card");
+    const statusIcon = head.querySelector('[data-testid="notification-status-icon"]');
+    expect(statusIcon, `tone ${tone} rendered no status icon`).toBeTruthy();
+    // First child of the head: the rail slot precedes the chip and title.
+    expect(head.firstElementChild).toBe(statusIcon);
+    // The glyph is the tone's kind, drawn by the shared line-art widget.
+    const kindProbe = render(<ToolIcon kind={kind} />);
+    expect(renderedIconPath(statusIcon)).toBe(renderedIconPath(kindProbe.container));
+    // One cleanup unmounts every root rendered this iteration (card + probe);
+    // without it the next iteration's queries would match two cards.
+    cleanup();
+  }
+});
+
+test("the status icon is decorative: aria-hidden, no accessible name of its own", () => {
+  render(<NotificationCard notification={notif()} />);
+  expect(screen.getByTestId("notification-status-icon").getAttribute("aria-hidden")).toBe("true");
 });
 
 test("renders stable delegate identity as Delegate while shell identity remains Job", async () => {

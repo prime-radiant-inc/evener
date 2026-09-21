@@ -1,0 +1,18 @@
+{
+  "name": "transcript-rail-icon-seats",
+  "description": "transcript rail: the live thinking row's bulb, the content-free thinking row's Loader grid, and the notification head's status glyph all seat in one avatar column - above 700px every slot starts at the turn's left edge with its row's text at the content edge and a 10px speaker gap (the same seat ToolRow's kind icon occupies), and below it every slot leads its line inline with the text one full gutter later; no seat ever escapes the turn's box",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/turnblock.module.css",
+    "widgets/loader/loader.module.css",
+    "panes/session/transcript/messages/notificationcard.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 1200, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "loader.module.css: the @media (min-width: 700px) .rail { margin-left: calc(-1 * var(--speaker-gutter)) } gutter pull reverted to 0; separately verified, notificationcard.module.css's .statusIcon pull reverted to 0",
+    "verified": "2026-09-20",
+    "expect": "fail",
+    "note": "Verified 2026-09-20, one pull at a time: each reverted pull fails the desktop leg's rail-origin assertion for its own row (slot.left lands 34px right of turn.left), naming the row - the Loader's .rail pull, notificationcard's .statusIcon pull, and the harness's reproduced think-row pull each re-run separately. Every row is caught by name, so the cross-row comparisons and the per-row origin arithmetic both carry the case."
+  }
+}
