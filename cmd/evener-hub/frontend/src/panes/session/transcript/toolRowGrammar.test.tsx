@@ -149,7 +149,13 @@ test("a collapsed row splits the summary into a clampable head and an always-ful
 test("a non-expandable clamped row keeps its whole summary in the DOM with no native title", () => {
   const summary = "Watch on job_034RuaCB8iWz0J1XBOUm1A_mftMIW5WFX2e fired on terminal scan - completed";
   render(
-    <ToolRow summary={summary} intent="Confirming the watch landed" failed={false} expandable={false} expanded={false} />,
+    <ToolRow
+      summary={summary}
+      intent="Confirming the watch landed"
+      failed={false}
+      expandable={false}
+      expanded={false}
+    />,
   );
   const head = screen.getByTestId("tool-row-summary-head");
   const tail = screen.getByTestId("tool-row-summary-tail");
