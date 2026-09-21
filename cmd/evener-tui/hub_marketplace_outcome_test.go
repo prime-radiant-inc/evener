@@ -796,6 +796,81 @@ func TestMarketplaceMutateResultStaleRefreshCannotResurrect(t *testing.T) {
 	}
 }
 
+func TestMarketplaceMutateResultFreshSnapshotSettlesPendingReconciliation(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	// A marked-but-unconfirmed removal issued its settle read (generation
+	// 2, still outstanding) while a refresh issued after the removal landed
+	// (generation 3) succeeds first.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           0,
+	}
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		Action:     "refresh",
+		Name:       removed.Name,
+		Generation: 3,
+	})
+	after := got.(hubModel)
+	if cmd != nil {
+		t.Fatal("fresh refresh snapshot needs no replacement read")
+	}
+	// The refresh's post-removal snapshot confirms the removal: the
+	// pending reconciliation must settle on it.
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("fresh refresh snapshot left the fence at %q/%v, want settled", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("fresh refresh snapshot should settle the panel on its list")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after fresh refresh = %q, want %q", remove.Name, kept.Name)
+	}
+
+	// The outstanding settle read (generation 2) arrives after: it is
+	// superseded by the applied refresh, and the settlement must stand.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		ReconcileGeneration: 2,
+	})
+	superseded := got.(hubModel)
+	if superseded.marketplaceRemovePending != "" || superseded.marketplaceReconcilePending {
+		t.Fatalf("superseded settle read rearmed the fence to %q/%v, want the settlement kept", superseded.marketplaceRemovePending, superseded.marketplaceReconcilePending)
+	}
+
+	// Even a later failed notification refetch keeps the fence clear.
+	got, _ = superseded.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		Err:                 errors.New("list read failed"),
+		ReconcileGeneration: 4,
+	})
+	settled := got.(hubModel)
+	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
+		t.Fatalf("failed later refetch rearmed the fence to %q/%v, want the settlement kept", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
+	}
+	updated, panelCmd = settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("settled panel should keep the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after failed refetch = %q, want the settled %q", remove.Name, kept.Name)
+	}
+}
+
 func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}

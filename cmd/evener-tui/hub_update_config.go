@@ -786,23 +786,34 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		// before the newest applied read carries a list that predates
 		// state the panel already holds, so applying it would resurrect
 		// what the settled list dropped. Discard it and schedule the
-		// replacement read that lands the mutation's own effect. A
-		// remove's own response is excepted: the hub reads its list after
-		// the unregister, so it is post-removal truth by construction.
+		// replacement read that lands the mutation's own effect.
 		if m.client != nil {
 			m.marketplaceReconcileGeneration++
 			return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 		}
 		return m, nil
 	}
-	if m.pluginsPanel != nil {
-		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
-		panel := updated.(launchconfig.PluginsPanel)
-		m.pluginsPanel = &panel
-		m.marketplaceListApplied = msg.Generation
-		return m, cmd
+	if msg.Action == "remove" {
+		// A remove's own response is post-removal truth by construction -
+		// the hub reads its list after the unregister - and its issuance
+		// generation predates the removal's landing, so the list-result
+		// guards would misread it as stale; apply it directly.
+		if m.pluginsPanel != nil {
+			updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
+			panel := updated.(launchconfig.PluginsPanel)
+			m.pluginsPanel = &panel
+			return m, cmd
+		}
+		return m, nil
 	}
-	return m, nil
+	// A fresh add or refresh snapshot is a post-removal list read like any
+	// other: route it through the list-result logic so it settles a
+	// pending reconciliation and advances the applied generation under the
+	// same guards that order every other list response.
+	return m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                msg.List,
+		ReconcileGeneration: msg.Generation,
+	})
 }
 
 func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrowseResultMsg) (tea.Model, tea.Cmd) {
