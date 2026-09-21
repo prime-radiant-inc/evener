@@ -119,13 +119,16 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			continue
 		}
 		entry := appsource.LocalDaemonEntry{
-			Entry:         item.Entry,
-			SessionID:     item.SessionID,
-			Status:        item.Status,
-			PendingAsk:    item.PendingAsk,
-			RunningJobs:   item.RunningJobs,
-			CompletedJobs: item.CompletedJobs,
-			Watches:       item.Watches,
+			Entry:             item.Entry,
+			SessionID:         item.SessionID,
+			Status:            item.Status,
+			PendingAsk:        item.PendingAsk,
+			PendingEscalation: item.PendingEscalation,
+			RunningJobs:       item.RunningJobs,
+			CompletedJobs:     item.CompletedJobs,
+			Watches:           item.Watches,
+			Capabilities:      item.Capabilities,
+			CapabilitiesKnown: item.CapabilitiesKnown,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire

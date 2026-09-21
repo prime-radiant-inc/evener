@@ -26,6 +26,37 @@
   display: none;
 }
 
+/* The status glyph in the rail beside the head's first line - the same seat
+ * ToolRow's .rowIcon gives the tool-kind glyph (toolcallitem.module.css): a
+ * --speaker-avatar-size slot whose glyph centres on the avatar column, at
+ * 50% opacity (status is ambient context, not content), pulled one gutter
+ * left above the breakpoint where .runContent reserves that padding. The
+ * head's own --space-2 gap also lands between the slot and the text that
+ * follows, so the margin-right is the speaker-gap MINUS that gap - the same
+ * arithmetic .rowIcon uses to seat its row's text at the content edge.
+ * flex-start + height: 1lh pin the glyph to line 1 (font-size matches the
+ * head's own, so 1lh is the first line's box) so it stays beside the title
+ * no matter how the flex-wrap head wraps below it. */
+.statusIcon {
+  flex: none;
+  align-self: flex-start;
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--speaker-avatar-size);
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
+  opacity: 0.5;
+  color: var(--ink-mid);
+}
+
+@media (min-width: 700px) {
+  .statusIcon {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
+}
+
 .headingText {
   flex: 0 1 auto;
   min-width: 0;

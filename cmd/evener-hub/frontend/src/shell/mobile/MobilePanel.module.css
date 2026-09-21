@@ -8,9 +8,3 @@
 .flushBody {
   padding: 0;
 }
-
-/* The welcome copy that shows when nothing is focused keeps the inset the
- * body gave up. */
-.drawerWelcome {
-  padding: var(--space-4);
-}

@@ -90,3 +90,30 @@
   color: var(--ink-low);
   font-variant-numeric: tabular-nums;
 }
+
+/* --- rail mode ------------------------------------------------------------
+ * Opt-in seating for the one consumer whose row owns an icon rail slot: the
+ * transcript's content-free "Thinking…" placeholder (ThinkBlock). The grid
+ * centres in a --speaker-avatar-size slot so its 15px of cells aligns on the
+ * same column the live/settled rows' bulb glyph centres on, and the row's own
+ * --space-2 gap also lands between grid and label, so the grid's margin-right
+ * is the speaker-gap MINUS that gap - the same arithmetic ToolRow's .rowIcon
+ * uses (toolcallitem.module.css) to seat its row's text at the content edge.
+ */
+.rail .grid {
+  width: var(--speaker-avatar-size);
+  justify-content: center;
+  margin-right: calc(var(--speaker-gap) - var(--space-2));
+}
+
+/* Above the breakpoint the row sits inside runContent's --speaker-gutter of
+ * reserved padding: pulling the row one gutter left seats the grid in the
+ * rail while the label stays at the content edge. The pull shares the
+ * breakpoint's media query with that padding (below 700px the gutter
+ * collapses and the slot simply leads the line inline, like every other
+ * rail icon). */
+@media (min-width: 700px) {
+  .rail {
+    margin-left: calc(-1 * var(--speaker-gutter));
+  }
+}

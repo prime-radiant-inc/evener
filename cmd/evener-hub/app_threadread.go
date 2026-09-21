@@ -679,6 +679,16 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		Goal:         true,
 		SharedNotes:  true,
 		Rename:       true,
+		// SkillInput is the same resume story Send tells: a resumed daemon runs
+		// current code, wires all four input-bearing turn mutations, and consumes
+		// skill selections. Withholding it while the same read attaches the
+		// session's skill catalog (attachPastThreadSkillCatalog) made the web
+		// composer offer those skills and then refuse them. The advertisement is
+		// harness-support truth only: every input-bearing mutation re-verifies
+		// against the live daemon (ensureSkillInputSupported, the relay's
+		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
+		// that genuinely lacks the support still refuses each selection.
+		SkillInput: true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
