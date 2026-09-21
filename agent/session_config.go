@@ -429,6 +429,12 @@ type testConfig struct {
 	// recordings in that window. Nil in production.
 	beforeFoldTranscriptCommit func()
 
+	// beforeRestoredFailureBoundaryDoorRelease observes the restored failure
+	// boundary after state publication and before attentionMu is released.
+	// Tests use it to prove that a concurrent transcript writer cannot pass the
+	// publication door between those operations. Nil in production.
+	beforeRestoredFailureBoundaryDoorRelease func()
+
 	// beforeEnvironmentEventPublish observes an environment append at the
 	// moment it is about to publish its live event, so a test can state where
 	// that publication sits relative to the transcript ordering boundary.
@@ -483,6 +489,25 @@ type testConfig struct {
 	// hazard the offline-harness design flags). It is inherited by the child's own
 	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
 	childClientFactory func() *llm.Client
+
+	// disableDelegateIdleRelease suppresses the non-terminal idle release of a
+	// finalized stable delegate's runtime subtree (see
+	// releaseIdleRuntimeAfterFinalize). Production always releases, so an idle
+	// delegate's process-local resources — stdio MCP server processes above
+	// all — do not outlive its generation for the life of the daemon. The
+	// warm-supervision and retirement-admission fixtures set this because their
+	// subject is the warm-resume machinery itself — a deliberately retained
+	// runtime under an explicit in-process mode — not the retention policy the
+	// default exercises. It is inherited by child configs, so setting it on a
+	// fixture's root session covers its whole delegate tree.
+	disableDelegateIdleRelease bool
+
+	// delegateIdleReleaseDelay overrides the production idle-release grace
+	// (delegateIdleReleaseDelayDefault) for tests: the idle-release contract
+	// test shrinks it to 100ms so the scheduled release fires within its poll
+	// window. Nil keeps the production default. Inherited by child configs
+	// like every testOnly field.
+	delegateIdleReleaseDelay *time.Duration
 
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,

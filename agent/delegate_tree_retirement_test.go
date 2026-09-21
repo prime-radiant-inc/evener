@@ -24,6 +24,10 @@ import (
 func newRetirementDelegateController(t *testing.T) (*Session, *delegateTreeController, *RetirementController) {
 	t.Helper()
 	root := newQueuePersistTestSession(t, t.TempDir())
+	// These fixtures exercise whole-tree retirement and idle entrypoints over
+	// LIVE child runtimes; the per-delegate idle release is a separate subject
+	// with its own test, so keep the children deliberately warm here.
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.disableDelegateIdleRelease = true })
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)
@@ -263,6 +267,55 @@ func TestRetirementDelegateRealIdleSource(t *testing.T) {
 	tree.mu.Unlock()
 	if fence != claim {
 		t.Fatal("tree fence is not exact outer claim")
+	}
+}
+
+// TestRetirementAfterIdleReleaseCoversReleasedMember: whole-tree retirement
+// must claim and commit over a member whose runtime the idle release already
+// released — production's shape after the grace period, which the fixtures
+// that keep children warm otherwise hide. The released member must not block
+// the claim, must keep its durable identity, and must not be torn down a
+// second time.
+func TestRetirementAfterIdleReleaseCoversReleasedMember(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+	result := retirementIdleDelegate(t, root)
+	tree.mu.Lock()
+	live := tree.live[result.DelegateID]
+	tree.mu.Unlock()
+	if live == nil || live.runtime == nil {
+		t.Fatal("fixture delegate is not resident before the idle release")
+	}
+	runtime := live.runtime
+	if !runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("idle release refused the terminal fixture delegate")
+	}
+
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("whole-tree retirement refused over a released member: %+v %v", state, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = c.Abort(claim, "")
+		}
+	}()
+	if err := c.Commit(claim); err != nil {
+		t.Fatalf("commit whole-tree retirement over a released member: %v", err)
+	}
+	committed = true
+
+	tree.mu.Lock()
+	aggregate := tree.durable[result.DelegateID]
+	tree.mu.Unlock()
+	if aggregate == nil {
+		t.Fatal("released member lost its durable identity at retirement")
+	}
+	// The idle release already spent this runtime's one teardown pass;
+	// retirement over the released member must not have needed another.
+	if err := runtime.releaseRuntime(context.Background(), closeOptions{}, releaseRetirement); !errors.Is(err, errRetirementTeardownSpent) {
+		t.Fatalf("released runtime teardown pass after retirement: err = %v, want errRetirementTeardownSpent", err)
 	}
 }
 

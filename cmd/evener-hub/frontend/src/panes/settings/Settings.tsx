@@ -21,6 +21,7 @@ import { AgentsDocSection } from "./sections/agentsDoc";
 import { CredentialsSection } from "./sections/credentials/CredentialsSection";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
+import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
@@ -83,6 +84,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   display: DisplaySection,
   notifications: NotificationsSection,
   keybindings: KeybindingsSection,
+  hosts: HostsSection,
   hub: HubSection,
   mobile: MobileSection,
   storage: StorageSection,

@@ -1,6 +1,6 @@
 // Per-delegate presentation state shared by the tool row and its card.
 
-import type { EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
+import type { EvenerDelegateInfo, ItemModel, ThreadModel } from "@evener/appwire-client";
 import { parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -11,7 +11,6 @@ export interface SubagentRow {
   rowKey: string;
   receiptStatus?: string;
   launching?: boolean;
-  resumable?: boolean;
   exhaustionBudget?: string;
   exhaustionLimit?: number;
   delegateId?: string;
@@ -51,6 +50,27 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
 export function effectiveRowKind(row: Pick<SubagentRow, "launching">, stable?: EvenerDelegateInfo): SubagentRowKind {
   if (stable) return classifyJobStatus(stableDelegateDisplayStatus(stable));
   return row.launching ? "running" : "unknown";
+}
+
+// The one derivation of a delegate row's live state: the launch receipt's
+// parsed output (for the stable identity), the owner projection (read only
+// under the row's own session - a projection without its session is not this
+// row's to read), and the display kind that outranks the frozen receipt. The
+// row's indicator and the standalone status line both consume this, so the
+// two surfaces cannot drift.
+export function delegateStableState(
+  item: ItemModel,
+  live: boolean,
+  sessionRef: string | undefined,
+  thread: ThreadModel | undefined,
+): { parsed: Record<string, unknown> | undefined; stable: EvenerDelegateInfo | undefined; kind: SubagentRowKind } {
+  const parsed = parseJSONObject(item.output);
+  const delegateId = parsed ? str(parsed, "delegate_id") : undefined;
+  const stable =
+    sessionRef === undefined || delegateId === undefined
+      ? undefined
+      : thread?.delegates?.find((delegate) => delegate.delegateId === delegateId);
+  return { parsed, stable, kind: effectiveRowKind({ launching: live || item.status === "inProgress" }, stable) };
 }
 
 // The delegate call creates a row; later renders update it in place. A

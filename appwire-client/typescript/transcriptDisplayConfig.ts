@@ -367,13 +367,10 @@ export function toWireDefault(value: HubTranscriptDisplayDefault): WireDefault {
   return { revision: value.revision, config: toWireConfig(value.config) };
 }
 
+/** Validates revision and config while ignoring unknown wrapper fields,
+ * so additional hub metadata does not invalidate a usable default. */
 export function fromWireDefault(value: unknown): HubTranscriptDisplayDefault | undefined {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ["revision", "config"]) ||
-    !Number.isSafeInteger(value.revision) ||
-    (value.revision as number) < 0
-  ) {
+  if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
     return undefined;
   }
   const config = fromWireConfig(value.config);
@@ -386,10 +383,12 @@ export function toWireDefaults(
   return { desktop: toWireDefault(value.desktop), mobile: toWireDefault(value.mobile) };
 }
 
+/** Validates desktop/mobile and ignores any other top-level key the hub
+ * sends - see fromWireDefault's own comment. */
 export function fromWireDefaults(
   value: unknown,
 ): Readonly<Record<TranscriptViewportClass, HubTranscriptDisplayDefault>> | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, ["desktop", "mobile"])) return undefined;
+  if (!isRecord(value)) return undefined;
   const desktop = fromWireDefault(value.desktop);
   const mobile = fromWireDefault(value.mobile);
   return desktop === undefined || mobile === undefined ? undefined : { desktop, mobile };

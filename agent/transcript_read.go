@@ -189,6 +189,26 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	return turns
 }
 
+// mapDivergenceThroughResumedHistory maps an immutable full-transcript
+// divergence index (the fork boundary, first child-owned turn) into
+// resumed-history coordinates: the resumed history starts at the
+// transcript's retained window, and orphan repair may have spliced
+// synthetic turns before the fork boundary, each shifting the boundary
+// right by one — the synthetic completes the call it repairs, which sits
+// inside the inherited prefix (history_repair.go shifts the live baseline
+// the same way). Both restored-state readers — restore and the
+// rejected-interrupt boundary — must map through this one place so a
+// correction to the off-by-one-sensitive shift lands everywhere at once.
+func mapDivergenceThroughResumedHistory(divergence, retained int, insertions []int) int {
+	divergence -= retained
+	for _, idx := range insertions {
+		if idx <= divergence-1 {
+			divergence++
+		}
+	}
+	return divergence
+}
+
 // reconcileSkillCompactionReceipts replays the typed compaction handoff
 // receipts found in ALL decoded transcript entries into a persisted
 // lifecycle snapshot that may be staler than the transcript (a crash or

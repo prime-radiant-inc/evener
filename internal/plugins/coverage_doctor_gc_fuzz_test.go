@@ -185,6 +185,8 @@ func coverageGC(t *testing.T) {
 		switch filepath.Base(path) {
 		case "cache":
 			return []os.DirEntry{coverageDirEntry{name: "flat"}, coverageDirEntry{name: "market", dir: true}}, nil
+		case "marketplaces":
+			return nil, nil
 		case "market":
 			return nil, boom
 		default:
@@ -198,6 +200,8 @@ func coverageGC(t *testing.T) {
 		switch filepath.Base(path) {
 		case "cache":
 			return []os.DirEntry{coverageDirEntry{name: "market", dir: true}}, nil
+		case "marketplaces":
+			return nil, nil
 		case "market":
 			return []os.DirEntry{coverageDirEntry{name: "flat"}, coverageDirEntry{name: "plugin", dir: true}}, nil
 		case "plugin":
@@ -213,6 +217,8 @@ func coverageGC(t *testing.T) {
 		switch filepath.Base(path) {
 		case "cache":
 			return []os.DirEntry{coverageDirEntry{name: "market", dir: true}}, nil
+		case "marketplaces":
+			return nil, nil
 		case "market":
 			return []os.DirEntry{coverageDirEntry{name: "plugin", dir: true}}, nil
 		case "plugin":

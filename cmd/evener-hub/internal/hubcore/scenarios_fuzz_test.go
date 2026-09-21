@@ -152,6 +152,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_RecentModels_DedupesGlobalRecencyLastN,
 		fuzzScenarioPastIndex_RecentModels_EmptyIndexReturnsNil,
 		fuzzScenarioPastIndex_RecentModels_SkipsBlankProviderOrModel,
+		fuzzScenarioPastIndex_RecentModels_SkipsSubagentSessions,
 		fuzzScenarioPastIndex_RefreshOneNoOpsOnMissingMetaFile,
 		fuzzScenarioPastIndex_RefreshOneNoOpsOnUntrackedID,
 		fuzzScenarioPastIndex_RefreshOneOnChangeFires,

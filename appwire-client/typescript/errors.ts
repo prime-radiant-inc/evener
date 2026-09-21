@@ -44,6 +44,24 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
+/** Extracts a payload the hub attached to a rejection under `key` when the
+ * rejection is the `evenerErrorInfo` kind named, decoded by `decode`
+ * (undefined for a malformed or absent payload, the same as a rejection of a
+ * different kind). Every settings-hub store's conflict/post-apply rejection
+ * shares this shape (a durable failure whose write already landed carries the
+ * hub's canonical state under "applied"; a lost revision race carries it
+ * under "current") - only the payload's own decoder differs between stores.
+ * The discriminator is the string, never the code - siblings share a code. */
+export function wireRejectionPayload<T>(
+  error: unknown,
+  info: string,
+  key: string,
+  decode: (value: unknown) => T | undefined,
+): T | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  return decode((error.data as Record<string, unknown>)[key]);
+}
+
 // ErrorInstanceRenamePersisted is the hub's discriminator for a provider-instance
 // rename that APPLIED before its credential move or reload failed
 // (appwire.ErrorInstanceRenamePersisted, appwire/errors.go); the hub's message
@@ -91,6 +109,18 @@ export function isInstanceRemoveApplied(err: unknown): boolean {
 // string is the one definition every credential flow matches against. The
 // binding test (errors.test.ts) reads the Go constant.
 export const ErrorEndpointConflict = "endpointConflict";
+
+// ErrorMarketplaceRemoveApplied is the hub's discriminant for a marketplace
+// removal that APPLIED - the unregister and its clone cleanup both completed
+// - but whose response could not carry the updated list, because the fresh
+// read that builds it failed (appwire.ErrorMarketplaceRemoveApplied,
+// appwire/errors.go). The marker alone means the removal stands: a retry
+// finds ErrMarketplaceNotFound, so consumers report neutrally and reconcile
+// through their normal fetch path, never a clone-litter warning and never a
+// retry. The binding test (errors.test.ts) reads the Go constant, so a
+// hub-side rename breaks there instead of silently leaving the standing
+// removal read as a failed one.
+export const ErrorMarketplaceRemoveApplied = "marketplaceRemoveApplied";
 
 // sessionActionHeadline names the step that actually died.
 //

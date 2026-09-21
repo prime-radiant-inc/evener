@@ -413,27 +413,28 @@ type Server struct {
 	// outer clientMutationId travels with it so the session can journal the
 	// outer mutation (success replays after the entry is gone; a reused ID
 	// with a different entry id conflicts without mutating).
-	urlsRemoveFunc      func(outerID, id string) (bool, error)
-	drainSteerFunc      func() error
-	drainSteerInputFunc func(string, []ImageAttachment) error
-	promoteSteerFunc    func(int, string) error
-	cancelQueuedFunc    func(int, string) (string, int, error)
-	compactFunc         func(context.Context) error
-	clearFunc           func(context.Context, appwire.ThreadClearParams) error
-	clearJournalPath    string
-	clearRecords        map[string]threadClearRecord
-	clearJournalErr     error
-	modelFunc           func(string) error
-	visionModelFunc     func(string) error
-	nameFunc            func(string) error
-	reasoningEffortFunc func(string) error
-	listModelsFunc      func(context.Context) ([]appwire.ModelDescriptor, error)
-	tasksFn             func() any
-	jobsFn              func(appwire.JobsListParams) (any, error)
-	jobOutputFn         func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
-	shutdownFunc        func()
-	daemonStatusFunc    func() appwire.DaemonLifecycle
-	daemonRetireFunc    func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
+	urlsRemoveFunc           func(outerID, id string) (bool, error)
+	drainSteerFunc           func() error
+	drainSteerInputFunc      func(string, []ImageAttachment) error
+	promoteSteerFunc         func(int, string) error
+	cancelQueuedFunc         func(int, string) (string, int, error)
+	compactFunc              func(context.Context) error
+	clearFunc                func(context.Context, appwire.ThreadClearParams) error
+	clearJournalPath         string
+	clearRecords             map[string]threadClearRecord
+	clearJournalErr          error
+	modelFunc                func(string) error
+	visionModelFunc          func(string) error
+	nameFunc                 func(string) error
+	reasoningEffortFunc      func(string) error
+	listModelsFunc           func(context.Context) ([]appwire.ModelDescriptor, error)
+	tasksFn                  func() any
+	jobsFn                   func(appwire.JobsListParams) (any, error)
+	jobOutputFn              func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
+	shutdownFunc             func()
+	daemonStatusFunc         func() appwire.DaemonLifecycle
+	daemonRetireFunc         func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
+	daemonIdleTimeoutSetFunc func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error)
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent

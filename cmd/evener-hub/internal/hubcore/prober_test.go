@@ -23,6 +23,10 @@ type probeDaemonConfig struct {
 	hubToken    string
 	source      wireProbeEnvelopeSource
 	descendants map[string]string
+	// setup, when set, wires extra seams on the fixture server before the
+	// envelope refresh, so a test can shape the daemon's own answers (its
+	// capability set, for instance).
+	setup func(*server.Server)
 	// childWatches is installed as the daemon's descendant watch accessor, so
 	// each listed child thread carries its own watches on read.
 	childWatches map[string][]agent.WatchStatusInfo
@@ -34,6 +38,9 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	srv.SetAppIdentity("local", cfg.sessionID)
 	srv.SetState(cfg.state)
 	srv.SetThreadEnvelopeSource(cfg.source)
+	if cfg.setup != nil {
+		cfg.setup(srv)
+	}
 	if cfg.childWatches != nil {
 		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
 			rows := make(map[string][]agent.WatchStatusInfo, len(threadIDs))

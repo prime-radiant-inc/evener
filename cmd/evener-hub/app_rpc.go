@@ -14,11 +14,59 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
+
+// remoteHostSourceSeams are the per-host seams one remote hub source resolves
+// through: the dialing client func, the attached-only client/handshake/facts
+// lookups, and the online signal. Startup reads them straight from WebConfig;
+// the host manager carries the same seams in its own config.
+type remoteHostSourceSeams struct {
+	client           appsource.RemoteHubClientFunc
+	clientIfAttached func(host string) (*appwire.Client, bool)
+	handshake        func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
+	facts            func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	online           func(host string) bool
+}
+
+// registerRemoteHubSource constructs and wires one remote host's appsource
+// source and registers it — the one construction path startup
+// (newHubSourceRegistry) and the runtime add (hubHostManager.registerSource)
+// share, so a host added at runtime is wired exactly like a configured one.
+// The non-dialing seams every non-explicit read path resolves through are
+// set here: the attached-only client lookup and the attach handshake facts
+// (component 05, §"Registration and default-source selection"). The online
+// signal fails open when none is wired — the pre-06 default — so an
+// explicitly attached host stays usable by every source-mediated call that
+// gates on Online(), while hostRow never trusts the signal alone: its
+// attached-client guard still decides Attached, so the fail-open default
+// cannot render a channel-less row online.
+//
+// The identity generation is assigned in the remote-thread cache BEFORE the
+// source becomes registry-visible: a refresh walk may enumerate the source
+// the moment it is added, and the walk captures the source's generation
+// immediately before it reads it, so every enumerable source must carry a
+// generation from the instant it is enumerable, or the publish drops its
+// rows as unowned. Configured hosts never pass through the host manager, so
+// theirs is assigned on this path; the local source needs none — the walk
+// skips it, so it can never own walk-published rows.
+func registerRemoteHubSource(registry *appsource.Registry, cache *hubcore.RemoteThreadCache, host hostreg.Host, seams remoteHostSourceSeams) {
+	source := appsource.NewRemoteHubSource(host.Name, host.Roots, seams.client)
+	source.SetHostClientIfAttached(seams.clientIfAttached)
+	source.SetHostFacts(seams.facts)
+	source.SetHostHandshake(seams.handshake)
+	source.SetHostOnline(func() bool {
+		return seams.online == nil || seams.online(host.Name)
+	})
+	if cache != nil {
+		cache.RegisterSource(host.Name)
+	}
+	registry.Add(source)
+}
 
 // newHubSourceRegistry builds the hub's sources over cfg.Roster. The hub always
 // wires a roster (main.go). Without one there is no local source at all, so a
@@ -48,18 +96,13 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
 		} else {
 			for _, host := range cfg.RemoteHosts {
-				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
-				// The non-dialing seams every non-explicit read path resolves
-				// through: the attached-only client lookup and the attach
-				// handshake facts (component 05, §"Registration and
-				// default-source selection").
-				source.SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)
-				source.SetHostFacts(cfg.RemoteHostFacts)
-				source.SetHostHandshake(cfg.RemoteHostHandshake)
-				source.SetHostOnline(func() bool {
-					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
+				registerRemoteHubSource(registry, cfg.RemoteThreadCache, host, remoteHostSourceSeams{
+					client:           cfg.RemoteHostClient,
+					clientIfAttached: cfg.RemoteHostClientIfAttached,
+					handshake:        cfg.RemoteHostHandshake,
+					facts:            cfg.RemoteHostFacts,
+					online:           cfg.RemoteHostOnline,
 				})
-				registry.Add(source)
 			}
 		}
 	}
@@ -76,13 +119,16 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			continue
 		}
 		entry := appsource.LocalDaemonEntry{
-			Entry:         item.Entry,
-			SessionID:     item.SessionID,
-			Status:        item.Status,
-			PendingAsk:    item.PendingAsk,
-			RunningJobs:   item.RunningJobs,
-			CompletedJobs: item.CompletedJobs,
-			Watches:       item.Watches,
+			Entry:             item.Entry,
+			SessionID:         item.SessionID,
+			Status:            item.Status,
+			PendingAsk:        item.PendingAsk,
+			PendingEscalation: item.PendingEscalation,
+			RunningJobs:       item.RunningJobs,
+			CompletedJobs:     item.CompletedJobs,
+			Watches:           item.Watches,
+			Capabilities:      item.Capabilities,
+			CapabilitiesKnown: item.CapabilitiesKnown,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -366,7 +412,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -378,7 +424,17 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager) {
+	// One fallback registry when cfg carries no live one, built once here so
+	// every host surface below — attach, management, and the admin proxy —
+	// validates against the same instance: a host added at runtime must be
+	// attachable and administrable, never "unknown" to a sibling handler
+	// that built its own copy from the configured entries. main.go always
+	// threads the live registry; the fallback is the embedder/test shape
+	// (newWebServer nil-defaults its own cfg copy the same way).
+	if cfg.RemoteHostRegistry == nil {
+		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
+	}
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -539,7 +595,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
-	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
@@ -547,7 +603,17 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
-	registerHostAttachHandler(server, cfg, sources)
+	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
+	// Component 08 slice 1: the host registry surface (add/list/status/
+	// remove). Controller-local, never dials; add/remove invalidate the
+	// manifest's sources so the picker converges without a refresh tick.
+	// The manager, the live host registry, and the selected hub.toml path all
+	// come from cfg — main.go threads the real sshconn.Manager, the one
+	// registry shared with the attach handler, and the config path whose
+	// sidecar persists UI-added hosts, so the surface is wired, not a
+	// placeholder. It returns the manager so newWebServer can expose it
+	// (main.go binds its event recorder to the SSH manager's lifecycle).
+	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
 	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
@@ -559,7 +625,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// stay subscribed while no browser is connected so that a host's config
 	// change is still relayed when one returns, and it re-subscribes itself
 	// across client reconnects. Its context is the RPC server's own lifetime
-	// handle (round eight), which Shutdown cancels when shutdown begins. Bound
+	// handle, which Shutdown cancels when shutdown begins. Bound
 	// this way the fan-out stops with the server it belongs to: a hub server
 	// recreated in-process no longer leaves the previous server's fan-outs
 	// subscribed forever (one goroutine per remote host, each still holding the
@@ -575,8 +641,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// (web.go) keeps the handle so main.go can bind hostAttached to the
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
-	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server, hostAdmin
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources)
+	return server, hostAdmin, hostManage
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -685,7 +751,30 @@ func registerThreadHandlers(
 				liveItemCandidatesEmpty = len(candidates.Candidates.Candidates) == 0
 			}
 		}
-		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread)
+
+		// A past session (a daemon that does not own the ref answers with an
+		// empty live thread) gets its turns from the windowed past item page,
+		// so that page runs BEFORE the merge and the merge never asks for the
+		// full past-turn projection. The old order computed the O(transcript)
+		// full projection first and then replaced its turns with this window,
+		// making every click on a long session pay for a projection it
+		// discarded in the same request.
+		var pastPage *appwire.ThreadReadResponse
+		if params.IncludeTurns && liveItemCandidatesEmpty {
+			past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
+			if pastErr != nil {
+				read.finish(false)
+				return appwire.ThreadReadResponse{}, pastErr
+			}
+			if ok {
+				pastPage = &past
+			}
+		}
+		// The merge still supplies past turns when the item page could not (a
+		// live source with candidates but no turns, or no past entry at all),
+		// preserving the old includePastTurns decision exactly.
+		wantPastTurns := params.IncludeTurns && pastPage == nil && len(resp.Thread.Turns) == 0
+		resp.Thread, err = mergePastThreadForRead(ctx, cfg, params, resp.Thread, wantPastTurns)
 		resp.Thread = applyThreadResumeRequirement(ctx, cfg, params.Ref, params.ThreadID, resp.Thread)
 		resp.Thread = applyHubForkCapability(cfg, resp.Thread)
 		if err != nil {
@@ -693,22 +782,12 @@ func registerThreadHandlers(
 			return appwire.ThreadReadResponse{}, err
 		}
 		if params.IncludeTurns {
-			usedPastItemPage := false
-			if liveItemCandidatesEmpty && len(resp.Thread.Turns) > 0 {
-				past, ok, pastErr := pastThreadItemReadResponse(ctx, cfg, params)
-				if pastErr != nil {
-					read.finish(false)
-					return appwire.ThreadReadResponse{}, pastErr
-				}
-				if ok {
-					resp.Thread.Turns = past.Thread.Turns
-					resp.OlderCursor = past.OlderCursor
-					resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
-					annotateThreadProjects([]appwire.Thread{resp.Thread})
-					usedPastItemPage = true
-				}
-			}
-			if !usedPastItemPage {
+			if pastPage != nil {
+				resp.Thread.Turns = pastPage.Thread.Turns
+				resp.OlderCursor = pastPage.OlderCursor
+				resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
+				annotateThreadProjects([]appwire.Thread{resp.Thread})
+			} else {
 				candidates := transcriptItemCandidateResultFromSource(read.itemCandidates)
 				if !read.hasItemCandidates {
 					var candidateErr error
@@ -1280,10 +1359,10 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 				return list, nil
 			}
 			// A rename that persisted before it failed is a write that stands,
-			// so it is announced (writeApplied, which instanceWrite broadcasts
-			// on) and the error goes back carrying ErrorInstanceRenamePersisted,
-			// so the client that asked reports the standing rename rather than
-			// a failed save.
+			// so it is announced (writeApplied, which the mutation folded onto
+			// its error) and the error goes back carrying
+			// ErrorInstanceRenamePersisted, so the client that asked reports the
+			// standing rename rather than a failed save.
 			persisted, wireErr := instanceRenameError(err)
 			if persisted {
 				return list, writeApplied(wireErr)
@@ -1294,8 +1373,8 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		return instanceWrite(params.OriginClientId, func() (appwire.InstanceListResponse, error) {
 			// A removal whose credential deletion applied before it failed is a
-			// write that stands, so it is announced (writeApplied, which
-			// instanceWrite broadcasts on) and the error goes back carrying
+			// write that stands, so it is announced (writeApplied, which the
+			// mutation folded onto its error) and the error goes back carrying
 			// ErrorInstanceRemoveApplied, so the client that asked reconciles the
 			// standing removal rather than a failed remove it would retry.
 			applied, wireErr := instanceRemoveError(instancesController.Remove(params))
@@ -1433,18 +1512,6 @@ func wirePluginStoreBroadcast(mgr *plugins.Manager, server hostNotificationBroad
 			notifyPluginUpdated(server)
 		}
 	})
-}
-
-// newWiredPluginManager constructs a *plugins.Manager rooted at root and
-// wires it to broadcaster in one step, for a caller that already has a live
-// broadcaster to hand it (main_background.go's three background-maintenance
-// sites, each with web.appRPC in hand): the construct-then-wire pair
-// wirePluginStoreBroadcast's own doc comment describes, without repeating it
-// at every call site.
-func newWiredPluginManager(root string, broadcaster hostNotificationBroadcaster) *plugins.Manager {
-	mgr := plugins.NewManager(root)
-	wirePluginStoreBroadcast(mgr, broadcaster)
-	return mgr
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option
@@ -1606,11 +1673,11 @@ func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthSta
 		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
 	case writeDidApply(err):
 		// The no-data form, deliberately WITHOUT the origin. The originating
-		// credential mutation has already retired its own marker on the error,
-		// so it cannot attribute this broadcast anyway - and echoing the origin
-		// would make this provider-less broadcast structurally identical to a
-		// provider-instance echo, letting it consume an instance mutation's
-		// marker and turn that mutation's own echo foreign.
+		// credential mutation failed, so it cannot attribute this broadcast as
+		// its own success anyway - and echoing the origin would make this
+		// provider-less broadcast structurally identical to a provider-instance
+		// echo, letting it consume an instance mutation's marker and turn that
+		// mutation's own echo foreign.
 		notifyInstanceUpdated(server, "")
 	}
 }

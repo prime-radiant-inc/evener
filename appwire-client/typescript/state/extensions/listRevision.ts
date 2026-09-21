@@ -149,19 +149,24 @@ export async function readRevisioned<T>(
  * propagates and the revision is given back - a request that published nothing
  * must not keep what it fenced. `onAnswer` returns null to say the same thing
  * about an answer it will not publish, for a store with a fence of its own
- * beside this one.
+ * beside this one. `onFailure` may return a state writer for an authoritative
+ * failure payload; it uses this request's revision before the original error
+ * is rethrown.
  */
 export async function writeRevisioned<T>(
   revisions: ListRevision,
   request: () => Promise<T>,
   onAnswer: (answer: T) => (() => void) | null,
+  onFailure?: (error: unknown) => (() => void) | null,
 ): Promise<void> {
   const revision = revisions.next();
   let answer: T;
   try {
     answer = await request();
   } catch (error) {
-    revisions.retract(revision);
+    const write = onFailure?.(error) ?? null;
+    if (write) revisions.publish(revision, write);
+    else revisions.retract(revision);
     throw error;
   }
   const write = onAnswer(answer);

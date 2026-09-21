@@ -363,7 +363,26 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
-	if err := cfg.ResumeLocks.PersistForceStopWithOwner(aliases, target.SessionID, target); err != nil {
+	if committed, err := cfg.ResumeLocks.PersistForceStopWithOwner(aliases, target.SessionID, target); err != nil {
+		if !committed {
+			// Nothing committed and nothing signaled, so this refusal canceled
+			// nothing: like every other such refusal it stays admission-neutral
+			// — an unrejected Finish would mint an epoch and sequence advance
+			// for a record that never landed.
+			return refuseStop(appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err)))
+		}
+		// The record landed (the rename committed; a later sync step failed):
+		// the recovery obligation is installed, so this refusal DID mutate the
+		// world and the root fence must publish — pre-stop admissions are stale
+		// and the obligation stands for the explicit Resume to answer. No
+		// signal ever reached the shared process, though, so the
+		// pre-cancellation descendant fences guard processes nothing happened
+		// to: they reject like every refusal that canceled nothing.
+		if !canceledResumes {
+			for _, fence := range preCancellationDescendants {
+				fence.Reject()
+			}
+		}
 		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
 	}
 	if exited {

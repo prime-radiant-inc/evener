@@ -31,6 +31,7 @@ import type {
 
 import {
   hasItemFailure,
+  hasWarningText,
   isActiveItem,
   isInProgressStatus,
   joinedReasoningParagraphs,
@@ -513,6 +514,11 @@ function projectItem(
     };
   }
 
+  // Warning — the same attention row the live applier emits (see warningItem).
+  if (item.type === "warning") {
+    return { kind: "final", item: warningItem(item) };
+  }
+
   // Unknown / forward-compatible item type — neutral collapsed activity, never
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
@@ -530,26 +536,36 @@ function projectItem(
         label: "Activity",
         family: "unknown",
         state: activityState(item, turn.status),
-        detail: { ...activityDetail(item), output: warningFallbackText(item) || item.text || item.output },
+        detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
   };
 }
 
-// Composes a warning item's displayable text: title, message, and hint
-// together, the same parts the web (WarningItem.tsx) renders (title as a
-// chip, message as the body, hint below) and the live warning row
-// (conversation.ts's case "warning") carries (title as its own field,
-// message+hint as detail) - this canonical row has no separate title slot,
-// so title has to join the rest of the string instead of being dropped
-// whenever there's also a message. A message-less frame folds to text: ""
-// on the wire side (reducer.ts's warning fold; joinWarningParts filters it
-// out), leaving just title+hint, the same content the web renders via
-// item.warning directly. Returns "" rather than undefined when there's
-// nothing to show - the one call site's `||` chain treats them identically.
-function warningFallbackText(item: ItemModel): string {
-  if (item.type !== "warning" || !item.warning) return "";
-  return joinWarningParts([item.warning.title, item.text, item.warning.hint]);
+// A warning's display row. It is an attention row, not an activity: the live
+// row applier (state/conversation.ts's case "warning") emits kind "failure"
+// with title as its own field and the message+hint joined as detail, and this
+// canonical projection must produce the same row for the same model item or
+// the row changes kind (and loses its attention treatment) the moment a reread
+// replaces the live row. The generic unknown-activity fallback used to swallow
+// warnings here (label "Activity", family "unknown", always shown in full by
+// mobile-native's activityMode) - the web (WarningItem.tsx) renders a warning
+// as its own attention banner, and the package transcript projector
+// (transcriptProjector.ts) routes type "warning" to a critical entry.
+// item.warning rides an untyped wire param map through the reducer's fold, so
+// hasWarningText guards a non-string runtime value the same way WarningItem.tsx
+// does before the title reaches a React Native <Copy> child.
+function warningItem(
+  item: ItemModel,
+): Extract<MobileTimelineItem, { kind: "failure" }> {
+  const rawTitle = item.warning?.title;
+  const title = hasWarningText(rawTitle) ? rawTitle : "Warning";
+  return {
+    kind: "failure",
+    id: item.id,
+    title,
+    detail: joinWarningParts([item.text, item.warning?.hint]),
+  };
 }
 
 function activityDescription(item: ItemModel): string | undefined {
