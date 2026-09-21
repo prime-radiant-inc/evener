@@ -1607,14 +1607,15 @@ describe("the checkpointed draft editor", () => {
       storageUnavailable: true,
       writeUncertain: false,
     });
-    // The direct write composes against the same confirmed hub an edit
-    // would, so it must not send past an unreadable checkpoint either.
+    // The direct write's gate attempts the port's recovery itself: the
+    // reload reveals the other window's uncertain write, and the revealed
+    // uncertainty - not the stale storage flag - is what refuses the send.
     client.on(patchMethod, () => patchAnswer("mobile", hubDefault(3, desktopConfig)));
     await expect(store.getState().patchHubDefault("mobile", desktopConfig)).rejects.toThrow(/unavailable/);
     expect(store.getState().hubErrors.mobile).toBe("Hub transcript display settings are unavailable.");
+    expect(store.getState().writeUncertain).toBe(true);
 
-    // Recovery re-reads the checkpoint: the uncertain write is revealed and
-    // immediately settled by the same authoritative read (the hub still
+    // An authoritative read settles the revealed uncertainty (the hub still
     // holds revision 2, so that write never landed), leaving the other
     // window's proposal as a clean current draft - and the direct path
     // reopens.
@@ -1628,6 +1629,47 @@ describe("the checkpointed draft editor", () => {
       config: mobileConfig,
       generation: 1,
     });
+    expect(await store.getState().patchHubDefault("mobile", desktopConfig)).toEqual(hubDefault(3, desktopConfig));
+  });
+
+  test("a port failure behind a stale unreadable classification still gates reads and writes", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // The corrupt record is classified unreadable: the port read its bytes,
+    // the draft is simply absent, and the section stays usable.
+    expect(store.getState().draftUnreadable).toBe(true);
+    expect(store.getState().loaded).toBe(true);
+
+    // Another window replaces the corrupt record with an uncertain write,
+    // and the port fails before this store can read the replacement.
+    drafts.storage.save({
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: true,
+    });
+    drafts.failLoad();
+    const readsBefore = client.calls.filter((call) => call.method === getMethod).length;
+    await store.getState().refreshHubDefaults();
+    // No read may land past the inaccessible port, stale flag or not: the
+    // record it classified unreadable may have been replaced by anything.
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(readsBefore);
+    client.on(patchMethod, () => patchAnswer("mobile", hubDefault(3, desktopConfig)));
+    await expect(store.getState().patchHubDefault("mobile", desktopConfig)).rejects.toThrow(/unavailable/);
+
+    // The stale unreadable classification survives for discard to keep
+    // naming the record it classified.
+    expect(() => store.getState().discardDraft()).not.toThrow(/unavailable/);
+
+    // Once loading succeeds again, the refresh reveals the replacement's
+    // uncertainty and settles it in the same read (the hub's unchanged
+    // revision proves that write never landed), and the direct path reopens.
+    drafts.failLoad(false);
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
     expect(await store.getState().patchHubDefault("mobile", desktopConfig)).toEqual(hubDefault(3, desktopConfig));
   });
 

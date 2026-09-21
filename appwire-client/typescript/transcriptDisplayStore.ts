@@ -403,7 +403,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   /** The fields a restored checkpoint (or its absence, or a failed restore)
    * sets. `confirmed` is passed in because the creation-time restore runs
    * before there is any state to read; `generation` is only supplied by the
-   * identity-aware recovery path (reloadDraft) - an ordinary restore always
+   * identity-aware recovery path (recoverDraftPort) - an ordinary restore always
    * takes null, never the current generation: a replacement record knows
    * nothing about this store's generations, and stamping one would launder
    * an unprovable claim into the staleness check. The first authoritative
@@ -440,27 +440,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // draftUnreadable is omitted rather than reset to false, which would
       // silently hide the one recovery an earlier unreadable classification
       // still allows.
-      const unreadable = error instanceof UnreadableDraftError;
-      return {
-        storageUnavailable: true,
-        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
-        ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
-      };
-    }
-  }
-
-  /** Re-reads after a port failure without laundering a stale generation:
-   * only the same classified checkpoint identity may carry forward the
-   * in-memory stamp. A replacement with equal fields is still a new record
-   * and takes the ordinary null-generation restore path. */
-  function reloadDraft(confirmed: {
-    loaded: boolean;
-    hub: HubDefaultsByLayout;
-  }): Partial<TranscriptDisplayStoreFields> {
-    try {
-      const { checkpoint, sameIdentity } = draftRepository.reload();
-      return restoreDraft(confirmed, sameIdentity ? (getState().draft?.generation ?? null) : null, checkpoint);
-    } catch (error) {
       const unreadable = error instanceof UnreadableDraftError;
       return {
         storageUnavailable: true,
@@ -759,10 +738,30 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * be READ FROM, so an edit cannot compose against a confirmed payload with
    * the draft unknown. An unreadable RECORD is not that: the draft is simply
    * absent, and holding the section's defaults hostage to it would lock a
-   * user out of settings they never edited. */
+   * user out of settings they never edited. A plain port failure is that,
+   * even when an earlier unreadable classification survives it (discard
+   * must keep naming the record it classified): the record may since have
+   * been replaced by anything, another window's uncertain write included,
+   * so only a load that succeeds - or one that freshly classifies whatever
+   * is stored as unreadable - reopens the store. */
   function recoverDraftPort(): boolean {
     if (!getState().storageUnavailable) return true;
-    setState(reloadDraft(getState()));
+    try {
+      const { checkpoint, sameIdentity } = draftRepository.reload();
+      // The re-read launders no stale generation: only the same classified
+      // checkpoint identity carries the in-memory stamp forward, and a
+      // replacement with equal fields is still a new record taking the
+      // ordinary null-generation restore path.
+      setState(restoreDraft(getState(), sameIdentity ? (getState().draft?.generation ?? null) : null, checkpoint));
+    } catch (error) {
+      const unreadable = error instanceof UnreadableDraftError;
+      setState({
+        storageUnavailable: true,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+        ...(unreadable ? { draftUnreadable: true, draft: null, writeUncertain: false, draftConflict: false } : {}),
+      });
+      return unreadable;
+    }
     return !getState().storageUnavailable || getState().draftUnreadable;
   }
 
@@ -823,22 +822,24 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     layout: ViewportClass,
     input: TranscriptDisplayConfigV1,
   ): Promise<HubTranscriptDisplayDefault> {
-    const state = getState();
     const generation = fence.generation;
+    let state = getState();
     // A direct write composes against the same confirmed hub an edit does,
     // so it waits on the same draft-port recovery: a checkpoint this store
     // cannot read may be another window's uncertain write, and sending past
-    // it would change settings that unresolved outcome is holding still. An
-    // unreadable RECORD is usable state, not a port failure - the draft is
-    // simply absent - so it does not block (see restoreDraft).
-    if (
-      !fence.liveHub(generation) ||
-      !state.loaded ||
-      state.hubLoading ||
-      state.saving ||
-      state.writeUncertain ||
-      (state.storageUnavailable && !state.draftUnreadable)
-    ) {
+    // it would change settings that unresolved outcome is holding still.
+    // The flags alone cannot say whether the port fails NOW - an earlier
+    // unreadable-record classification survives a plain port failure for
+    // discard to still name, so draftUnreadable alone is not permission -
+    // so a marked-unavailable store gets one recovery attempt here. The
+    // state re-reads after: a recovery can restore a draft this write must
+    // respect.
+    if (state.storageUnavailable && !recoverDraftPort()) {
+      setState(layoutError(layout, UNAVAILABLE_MESSAGE));
+      throw new Error(UNAVAILABLE_MESSAGE);
+    }
+    state = getState();
+    if (!fence.liveHub(generation) || !state.loaded || state.hubLoading || state.saving || state.writeUncertain) {
       setState(layoutError(layout, UNAVAILABLE_MESSAGE));
       throw new Error(UNAVAILABLE_MESSAGE);
     }
