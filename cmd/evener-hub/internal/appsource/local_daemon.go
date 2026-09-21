@@ -1166,63 +1166,56 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 // row mirrors the daemon's own answer — the same set a ThreadRead of the
 // session serves, cut from the same probe as the row's status — so the same
 // session cannot read differently from ListThreads and from ThreadRead
-// (#1840). The hand literal below is the fallback for rows no probe
-// answered: it approximates the daemon's expected idle answer rather than
-// understating a live session until a read hydrates it.
+// (#1840). Fork is no exception: the daemon hardwires its bit false, and
+// the hub's applyHubForkCapability is the single owner that turns it on,
+// on every path that serves a local row.
 //
-// One hub overlay applies on top of either source: ForkFromTurn is the hub's
-// own operation, hardwired false by the daemon, so the row advertises hub
-// support and every hub list path re-fences the bit precisely through
-// applyHubForkCapability. The restart-required and read-only-alias branches
-// in threadFromEntry still replace the whole set after this projection.
+// The hand literal below is the fallback for rows no probe answered: it
+// approximates the daemon's expected idle answer rather than understating a
+// live session until a read hydrates it. The restart-required and read-only
+// alias branches in threadFromEntry still replace the whole set after this
+// projection.
 func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCapabilities {
-	var caps appwire.ThreadCapabilities
 	if item.CapabilitiesKnown {
-		caps = item.Capabilities
-	} else {
-		caps = appwire.ThreadCapabilities{
-			Send: true,
-			// Steer, Interrupt and Queue advertise harness support and are
-			// withheld the way the daemon withholds them: closed removes all
-			// three (appCapabilitiesLocked's `!closed`), while `active` moves
-			// none of them (#1363, #1375). Gating only Queue left a closed
-			// entry advertising two actions the daemon it mirrors refuses.
-			Steer:       status != appwire.ThreadStatusClosed,
-			Interrupt:   status != appwire.ThreadStatusClosed,
-			Compact:     true,
-			Clear:       !item.ReadOnlyAlias,
-			Shutdown:    true,
-			ChangeModel: true,
-			// The daemon's idle answer advertises this whenever its vision-model
-			// seam is wired, which every current daemon wires at startup; the
-			// live-hub probe showed list rows understating it while the same
-			// session's read advertised it, the same drift class SkillInput had.
-			ChangeVisionModel: true,
-			// Folding `active` into Queue made ListThreads disagree with
-			// ThreadRead and the status frames for the same session.
-			Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
-			Goal:        true,
-			SharedNotes: !item.ReadOnlyAlias,
-			Rename:      true,
-			// SkillInput follows the harness-support rule Steer, Interrupt
-			// and Queue follow (#1375, #1840): every current daemon wires all
-			// four input-bearing turn mutations, so a live local session's
-			// list row must not understate it until a read hydrates. It is
-			// deliberately not closed-gated, because the daemon's own
-			// advertisement is not either (appCapabilitiesLocked's
-			// skillInputSupportedLocked) — the actions that could carry a
-			// selection are the ones `!closed` withholds. The hub's mutation
-			// gates re-verify against the live daemon, so a daemon that
-			// genuinely lacks the support still refuses each selection
-			// honestly.
-			SkillInput: true,
-		}
+		return item.Capabilities
 	}
-	// The hub overlay shared by both sources: fork is the hub's own operation
-	// and the daemon hardwires its answer false, so the row advertises hub
-	// support and the hub's list paths re-fence the bit precisely.
-	caps.ForkFromTurn = true
-	return caps
+	return appwire.ThreadCapabilities{
+		Send: true,
+		// Steer, Interrupt and Queue advertise harness support and are
+		// withheld the way the daemon withholds them: closed removes all
+		// three (appCapabilitiesLocked's `!closed`), while `active` moves
+		// none of them (#1363, #1375). Gating only Queue left a closed
+		// entry advertising two actions the daemon it mirrors refuses.
+		Steer:       status != appwire.ThreadStatusClosed,
+		Interrupt:   status != appwire.ThreadStatusClosed,
+		Compact:     true,
+		Clear:       !item.ReadOnlyAlias,
+		Shutdown:    true,
+		ChangeModel: true,
+		// The daemon's idle answer advertises this whenever its vision-model
+		// seam is wired, which every current daemon wires at startup; the
+		// live-hub probe showed list rows understating it while the same
+		// session's read advertised it, the same drift class SkillInput had.
+		ChangeVisionModel: true,
+		// Folding `active` into Queue made ListThreads disagree with
+		// ThreadRead and the status frames for the same session.
+		Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
+		Goal:        true,
+		SharedNotes: !item.ReadOnlyAlias,
+		Rename:      true,
+		// SkillInput follows the harness-support rule Steer, Interrupt
+		// and Queue follow (#1375, #1840): every current daemon wires all
+		// four input-bearing turn mutations, so a live local session's
+		// list row must not understate it until a read hydrates. It is
+		// deliberately not closed-gated, because the daemon's own
+		// advertisement is not either (appCapabilitiesLocked's
+		// skillInputSupportedLocked) — the actions that could carry a
+		// selection are the ones `!closed` withholds. The hub's mutation
+		// gates re-verify against the live daemon, so a daemon that
+		// genuinely lacks the support still refuses each selection
+		// honestly.
+		SkillInput: true,
+	}
 }
 
 func cloneLocalDaemonJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {

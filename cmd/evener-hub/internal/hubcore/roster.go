@@ -1318,13 +1318,12 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		RunningJobs: runningJobs, CompletedJobs: completedJobs,
-		Watches: diagnosticsWatches(root.Evener.Diagnostics)}
-	// The identity checks above already require a current-protocol daemon,
-	// and every current daemon stamps its capability set on the thread
-	// projection this read answered from, so the caps beside the status are
-	// the daemon's own answer — not an approximation.
-	result.Capabilities = root.Evener.Capabilities
-	result.CapabilitiesKnown = true
+		Watches: diagnosticsWatches(root.Evener.Diagnostics),
+		// The identity checks above already require a current-protocol daemon,
+		// and every current daemon stamps its capability set on the thread
+		// projection this read answered from, so the caps beside the status
+		// are the daemon's own answer — not an approximation.
+		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

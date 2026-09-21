@@ -691,10 +691,10 @@ func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
 // TestLocalDaemonSourceListUsesProbedCapabilities pins the probe-carried row:
 // when the roster's probe captured the daemon's own capability set, the list
 // row mirrors it rather than the fallback approximation — the same one-answer
-// rule the status follows (#1840). The hub's fork overlay still applies on
-// top (the hub serves fork itself, and every hub list path re-fences the bit
-// precisely), and the restart-required and read-only alias branches keep
-// replacing the set wholesale.
+// rule the status follows (#1840), fork included: the daemon hardwires that
+// bit false and the hub's applyHubForkCapability owns turning it on. The
+// restart-required and read-only alias branches keep replacing the set
+// wholesale.
 func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
 	// An under-wired daemon's idle answer, a set the fallback approximation
 	// would never produce: no steer, no queue, no skill-input surface, but its
@@ -728,10 +728,8 @@ func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
 	for _, thread := range resp.Data {
 		capsBySession[thread.SessionID] = thread.Evener.Capabilities
 	}
-	want := probed
-	want.ForkFromTurn = true
-	if got := capsBySession["sess_probed"]; got != want {
-		t.Fatalf("probed row capabilities = %+v, want the probe's set with the hub's fork overlay %+v", got, want)
+	if got := capsBySession["sess_probed"]; got != probed {
+		t.Fatalf("probed row capabilities = %+v, want the probe's set mirrored verbatim %+v", got, probed)
 	}
 	unprobed := capsBySession["sess_unprobed"]
 	if !unprobed.SkillInput || !unprobed.Queue || !unprobed.ChangeVisionModel {

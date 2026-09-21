@@ -5,15 +5,8 @@ package hub
 // set — the one answer every projection of that session is supposed to
 // agree with (#1840: the same session must not read differently from
 // ListThreads and from ThreadRead). This test reads that answer and requires
-// the hub's hand-written projections to match it field by field.
-//
-// Every deliberate difference is enumerated in one ledger, with its reason,
-// and every field NOT in the ledger must be true on the daemon side and equal
-// on the projection side. A capability bit added to
-// appwire.ThreadCapabilities therefore fails this test until the projection
-// answers it and the ledger records the decision — the drift that shipped
-// SkillInput and ChangeVisionModel understated (issue: skill selections
-// aren't supported on this session yet) cannot recur silently.
+// the hub's projections to match it field by field, through the one rule
+// documented on assertCapabilityParity below.
 
 import (
 	"context"
@@ -22,53 +15,20 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/rendezvous"
 	daemonserver "primeradiant.com/evener/server"
 )
 
-// daemonIdleCapabilities wires a server.Server with every seam
-// appCapabilitiesLocked consults — the production shape of
-// cmd/evener/serve.go — and returns the capability set it answers thread/read
-// with at idle.
+// daemonIdleCapabilities wires a server.Server the production way
+// (hubtest.WireCapabilitySeams) and returns the capability set it answers
+// thread/read with at idle.
 func daemonIdleCapabilities(t *testing.T) appwire.ThreadCapabilities {
 	t.Helper()
 	srv := daemonserver.NewServer(daemonserver.ServerConfig{})
 	srv.SetAppIdentity("local", "th_parity_oracle")
 	srv.SetState("idle")
-	srv.SetRetrySafeTurnFunctions(daemonserver.RetrySafeTurnFunctions{
-		Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-			return appwire.TurnStartResponse{}, nil
-		},
-		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-			return appwire.TurnSteerResponse{}, nil
-		},
-		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-			return appwire.TurnQueueResponse{}, nil
-		},
-		Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-			return appwire.TurnDrainAsSteerResponse{}, nil
-		},
-		Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-			return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
-		},
-		Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-			return appwire.TurnCancelQueuedResponse{}, nil
-		},
-		Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-			return appwire.TurnInterruptResponse{}, nil
-		},
-	})
-	srv.SetCompactFunc(func(context.Context) error { return nil })
-	srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
-	srv.SetShutdownFunc(func() {})
-	srv.SetModelFunc(func(string) error { return nil })
-	srv.SetVisionModelFunc(func(string) error { return nil })
-	srv.SetNameFunc(func(string) error { return nil })
-	srv.SetGoalFunc(func(string) (bool, error) { return false, nil })
-	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
-		return appwire.NotesHumanSetResponse{}, nil
-	})
-	srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) { return false, nil })
+	hubtest.WireCapabilitySeams(srv)
 
 	// The in-process connection is the same appserver request path a
 	// websocket client — the roster's prober included — speaks to.
@@ -91,29 +51,47 @@ func daemonIdleCapabilities(t *testing.T) appwire.ThreadCapabilities {
 }
 
 // assertCapabilityParity is the oracle's one rule, applied to every
-// projection: a field either appears in the exception ledger — with a reason,
-// and with the projections genuinely differing, or the ledger entry is stale
-// and must go — or the projection must equal the daemon's answer, and the
-// daemon's answer must be true (a false oracle-side bit would let a future
-// un-wired capability pass here silently, since false == false).
-func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire.ThreadCapabilities, exceptions map[string]string) {
+// projection. A field is either recorded in the `differ` ledger — with a
+// reason, and with the projections genuinely differing, or the entry is
+// stale and must go — or recorded in the `agreeOnFalse` ledger — both sides
+// false, with the reason the daemon legitimately answers false — or the
+// projection must equal the daemon's answer. Both ledgers are validated
+// against the field set, so an entry that matches no bit (a typo, a rename,
+// a removal) fails as orphaned cruft, and the daemon-false audit in the test
+// body forces every false oracle bit to be accounted for somewhere.
+func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire.ThreadCapabilities, differ, agreeOnFalse map[string]string) {
 	t.Helper()
 	daemonV, gotV := reflect.ValueOf(daemon), reflect.ValueOf(got)
 	typ := daemonV.Type()
 	for i := range typ.NumField() {
 		name := typ.Field(i).Name
 		d, g := daemonV.Field(i).Bool(), gotV.Field(i).Bool()
-		if reason, listed := exceptions[name]; listed {
+		if reason, listed := differ[name]; listed {
 			if d == g {
-				t.Errorf("%s: %s is in the exception ledger (%s) but the projections agree (%v) — remove the stale entry", projection, name, reason, g)
+				t.Errorf("%s: %s is in the differ ledger (%s) but the projections agree (%v) — remove the stale entry", projection, name, reason, g)
+			}
+			continue
+		}
+		if reason, listed := agreeOnFalse[name]; listed {
+			if d || g {
+				t.Errorf("%s: %s is in the agree-on-false ledger (%s) but daemon=%v projection=%v — reclassify the entry", projection, name, reason, d, g)
 			}
 			continue
 		}
 		if d != g {
 			t.Errorf("%s: %s = %v, but the daemon answers %v — update the projection, or record the exception with its reason", projection, name, g, d)
 		}
-		if !d {
-			t.Errorf("%s: the daemon oracle answers %s = false; wire the oracle server's seam for it, or this test cannot force parity accounting for that bit", projection, name)
+	}
+	for name, reason := range differ {
+		if _, ok := typ.FieldByName(name); !ok {
+			t.Errorf("%s: differ-ledger key %q (%s) matches no ThreadCapabilities field — remove the orphaned entry", projection, name, reason)
+		} else if _, also := agreeOnFalse[name]; also {
+			t.Errorf("%s: %s is in both ledgers; pick one", projection, name)
+		}
+	}
+	for name, reason := range agreeOnFalse {
+		if _, ok := typ.FieldByName(name); !ok {
+			t.Errorf("%s: agree-on-false key %q (%s) matches no ThreadCapabilities field — remove the orphaned entry", projection, name, reason)
 		}
 	}
 }
@@ -124,47 +102,64 @@ func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	// The cold set a session with no daemon reads through: send resumes it,
 	// and the hub's mutation gates re-verify every action against the daemon
 	// a resume spawns. The turn actions are withheld because the hub cannot
-	// carry them out with nothing there to take them.
-	assertCapabilityParity(t, "pastThreadCapabilities", daemon, pastThreadCapabilities(), map[string]string{
+	// carry them out with nothing there to take them; fork stays advertised
+	// because it is the hub's own operation.
+	pastDiffer := map[string]string{
 		"Steer":        "no daemon is running to carry out a steer",
 		"Interrupt":    "no daemon is running to interrupt",
 		"Queue":        "no daemon is running to queue behind",
-		"ForkFromTurn": "the hub's own operation; the daemon hardwires false and applyHubForkCapability owns the bit",
-	})
-
-	// The unprobed list-row fallback approximates the daemon's expected idle
-	// answer for rows no probe has confirmed yet (probed rows mirror the
-	// daemon directly, the test in appsource pins that path).
-	fallbackRows := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{
-			Entry:  rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/unprobed", ThreadID: "th_unprobed", SessionID: "sess_unprobed"},
-			Status: "idle",
-		}}
-	})
-	if len(fallbackRows) != 1 {
-		t.Fatalf("list rows = %+v, want the one unprobed fixture row", fallbackRows)
+		"ForkFromTurn": "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
 	}
-	assertCapabilityParity(t, "unprobed list row", daemon, fallbackRows[0].Evener.Capabilities, map[string]string{
-		"ForkFromTurn": "the hub's own operation; every hub list path re-fences the bit through applyHubForkCapability",
-	})
+	assertCapabilityParity(t, "pastThreadCapabilities", daemon, pastThreadCapabilities(), pastDiffer, nil)
 
-	// The probe-mirrored row is the same daemon answer flowing back through
-	// the roster plumbing, so it must render as the oracle's own set — the
-	// fork overlay aside.
-	probedRows := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{{
-			Entry:             rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed", SessionID: "sess_probed"},
-			Status:            "idle",
-			Capabilities:      daemon,
-			CapabilitiesKnown: true,
-		}}
-	})
-	if len(probedRows) != 1 {
-		t.Fatalf("list rows = %+v, want the one probed fixture row", probedRows)
+	// List rows mirror the daemon (probed) or approximate its idle answer
+	// (unprobed), fork included: the daemon hardwires the bit false, and the
+	// hub's applyHubForkCapability is the single owner that turns it on.
+	rowAgreeOnFalse := map[string]string{
+		"ForkFromTurn": "the daemon hardwires fork false, and applyHubForkCapability owns turning it on",
 	}
-	assertCapabilityParity(t, "probed list row", daemon, probedRows[0].Evener.Capabilities, map[string]string{
-		"ForkFromTurn": "the hub's own operation; every hub list path re-fences the bit through applyHubForkCapability",
+	rows := listRowsFromLocalDaemonSource(t, func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/unprobed", ThreadID: "th_unprobed", SessionID: "sess_unprobed"},
+				Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed", SessionID: "sess_probed"},
+				Status: "idle", Capabilities: daemon, CapabilitiesKnown: true},
+		}
 	})
+	capsBySession := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range rows {
+		capsBySession[thread.SessionID] = thread.Evener.Capabilities
+	}
+	for projection, session := range map[string]string{
+		"unprobed list row": "sess_unprobed",
+		"probed list row":   "sess_probed",
+	} {
+		caps, ok := capsBySession[session]
+		if !ok {
+			t.Fatalf("list rows = %+v, want the %s fixture row", rows, projection)
+		}
+		assertCapabilityParity(t, projection, daemon, caps, nil, rowAgreeOnFalse)
+	}
+
+	// The oracle audit, hoisted so an unwired seam fails once instead of once
+	// per projection: every bit the fixture daemon answers false must be
+	// recorded in some ledger above, or the fixture has drifted from the
+	// production wiring and every parity comparison below is against a lie.
+	daemonV := reflect.ValueOf(daemon)
+	typ := daemonV.Type()
+	for i := range typ.NumField() {
+		name := typ.Field(i).Name
+		if daemonV.Field(i).Bool() {
+			continue
+		}
+		if _, listed := pastDiffer[name]; listed {
+			continue
+		}
+		if _, listed := rowAgreeOnFalse[name]; listed {
+			continue
+		}
+		t.Errorf("daemon oracle answers %s = false with no ledger entry anywhere — wire its seam in hubtest.WireCapabilitySeams, or record why every projection legitimately answers false", name)
+	}
 }
 
 func listRowsFromLocalDaemonSource(t *testing.T, entries func() []appsource.LocalDaemonEntry) []appwire.Thread {

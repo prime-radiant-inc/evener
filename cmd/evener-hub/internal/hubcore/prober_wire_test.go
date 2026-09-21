@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
@@ -197,48 +198,12 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 // approximation. The set comes from the LISTED root, so it is the same
 // snapshot cut as the status and the diagnostics the probe carries.
 func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
-	// Wire every seam appCapabilitiesLocked consults, the way
-	// cmd/evener/serve.go does, so the daemon's idle answer is the
+	// Wire the production seam set so the daemon's idle answer is the
 	// production shape: every capability but fork is true at idle.
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "th_wire_caps",
 		state:     appwire.ThreadStatusIdle,
-		setup: func(srv *server.Server) {
-			srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
-				Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-					return appwire.TurnStartResponse{}, nil
-				},
-				Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-					return appwire.TurnSteerResponse{}, nil
-				},
-				Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-					return appwire.TurnQueueResponse{}, nil
-				},
-				Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-					return appwire.TurnDrainAsSteerResponse{}, nil
-				},
-				Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-					return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
-				},
-				Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-					return appwire.TurnCancelQueuedResponse{}, nil
-				},
-				Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-					return appwire.TurnInterruptResponse{}, nil
-				},
-			})
-			srv.SetCompactFunc(func(context.Context) error { return nil })
-			srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
-			srv.SetShutdownFunc(func() {})
-			srv.SetModelFunc(func(string) error { return nil })
-			srv.SetVisionModelFunc(func(string) error { return nil })
-			srv.SetNameFunc(func(string) error { return nil })
-			srv.SetGoalFunc(func(string) (bool, error) { return false, nil })
-			srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
-				return appwire.NotesHumanSetResponse{}, nil
-			})
-			srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) { return false, nil })
-		},
+		setup:     hubtest.WireCapabilitySeams,
 	})
 	got := prober.Probe(entry)
 	if !got.OK {
