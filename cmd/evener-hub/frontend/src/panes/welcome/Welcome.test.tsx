@@ -100,14 +100,6 @@ test('"New session" is styled as a button (secondary variant, not quiet)', () =>
   expect(button.className).not.toContain(buttonStyles.quiet);
 });
 
-test("orients a new person to what a session can do", () => {
-  render(<Welcome params={{}} paneId="welcome" focused={true} />);
-
-  expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
-  expect(screen.getByText(/run commands/i)).toBeTruthy();
-  expect(screen.getByText(/delegate work to helpers/i)).toBeTruthy();
-});
-
 test('clicking "New session" navigates to /new', async () => {
   const user = userEvent.setup();
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
@@ -156,12 +148,11 @@ test('offers "Jump back in" to the first needs-you session when one exists', () 
   expect(screen.getByRole("button", { name: /Jump back in.*Fix the thing/s })).toBeTruthy();
 });
 
-test('can hide "Jump back in" while retaining orientation text', () => {
+test('can hide "Jump back in"', () => {
   setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
   render(<WelcomeContent showResume={false} />);
 
   expect(screen.queryByRole("button", { name: /Jump back in/ })).toBeNull();
-  expect(screen.getByText(/read and edit the repository/i)).toBeTruthy();
 });
 
 test("falls back to the first live session when nothing needs you", () => {

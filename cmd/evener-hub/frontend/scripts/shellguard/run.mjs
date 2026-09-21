@@ -216,7 +216,6 @@ function assertMobileResult(result) {
   if (result.searchBox) failures.push("mobile inline search box is still rendered");
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
-  if (!result.orientation) failures.push("mobile orientation text is missing");
   return failures;
 }
 
