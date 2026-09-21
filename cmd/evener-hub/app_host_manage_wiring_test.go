@@ -23,8 +23,8 @@ import (
 // manager over it, the Ensure-backed dial seam, the attached-only lookups, and
 // the selected hub.toml path whose sidecar persists UI-added hosts — the same
 // values runMain threads through WebConfig. The runner refuses every dial, so
-// no test here reaches a real ssh; nothing in add/list/status/remove dials at
-// all.
+// no test here reaches a real ssh; nothing in add/list/status/remove/update
+// dials at all.
 func hostManageWiringConfig(t *testing.T, configPath string, entries []hostreg.Host, runner sshconn.Runner) (hubcore.WebConfig, *hostreg.Registry, *sshconn.Manager) {
 	t.Helper()
 	reg, err := hostreg.New(entries)

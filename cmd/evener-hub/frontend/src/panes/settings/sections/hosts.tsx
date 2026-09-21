@@ -69,10 +69,13 @@ function rowDetail(row: HostRow): string | null {
  * Settings -> Hosts (component 08 slice 1): the host registry surface. Rows
  * come from evener/host/list with truthful online state (attached rows read
  * the live channel, offline rows render last-known state, never dialing);
- * Add opens the name/address/key dialog over evener/host/add; Connect drives
- * the same evener/host/attach the spawn picker uses, with a retry affordance
- * on failure; Remove confirms over evener/host/remove. hub.toml-declared
- * rows cannot be removed here — the confirm explains to edit the file.
+ * Add opens the full-entry Add/Edit dialog over evener/host/add, and a row's
+ * Edit reopens the same dialog over evener/host/update with the name held
+ * fixed — it is the immutable target, so edit mode only ever changes the
+ * entry's other fields; Connect drives the same evener/host/attach the spawn
+ * picker uses, with a retry affordance on failure; Remove confirms over
+ * evener/host/remove. hub.toml-declared rows cannot be removed here — the
+ * confirm explains to edit the file.
  */
 export function HostsSection(_props: HostsSectionProps) {
   const load = useHostsStore((s) => s.load);

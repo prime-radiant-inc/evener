@@ -33,8 +33,8 @@ type WebServer struct {
 	// the sshconn attach-event path so an EventAttached rebinds a
 	// backoff-sleeping fan-out immediately.
 	hostAdmin *hubHostAdminController
-	// hostManage is the slice-1 host-management controller (add/list/status/
-	// remove). main.go binds its event recorder to the same sshconn lifecycle
+	// hostManage is the host-management controller (add/list/status/remove/
+	// update). main.go binds its event recorder to the same sshconn lifecycle
 	// path, so host rows retain attach state from the manager's events.
 	hostManage *hubHostManager
 

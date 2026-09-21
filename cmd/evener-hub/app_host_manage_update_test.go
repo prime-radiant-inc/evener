@@ -136,6 +136,62 @@ func TestHostManageUpdateKeepsTheFileOrder(t *testing.T) {
 	assertSidecarNames(t, f.configPath, "side", "second")
 }
 
+// TestHostManageUpdateCannotRename pins the no-rename invariant (criterion 3):
+// an update's target is HostUpdateParams.Name, the request's one immutable
+// field, and the entry's own Name is deliberately never read. So a request that
+// addresses "side" while its entry carries Name "other" is an ordinary edit of
+// side — nothing is re-keyed — rather than a rename. A later change that started
+// reading params.Entry.Name would silently move the host to the entry's name
+// and leave the addressed name stale, with every other test still green.
+func TestHostManageUpdateCannotRename(t *testing.T) {
+	f := newUpdateFixture(t)
+	resp, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Name: "other", Address: "edited.example"},
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// The response row still describes the addressed host, not a renamed one,
+	// and the removal/rename discriminator is not set on an ordinary edit.
+	if resp.Host.Name != "side" || resp.Host.Address != "edited.example" {
+		t.Fatalf("response row = %+v, want side with the edited address", resp.Host)
+	}
+	if resp.Host.Removed {
+		t.Fatalf("update row = %+v, want no removed/rename discriminator", resp.Host)
+	}
+	// The durable sidecar file still holds side (edited), never other.
+	assertSidecarNames(t, f.configPath, "side")
+	reloaded, err := loadHostSidecar(sidecarPathFor(f.configPath))
+	if err != nil {
+		t.Fatalf("reload sidecar: %v", err)
+	}
+	if len(reloaded) != 1 || reloaded[0].Name != "side" || reloaded[0].SSH != "edited.example" {
+		t.Fatalf("reloaded sidecar = %+v, want side with the edited address only", reloaded)
+	}
+	// The in-memory sidecar store still holds side (edited), never other.
+	stored := f.m.cfg.sidecar.snapshot()
+	if len(stored) != 1 || stored[0].Name != "side" || stored[0].SSH != "edited.example" {
+		t.Fatalf("sidecar store = %+v, want side with the edited address only", stored)
+	}
+	if f.m.cfg.sidecar.isSidecar("other") {
+		t.Fatal("a rename put the entry's name into the sidecar store")
+	}
+	// The live registry still holds side (edited), never other.
+	live, ok := f.hosts.Get("side")
+	if !ok || live.SSH != "edited.example" {
+		t.Fatalf("live registry entry = %+v (present %v), want side with the edited address", live, ok)
+	}
+	if _, ok := f.hosts.Get("other"); ok {
+		t.Fatal("a rename registered the entry's name in the live registry")
+	}
+	// The registry holds no registration under the entry's name, asked through
+	// the registry's own predicate rather than guessed at internally.
+	if f.hosts.SameRegistration("other", hostreg.Host{Name: "other"}) {
+		t.Fatal("the registry matched a registration under the entry's name")
+	}
+}
+
 // TestHostManageUpdateRefusalsCommitNothing pins criteria 4, 5, and 14's
 // durable half: a hub.toml name, an unknown name, and a name with a mutation in
 // flight all refuse, and the file's bytes are the ones the fixture left.

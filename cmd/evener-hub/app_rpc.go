@@ -602,8 +602,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// that may dial a remote host on the user's behalf.
 	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
 	// Component 08 slice 1: the host registry surface (add/list/status/
-	// remove). Controller-local, never dials; add/remove invalidate the
-	// manifest's sources so the picker converges without a refresh tick.
+	// remove/update). Controller-local, never dials; add/remove/update
+	// invalidate the manifest's sources so the picker converges without a
+	// refresh tick.
 	// The manager, the live host registry, and the selected hub.toml path all
 	// come from cfg — main.go threads the real sshconn.Manager, the one
 	// registry shared with the attach handler, and the config path whose

@@ -412,16 +412,18 @@ func TestHostManageRemoveDetachesManager(t *testing.T) {
 	}
 }
 
-// TestHostManageNotForwarded pins the spec's negative requirement: the four
-// slice-1 methods are controller-local and MUST NOT be added to
-// remoteHostAdminMethods — otherwise the proxy would forward them to a remote
-// hub instead of acting on the controller's own config.
+// TestHostManageNotForwarded pins the spec's negative requirement: the
+// host-management methods (add/list/status/remove/update) are controller-local
+// and MUST NOT be added to remoteHostAdminMethods — otherwise the proxy would
+// forward them to a remote hub instead of acting on the controller's own
+// config.
 func TestHostManageNotForwarded(t *testing.T) {
 	for _, name := range []string{
 		appwire.MethodEvenerHostAdd,
 		appwire.MethodEvenerHostList,
 		appwire.MethodEvenerHostStatus,
 		appwire.MethodEvenerHostRemove,
+		appwire.MethodEvenerHostUpdate,
 	} {
 		if _, ok := remoteHostAdminMethods[name]; ok {
 			t.Errorf("controller-local %q is on the remote forward allow-list", name)
@@ -639,9 +641,9 @@ func TestHostManageRemovePersists(t *testing.T) {
 
 // TestHostManageRefusesRemoteOrigin pins HIGH 3's controller-local rule from
 // the request side: a bridge-originated request (a peer hub calling over its
-// attach bridge) may not add, list, status, or remove the controller's hosts.
-// Every method fails InvalidParams and none of them mutates or exposes host
-// data; the same calls from a local origin succeed, so the guard is
+// attach bridge) may not add, list, status, remove, or update the controller's
+// hosts. Every method fails InvalidParams and none of them mutates or exposes
+// host data; the same calls from a local origin succeed, so the guard is
 // origin-keyed rather than broken.
 func TestHostManageRefusesRemoteOrigin(t *testing.T) {
 	m := testHostManager([]hostreg.Host{{Name: "m4", SSH: "m4.example"}}, nil)
@@ -663,6 +665,11 @@ func TestHostManageRefusesRemoteOrigin(t *testing.T) {
 	}
 	if _, err := m.Remove(ctx, appwire.HostRemoveParams{Name: "m4"}); err == nil {
 		t.Fatal("bridge-originated Remove accepted, want refusal")
+	} else {
+		assertWireCode(t, err, appwire.CodeInvalidParams)
+	}
+	if _, err := m.Update(ctx, appwire.HostUpdateParams{Name: "m4", Entry: appwire.HostEntry{Address: "edited.example"}}); err == nil {
+		t.Fatal("bridge-originated Update accepted, want refusal")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
 	}
