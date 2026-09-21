@@ -115,3 +115,25 @@ func TestProjectTurnUserInputImageOnlyWithNoteProjectsEmptyText(t *testing.T) {
 		t.Fatalf("user message text=%q, want empty (image-only turn; note must not surface)", items[0].Text)
 	}
 }
+
+// TestProjectTurnSteeringMachineryOnlyKeepsFullText: a steering turn whose
+// only content is one machinery block is a real production shape — the
+// cancelled-callback-watches notice routes exactly that text to a session —
+// and the live stream projects its text as-is, so reload must keep the item,
+// not strip it to nothing.
+func TestProjectTurnSteeringMachineryOnlyKeepsFullText(t *testing.T) {
+	turn := schema.Turn{
+		Kind: schema.TurnSteering,
+		Message: llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.ContentPart{{Kind: llm.ContentText, Text: notificationNote}},
+		},
+	}
+	items := ProjectTurn("turn_1", 0, turn, map[string]string{}, nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want 1 steering item", items)
+	}
+	if got, want := items[0].Text, notificationNote; got != want {
+		t.Fatalf("steering text=%q, want the full machinery block %q (machinery-only steering must not vanish on reload)", got, want)
+	}
+}
