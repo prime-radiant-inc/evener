@@ -352,6 +352,7 @@ func TestMarketplaceReconciliationRetriesThroughPanelReopen(t *testing.T) {
 		marketplaceRemovePending:       "removed",
 		marketplaceReconcilePending:    true,
 		marketplaceReconcileGeneration: 1,
+		marketplaceListReadsOrdered:    true,
 	}
 	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
 		Err:                 errors.New("list read failed"),
@@ -420,6 +421,7 @@ func TestMarketplaceReconciliationRetriesThroughNotificationRefresh(t *testing.T
 		marketplaceRemovePending:       "removed",
 		marketplaceReconcilePending:    true,
 		marketplaceReconcileGeneration: 4,
+		marketplaceListReadsOrdered:    true,
 	}
 	var list launchconfig.MarketplaceListResultMsg
 	seen := false
@@ -439,5 +441,68 @@ func TestMarketplaceReconciliationRetriesThroughNotificationRefresh(t *testing.T
 	recovered := got.(hubModel)
 	if recovered.marketplaceRemovePending != "" || recovered.marketplaceReconcilePending {
 		t.Fatalf("after recovered reconcile pending = %q/%v, want cleared", recovered.marketplaceRemovePending, recovered.marketplaceReconcilePending)
+	}
+}
+
+func TestMarketplaceListResultDiscardsStaleReadsAfterRemovalSettles(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removed := appwire.MarketplaceEntry{Name: "removed"}
+	// The model state after a marked-but-unconfirmed removal settled: the
+	// fence is cleared, the panel shows the post-removal list, and the read
+	// that settled it was issued after the removal landed.
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       "",
+		marketplaceReconcilePending:    false,
+		marketplaceReconcileGeneration: 1,
+		marketplaceListReadsOrdered:    true,
+	}
+
+	// A straggler read issued BEFORE the removal landed - the kind every
+	// ordinary list read is - cannot be authoritative anymore, however late
+	// it arrives: its snapshot still carries the removed marketplace, and
+	// accepting it would resurrect the row the settlement already dropped.
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed, kept}},
+	})
+	after := got.(hubModel)
+	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale read should leave the surviving marketplace selectable")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("stale read resurrected marketplace %q; the settled list must survive", remove.Name)
+	}
+}
+
+func TestMarketplaceMutateResultSuccessAlsoRejectsLaterStaleReads(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept"}
+	removed := appwire.MarketplaceEntry{Name: "removed"}
+	m := hubModel{
+		pluginsPanel:             marketplacePanelWithEntries(t, removed),
+		marketplaceRemovePending: removed.Name,
+	}
+
+	// A successful remove answers with the post-removal list itself; the
+	// same straggler race applies to the reads issued before it landed.
+	got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:   appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		Action: "remove",
+		Name:   removed.Name,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" {
+		t.Fatalf("successful remove left the fence at %q, want cleared", after.marketplaceRemovePending)
+	}
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed, kept}},
+	})
+	recovered := got.(hubModel)
+	updated, cmd := recovered.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale read should leave the surviving marketplace selectable")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("stale read resurrected marketplace %q; the successful removal must survive", remove.Name)
 	}
 }

@@ -629,6 +629,14 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 }
 
 func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
+	// Once a removal has landed, an untagged read is a straggler issued
+	// before it landed: its snapshot predates the removal, so accepting it
+	// - even after the fence has settled - would resurrect the removed
+	// marketplace's row. The boundary outlives the fence, however late the
+	// stale response arrives.
+	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration == 0 {
+		return m, nil
+	}
 	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
 		return m, nil
 	}
@@ -646,18 +654,18 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 }
 
 // marketplaceListRead returns the marketplace-list read this model should
-// issue for a user- or notification-driven refetch. While a removal's
-// post-removal state is unconfirmed the read must carry the reconciliation
-// generation: handleMarketplaceListResult discards untagged reads until the
-// fence settles, so an ordinary read could neither recover a failed
-// reconciliation nor settle the fence - it would leave the fresh panel
-// waiting forever. The generation is reused rather than bumped: every
-// tagged read is issued after the removal landed, so any tagged read's
-// success is a legitimate confirmation, and a still-in-flight earlier
-// tagged read stays settleable too. The duplicate-remove fence is
-// untouched here; only a successful tagged read clears it.
-func (m hubModel) marketplaceListRead() tea.Cmd {
-	if m.marketplaceReconcilePending {
+// issue for a user- or notification-driven refetch. Once a removal has
+// landed it must carry the next reconciliation generation - so each read's
+// response stays orderable against the boundary - because
+// handleMarketplaceListResult rejects untagged reads from that point on,
+// and an ordinary read could then neither recover a failed reconciliation,
+// nor settle the fence, nor populate a reopened panel. Before any removal
+// lands there is nothing to order against and the ordinary read is used.
+// The duplicate-remove fence is untouched here; only a successful read
+// clears it.
+func (m *hubModel) marketplaceListRead() tea.Cmd {
+	if m.marketplaceListReadsOrdered {
+		m.marketplaceReconcileGeneration++
 		return launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 	}
 	return launchconfig.CmdMarketplaceList(m.client)
@@ -670,6 +678,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			case marketplaceRemovalApplied:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
 				m.marketplaceRemovePending = ""
+				m.marketplaceListReadsOrdered = true
 				m.marketplaceReconcilePending = false
 				if m.pluginsPanel != nil {
 					updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: applied})
@@ -680,6 +689,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				return m, nil
 			case marketplaceRemovalUnavailable:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
+				m.marketplaceListReadsOrdered = true
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
@@ -693,6 +703,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				// reconcile from a fresh read rather than retrying, and
 				// never claim litter - nothing was left on disk.
 				m.err = marketplaceRemovedWarning(msg.Err)
+				m.marketplaceListReadsOrdered = true
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
@@ -711,6 +722,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 	m.err = nil
 	if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
 		m.marketplaceRemovePending = ""
+		m.marketplaceListReadsOrdered = true
 		m.marketplaceReconcilePending = false
 	}
 	if m.pluginsPanel != nil {
