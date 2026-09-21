@@ -113,14 +113,21 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
         ? tail.renderedText
         : `${tail.renderedText}\n${exitFooter}`;
   if (command === "" && renderedOutput === undefined) return null;
-  const body =
-    live || !tail.truncated
-      ? renderedOutput
-      : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`;
   return (
     <>
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
-      {renderedOutput !== undefined && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
+      {renderedOutput !== undefined && (
+        <CodeBlock
+          text={
+            live || !tail.truncated
+              ? renderedOutput
+              : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`
+          }
+          copyText={tail.copyText}
+          copyLabel="Copy output"
+          ansi
+        />
+      )}
     </>
   );
 }
