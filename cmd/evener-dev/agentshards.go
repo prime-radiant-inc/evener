@@ -49,7 +49,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -561,10 +560,6 @@ func effectiveGoflags() (string, error) {
 // so the excerpt is built around these markers.
 var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
 
-// surveyGreenLine is the verdict a `go test -v` log carries when the run
-// passed: the test binary prints PASS, and `go test` prints `ok  pkg`.
-var surveyGreenLine = regexp.MustCompile(`^(PASS|ok[\t ])`)
-
 // The red survey's excerpt is one failure block per marker, never the suite
 // log: these bound how much of the failing test's own output a block carries,
 // how many blocks print at all, and how much of the log a markerless run's
@@ -704,18 +699,22 @@ func fileHasContent(path string) bool {
 // number of blocks by maxBlocks. Those bounds are what keep the excerpt an
 // excerpt — a CI job summary shows it in full.
 //
-// A block is the marker with the test's own output around it: the framework
-// writes t.Log/t.Error output with a file:line prefix and indents a subtest's
-// verdict, while its own framing (`=== RUN`, an enclosing verdict) is
-// unindented and ends the run. A panic carries its message on the marker line
-// itself, so the failure stays legible even with the stack left out.
+// A block is the marker with the test's own output around it, and it runs from
+// the previous framework line to the next one, bounded by the two line counts.
+// That keeps the indented t.Log/t.Error lines and the test's unindented direct
+// output (fmt.Println, log.Print, a child process) alike; only the toolchain's
+// own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
+// marker such as `panic:` — ends the run, on either side of the marker.
 //
 // A survey that died with no marker at all — a fatal error, an os.Exit, a
 // killed binary — has no block to show, so a bounded tail of the log stands in.
-// The excerpt is non-empty whenever the log has content: the run has just
-// written that log, so the only silent case is a path this function cannot read
-// (or one holding nothing but whitespace) — an unreadable log, not an absent
-// one.
+// The caller reaches this only after the survey pass exited nonzero — the run
+// is already known red — so there is no green verdict to consult here, and a
+// log tail that happens to end in a test's own `ok done` print must not
+// suppress the fallback. The excerpt is non-empty whenever the log has content:
+// the run has just written that log, so the only silent case is a path this
+// function cannot read (or one holding nothing but whitespace) — an unreadable
+// log, not an absent one.
 func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -736,11 +735,11 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		maxBlocks--
 		matched = true
 		start := i
-		for n := 0; n < surveyContextBefore && start > emitted && surveyOutputLine(lines[start-1]); n++ {
+		for n := 0; n < surveyContextBefore && start > emitted && !surveyFrameworkLine(lines[start-1]); n++ {
 			start--
 		}
 		end := i + 1
-		for n := 0; n < surveyContextAfter && end < len(lines) && surveyOutputLine(lines[end]); n++ {
+		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
 		for _, excerpt := range lines[start:end] {
@@ -752,32 +751,27 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		emitted = end
 		i = end
 	}
-	if !matched && maxBlocks > 0 && !surveyLogGreen(lines) {
+	if !matched && maxBlocks > 0 {
 		for _, line := range lines[max(len(lines)-surveyTailLines, 0):] {
 			_, _ = fmt.Fprintln(w, line)
 		}
 	}
 }
 
-// surveyLogGreen reports whether a log ends with the toolchain's green
-// verdict. A red run's log does not: it either printed a failure marker or died
-// before reaching a verdict, and the latter is the case the tail fallback above
-// exists for.
-func surveyLogGreen(lines []string) bool {
-	for _, line := range slices.Backward(lines) {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		return surveyGreenLine.MatchString(line)
-	}
-	return false
-}
-
-// surveyOutputLine reports whether a `go test -v` log line is a test's own
-// output rather than the framework's framing: t.Log/t.Error lines and subtest
-// verdicts are indented, the `=== RUN`/`--- FAIL` framing is not.
-func surveyOutputLine(line string) bool {
-	return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+// surveyFrameworkLine reports whether a `go test -v` log line is the
+// toolchain's own framing rather than a test's output: a `=== RUN`/`=== PAUSE`
+// phase line, a test verdict (`--- PASS`/`--- FAIL`), the binary's `PASS` or
+// `FAIL` verdict, `go test`'s `ok  pkg` summary, or another failure marker
+// (`panic:`). A failure's excerpt runs until the next such line, so a test's
+// own unindented output — fmt.Println, log.Print, a child process — stays in
+// the block instead of being cut at the first line that is not indented.
+func surveyFrameworkLine(line string) bool {
+	return strings.HasPrefix(line, "=== ") ||
+		strings.HasPrefix(line, "--- ") ||
+		strings.HasPrefix(line, "ok ") ||
+		strings.HasPrefix(line, "FAIL") ||
+		strings.HasPrefix(line, "PASS") ||
+		surveyRedLine.MatchString(line)
 }
 
 // copyFileTo writes a whole log to w and reports whether there was anything

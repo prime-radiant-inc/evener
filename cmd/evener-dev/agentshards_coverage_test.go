@@ -242,18 +242,69 @@ func TestReplaySurveyFailuresShowsAssertionContext(t *testing.T) {
 	}
 }
 
-// TestReplaySurveyFailuresPassingLogSaysNothing pins the other direction: a
-// green survey log yields no excerpt, so a passing run's summary gains no
-// empty failure block.
-func TestReplaySurveyFailuresPassingLogSaysNothing(t *testing.T) {
+// TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
+// failing test's unindented direct output (fmt.Println, log.Print, a child
+// process) sits with its verdict, and the excerpt must carry it. The framework
+// frames those lines with unindented output of its own, so a block runs from
+// the previous framework line to the next one rather than stopping at the
+// first line that is not indented.
+func TestReplaySurveyFailuresKeepsUnindentedFailureOutput(t *testing.T) {
 	path := writeSurveyLog(t,
-		"=== RUN   TestGreen\n"+
-			"    thing_test.go:5: green noise\n"+
-			"--- PASS: TestGreen (0.00s)\n"+
-			"PASS\n"+
-			"ok  \tpkg\t0.01s\n")
-	if got := replayLines(t, path, 10); got != nil {
-		t.Fatalf("a green survey log should produce no excerpt, got %q", got)
+		"=== RUN   TestPrints\n"+
+			"WORKER: building cache index\n"+
+			"2026/09/21 21:28:27 worker: connecting to peer\n"+
+			"    thing_test.go:12: a framed log line\n"+
+			"    thing_test.go:13: the fatal message\n"+
+			"--- FAIL: TestPrints (0.00s)\n"+
+			"=== RUN   TestNext\n")
+	want := []string{
+		"WORKER: building cache index",
+		"2026/09/21 21:28:27 worker: connecting to peer",
+		"    thing_test.go:12: a framed log line",
+		"    thing_test.go:13: the fatal message",
+		"--- FAIL: TestPrints (0.00s)",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want the failure's own unindented output carried %q", got, want)
+	}
+
+	// The before bound still holds: a failure with more output ahead than a
+	// block keeps shows only the last surveyContextBefore lines of it, and the
+	// green test's own run line ends the block above.
+	var noisy strings.Builder
+	noisy.WriteString("=== RUN   TestNoisy\n")
+	for i := range surveyContextBefore + surveyContextAfter {
+		_, _ = fmt.Fprintf(&noisy, "WORKER: output line %d\n", i)
+	}
+	noisy.WriteString("--- FAIL: TestNoisy (0.00s)\n")
+	got := replayLines(t, writeSurveyLog(t, noisy.String()), 10)
+	if len(got) != surveyContextBefore+1 {
+		t.Fatalf("replayed %d lines of a noisy failure, want %d:\n%s",
+			len(got), surveyContextBefore+1, strings.Join(got, "\n"))
+	}
+	if wantFirst := fmt.Sprintf("WORKER: output line %d", surveyContextAfter); got[0] != wantFirst {
+		t.Fatalf("excerpt starts at %q, want %q: the before bound keeps the %d output lines nearest the verdict", got[0], wantFirst, surveyContextBefore)
+	}
+}
+
+// TestReplaySurveyFailuresMarkerlessTailWithTestOKPrint is the D2 contract:
+// the excerpt runs only once the survey pass has already exited nonzero, so
+// there is no green verdict to consult. A log with no failure marker whose
+// last line is the failing test's own unindented `ok done` print — which the
+// removed green-verdict check read as the toolchain's `ok  pkg` and suppressed
+// the fallback for — must still print its bounded tail.
+func TestReplaySurveyFailuresMarkerlessTailWithTestOKPrint(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestDies\n"+
+			"worker: about to die\n"+
+			"ok done\n")
+	want := []string{
+		"=== RUN   TestDies",
+		"worker: about to die",
+		"ok done",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a markerless red log ending in a test's own %q replayed %q, want its bounded tail %q", "ok done", got, want)
 	}
 }
 
@@ -310,8 +361,10 @@ func TestReplaySurveyFailuresAdjacentFailuresDoNotOverlap(t *testing.T) {
 	}
 }
 
-// TestReplaySurveyFailuresShowsPanic covers the other marker: a panic's
-// message is on its own line, so the marker replays legibly without the stack.
+// TestReplaySurveyFailuresShowsPanic covers the other marker: `panic:` is a
+// framework line too, so the failing test's verdict block ends at the panic
+// line and the panic's own block carries its message plus the stack head, up
+// to the after bound.
 func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
 	path := writeSurveyLog(t,
 		"=== RUN   TestPanics\n"+
@@ -321,7 +374,14 @@ func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
 			"goroutine 1 [running]:\n"+
 			"\tpkg.TestPanics(0x0)\n"+
 			"\t\tthing_test.go:21 +0x25\n")
-	want := []string{"--- FAIL: TestPanics (0.00s)", "panic: boom as instructed"}
+	want := []string{
+		"--- FAIL: TestPanics (0.00s)",
+		"panic: boom as instructed",
+		"",
+		"goroutine 1 [running]:",
+		"\tpkg.TestPanics(0x0)",
+		"\t\tthing_test.go:21 +0x25",
+	}
 	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
 		t.Fatalf("replayed %q, want %q", got, want)
 	}
