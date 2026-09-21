@@ -494,6 +494,9 @@ export type {
   TranscriptDisplayStoreFields,
   TranscriptDisplayStoreState,
   TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export type {
