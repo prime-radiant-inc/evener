@@ -47,6 +47,13 @@ const (
 // destination's ssh_config already names one), and EVENER_SSH_E2E_EVENER_PATH
 // overrides the host's evener path (default ~/.local/bin/evener).
 //
+// The provenance half of the positive check needs EVENER_SSH_E2E_REMOTE_DIR: a
+// directory that exists on the host and NOT on this controller. The forwarded
+// evener/paths/complete over that prefix must list the host's own entries, and
+// the same prefix asked of this hub directly must find none. Only the host can
+// see that directory, so the pair pins the answer's origin where the forwarded
+// call alone could still have been served locally.
+//
 // The host must already carry a matching evener build at that path: a test hub
 // has no BuildSource, so the version-match ladder refuses to attach a host whose
 // launch-check reports a version the controller does not carry, rather than
@@ -62,6 +69,10 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 	dest := os.Getenv("EVENER_SSH_E2E_HOST")
 	if dest == "" {
 		t.Skip("set EVENER_SSH_E2E_HOST to a disposable ssh destination (an ssh alias or user@host) to run the live host add/attach/forward test; the host must already run a matching evener build")
+	}
+	remoteDir := os.Getenv("EVENER_SSH_E2E_REMOTE_DIR")
+	if remoteDir == "" {
+		t.Skip("set EVENER_SSH_E2E_REMOTE_DIR to a directory that exists on the host and not on this controller to run the live host add/attach/forward test")
 	}
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
@@ -137,6 +148,42 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 		t.Fatalf("forwarded %s returned %#v, want the remote hub's harness list (carrying the evener harness)", appwire.MethodEvenerHarnessesList, harnesses.Data)
 	}
 	t.Logf("forwarded %s through host %q: %+v", appwire.MethodEvenerHarnessesList, hostE2EName, harnesses.Data)
+
+	// The call above proves the forward answers; it does not prove who answered.
+	// A hub that served the discovery call locally would return its own harness
+	// list just as readily. EVENER_SSH_E2E_REMOTE_DIR names a directory only the
+	// host has, so the pair below pins the origin: the forwarded completion over
+	// that prefix must see the host's entries, and the same prefix asked of this
+	// hub directly must find none.
+	remotePrefix := strings.TrimRight(remoteDir, "/") + "/"
+	forwardedParams, err := json.Marshal(appwire.PathsCompleteParams{Prefix: remotePrefix})
+	if err != nil {
+		t.Fatalf("marshal %s params for the host-only prefix %q: %v", appwire.MethodEvenerPathsComplete, remotePrefix, err)
+	}
+	rawPaths, err := forwardHostMethod(ctx, client, hostE2EName, appwire.MethodEvenerPathsComplete, forwardedParams)
+	if err != nil {
+		t.Fatalf("step evener/host/request (forwarded %s %q) after attach: %v", appwire.MethodEvenerPathsComplete, remotePrefix, err)
+	}
+	var forwardedPaths appwire.PathsCompleteResponse
+	if err := json.Unmarshal(rawPaths, &forwardedPaths); err != nil {
+		t.Fatalf("step evener/host/request (forwarded %s) after attach: result %s does not decode as the forwarded method's own result: %v", appwire.MethodEvenerPathsComplete, rawPaths, err)
+	}
+	if len(forwardedPaths.Data) == 0 {
+		t.Fatalf("forwarded %s for the host-only prefix %q returned no entries, want the host's own completion of a directory only it has", appwire.MethodEvenerPathsComplete, remotePrefix)
+	}
+
+	// The direct half, without the forward: this hub answers the method itself,
+	// against the controller's filesystem, where that host's directory does not
+	// exist. An empty answer here is what makes the non-empty forwarded answer
+	// above evidence of the host rather than of a local read.
+	directPaths, err := clientRequest[appwire.PathsCompleteResponse](ctx, client, appwire.MethodEvenerPathsComplete, appwire.PathsCompleteParams{Prefix: remotePrefix})
+	if err != nil {
+		t.Fatalf("direct %s for the host-only prefix %q: %v (the local hub must answer the unforwarded call, not refuse it)", appwire.MethodEvenerPathsComplete, remotePrefix, err)
+	}
+	if len(directPaths.Data) != 0 {
+		t.Fatalf("direct %s for the host-only prefix %q returned %v, want no entries: this hub does not carry the host's directory, so entries here would mean the forwarded answer above was served locally too", appwire.MethodEvenerPathsComplete, remotePrefix, directPaths.Data)
+	}
+	t.Logf("provenance: forwarded %s for %q listed %d host entries; the same prefix asked of this hub directly listed %d", appwire.MethodEvenerPathsComplete, remotePrefix, len(forwardedPaths.Data), len(directPaths.Data))
 }
 
 // assertHostRequestRefused fails unless forwarding method to host is refused

@@ -269,6 +269,14 @@ host's ssh destination — an `ssh_config` alias or `user@host`;
 destination already names one), and `EVENER_SSH_E2E_EVENER_PATH` overrides the
 host's evener path (default `~/.local/bin/evener`).
 
+`EVENER_SSH_E2E_REMOTE_DIR` is required as well: a directory that exists on the
+host and not on this controller. The check forwards `evener/paths/complete` for
+that prefix through `evener/host/request` and requires the host's own entries
+back, then asks this hub the same prefix directly and requires none. Only the
+host can see that directory, so the pair pins the answer's origin where the
+forwarded call alone could still have been served locally. Without it the test
+skips.
+
 The host must be disposable and reachable over non-interactive ssh
 (`ssh -T -o BatchMode=yes`), and it must already carry a matching evener build
 at that path. The test hub is built with no `BuildSource`, so the version-match
@@ -281,12 +289,15 @@ are `linux/amd64` and `darwin/arm64`.
 
 ~~~sh
 # Install the lane's build on the host (macOS needs an ad-hoc re-signature
-# after scp, or the loader kills the unsigned-arm64 copy).
+# after scp, or the loader kills the unsigned-arm64 copy). ~/.local/bin may not
+# exist on a fresh host, so create it before the copy.
 GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/evener-host ./cmd/evener/
+ssh -T -o BatchMode=yes paradise-park 'mkdir -p ~/.local/bin'
 scp /tmp/evener-host paradise-park:~/.local/bin/evener
 ssh paradise-park 'chmod +x ~/.local/bin/evener && codesign --force --sign - ~/.local/bin/evener'
 
 EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
+  EVENER_SSH_E2E_REMOTE_DIR=/opt/homebrew \
   go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
 ~~~
 
