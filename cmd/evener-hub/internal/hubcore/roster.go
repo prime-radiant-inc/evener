@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -401,6 +402,23 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		}
 		_, _ = h.Write([]byte{0})
 		if bySess[id].PendingAsk {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		// The daemon's capability answer is per-session observable state in
+		// the same sense the status is: bits fold daemon state the status
+		// string itself does not (Clear folds the clear-blocked reason, Send
+		// folds activity), so a bit can flip while the status holds still.
+		// Reflection walks the whole set so a capability bit added later
+		// moves the fingerprint without anyone having to remember this site.
+		capsV := reflect.ValueOf(bySess[id].Capabilities)
+		for _, fieldValue := range capsV.Fields() {
+			if fieldValue.Bool() {
+				_, _ = h.Write([]byte{1})
+			}
+			_, _ = h.Write([]byte{0})
+		}
+		if bySess[id].CapabilitiesKnown {
 			_, _ = h.Write([]byte{1})
 		}
 		_, _ = h.Write([]byte{0})

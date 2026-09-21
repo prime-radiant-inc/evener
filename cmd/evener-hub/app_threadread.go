@@ -685,7 +685,7 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		// session's skill catalog (attachPastThreadSkillCatalog) made the web
 		// composer offer those skills and then refuse them. The advertisement is
 		// harness-support truth only: every input-bearing mutation re-verifies
-		// against the live daemon (ensureSkillInputSupport, the relay's
+		// against the live daemon (ensureSkillInputSupported, the relay's
 		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
 		// that genuinely lacks the support still refuses each selection.
 		SkillInput: true,

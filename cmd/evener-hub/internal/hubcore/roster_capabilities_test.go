@@ -67,6 +67,57 @@ func TestRosterEntryWithoutProbeCapabilitiesStaysUnknown(t *testing.T) {
 	}
 }
 
+// capabilityFlipProber answers probes that differ only in the capability
+// set, the way a daemon's answer changes when a bit that folds daemon state
+// (Clear and its blocked reason, Send and activity) flips while the status
+// string itself holds still.
+type capabilityFlipProber struct {
+	base    ProbeResult
+	flipped bool
+}
+
+func (p *capabilityFlipProber) Probe(rendezvous.Entry) ProbeResult {
+	if !p.flipped {
+		return p.base
+	}
+	flipped := p.base
+	flipped.Capabilities = appwire.ThreadCapabilities{Send: true, SkillInput: true}
+	return flipped
+}
+
+// TestRosterOnChangeFiresOnCapabilityOnlyChange pins the roster's change
+// notification against the probe-carried capabilities: onChange invalidates
+// the projections cached off the roster, and a capability-only delta must
+// move the fingerprint exactly like a status change would, or those caches
+// serve a stale answer until some other field happens to change.
+func TestRosterOnChangeFiresOnCapabilityOnlyChange(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1004, Address: "127.0.0.1:50004"})
+	prober := &capabilityFlipProber{base: ProbeResult{
+		SessionID:         "01CAPS",
+		Status:            "idle",
+		OK:                true,
+		CapabilitiesKnown: true,
+		Capabilities:      appwire.ThreadCapabilities{Send: true, SkillInput: true, Queue: true},
+	}}
+	r := NewRoster(dir, prober)
+	fired := 0
+	r.SetOnChange(func() { fired++ })
+	r.Refresh()
+	if fired != 1 {
+		t.Fatalf("the initial refresh fired onChange %d times, want 1", fired)
+	}
+	r.Refresh()
+	if fired != 1 {
+		t.Fatalf("a no-op refresh fired onChange: %d", fired)
+	}
+	prober.flipped = true
+	r.Refresh()
+	if fired != 2 {
+		t.Fatal("a capability-only change must fire onChange: projections cached on the roster would otherwise keep the stale answer")
+	}
+}
+
 // TestRosterReadSpawnedThreadPublishesCapabilities mirrors the status-flags
 // variant: the caller's direct read of a freshly spawned daemon is the one
 // path into the roster that does not go through the prober, and the
