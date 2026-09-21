@@ -197,13 +197,11 @@ In `PendingChips.test.tsx`, extend `seedPending`'s `wireMethod` map with `promot
 ```tsx
 test("a pending promote never chips (the ghost stack owns it)", async () => {
   await seedPending("promote", "a promote");
-  render(<PendingChips sessionRef="ref_a" />);
-  expect(container.innerHTML === "" || screen.queryByText("a promote") === null).toBe(true);
+  const { container } = render(<PendingChips sessionRef="ref_a" />);
   expect(screen.queryByText("a promote")).toBeNull();
+  expect(container.innerHTML).toBe(""); // the strip renders null with no send entries
 });
 ```
-
-(Render into `const { container } = render(...)`; drop the first `container.innerHTML` clause if the query alone reads clearly.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -795,6 +793,10 @@ test("a blank composed drain body shows the stack-owned [queued messages] fallba
 test("the drain ghost's text refines to the authoritative combined input at the next hydrate", async () => {
   const id = await seedHeld("drain", "composer text");
   // Re-hydrate with the daemon's pendingMutations carrying the combined input.
+  // Verify the wire field's actual name and location (evener.pendingMutations
+  // or its sibling) against types.gen.ts's Thread shape before writing the
+  // fixture - the contract under test is the ENTRY text refining, not the
+  // fixture's spelling.
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       evener: {
@@ -1016,13 +1018,13 @@ test("a held steer renders as the live-edge trailing row, under the AskDock when
   // With the ask dock pending too, both live in the ONE trailing row, dock first.
   fake.emitNotification(askPendingStatusChanged("ref_a"));
   await waitFor(() => {
-    const row = document.querySelector('[data-row-id="live-edge"]');
-    expect(row!.querySelector("[data-testid='held-steer-stack']")).not.toBeNull();
-    expect(row!.children[0].querySelector("[data-ask-response-dock], [data-testid]")).not.toBeNull();
+    const stack = document.querySelector("[data-testid='held-steer-stack']");
+    expect(stack).not.toBeNull();
+    const dock = document.querySelector("[data-ask-response-dock]");
+    expect(dock).not.toBeNull();
+    // DOM order: the dock precedes the stack inside the same row.
+    expect(dock!.compareDocumentPosition(stack!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
-  const dock = document.querySelector("[data-ask-response-dock]");
-  const stack = document.querySelector("[data-testid='held-steer-stack']");
-  expect(dock && stack && dock.compareDocumentPosition(stack) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("no trailing row renders when neither an ask nor held steering exists", async () => {
@@ -1030,7 +1032,9 @@ test("no trailing row renders when neither an ask nor held steering exists", asy
   fake.on("thread/read", () => readResponse("ref_a"));
   renderPane("ref_a");
   await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
-  expect(document.querySelector("[data-row-id]")).toBeNull();
+  // Scoped to the trailing row's id: ordinary turn rows carry their own
+  // data-row-id values and must keep rendering.
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
 });
 
 test("a held steer without an ask still counts in renderedRowCount (the one-row-short regression)", async () => {
@@ -1240,9 +1244,12 @@ test.each([
 ])("a %s departure is announced once", async (_label, expected, seedKind) => {
   const id = await seedHeld("steer", "hello");
   ... render ...
-  // seedKind maps to the storage write (transferToRecovery(id, "rejected") /
-  // cancelUnattempted("ref_a") / markUnknown(id, "blockedUnknown")) - the same
-  // real writes QueueStrip.test.tsx's seedRecovery/seedCanceled/seedBlockedUnknown use.
+  // seedKind names the STORAGE WRITE, not a literal recovery-kind string:
+  // use the same real writes QueueStrip.test.tsx's seedRecovery /
+  // seedCanceled / seedBlockedUnknown perform. For the rejected arm, look up
+  // the actual MutationRecoveryKind value that models an acceptance rejection
+  // in stores/mutationOutbox (the type's own doc comments) and pass it to
+  // storage.transferToRecovery(id, kind, reason) - never an invented string.
   await refreshPendingTurnsProjection("ref_a");
   await waitFor(() => expect(...textContent).toBe(expected));
 });
