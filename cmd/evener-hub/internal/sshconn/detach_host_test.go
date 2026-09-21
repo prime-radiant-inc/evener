@@ -199,7 +199,7 @@ func TestDetachHostLeavesTheReaddedChannelAttached(t *testing.T) {
 	if !ok {
 		t.Fatal("reg.Get after the re-add: not registered")
 	}
-	m.publishChannel("alpha", &Channel{host: readded, lost: make(chan struct{}), done: make(chan struct{})})
+	m.publishChannel("alpha", &Channel{host: readded, lost: make(chan struct{}), done: make(chan struct{})}, readded)
 
 	hold.Unlock()
 	m.releaseHostLock("alpha")
