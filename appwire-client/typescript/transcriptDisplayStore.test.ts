@@ -1385,6 +1385,65 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().drafts).toEqual({});
   });
 
+  test("a checkpoint replaced during a successful save adopts the replacement without sticking on saving", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    // Another window replaces the checkpoint while this PATCH is in flight.
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => {
+      drafts.storage.save({
+        id: "other",
+        layout: "desktop",
+        baseRevision: 3,
+        config: desktopConfig,
+        writeUncertain: false,
+      });
+      return reply.promise;
+    });
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await save).toEqual(hubDefault(3, proposed));
+    // The replacement survives, the settlement clears the in-flight flags,
+    // and the editor stays usable.
+    expect(drafts.stored()).toMatchObject({ id: "other", layout: "desktop" });
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().draft?.layout).toBe("desktop");
+    expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
+  });
+
+  test("a checkpoint replaced during a newer-external save adopts the replacement without sticking on saving", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    // An external change beats this write's revision and another window
+    // replaces the checkpoint, both while the PATCH is out.
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 7, config: toWireConfig(desktopConfig) },
+    });
+    drafts.storage.save({
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    });
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await save).toEqual(hubDefault(3, proposed));
+    expect(drafts.stored()).toMatchObject({ id: "other", layout: "desktop" });
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().draft?.layout).toBe("desktop");
+    expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
+  });
+
   test("a post-apply rejection is a confirmed save, not an uncertain one", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();

@@ -1125,7 +1125,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
           // replacement is adopted rather than overwritten.
           settledStorage = draftRepository.replaceClassified({ ...checkpoint, writeUncertain: false })
             ? settled
-            : restoreDraft({ loaded: true, hub });
+            : { ...settled, ...restoreDraft({ loaded: true, hub }) };
         } else if (draftRepository.removeIf(checkpoint)) {
           // The write landed and settled its own checkpoint: the draft it
           // described is gone with it.
@@ -1135,7 +1135,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
           // writer while the PATCH was out: the replacement survives on disk
           // (removeIf's own compare refused to touch it) and must not be
           // hidden behind a "no draft" report.
-          settledStorage = restoreDraft({ loaded: true, hub });
+          settledStorage = { ...settled, ...restoreDraft({ loaded: true, hub }) };
         }
       } catch {
         // A cleanup failure keeps the proposal in view with the port marked
