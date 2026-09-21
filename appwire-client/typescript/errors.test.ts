@@ -58,7 +58,7 @@ function goErrorInfo(name: string): string {
 
 test("hostFieldError reads the blamed input off the hub's own discriminant", () => {
   // The binding: the Go constant's value is what this module matches on.
-  expect(appwireErrorsGo).toMatch(new RegExp(`ErrorInvalidHostField\\s+ErrorInfo\\s*=\\s*"${ErrorInvalidHostField}"`));
+  expect(ErrorInvalidHostField).toBe(goErrorInfo("ErrorInvalidHostField"));
   const blamed = new WireError('host "m4": missing ssh destination', -32602, {
     evenerErrorInfo: ErrorInvalidHostField,
     field: "address",

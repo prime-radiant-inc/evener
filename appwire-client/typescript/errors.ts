@@ -37,11 +37,9 @@ export const ErrorInvalidHostField = "invalidHostField";
 // whole, which carries no field. The returned name is the wire spelling the
 // dialog's own inputs use, so a caller maps it onto an input directly.
 export function hostFieldError(error: unknown): string | undefined {
-  if (!(error instanceof WireError) || error.evenerErrorInfo !== ErrorInvalidHostField) return undefined;
-  const data = error.data;
-  if (!data || typeof data !== "object") return undefined;
-  const field = (data as { field?: unknown }).field;
-  return typeof field === "string" && field !== "" ? field : undefined;
+  return wireRejectionPayload(error, ErrorInvalidHostField, "field", (value) =>
+    typeof value === "string" && value !== "" ? value : undefined,
+  );
 }
 
 // errorText flattens a rejected value to the text worth showing. It is the
@@ -78,6 +76,7 @@ export function wireRejectionPayload<T>(
   decode: (value: unknown) => T | undefined,
 ): T | undefined {
   if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  if (!error.data || typeof error.data !== "object") return undefined;
   return decode((error.data as Record<string, unknown>)[key]);
 }
 

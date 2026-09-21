@@ -40,6 +40,8 @@ export interface HostsSectionProps {
   sectionId: string;
 }
 
+type HostDialogState = { mode: "add" } | { mode: "edit"; row: HostRow } | null;
+
 function stateChip(row: HostRow, connecting: boolean) {
   if (row.removed) return <Chip tone="neutral">removed</Chip>;
   // connecting is the row's combined in-progress state, derived once by the
@@ -75,8 +77,7 @@ function rowDetail(row: HostRow): string | null {
 export function HostsSection(_props: HostsSectionProps) {
   const load = useHostsStore((s) => s.load);
   const toasts = useToasts();
-  const [dialogMode, setDialogMode] = useState<"add" | "edit" | null>(null);
-  const [editRow, setEditRow] = useState<HostRow | null>(null);
+  const [dialog, setDialog] = useState<HostDialogState>(null);
   const [connecting, setConnecting] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingRemove, setPendingRemove] = useState<HostRow | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -170,8 +171,7 @@ export function HostsSection(_props: HostsSectionProps) {
         <Button
           size="sm"
           onClick={() => {
-            setEditRow(null);
-            setDialogMode("add");
+            setDialog({ mode: "add" });
           }}
         >
           Add host
@@ -204,8 +204,7 @@ export function HostsSection(_props: HostsSectionProps) {
                       size="sm"
                       variant="quiet"
                       onClick={() => {
-                        setEditRow(row);
-                        setDialogMode("edit");
+                        setDialog({ mode: "edit", row });
                       }}
                     >
                       Edit
@@ -222,20 +221,17 @@ export function HostsSection(_props: HostsSectionProps) {
           })}
         </ul>
       )}
-      {dialogMode !== null && (
+      {dialog !== null && (
         <HostEntryDialog
           // The key is what makes an edit dialog start from its row: a dialog
           // opened for a different host (or for Add after an Edit) is a fresh
           // mount with fresh field state, never the previous host's values.
-          key={dialogMode === "edit" ? `edit:${editRow?.name ?? ""}` : "add"}
-          mode={dialogMode}
-          row={editRow ?? undefined}
-          onClose={() => {
-            setDialogMode(null);
-            setEditRow(null);
-          }}
+          key={dialog.mode === "edit" ? `edit:${dialog.row.name}` : "add"}
+          mode={dialog.mode}
+          row={dialog.mode === "edit" ? dialog.row : undefined}
+          onClose={() => setDialog(null)}
           onSubmit={async (entry) => {
-            if (dialogMode === "edit" && editRow !== null) await handleEdit(editRow, entry);
+            if (dialog.mode === "edit") await handleEdit(dialog.row, entry);
             else await handleAdd(entry);
           }}
         />
@@ -287,7 +283,7 @@ interface HostEntryDialogProps {
 }
 
 function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps) {
-  const [name, setName] = useState(mode === "add" ? "" : (row?.name ?? ""));
+  const [name, setName] = useState("");
   const [address, setAddress] = useState(row?.address ?? "");
   const [user, setUser] = useState(row?.user ?? "");
   const [keyPath, setKeyPath] = useState(row?.keyPath ?? "");
@@ -303,7 +299,6 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
   const formError = error !== null && error.field === null ? error.message : null;
   // Submission stays available for invalid values so the hub remains the one
   // validator and can blame the precise input. It is disabled only in flight.
-  const submitDisabled = busy;
 
   async function handleSubmit(): Promise<void> {
     setBusy(true);
@@ -343,7 +338,7 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
           <Button variant="quiet" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={submitDisabled} onClick={() => void handleSubmit()}>
+          <Button variant="primary" disabled={busy} onClick={() => void handleSubmit()}>
             {busy ? "Saving…" : mode === "add" ? "Add host" : "Save"}
           </Button>
         </>

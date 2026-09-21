@@ -163,6 +163,59 @@ describe("mutations", () => {
     }
   });
 
+  test("remove remains pending past the ordinary RPC deadline and ultimately resolves", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
+    try {
+      const ready = client.connect();
+      socket.open();
+      await ready;
+      // Prove the transport remains live independently of the mutation under
+      // test while the hub is legitimately waiting on the host gate.
+      await client.request("ping", {});
+      expect(client.state).toBe("ready");
+      connectionStore.getState().connect(client);
+
+      let outcome: { status: "resolved" } | { status: "rejected"; error: unknown } | undefined;
+      const done = hostsStore
+        .getState()
+        .remove("side")
+        .then(
+          () => {
+            outcome = { status: "resolved" };
+          },
+          (error: unknown) => {
+            outcome = { status: "rejected", error };
+          },
+        );
+      const removeRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/remove");
+      if (typeof removeRequest?.id !== "number") throw new Error("missing evener/host/remove request id");
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(client.state).toBe("ready");
+      expect(outcome, "Remove must keep waiting under the same minutes-long host-gate budget").toBeUndefined();
+
+      // The held removal now succeeds, then its quiet list re-read succeeds too:
+      // the store promise must resolve rather than merely avoiding the 30s error.
+      socket.receive({ id: removeRequest.id, result: { host: { ...row("side"), removed: true } } });
+      await vi.advanceTimersByTimeAsync(0);
+      const listRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/list");
+      if (typeof listRequest?.id !== "number") throw new Error("missing post-remove evener/host/list request id");
+      socket.receive({ id: listRequest.id, result: { hosts: [] } });
+      await done;
+      expect(outcome).toEqual({ status: "resolved" });
+    } finally {
+      client.close();
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      vi.useRealTimers();
+    }
+  });
+
   test("update sends the target name and the entry, then re-reads quietly", async () => {
     const fake = connectFakeClient();
     fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));

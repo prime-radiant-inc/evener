@@ -427,9 +427,7 @@ func (s *hostSidecarStore) replace(entry hostreg.Host) {
 // entries with entry swapped in for the same-name one, in place. Callers hold
 // hostManagerConfig.mu.
 func (s *hostSidecarStore) withReplaced(entry hostreg.Host) []hostreg.Host {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return replaceEntry(append([]hostreg.Host(nil), s.entries...), entry)
+	return replaceEntry(s.snapshot(), entry)
 }
 
 // replaceEntry swaps entry in for the same-name entry, in place, appending when
@@ -994,6 +992,22 @@ func hostValidationRefusal(name string, err error) error {
 	return appwire.InvalidParams(message)
 }
 
+// hostEntryToHost converts the wire's configured-host shape to the registry's
+// equivalent shape. name is supplied separately because Add takes it from the
+// entry while Update takes it from the immutable request target.
+func hostEntryToHost(name string, entry appwire.HostEntry) hostreg.Host {
+	return hostreg.Host{
+		Name:       name,
+		SSH:        entry.Address,
+		User:       entry.User,
+		KeyPath:    entry.KeyPath,
+		EvenerPath: entry.EvenerPath,
+		ConfigPath: entry.ConfigPath,
+		Addr:       entry.Addr,
+		Roots:      entry.Roots,
+	}
+}
+
 // Add registers one sidecar host entry: name + SSH address + key path. It
 // validates exactly like hub.toml loading (component-03 rules) and refuses a
 // name hub.toml or the live set already holds — the duplicate refusal applies
@@ -1022,16 +1036,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// the dialog collected instead of the three fields slice 1 carried: the
 	// entry is normalized and validated as one record, exactly as hub.toml
 	// loading does.
-	entry := hostreg.Normalize(hostreg.Host{
-		Name:       params.Entry.Name,
-		SSH:        params.Entry.Address,
-		User:       params.Entry.User,
-		KeyPath:    params.Entry.KeyPath,
-		EvenerPath: params.Entry.EvenerPath,
-		ConfigPath: params.Entry.ConfigPath,
-		Addr:       params.Entry.Addr,
-		Roots:      params.Entry.Roots,
-	})
+	entry := hostreg.Normalize(hostEntryToHost(params.Entry.Name, params.Entry))
 	// Validate without inserting: hostreg's own entry validation runs the
 	// exact add-time checks (name grammar, reserved name, ssh destination,
 	// user/ssh agreement, non-empty roots) over this one entry without touching
@@ -1440,16 +1445,7 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// unrepresentable rather than merely refused. Name is immutable — it keys
 	// source IDs, cached rows, manager state, and the file's own entries — so the
 	// request has nowhere to put a new one.
-	entry := hostreg.Normalize(hostreg.Host{
-		Name:       name,
-		SSH:        params.Entry.Address,
-		User:       params.Entry.User,
-		KeyPath:    params.Entry.KeyPath,
-		EvenerPath: params.Entry.EvenerPath,
-		ConfigPath: params.Entry.ConfigPath,
-		Addr:       params.Entry.Addr,
-		Roots:      params.Entry.Roots,
-	})
+	entry := hostreg.Normalize(hostEntryToHost(name, params.Entry))
 	// Validate before the write: a refusal here commits nothing, and an entry
 	// the registry would reject never reaches the file. The registry re-runs the
 	// same validation under its own lock; this check is what keeps the file

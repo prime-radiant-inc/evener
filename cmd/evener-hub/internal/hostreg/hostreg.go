@@ -248,11 +248,18 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	// counter: a re-add of the same name — byte-identical or not, interleaved
 	// with other hosts' churn or not — always carries a generation the
 	// removed entry never had.
+	r.stampAndStoreLocked(entry)
+	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
+	return nil
+}
+
+// stampAndStoreLocked gives entry its fresh registry identity and stores it.
+// Callers hold r.mu, so advancing the registry-wide generation and exposing the
+// entry remain one atomic operation.
+func (r *Registry) stampAndStoreLocked(entry Host) {
 	entry.Generation = r.gen + 1
 	r.gen = entry.Generation
 	r.hosts[entry.Name] = entry
-	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
-	return nil
 }
 
 // Update replaces the entry registered under entry.Name in place and stamps it
@@ -285,9 +292,7 @@ func (r *Registry) Update(entry Host) error {
 	// The generation is assigned under the lock from the registry-wide counter,
 	// exactly as AddWithUpstreams does, so an update is as much a new identity
 	// as a remove/re-add: no generation a capture can hold is ever reused.
-	entry.Generation = r.gen + 1
-	r.gen = entry.Generation
-	r.hosts[entry.Name] = entry
+	r.stampAndStoreLocked(entry)
 	return nil
 }
 

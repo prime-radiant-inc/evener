@@ -38,6 +38,11 @@ interface HostsStoreState {
 // store - the shared port (stores/connection.ts), not a hand-rolled twin.
 const { requireClient } = connectedClientPort("hosts");
 
+// HOST_GATE_TIMEOUT_MS is the client-side bound for a host RPC whose server
+// side queues on or holds the per-host gate. A supervisor may hold that gate
+// for a whole reconnect/ensure cycle, beyond the client's ordinary deadline.
+const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
+
 // At most one background refresh runs at a time; concurrent callers join the
 // same promise (mirrors stores/daemonResidents.ts).
 let refreshInflight: Promise<void> | null = null;
@@ -229,7 +234,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
         name: params.name,
         entry: params.entry,
       },
-      { timeoutMs: 35 * 60_000 },
+      { timeoutMs: HOST_GATE_TIMEOUT_MS },
     );
     await reReadAfterMutation();
     return row;
@@ -239,12 +244,12 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     // The same fire-and-wait the spawn picker's Connect trigger issues
     // (Spawn.tsx's connectHost): evener/host/attach, then re-read the row.
     // A failure throws to the caller — the row keeps its retry affordance.
-    await requireClient().request("evener/host/attach", { host: name }, { timeoutMs: 35 * 60_000 });
+    await requireClient().request("evener/host/attach", { host: name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
     await reReadAfterMutation();
   },
 
   remove: async (name) => {
-    await requireClient().request("evener/host/remove", { name });
+    await requireClient().request("evener/host/remove", { name }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
     await reReadAfterMutation();
   },
 

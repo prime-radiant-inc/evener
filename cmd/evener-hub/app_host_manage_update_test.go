@@ -266,11 +266,7 @@ func TestHostManageUpdateAdvancesTheRegistryGeneration(t *testing.T) {
 // live phase leaves the file, the store row, and the live registry describing the
 // old entry, and a retry of the same edit then succeeds.
 func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	f := newUpdateFixture(t)
 	// A manager whose registry is a DIFFERENT, empty one: UpdateHost refuses
 	// hostreg.ErrUnknownHost deterministically — the one seam that fails between
 	// the durable save and the live swap.
@@ -280,23 +276,13 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	}
 	manager := sshconn.New(otherReg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
-	hosts, err := hostreg.New(nil)
-	if err != nil {
-		t.Fatalf("hostreg.New: %v", err)
-	}
-	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{
-		Entry: appwire.HostEntry{Name: "side", Address: "side.example"},
-	}); err != nil {
-		t.Fatalf("Add(side): %v", err)
-	}
 	// Add with the manager unwired so the entry lands in the live registry the
 	// commit reads; wiring the different empty manager only now makes the live
 	// phase fail after that durable commit, which is the rollback seam under test.
-	m.cfg.manager = manager
-	before, _ := hosts.Get("side")
+	f.m.cfg.manager = manager
+	before, _ := f.hosts.Get("side")
 
-	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{
+	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
 		Name:  "side",
 		Entry: appwire.HostEntry{Address: "edited.example"},
 	}); err == nil {
@@ -305,15 +291,15 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 
 	// The live registry, the store row, and the file all still describe the old
 	// entry.
-	live, ok := hosts.Get("side")
+	live, ok := f.hosts.Get("side")
 	if !ok || !live.Equal(before) || live.Generation != before.Generation {
 		t.Fatalf("live entry after the failed edit = %+v, want %+v", live, before)
 	}
-	stored := m.cfg.sidecar.snapshot()
+	stored := f.m.cfg.sidecar.snapshot()
 	if len(stored) != 1 || stored[0].SSH != "side.example" {
 		t.Fatalf("store rows after the failed edit = %+v, want the old entry", stored)
 	}
-	onDisk, err := loadHostSidecar(sidecarPathFor(configPath))
+	onDisk, err := loadHostSidecar(sidecarPathFor(f.configPath))
 	if err != nil {
 		t.Fatalf("reload sidecar: %v", err)
 	}
@@ -323,14 +309,14 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 
 	// The retry lands, from a fresh boot over the same config with a live seam
 	// that works: nothing was half-applied.
-	boot := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, nil, nil)
+	boot := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, f.configPath, nil, nil)
 	if _, err := boot.Update(context.Background(), appwire.HostUpdateParams{
 		Name:  "side",
 		Entry: appwire.HostEntry{Address: "edited.example"},
 	}); err != nil {
 		t.Fatalf("retry after the rollback: %v", err)
 	}
-	reloaded, err := loadHostSidecar(sidecarPathFor(configPath))
+	reloaded, err := loadHostSidecar(sidecarPathFor(f.configPath))
 	if err != nil {
 		t.Fatalf("reload sidecar after the retry: %v", err)
 	}
