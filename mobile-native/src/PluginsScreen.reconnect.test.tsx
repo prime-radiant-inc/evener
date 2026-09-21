@@ -9,7 +9,10 @@
 // mocking: every native edge the screen reaches is mocked here and nowhere
 // else, and the hub is the SDK's FakeClient.
 import type { ComponentProps } from "react";
-import { act } from "react-test-renderer";
+import {
+	act,
+	type ReactTestInstance,
+} from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type {
 	ConnectionState,
@@ -68,6 +71,38 @@ function connection(client: unknown, state: ConnectionState) {
 	};
 }
 
+/** Every string under a node - the modal-scoped counterpart of renderedText.
+ * The host mock renders modal content regardless of its visible prop, so
+ * the modal a flap-banner test scopes to is found by what it contains. */
+function subtreeText(node: ReactTestInstance): string {
+	const chunks: string[] = [];
+	const visit = (value: ReactTestInstance | ReactTestInstance[] | string) => {
+		if (typeof value === "string") {
+			chunks.push(value);
+			return;
+		}
+		if (Array.isArray(value)) {
+			for (const entry of value) visit(entry);
+			return;
+		}
+		for (const child of value.children) visit(child);
+	};
+	visit(node);
+	return chunks.join(" ");
+}
+
+function modalContaining(
+	tree: ReturnType<typeof render>,
+	needle: string,
+): ReactTestInstance {
+	const modals = tree.root
+		.findAll((node) => (node.type as unknown as string) === "Modal")
+		.filter((modal) => subtreeText(modal).includes(needle));
+	if (modals.length !== 1)
+		throw new Error(`expected one modal containing "${needle}"`);
+	return modals[0];
+}
+
 it("reads the plugin list again once a flap the screen survived is ready again", async () => {
 	const hub = new FakeClient("ready");
 	let reads = 0;
@@ -101,6 +136,82 @@ it("reads the plugin list again once a flap the screen survived is ready again",
 	// the recovery read is what catches the screen up on it.
 	expect(reads).toBe(2);
 	expect(renderedText(tree)).toContain("added-while-away");
+});
+
+it("shows the connection status and reconnect inside an open plugin detail modal", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	const row = tree.root.find(
+		(node) =>
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("kept"),
+	);
+	act(() => {
+		row.props.onPress();
+	});
+	await act(async () => {});
+
+	// The connection drops with the detail modal open: the native modal
+	// covers the screen's banner, so the status and the manual reconnect
+	// live inside it, with the modal's own content intact.
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	const modal = modalContaining(tree, "Installation details");
+	expect(subtreeText(modal)).toContain("reconnecting");
+	expect(
+		modal.findAll(
+			(node) => node.props.accessibilityLabel === "Reconnect",
+		).length,
+	).toBeGreaterThan(0);
+	expect(subtreeText(modal)).toContain("Installation details");
+});
+
+it("shows the connection status and reconnect inside the add-marketplace modal", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+	hub.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
+	const client = hub as unknown as ConversationClientLike;
+	// ConnectionStatus inside the modal reads the connection itself, so the
+	// harness must say what the browser's connectionState prop says - this
+	// test does not inherit the state a sibling test leaves behind.
+	harness.connection = connection(hub, "ready");
+	const browser = (state: ConnectionState) => (
+		<MarketplaceBrowser
+			client={client}
+			connectionState={state}
+			hubName="Work hub"
+			installed={createPluginsStore(client)}
+			gate={createPluginMutationGate()}
+			onOpenPlugin={() => {}}
+		/>
+	);
+	const tree = render(browser("ready"));
+	await act(async () => {});
+	const add = tree.root.find(
+		(node) => node.props.accessibilityLabel === "Add marketplace",
+	);
+	act(() => {
+		add.props.onPress();
+	});
+	await act(async () => {});
+
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(browser("reconnecting"));
+	});
+	const modal = modalContaining(tree, "Git URL");
+	expect(subtreeText(modal)).toContain("reconnecting");
+	expect(
+		modal.findAll(
+			(node) => node.props.accessibilityLabel === "Reconnect",
+		).length,
+	).toBeGreaterThan(0);
+	expect(subtreeText(modal)).toContain("Git URL");
 });
 
 it("recovers a replacement client's failed first read when it becomes ready", async () => {

@@ -5,7 +5,7 @@
 // which renderNative.testkit makes possible; every native edge the screen
 // reaches is mocked here and nowhere else.
 import type { ComponentProps } from "react";
-import { act } from "react-test-renderer";
+import { act, type ReactTestInstance } from "react-test-renderer";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import {
@@ -15,6 +15,9 @@ import {
 	type ProviderDescriptor,
 	type InstanceListResponse,
 } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ProviderSignIn } from "./providerSignIn";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProvidersScreen } from "./ProvidersScreen";
 import {
@@ -27,7 +30,13 @@ import {
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
-vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
+vi.mock("react-native", async () => ({
+	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	AppState: {
+		currentState: "active",
+		addEventListener: () => ({ remove: () => {} }),
+	},
+}));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => {} }));
@@ -51,6 +60,40 @@ const rows: InstanceListResponse = {
 	availableProviders: [],
 	diagnostics: ["from the hub"],
 };
+
+/** The Modal whose subtree contains `needle` - the modal a banner test
+ * scopes to. The host mock renders every Modal's content regardless of its
+ * visible prop, so a tree can hold more than one and content tells them
+ * apart. */
+function modalContaining(
+	tree: ReactTestRenderer,
+	needle: string,
+): ReactTestInstance {
+	const modals = tree.root
+		.findAll((node) => (node.type as unknown as string) === "Modal")
+		.filter((modal) => subtreeText(modal).includes(needle));
+	if (modals.length !== 1)
+		throw new Error(`expected one modal containing "${needle}"`);
+	return modals[0];
+}
+
+/** Every string under a node - the modal-scoped counterpart of renderedText. */
+function subtreeText(node: ReactTestInstance): string {
+	const chunks: string[] = [];
+	const visit = (value: ReactTestInstance | ReactTestInstance[] | string) => {
+		if (typeof value === "string") {
+			chunks.push(value);
+			return;
+		}
+		if (Array.isArray(value)) {
+			for (const entry of value) visit(entry);
+			return;
+		}
+		for (const child of value.children) visit(child);
+	};
+	visit(node);
+	return chunks.join(" ");
+}
 
 it("mounts on a ready client and issues and publishes the listing read", async () => {
 	const hub = scriptedClient(rows);
@@ -577,4 +620,185 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 	const text = renderedText(tree);
 	expect(text).not.toContain("changed to a different endpoint");
 	expect(text).not.toContain("Save instance");
+});
+
+it("shows the connection status and reconnect inside an open editor modal", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Edit instance");
+	await act(async () => {});
+
+	// The connection drops with the editor modal open. The native modal
+	// covers the screen's banner, so the status and the manual reconnect
+	// have to live inside it - with the draft still intact.
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	const modal = modalContaining(tree, "Save instance");
+	expect(subtreeText(modal)).toContain("reconnecting");
+	expect(
+		modal.findAll(
+			(node) => node.props.accessibilityLabel === "Reconnect",
+		).length,
+	).toBeGreaterThan(0);
+	// The draft survived: the modal is still the editor's.
+	expect(subtreeText(modal)).toContain("Save instance");
+});
+
+it("starts a sign-in from behind the banner without a doomed client", async () => {
+	const fake = new FakeClient("ready");
+	const oauth: InstanceListResponse = {
+		instances: [
+			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
+		],
+		availableProviders: [],
+	};
+	fake.on("evener/instance/list", () => oauth);
+	fake.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-1",
+		userCode: "WORK-1234",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	const setConnection = vi.spyOn(ProviderSignIn.prototype, "setConnection");
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: fake as unknown as ConversationClientLike,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	// A flap the screen survives behind its banner.
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Sign in");
+	await act(async () => {});
+
+	// The flow is handed null - the raw client cannot reach the hub - and
+	// the sheet the sign-in opens carries the status itself, over the
+	// native modal that covers the screen's banner.
+	expect(setConnection.mock.calls[0]?.[0]).toBe(null);
+	const sheet = modalContaining(tree, "Waiting for this hub to reconnect");
+	expect(subtreeText(sheet)).toContain("reconnecting");
+	expect(
+		sheet.findAll(
+			(node) => node.props.accessibilityLabel === "Reconnect",
+		).length,
+	).toBeGreaterThan(0);
+
+	// Recovery hands the flow the connection it was opened without, and the
+	// exchange proceeds.
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+	await act(async () => {});
+	expect(setConnection).toHaveBeenCalledWith(fake);
+	expect(fake.calls.map((call) => call.method)).toContain(
+		"evener/auth/device/start",
+	);
+	expect(renderedText(tree)).toContain("WORK-1234");
+	setConnection.mockRestore();
+});
+
+it("resumes a banner-started sign-in after a manual retry's listing read lands", async () => {
+	const oauth: InstanceListResponse = {
+		instances: [
+			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
+		],
+		availableProviders: [],
+	};
+	const first = new FakeClient("ready");
+	first.on("evener/instance/list", () => oauth);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: first as unknown as ConversationClientLike,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	press(tree, (label) => label.startsWith("work"));
+	await act(async () => {});
+	press(tree, (label) => label === "Sign in");
+	await act(async () => {});
+
+	// A manual retry replaces the client. The replacement's own listing
+	// read is still on the wire when the connection turns ready, and the
+	// rows the screen has are a replaced connection's: the store refuses
+	// writes against them until that read lands.
+	let resolveListing: (value: InstanceListResponse) => void = () => {};
+	const listing = new Promise<InstanceListResponse>((resolve) => {
+		resolveListing = resolve;
+	});
+	const second = new FakeClient("ready");
+	second.on("evener/instance/list", () => listing);
+	second.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-2",
+		userCode: "WORK-5678",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	harness.connection = {
+		...harness.connection,
+		client: second as unknown as ConversationClientLike,
+		state: "connecting",
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+
+	// The resume waits: starting against the stale rows would refuse the
+	// device start and strand the flow in its error phase.
+	expect(renderedText(tree)).not.toContain("Sign-in could not be started");
+
+	// The listing the new connection owes lands; the gate clears and the
+	// idle exchange finally runs.
+	resolveListing(oauth);
+	await act(async () => {});
+	await act(async () => {});
+	await act(async () => {});
+	expect(
+		second.calls.map((call) => call.method),
+	).toContain("evener/auth/device/start");
+	expect(renderedText(tree)).toContain("WORK-5678");
 });

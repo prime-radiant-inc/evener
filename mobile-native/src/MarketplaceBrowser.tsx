@@ -22,6 +22,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ConnectionStatus } from "./ConnectionStatus";
 import {
   PLUGIN_MUTATION_BUSY,
   runGatedMutation,
@@ -358,6 +359,7 @@ export function MarketplaceBrowser({
       {adding && (
         <AddMarketplace
           client={client}
+          connectionState={connectionState}
           hubName={hubName}
           gate={gate}
           onClose={() => setAdding(false)}
@@ -369,12 +371,14 @@ export function MarketplaceBrowser({
 }
 
 function AddMarketplace({
+  connectionState,
   client,
   hubName,
   gate,
   onClose,
   onAdd,
 }: {
+  connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
   onClose(): void;
@@ -440,6 +444,10 @@ function AddMarketplace({
           </View>
           <Action onPress={onClose}>Cancel</Action>
         </View>
+        {/* The native modal covers the banner the browser shows behind it,
+         * so the status and the manual reconnect live here while this form
+         * is open. */}
+        {connectionState !== "ready" ? <ConnectionStatus /> : null}
         <KeyboardAvoidingView
           style={styles.fill}
           enabled={Platform.OS === "android"}

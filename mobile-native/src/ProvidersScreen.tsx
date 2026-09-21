@@ -13,7 +13,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { InstanceEntry } from "@evener/appwire-client";
+import type { ConnectionState, InstanceEntry } from "@evener/appwire-client";
 import {
   activeSourceLabel,
   CONNECTION_REPLACED_ERROR,
@@ -91,6 +91,15 @@ export function ProvidersScreen({
   // screen needs no "last known client" fallback: <Providers> below takes
   // only `store`, never `client` directly.
   const store = useCredentialStore();
+  // The write gate the credential core holds over a replaced connection's
+  // rows, subscribed so the resume below can wait for it: a manual retry
+  // turns the new connection ready before its own listing read lands, and a
+  // device start issued in between is refused as a stale-listing write -
+  // the exchange would strand in its error phase instead of resuming.
+  const writesRefused = useSyncExternalStore(
+    store.subscribe,
+    () => staleListingHeld(store.getState()),
+  );
   useEffect(() => () => signIn?.flow.dispose(), [signIn]);
   useEffect(() => {
     if (!signIn) return;
@@ -99,8 +108,21 @@ export function ProvidersScreen({
       setSignIn(null);
       return;
     }
-    signIn.flow.setConnection(state === "ready" ? client : null);
-  }, [signIn, activeProfile?.id, client, state]);
+    const connection = state === "ready" ? client : null;
+    signIn.flow.setConnection(connection);
+    // A sign-in started from behind the banner never started: with no
+    // connection its first start() was a no-op, so the exchange resumes
+    // when the connection it was opened without arrives. Only an idle flow
+    // - start() publishes "starting" synchronously, so a started one can
+    // never read as idle here - and a mid-flow disconnect keeps its own
+    // phase until the user retries.
+    if (
+      connection &&
+      !writesRefused &&
+      signIn.flow.getSnapshot().phase === "idle"
+    )
+      void signIn.flow.start();
+  }, [signIn, activeProfile?.id, client, state, writesRefused]);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -118,10 +140,16 @@ export function ProvidersScreen({
       <Providers
         key={`${activeProfile.id}:${revision}`}
         store={store}
+        connectionState={state}
         hubName={activeProfile.name}
         onSignIn={(name) => {
           const flow = new ProviderSignIn(store, name);
-          flow.setConnection(client);
+          // The raw client cannot be handed to the flow while the
+          // connection is away - its first exchange would fire at a
+          // connection that cannot reach the hub, the very start the wall
+          // this screen used to show made unreachable. The effect above
+          // hands the flow the connection once it is usable again.
+          flow.setConnection(state === "ready" ? client : null);
           setSignIn({ hubId: activeProfile.id, name, flow });
           void flow.start();
         }}
@@ -145,10 +173,12 @@ export function ProvidersScreen({
 
 function Providers({
   store,
+  connectionState,
   hubName,
   onSignIn,
 }: {
   store: CredentialInstancesStore;
+  connectionState: ConnectionState;
   hubName: string;
   onSignIn(name: string): void;
 }) {
@@ -469,6 +499,11 @@ function Providers({
             </View>
             <Action onPress={close}>Done</Action>
           </View>
+          {/* The native modal covers the screen's banner, so while this
+           * editor is open the status and the manual reconnect live here
+           * instead - and the draft stays in reach of neither a dismissal
+           * nor a missed recovery. */}
+          {connectionState !== "ready" ? <ConnectionStatus /> : null}
           <View style={styles.fill}>
             <ScrollView
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}

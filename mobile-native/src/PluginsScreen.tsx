@@ -322,6 +322,10 @@ function Plugins({
               </View>
               <Action onPress={close}>Done</Action>
             </View>
+            {/* The native modal covers the banner the screen shows behind
+             * it, so the status and the manual reconnect live here while
+             * this detail is open. */}
+            {connectionState !== "ready" ? <ConnectionStatus /> : null}
             <ScrollView
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
               contentContainerStyle={{ padding: 20, gap: 12 }}
