@@ -73,6 +73,44 @@ describe("marketplaceRemovalOutcome", () => {
     ).toEqual({ kind: "unavailable" });
   });
 
+  test("keeps a malformed applied member applied-but-unconfirmed, never miscast", () => {
+    // Each member must match appwire.MarketplaceEntry's wire shape
+    // (types.gen.ts) before its list can be published as authoritative: a
+    // malformed member is the malformed-applied-data case the doc comment on
+    // MarketplaceRemovalOutcome names, not a row to cast blindly.
+    for (const row of [
+      { name: 42, source: { kind: "github" }, lastUpdated: 1 }, // non-string name
+      { name: "acme", source: { kind: "github" } }, // missing lastUpdated
+      { name: "acme", lastUpdated: 1 }, // missing source
+      { name: "acme", source: "github", lastUpdated: 1 }, // source not an object
+      { name: "acme", source: null, lastUpdated: 1 },
+      { name: "acme", source: { repo: "acme/plugins" }, lastUpdated: 1 }, // source missing kind
+      { name: "acme", source: { kind: 7 }, lastUpdated: 1 }, // non-string kind
+      { name: "acme", source: { kind: "github" }, lastUpdated: "recent" }, // non-number lastUpdated
+      { name: "acme", source: { kind: "github", repo: 42 }, lastUpdated: 1 }, // non-string optional
+      { name: "acme", source: { kind: "github" }, installLocation: 7, lastUpdated: 1 },
+    ]) {
+      expect(marketplaceRemovalOutcome(cloneLitterError([row]))).toEqual({ kind: "unavailable" });
+    }
+    expect(marketplaceRemovalOutcome(cloneLitterError(["acme"]))).toEqual({ kind: "unavailable" });
+    // One malformed member rejects the whole list, not only its own slot.
+    expect(marketplaceRemovalOutcome(cloneLitterError([LOCAL, { name: "acme", lastUpdated: 1 }]))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  test("still accepts a minimal well-formed member and an empty applied list", () => {
+    // Every source field but kind is optional on the wire (appwire/types.go
+    // omitempty) and an empty list is a legitimate empty registry, so member
+    // validation must not reject payloads the hub really sends.
+    const minimal = { name: "acme", source: { kind: "url" }, lastUpdated: 0 };
+    expect(marketplaceRemovalOutcome(cloneLitterError([minimal]))).toEqual({
+      kind: "applied",
+      marketplaces: [minimal],
+    });
+    expect(marketplaceRemovalOutcome(cloneLitterError([]))).toEqual({ kind: "applied", marketplaces: [] });
+  });
+
   test("keeps truly ordinary failures retryable", () => {
     expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
   });
@@ -265,6 +303,12 @@ describe("removeMarketplace clone litter", () => {
     ["null list", cloneLitterError(null)],
     ["object list", cloneLitterError({ name: "not-a-list" })],
     ["unavailable list", cloneLitterError(null, { appliedUnavailable: true })],
+    ["row missing a field", cloneLitterError([{ name: "local" }])],
+    [
+      "row with an incorrectly-typed field",
+      cloneLitterError([{ name: 42, source: { kind: "github" }, lastUpdated: 1 }]),
+    ],
+    ["non-object row", cloneLitterError(["local"])],
   ])("does not publish a %s payload", async (_label, error) => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
