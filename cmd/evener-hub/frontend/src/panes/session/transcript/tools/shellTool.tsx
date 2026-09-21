@@ -96,15 +96,35 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   }
   buffer.current.live = live;
   const tail = buffer.current.tail.update(output);
-  if (command === "" && output === "") return null;
+  // The typed exit code's one home is the captured output's trailing footer,
+  // but the wire carries the two independently: an output can exist with NO
+  // exit trailer of either shape while the typed ItemModel.exitCode is present
+  // (a stored transcript predating footer-baking replayed by a newer daemon, a
+  // buffered path that lost its line). With the row's hover title retired, the
+  // body is the number's only home, so it synthesizes the daemon's own footer
+  // shape for exactly that gap - display-only, like the truncated-tail notice
+  // below, so Copy output keeps the raw evidence.
+  const exitFooter =
+    item.exitCode !== undefined && parseShellExitCode(output) === undefined
+      ? `[exit ${item.exitCode}]`
+      : undefined;
+  const renderedOutput =
+    tail.renderedText === "" && output === ""
+      ? exitFooter
+      : exitFooter === undefined
+        ? tail.renderedText
+        : `${tail.renderedText}\n${exitFooter}`;
+  if (command === "" && renderedOutput === undefined) return null;
   const body =
     live || !tail.truncated
-      ? tail.renderedText
-      : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${tail.renderedText}`;
+      ? renderedOutput
+      : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`;
   return (
     <>
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
-      {output !== "" && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
+      {renderedOutput !== undefined && (
+        <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />
+      )}
     </>
   );
 }

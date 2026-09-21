@@ -190,6 +190,38 @@ test("body renders the raw formatted command above the existing output block", (
   expect(container.textContent).not.toContain("$ ");
 });
 
+// The typed exit code's one home is the captured output's trailing footer — but
+// the wire carries the two independently, and an output can exist with NO exit
+// trailer of either shape while the typed ItemModel.exitCode is present (a
+// stored transcript predating footer-baking replayed by a newer daemon, a
+// buffered path that lost its line). With the row's hover title retired, the
+// body is the number's only home, so it synthesizes the daemon's own footer
+// shape for exactly that gap.
+test("body appends the daemon's exit footer when the typed exit code has no trailer in the output", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(<Body item={withCommand("false", { output: "boom", exitCode: 2 })} live={false} />);
+  expect(container.textContent).toContain("boom");
+  expect(container.textContent).toContain("[exit 2]");
+});
+
+test("body never duplicates the exit footer the output already carries", () => {
+  const Body = toolRendererFor("shell").body!;
+  const { container } = render(
+    <Body item={withCommand("false", { output: "done\n[exit 5]", exitCode: 5 })} live={false} />,
+  );
+  expect(container.textContent?.match(/\[exit 5\]/g)).toHaveLength(1);
+});
+
+test("body's synthesized exit footer is display-only - Copy output keeps the raw evidence", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  const Body = toolRendererFor("shell").body!;
+  render(<Body item={withCommand("false", { output: "boom", exitCode: 2 })} live={false} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy output" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith("boom");
+});
+
 test("body copies the exact raw command", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");
