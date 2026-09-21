@@ -80,12 +80,16 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 }
 
 // writeAttachmentFile stores data at the content-addressed path without
-// following a symlink at the leaf or overwriting an existing entry. An
-// existing entry is the same attachment from an earlier paste exactly when
-// its bytes match, which dedupes to a no-op; anything else there — a planted
-// file, a symlink — is a write failure the caller reports like any other.
+// following a symlink at the leaf or overwriting an existing entry: the
+// O_CREAT|O_EXCL create is atomic against the directory entry, and when the
+// path already holds anything — a file, a symlink pointing anywhere — the
+// open fails with EEXIST without ever dereferencing it, so a planted symlink
+// is refused, not written through. An existing entry is the same attachment
+// from an earlier paste exactly when its bytes match, which dedupes to a
+// no-op; anything else there — a planted file, a symlink — is a write failure
+// the caller reports like any other.
 func (s *Session) writeAttachmentFile(path string, data []byte) error {
-	f, err := createAttachmentFile(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if !errors.Is(err, os.ErrExist) {
 			return err
