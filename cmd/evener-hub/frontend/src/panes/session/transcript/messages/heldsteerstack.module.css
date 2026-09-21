@@ -1,0 +1,10 @@
+/* Deliberately bare: each row is the same UserMessageView real messages
+ * render, so the transcript's own rhythm styles the stack - only the list
+ * reset lives here. The provisional register itself (dashed edge, opacity,
+ * railmark) belongs to usermessageitem.module.css, applied by the
+ * `provisional` prop. */
+.stack {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
