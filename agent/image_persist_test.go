@@ -624,3 +624,33 @@ func TestProcessInput_PlantedAttachmentFile_NotReplaced(t *testing.T) {
 	}
 	awaitWarningNaming(t, warnCh, "shot.png")
 }
+
+// TestProcessInput_WithoutReadFileTool_OmitsAttachmentNote pins the tool
+// half of the announcement contract: the note promises read_file, so a
+// session whose registry does not carry that tool (role toolsets are
+// plugin-configurable) must not hear the promise. The bytes are still
+// persisted for later readers.
+func TestProcessInput_WithoutReadFileTool_OmitsAttachmentNote(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	sess.reg.Remove("read_file")
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	wantPath := expectedAttachmentPath(t, stateDir, sess.ID(), img)
+	if got, err := os.ReadFile(wantPath); err != nil || !bytes.Equal(got, png) {
+		t.Fatalf("attachment bytes must still be persisted: %v", err)
+	}
+	turn := lastTurnOfKind(t, sess, schema.TurnUserInput)
+	if !hasImagePart(turn.Message) {
+		t.Error("image must still ride the turn inline")
+	}
+	if _, ok := findSystemNotificationPart(turn.Message); ok {
+		t.Errorf("a session without the read_file tool must not be promised a read_file path: %+v", turn.Message.Content)
+	}
+}

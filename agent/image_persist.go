@@ -56,6 +56,10 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		return images
 	}
 	out := slices.Clone(images)
+	// The note promises read_file; a session whose registry does not carry the
+	// tool (role toolsets are plugin-configurable) must not hear that promise.
+	// The stored bytes are for later readers regardless.
+	announceStoredPath := s.reg.Get("read_file") != nil
 	for i := range out {
 		if out[i].Path != "" {
 			continue // already persisted by an earlier build of the same input
@@ -67,7 +71,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
-		if !s.fileToolsCanRead(path) {
+		if !announceStoredPath || !s.fileToolsCanRead(path) {
 			continue
 		}
 		out[i].Path = path
