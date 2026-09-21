@@ -21,6 +21,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // DefaultMaxLineBytes is the maximum transcript record payload. The trailing
@@ -126,6 +127,13 @@ type Entry struct {
 	Kind string      `json:"kind"` // Always "entry"
 	Seq  int         `json:"seq"`  // monotonically increasing line sequence number
 	Turn schema.Turn `json:"turn"` // the recorded conversation turn
+	// MachineryFlagged marks an entry written by a build that flags
+	// machinery parts at construction: its parts' Machinery flags are
+	// authoritative. Entries lacking the marker predate the flag, so
+	// DecodeEntry infers machinery from exact-block text shape for them —
+	// an unflagged block-shaped part in a marked entry is a user's
+	// verbatim paste and must stay unflagged.
+	MachineryFlagged bool `json:"machinery_flagged,omitempty"`
 }
 
 // ValidateHeader enforces the hard transcript-v2 boundary shared by writers
@@ -182,7 +190,24 @@ func DecodeEntry(line []byte) (Entry, error) {
 	if err := decodeStrictJSON(line, &entry); err != nil {
 		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
 	}
+	if !entry.MachineryFlagged {
+		inferPreFlagMachinery(&entry.Turn)
+	}
 	return entry, nil
+}
+
+// inferPreFlagMachinery flags block-shaped machinery parts on turns recorded
+// before part flags existed, so those transcripts keep filtering their
+// machinery notes under flag-only user-facing projection. It never runs on
+// marked entries: there an unflagged block-shaped part is a user pasting the
+// block verbatim, and the user's own words must survive.
+func inferPreFlagMachinery(turn *schema.Turn) {
+	for i := range turn.Message.Content {
+		p := &turn.Message.Content[i]
+		if p.Kind == llm.ContentText && !p.Machinery && llm.IsMachineryNotificationText(p.Text) {
+			p.Machinery = true
+		}
+	}
 }
 
 func decodeStrictJSON(line []byte, target any) error {
@@ -608,7 +633,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
 	for i, turn := range turns {
-		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn}); encErr != nil {
+		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
 			return firstSeq, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
 	}
