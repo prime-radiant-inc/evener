@@ -4,7 +4,10 @@ import {
   type TranscriptDisplayConfigV1,
   type TranscriptDisplayPatchResponse,
   toWireConfig,
+  toWireDefault,
+  WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
@@ -507,5 +510,167 @@ describe("transcript display adapter (package store delegation)", () => {
     });
     await transcriptDisplayStore.getState().refreshHubDefaults();
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 7, config: preset("full") });
+  });
+
+  test("draft actions forward to the package store and the checkpoint survives a client swap", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: preset("intent") },
+      mobile: { revision: 2, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    // editDraft forwards and the composed draft mirrors into the web state.
+    transcriptDisplayStore.getState().editDraft("mobile", preset("tools"));
+    expect(transcriptDisplayStore.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: preset("tools"),
+      generation: 1,
+    });
+    expect(storage.getItem("evener.prefs.transcriptDisplay.draft")).toBeTruthy();
+
+    // A replacement client builds a fresh package store: the browser port
+    // hands it the same durable checkpoint, and the new generation's read
+    // stamps it.
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: preset("intent") },
+      mobile: { revision: 2, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(replacement);
+    expect(transcriptDisplayStore.getState().draft).toMatchObject({
+      layout: "mobile",
+      revision: 2,
+      config: preset("tools"),
+    });
+    connectionStore.setState({
+      features: { ...(await replacement.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: preset("tools"),
+      generation: 1,
+    });
+
+    // discardDraft forwards and removes the durable record.
+    transcriptDisplayStore.getState().discardDraft();
+    expect(transcriptDisplayStore.getState().draft).toBeNull();
+    expect(storage.getItem("evener.prefs.transcriptDisplay.draft")).toBeNull();
+  });
+
+  test("a blocked draft port surfaces the package's storage failure through the mirror", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: preset("intent") },
+      mobile: { revision: 2, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    // A storage that rejects writes: the package's port failure feeds
+    // storageUnavailable/draftError through the mirror, and the package's
+    // own gate - reached by forwarding, with no web gate of its own -
+    // refuses the next edit.
+    const blocked = {
+      getItem: (key: string) => storage.getItem(key),
+      setItem: () => {
+        throw new Error("quota exceeded");
+      },
+      removeItem: () => {
+        throw new Error("quota exceeded");
+      },
+    };
+    vi.stubGlobal("localStorage", blocked);
+    expect(() => transcriptDisplayStore.getState().editDraft("mobile", preset("tools"))).toThrow(
+      /save the transcript draft/,
+    );
+    expect(transcriptDisplayStore.getState().storageUnavailable).toBe(true);
+    expect(transcriptDisplayStore.getState().draftError).toMatch(/save the transcript draft/);
+    expect(() => transcriptDisplayStore.getState().editDraft("mobile", preset("tools"))).toThrow(/unavailable/);
+
+    // Once storage recovers, a refresh re-reads the port and clears the
+    // failure through the mirror.
+    vi.stubGlobal("localStorage", storage);
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().storageUnavailable).toBe(false);
+    expect(() => transcriptDisplayStore.getState().editDraft("mobile", preset("tools"))).not.toThrow();
+  });
+
+  test("saveDraft settles through the adapter and the direct write stays gated while it is in flight", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: preset("intent") },
+      mobile: { revision: 2, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    transcriptDisplayStore.getState().editDraft("mobile", preset("tools"));
+
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on("evener/settings/transcriptDisplay/patch", () => reply.promise);
+    const save = transcriptDisplayStore.getState().saveDraft();
+    await vi.waitFor(() => expect(transcriptDisplayStore.getState().saving).toBe(true));
+    // The one end-to-end pass of the package's direct-write gate: the write
+    // forwards and refuses while the checkpointed save holds the layer.
+    await expect(transcriptDisplayStore.getState().patchHubDefault("mobile", preset("full"))).rejects.toThrow(
+      /unavailable/,
+    );
+    reply.resolve({ layout: "mobile", revision: 3, config: toWireConfig(preset("tools")) });
+    expect(await save).toEqual({ revision: 3, config: preset("tools") });
+    expect(transcriptDisplayStore.getState().saving).toBe(false);
+    expect(transcriptDisplayStore.getState().draft).toBeNull();
+    expect(storage.getItem("evener.prefs.transcriptDisplay.draft")).toBeNull();
+  });
+
+  test("conflict review, rebase, and an uncertain write's settlement mirror through the adapter", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: preset("intent") },
+      mobile: { revision: 2, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    transcriptDisplayStore.getState().editDraft("mobile", preset("tools"));
+
+    // A known conflict keeps the proposal for review; rebaseDraft forwards
+    // the review and clears the conflict.
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault({ revision: 5, config: preset("chat") }),
+      });
+    });
+    await expect(transcriptDisplayStore.getState().saveDraft()).rejects.toThrow("revision conflict");
+    expect(transcriptDisplayStore.getState().draftConflict).toBe(true);
+    transcriptDisplayStore.getState().rebaseDraft(5);
+    expect(transcriptDisplayStore.getState().draftConflict).toBe(false);
+    expect(transcriptDisplayStore.getState().draft).toMatchObject({ layout: "mobile", revision: 5 });
+
+    // A lost reply leaves the uncertainty mirrored, and an authoritative
+    // read settles it - all package machinery, all mirrored state.
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      throw new Error("connection lost");
+    });
+    await expect(transcriptDisplayStore.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(transcriptDisplayStore.getState().writeUncertain).toBe(true);
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().writeUncertain).toBe(false);
   });
 });
