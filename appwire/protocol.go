@@ -144,6 +144,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerDaemonList, DaemonListParams{}, DaemonListResponse{}, ScopeHub, "Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes."},
 	{MethodEvenerDaemonRetire, DaemonRetireParams{}, DaemonRetireResponse{}, ScopeBoth, "Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle."},
 	{MethodEvenerDaemonStatus, DaemonStatusParams{}, DaemonStatusResponse{}, ScopeDaemon, "Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility."},
+	{MethodEvenerDaemonIdleTimeoutSet, DaemonIdleTimeoutSetParams{}, DaemonIdleTimeoutSetResponse{}, ScopeDaemon, "Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions."},
 	{MethodEvenerThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
@@ -217,6 +218,10 @@ var Methods = []MethodSpec{
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
 	{MethodEvenerHostAttach, HostAttachParams{}, HostAttachResponse{}, ScopeHub, "Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state."},
+	{MethodEvenerHostAdd, HostAddParams{}, HostRow{}, ScopeHub, "Registers one sidecar host entry (name + SSH address + key path); validates like hub.toml loading and refuses a name hub.toml or the live set already holds."},
+	{MethodEvenerHostList, EmptyParams{}, HostListResponse{}, ScopeHub, "Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state."},
+	{MethodEvenerHostStatus, HostStatusParams{}, HostStatusResponse{}, ScopeHub, "Returns one host's list row for a single named host; never dials."},
+	{MethodEvenerHostRemove, HostRemoveParams{}, HostRemoveResponse{}, ScopeHub, "Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition

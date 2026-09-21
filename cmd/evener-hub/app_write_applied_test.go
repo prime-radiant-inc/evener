@@ -811,6 +811,42 @@ func TestInstances_SetDefaultWhoseReloadFailsIsStillApplied(t *testing.T) {
 	}
 }
 
+// The applied record belongs to the call that made the write, not to the
+// controller: a mutation that lands a write and then fails reports the marker
+// on its own error and leaves the controller's record clear, so a later call
+// that writes nothing cannot read or inherit it. A record left on the
+// controller for the RPC layer to read after the lock is released is exactly
+// what let a concurrent call reset or steal the mark (roborev on PR #2042);
+// this pins the per-call property that folding the mark onto the mutation's
+// own error while its lock is held gives.
+func TestInstances_AppliedMarkerBelongsToTheCallThatWrote(t *testing.T) {
+	// Load 1 is the fixture's own, load 2 Create's reload, load 3 this
+	// SetDefault's: SetDefault's write lands and the reload after it fails.
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
+	if err == nil {
+		t.Fatal("SetDefault = nil, want the failed reload reported")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("SetDefault = %v (%T), want the applied marker on the call's own error", err, err)
+	}
+	if f.ctl.applied.peekApplied() {
+		t.Fatal("SetDefault left its applied record on the controller: a later call could read or steal it")
+	}
+	// A call that writes nothing carries no marker and cannot inherit one.
+	err = f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "missing"})
+	if err == nil {
+		t.Fatal("SetDefault(missing) = nil, want the refusal")
+	}
+	if writeDidApply(err) {
+		t.Fatalf("SetDefault(missing) = %v (%T), want a plain refusal with no applied marker", err, err)
+	}
+}
+
 // LoginComplete saves the OAuth record and then reads the instance's status.
 // The record is on disk before the read, so a read that fails still leaves
 // every other client's provider list stale.

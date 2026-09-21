@@ -309,6 +309,15 @@ export interface DaemonIdentity {
   generation: string;
 }
 
+export interface DaemonIdleTimeoutSetParams {
+  identity: DaemonIdentity;
+  timeoutMillis: number;
+}
+
+export interface DaemonIdleTimeoutSetResponse {
+  lifecycle: DaemonLifecycle;
+}
+
 export interface DaemonLifecycle {
   phase: string;
   timeoutMillis: number;
@@ -931,6 +940,12 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HostAddParams {
+  name: string;
+  address: string;
+  keyPath?: string;
+}
+
 export interface HostAttachParams {
   host: string;
 }
@@ -950,16 +965,52 @@ export interface HostAttachResponse {
 export interface HostForwardedResult {
 }
 
+export interface HostListResponse {
+  hosts: HostRow[];
+}
+
 export interface HostNotificationParams {
   host: string;
   method: string;
   params?: unknown;
 }
 
+export interface HostRemoveParams {
+  name: string;
+}
+
+export interface HostRemoveResponse {
+  host: HostRow;
+}
+
 export interface HostRequestParams {
   host: string;
   method: string;
   params?: unknown;
+}
+
+export interface HostRow {
+  name: string;
+  address?: string;
+  keyPath?: string;
+  origin: string;
+  attached: boolean;
+  serverName?: string;
+  serverVersion?: string;
+  hubVersion?: string;
+  os?: string;
+  arch?: string;
+  lastAttachError?: string;
+  midAttach: boolean;
+  removed: boolean;
+}
+
+export interface HostStatusParams {
+  name: string;
+}
+
+export interface HostStatusResponse {
+  host: HostRow;
 }
 
 export interface InitializeParams {
@@ -2592,9 +2643,12 @@ export interface ThreadCapabilities {
   rename: boolean;
   /**
    * SkillInput advertises support for canonical {type:"skill", name} input
-   * items on the input-bearing turn mutations. False everywhere until
-   * runtime consumption is wired per endpoint; ValidateSkillInputSupport
-   * keeps skill items rejected wherever this capability is false.
+   * items on the input-bearing turn mutations. A live daemon advertises it
+   * when all of those endpoints are wired; the hub's cold projections
+   * (past reads, close and gave-up frames, and list rows) advertise the same
+   * current-daemon floor, since each input-bearing mutation re-verifies
+   * against the live daemon. ValidateSkillInputSupport keeps skill items
+   * rejected wherever this capability is false.
    */
   skillInput?: boolean;
 }
@@ -3343,6 +3397,7 @@ export const METHOD_NAMES = [
   "evener/daemon/list",
   "evener/daemon/retire",
   "evener/daemon/status",
+  "evener/daemon/idle-timeout/set",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -3416,6 +3471,10 @@ export const METHOD_NAMES = [
   "evener/sandbox/escalation/resolve",
   "evener/host/request",
   "evener/host/attach",
+  "evener/host/add",
+  "evener/host/list",
+  "evener/host/status",
+  "evener/host/remove",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3467,6 +3526,7 @@ export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
 export const STEERING_KINDS = [
   "interrupted",
+  "interrupted-salvage",
   "agent-message",
   "hook-context",
   "precompact-hook",
@@ -3546,6 +3606,7 @@ export interface MethodTypes {
   "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
   "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
+  "evener/daemon/idle-timeout/set": { params: DaemonIdleTimeoutSetParams; result: DaemonIdleTimeoutSetResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
@@ -3619,6 +3680,10 @@ export interface MethodTypes {
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
+  "evener/host/add": { params: HostAddParams; result: HostRow };
+  "evener/host/list": { params: EmptyParams; result: HostListResponse };
+  "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
+  "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
 }
 
 export interface NotificationTypes {

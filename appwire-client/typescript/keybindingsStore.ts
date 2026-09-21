@@ -27,6 +27,7 @@
 // reply leaves it `writeUncertain` until an authoritative read). Which one a
 // host uses is the host's product decision; the hub state they confirm is one.
 
+import { assertDraftDiscardable, discardCheckpointedDraft, persistCheckpointedDraft } from "./checkpointedDraftEditor";
 import type { AppwireClient } from "./client";
 import {
   createDraftRepository,
@@ -35,7 +36,7 @@ import {
   discardStoredDraft,
   UnreadableDraftError,
 } from "./draftCheckpointPort";
-import { errorText, WireError } from "./errors";
+import { errorText, wireRejectionPayload } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
@@ -43,6 +44,11 @@ import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./key
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
 import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
 import { createReadyGenerationFence } from "./readyGenerationFence";
+import {
+  createSettingsHubGeneration,
+  retireSettingsHubPayload,
+  settleUnsettleableWrite,
+} from "./settingsHubGeneration";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -463,17 +469,14 @@ export function decodeKeybindingDraftFields(value: unknown): {
   }
 }
 
-/** Extracts a payload the hub attached to a rejection under `key` when the
- * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
- * `current` (the server's state after a lost revision race) and the
- * post-rename durable failure's `applied` (the hub's rename already published
- * the patch and only a follow-up sync failed, so the write must be treated as
- * applied - not as a hubError that leaves editing disabled over live new
- * bindings; roborev PR #884 round 2). The discriminator is the string, never
- * the code - siblings share a code. */
+/** The conflict rejection's `current` (the server's state after a lost
+ * revision race) and the post-rename durable failure's `applied` (the hub's
+ * rename already published the patch and only a follow-up sync failed, so the
+ * write must be treated as applied - not as a hubError that leaves editing
+ * disabled over live new bindings; roborev PR #884 round 2), both decoded via
+ * wireRejectionPayload - see its own doc. */
 function rejectionPayload(error: unknown, info: string, key: string): KeybindingsOverrides | undefined {
-  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
-  return fromWireOverrides((error.data as Record<string, unknown>)[key]);
+  return wireRejectionPayload(error, info, key, fromWireOverrides);
 }
 
 /** What applying a confirmed payload does to the host's bindings. The
@@ -678,7 +681,6 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   // Ready-generation wiring: every refresh, write and notification captures
   // the generation it started under and lands only through the shared fence.
   const fence = createReadyGenerationFence(isSupported);
-  let unwireNotification: (() => void) | null = null;
   /** Set when an un-apply rolled back against a wedged registry (findings 31
    * and 32): the overrides are STILL firing, so the rollback hubError is not
    * stale and refreshFor's entry clear must not wipe it. Cleared by the next
@@ -803,38 +805,27 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   /** Publishes the end of a write whose reply can never be settled by
-   * anything else: lostHub (this write's own claim is intact and only
-   * support went away - the unknown window keeps the state and the
-   * in-flight work) means nothing else will ever clear `saving` for it.
-   * A superseded reply (a later write, or a payload retirement, took over)
-   * does nothing here - its successor owns the flags. */
+   * anything else. This store's own draftConflict (a field the shared
+   * helper's generic Fields type does not carry) rides through
+   * settleUnsettleableWrite's `extra` - the same posture every other
+   * unknown-outcome settle takes (no reply at all, a malformed reply): the
+   * proposal needs review, not just a retry. */
   function settleLostHubWrite(generation: number, token: number): void {
-    if (fence.lostHub(generation, token === fence.writeToken) && getState().saving) {
-      // Same posture as every other unknown-outcome settle (no reply at all,
-      // a malformed reply): the proposal needs review, not just a retry.
-      setState({ saving: false, writeUncertain: true, draftConflict: true });
-    }
+    settleUnsettleableWrite(fence, generation, token === fence.writeToken, getState, setState, {
+      draftConflict: true,
+    });
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
-   * support dropped, the hub was replaced): it stops presenting as current,
-   * every reply still in flight is superseded so it lands nothing, and the
-   * in-flight flags end here. A checkpointed write caught mid-flight has an
-   * UNKNOWN outcome - exactly what writeUncertain means, and what its
-   * checkpoint already says on disk; the next authoritative read settles it.
-   * `extra` is the site's own addition (payload arrays, hubError) in the
-   * same publish. */
+   * support dropped, the hub was replaced) - see retireSettingsHubPayload for
+   * the in-flight flags this resets. `extra` is the site's own addition
+   * (payload arrays, hubError) in the same publish; revision resets to 0
+   * with them (revision numbering is hub-scoped, so a retained revision
+   * would let applyHubOverrides' stale guard silently discard a lower
+   * revision the returning hub legitimately reports - roborev PR #884
+   * round 11). */
   function retirePayload(extra: Partial<KeybindingsStoreFields> = {}): void {
-    fence.supersede();
-    const state = getState();
-    setState({
-      loaded: false,
-      revision: 0,
-      saving: false,
-      hubLoading: false,
-      writeUncertain: state.writeUncertain || state.saving,
-      ...extra,
-    });
+    retireSettingsHubPayload(fence, getState, setState, { revision: 0, ...extra });
   }
 
   /** Applies a confirmed hub payload (get result, changed params, patch
@@ -927,31 +918,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
   }
 
-  function endReadyGeneration(): void {
-    fence.end();
-    unwireNotification?.();
-    unwireNotification = null;
-    // The ready generation that confirmed the loaded state just ended; nothing
-    // hub-sourced is current until the next generation's refresh lands. Reset
-    // the revision baseline WITH it: revision numbering is hub-scoped (finding
-    // 34 makes the same reset on the support-loss and rewire paths), and an
-    // automatic reconnect can be a hub RESTART serving a legitimately LOWER
-    // revision - applyHubOverrides' stale guard would otherwise reject that
-    // authoritative payload on every refresh, leaving the old hub's shortcuts
-    // live and editing silently disabled (roborev PR #884 round 11).
-    retirePayload();
-  }
-
-  function beginReadyGeneration(): void {
-    const generation = fence.begin();
-    if (generation < 0) return;
-    missedChangeNotification = false;
-    unwireNotification?.();
-    unwireNotification = client.onNotification((notification) => {
-      if (!fence.isCurrent(generation)) return;
-      onNotification(notification);
-    });
-  }
+  const { beginReadyGeneration, endReadyGeneration } = createSettingsHubGeneration({
+    fence,
+    wireNotifications: (generation) => {
+      missedChangeNotification = false;
+      return client.onNotification((notification) => {
+        if (!fence.isCurrent(generation)) return;
+        onNotification(notification);
+      });
+    },
+    retirePayload,
+  });
 
   function setSupport(support: KeybindingsSupport): void {
     const state = getState();
@@ -1367,42 +1344,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return { revision: state.revision, rules: state.rawOverrides };
   }
 
-  /** discardDraft's own gate, narrower than assertEditable: discarding needs
-   * no confirmed hub state to compose against, so hubSupport/loaded/
-   * loadError never block it. An unreadable record is the one storage
-   * failure discarding can FIX, so it is not a reason to refuse either -
-   * throwing the record away is exactly what the user is asking for. */
+  /** discardDraft's own gate - see assertDraftDiscardable. */
   function assertDiscardable(): void {
-    const state = getState();
-    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable))
-      throw new Error(UNAVAILABLE_MESSAGE);
+    assertDraftDiscardable(fence, getState, UNAVAILABLE_MESSAGE);
   }
 
+  /** Persists a freshly composed checkpoint - see persistCheckpointedDraft. */
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
-    let checkpoint: KeybindingDraftCheckpoint;
-    let saved: boolean;
-    try {
-      // createId() is this build's own local-write step, not the hub's - a
-      // failure minting one (a crypto/random-source failure, say) is exactly
-      // as much a local-write failure as save() throwing, and must not
-      // escape uncaught with the store never told a write was attempted.
-      checkpoint = { ...input, id: drafts.createId() };
-      saved = drafts.save(checkpoint);
-    } catch {
-      setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });
-      throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
-    }
-    if (!saved) {
-      // save()'s own refusal (another writer replaced the classified record
-      // since - see createDraftRepository) is a conflict, not a storage
-      // exception: adopt whatever is actually on disk, the same posture
-      // discardDraft/settleWrite take on their own refusal, rather than
-      // reporting storageUnavailable and leaving the stale classification
-      // in place.
-      setState(restoreDraft(getState()));
-      throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
-    }
-    return checkpoint;
+    return persistCheckpointedDraft(
+      drafts,
+      input,
+      getState,
+      setState,
+      restoreDraft,
+      DRAFT_SAVE_FAILED_MESSAGE,
+      DRAFT_REVIEW_AGAIN_MESSAGE,
+    );
   }
 
   function editDraft(rules: readonly KeybindingsRule[]): void {
@@ -1609,28 +1566,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function discardDraft(): void {
     assertDiscardable();
-    let removed: boolean;
-    try {
-      removed = drafts.discardClassified();
-    } catch {
-      setState({ storageUnavailable: true });
-      throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
-    }
-    if (!removed) {
-      // The record this store classified is gone, replaced by something
-      // else (another writer, another window): re-read what is actually
-      // there now rather than assume success, so a newer checkpoint surfaces
-      // instead of staying reported as discarded.
-      setState(restoreDraft(getState()));
-      return;
-    }
-    setState({
-      draft: null,
-      draftConflict: false,
-      draftError: null,
-      storageUnavailable: false,
-      draftUnreadable: false,
-    });
+    discardCheckpointedDraft(drafts, getState, setState, restoreDraft, DRAFT_DISCARD_FAILED_MESSAGE);
   }
 
   function rebaseDraft(reviewedRevision: number): void {

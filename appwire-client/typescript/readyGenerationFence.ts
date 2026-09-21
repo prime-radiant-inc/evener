@@ -35,6 +35,12 @@ export interface ReadyGenerationFence {
   claimRead(): number;
   /** Claims this write's token, superseding every earlier write. */
   claimWrite(): number;
+  /** No authoritative read has confirmed state for the active generation yet.
+   * The next payload is authoritative at any revision because a reconnect can
+   * be a hub restart with its own revision sequence. */
+  readonly awaitingFirstPayload: boolean;
+  /** Marks this generation's first authoritative read as applied. */
+  firstPayloadApplied(): void;
   /** WHY a write's reply is not its own to land, because the two answers
    * call for opposite things. LOST-HUB: the write's own claim is still
    * intact and only support went away (the unknown window keeps the state
@@ -66,6 +72,7 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
   let disposed = false;
   let readSerial = 0;
   let writeSerial = 0;
+  let awaitingFirstPayload = true;
 
   function isCurrent(generation: number): boolean {
     return !disposed && generation >= 0 && activeEpoch === generation;
@@ -97,6 +104,12 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
     claimRead: () => ++readSerial,
     claimWrite: () => ++writeSerial,
     lostHub: (generation, stillClaimed) => stillClaimed && isCurrent(generation),
+    get awaitingFirstPayload() {
+      return awaitingFirstPayload;
+    },
+    firstPayloadApplied() {
+      awaitingFirstPayload = false;
+    },
     supersede() {
       readSerial += 1;
       writeSerial += 1;
@@ -104,6 +117,7 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
     begin() {
       if (disposed) return -1;
       activeEpoch = ++epoch;
+      awaitingFirstPayload = true;
       return activeEpoch;
     },
     end,

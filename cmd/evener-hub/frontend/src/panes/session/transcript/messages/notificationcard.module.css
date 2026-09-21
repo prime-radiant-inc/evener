@@ -26,6 +26,20 @@
   display: none;
 }
 
+/* The status glyph in the rail beside the head's first line - the same seat
+ * ToolRow's .rowIcon gives the tool-kind glyph, composed from the shared
+ * icon-rail seat (styles/railseat.module.css): .seat is the avatar-column
+ * slot geometry (its margin-right net of this head's own --space-2 gap
+ * seats the title at the content edge), .gutterPull the breakpoint-gated
+ * reach into .runContent's reserved padding. Composed, not restated, so the
+ * rail's glyphs cannot drift apart; railseat.contract.test.ts pins the
+ * wiring. */
+.statusIcon {
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: gutterPull from "../../../../styles/railseat.module.css";
+}
+
 .headingText {
   flex: 0 1 auto;
   min-width: 0;

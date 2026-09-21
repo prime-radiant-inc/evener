@@ -51,6 +51,11 @@ const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
 const STORAGE_WAIT_MS = 10_000;
+// The store scope every enqueue transaction opens: the three active record
+// stores plus the sequence store. All three record stores are locked so the
+// cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
+// reads and writes under one transaction.
+const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
 
 export class MutationStorageTimeoutError extends Error {
   constructor() {
@@ -154,7 +159,7 @@ export class MutationOutboxIndexedDB {
 
   async enqueueIntent(intent: MutationIntent, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
-    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "enqueueIntent", async (transaction) => {
+    return this.#write(ENQUEUE_STORES, "enqueueIntent", async (transaction) => {
       // §4's stop barrier: a Stop whose cancel transaction committed while
       // this submission was in flight - after the click, before this write
       // issued - has left the ref's durable stop epoch past the click-time
@@ -164,6 +169,7 @@ export class MutationOutboxIndexedDB {
       const canceledByBarrier = barrier !== undefined && stopEpoch > barrier.stopEpoch;
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
+      await this.#assertMutationIdAvailable(transaction, clientMutationId);
       const record: MutationOutboxRecord = {
         ...intent,
         payload: { ...intent.payload, clientMutationId },
@@ -239,12 +245,13 @@ export class MutationOutboxIndexedDB {
   // cannot cancel the interrupt itself, and an aborted commit rolls both back.
   async enqueueInterruptAndCancel(intent: MutationIntent): Promise<MutationOutboxRecord> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
-    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "enqueueInterruptAndCancel", async (transaction) => {
+    return this.#write(ENQUEUE_STORES, "enqueueInterruptAndCancel", async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       await this.#cancelUnattempted(transaction, intent.targetRef);
       await this.#bumpStopEpoch(transaction, intent.targetRef);
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
+      await this.#assertMutationIdAvailable(transaction, clientMutationId);
       const record: MutationOutboxRecord = {
         ...intent,
         payload: { ...intent.payload, clientMutationId },
@@ -679,12 +686,13 @@ export class MutationOutboxIndexedDB {
 
   async resendRecovery(clientMutationId: string, intent: MutationIntent): Promise<MutationOutboxRecord | undefined> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
-    return this.#write([OUTBOX_STORE, RECOVERY_STORE, SEQUENCE_STORE], "resendRecovery", async (transaction) => {
+    return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(clientMutationId));
       if (!recovery) return undefined;
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
+      await this.#assertMutationIdAvailable(transaction, nextMutationId);
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -885,6 +893,26 @@ export class MutationOutboxIndexedDB {
       this.#onWriteStalled?.(waiting);
     } catch {
       // Status subscribers cannot change the durable transaction outcome.
+    }
+  }
+
+  // The cross-store uniqueness invariant the port's enqueue contract states
+  // (appwire-client .../mutation/outbox.ts): a freshly generated
+  // clientMutationId must be absent from all three active stores before it is
+  // written. The outbox's own `add` rejects a within-store duplicate as its
+  // backstop; this catches a collision with a record that has already moved to
+  // optimistic or recovery, which would otherwise let a later settlement keyed
+  // on the id overwrite or discard that older active record. Throws before any
+  // write, so the enclosing transaction aborts and its sequence allocation
+  // rolls back; the id is rejected, never silently regenerated.
+  async #assertMutationIdAvailable(transaction: IDBTransaction, clientMutationId: string): Promise<void> {
+    const [outbox, optimistic, recovery] = await Promise.all([
+      requestResult(transaction.objectStore(OUTBOX_STORE).get(clientMutationId)),
+      requestResult(transaction.objectStore(OPTIMISTIC_STORE).get(clientMutationId)),
+      requestResult(transaction.objectStore(RECOVERY_STORE).get(clientMutationId)),
+    ]);
+    if (outbox !== undefined || optimistic !== undefined || recovery !== undefined) {
+      throw new Error(`clientMutationId is already active in the mutation outbox: ${clientMutationId}`);
     }
   }
 

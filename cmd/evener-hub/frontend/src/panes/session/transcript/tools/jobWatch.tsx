@@ -626,7 +626,9 @@ function WatchListRow({ row }: { row: WatchRow }) {
     return (
       <div className={CLASS.rowStatic} data-testid="job-watch-row">
         <Chip>{chip}</Chip>
-        <span className={CLASS.rowId} title={row.id}>
+        {/* No native title beside the id: the EntityRef's hover card is the
+         * one floating surface on it, and a title would fire both at once. */}
+        <span className={CLASS.rowId}>
           <EntityRef id={row.id} />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
@@ -645,8 +647,8 @@ function WatchListRow({ row }: { row: WatchRow }) {
         }}
       >
         <Chip>{chip}</Chip>
-        <span className={CLASS.rowId} title={row.id}>
-          {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. */}
+        {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. No native title either: the hover card is the one floating surface on the id. */}
+        <span className={CLASS.rowId}>
           <EntityRef id={row.id} embedded />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>

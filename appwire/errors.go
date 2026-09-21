@@ -56,6 +56,29 @@ const (
 	// durable step failed; the error's data carries the applied canonical
 	// state. Same rule as ErrorKeybindingsPostRename, for the other store.
 	ErrorTranscriptDisplayPostApply ErrorInfo = "transcriptDisplayPostApply"
+	// ErrorMarketplaceUnregisteredCloneRemains marks a marketplace removal
+	// that APPLIED (the unregister save landed; Applied carries the updated
+	// marketplace list) before its clone's removal from disk failed. A
+	// client should reconcile from Applied instead of treating the removal
+	// as rejected - same rule as ErrorKeybindingsPostRename, for a delete
+	// instead of a patch, and a retry finds ErrMarketplaceNotFound rather
+	// than repeating this error.
+	ErrorMarketplaceUnregisteredCloneRemains ErrorInfo = "marketplaceUnregisteredCloneRemains"
+	// ErrorMarketplaceRemoveApplied marks a marketplace removal that APPLIED
+	// (the unregister save landed and its clone cleanup, if any, completed)
+	// but whose response could not carry the updated list, because the fresh
+	// read that builds it failed. Same rule as
+	// ErrorMarketplaceUnregisteredCloneRemains: a consumer reconciling a
+	// removal treats this as the removal standing, never retries it (a retry
+	// finds ErrMarketplaceNotFound), and never reads the missing list as
+	// "every marketplace gone". Distinct from the litter discriminant so a
+	// consumer can tell no-litter from litter - nothing was left on disk here,
+	// so this one carries no leftover-files warning. The consumer half of that
+	// rule is deliberately deferred to the marketplace reconciliation
+	// successors (#1954 SDK, #1960 web); until one binds this discriminant, a
+	// client has no binding for it and still surfaces the removal as a failed
+	// mutation.
+	ErrorMarketplaceRemoveApplied ErrorInfo = "marketplaceRemoveApplied"
 )
 
 type MutationOutcome string

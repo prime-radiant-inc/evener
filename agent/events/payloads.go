@@ -342,25 +342,26 @@ const SteeringSourceUser = "user"
 // carried to the UI so a label is ground truth rather than a guess at the
 // message's prose. Absent kind means "unknown" and the UI claims nothing.
 const (
-	SteeringKindInterrupted       = "interrupted"
-	SteeringKindAgentMessage      = "agent-message"
-	SteeringKindHookContext       = "hook-context"
-	SteeringKindPrecompactHook    = "precompact-hook"
-	SteeringKindCompactNudge      = "compact-nudge"
-	SteeringKindImageDescription  = "image-description"
-	SteeringKindNoToolCalls       = "no-tool-calls"
-	SteeringKindLoopDetected      = "loop-detected"
-	SteeringKindTasksDone         = "tasks-done"
-	SteeringKindTaskNudge         = "task-nudge"
-	SteeringKindTaskInactive      = "task-inactive"
-	SteeringKindNoteHandoff       = "note-handoff"
-	SteeringKindGoalObjective     = "goal-objective"
-	SteeringKindTranscriptPointer = "transcript-pointer"
-	SteeringKindCurrentTask       = "current-task"
-	SteeringKindTaskList          = "task-list"
-	SteeringKindNotification      = "notification"
-	SteeringKindProviderFailure   = "provider-failure"
-	SteeringKindHumanNote         = "human-note"
+	SteeringKindInterrupted        = "interrupted"
+	SteeringKindInterruptedSalvage = "interrupted-salvage"
+	SteeringKindAgentMessage       = "agent-message"
+	SteeringKindHookContext        = "hook-context"
+	SteeringKindPrecompactHook     = "precompact-hook"
+	SteeringKindCompactNudge       = "compact-nudge"
+	SteeringKindImageDescription   = "image-description"
+	SteeringKindNoToolCalls        = "no-tool-calls"
+	SteeringKindLoopDetected       = "loop-detected"
+	SteeringKindTasksDone          = "tasks-done"
+	SteeringKindTaskNudge          = "task-nudge"
+	SteeringKindTaskInactive       = "task-inactive"
+	SteeringKindNoteHandoff        = "note-handoff"
+	SteeringKindGoalObjective      = "goal-objective"
+	SteeringKindTranscriptPointer  = "transcript-pointer"
+	SteeringKindCurrentTask        = "current-task"
+	SteeringKindTaskList           = "task-list"
+	SteeringKindNotification       = "notification"
+	SteeringKindProviderFailure    = "provider-failure"
+	SteeringKindHumanNote          = "human-note"
 )
 
 // AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
@@ -369,6 +370,7 @@ const (
 // deleted read-only classifier rule demonstrated).
 var AllSteeringKinds = []string{
 	SteeringKindInterrupted,
+	SteeringKindInterruptedSalvage,
 	SteeringKindAgentMessage,
 	SteeringKindHookContext,
 	SteeringKindPrecompactHook,

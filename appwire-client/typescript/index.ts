@@ -78,6 +78,16 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+export type {
+  DiscardedDraftFields,
+  DraftDiscardableFields,
+  PersistedDraftFields,
+} from "./checkpointedDraftEditor";
+export {
+  assertDraftDiscardable,
+  discardCheckpointedDraft,
+  persistCheckpointedDraft,
+} from "./checkpointedDraftEditor";
 // chunkViewBackingForTests is deliberately absent here; the white-box test hook
 // is published through the non-shipped testing/reducerHooks.ts instead.
 export { pendingTextJoined } from "./chunkview";
@@ -147,6 +157,7 @@ export {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -162,6 +173,7 @@ export {
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
@@ -330,6 +342,8 @@ export {
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type { SettingsHubGeneration } from "./settingsHubGeneration";
+export { createSettingsHubGeneration } from "./settingsHubGeneration";
 export { canReadSharedNotes } from "./sharedNotesAvailability";
 export type {
   SlashEmbedding,
@@ -471,6 +485,21 @@ export {
   toWireDefaults,
   visibleCategoryInventory,
 } from "./transcriptDisplayConfig";
+export type {
+  HubDefaultsByLayout,
+  TranscriptDisplayChange,
+  TranscriptDisplayClient,
+  TranscriptDisplayStore,
+  TranscriptDisplayStoreActions,
+  TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreFields,
+  TranscriptDisplayStoreState,
+  TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
+} from "./transcriptDisplayStore";
+export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export type {
   ProjectedAnchor,
   ProjectedEntry,

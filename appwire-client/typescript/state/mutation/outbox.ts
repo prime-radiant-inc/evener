@@ -89,9 +89,19 @@ export interface MutationOutboxStorage<A extends MutationAttachmentRef = Mutatio
   // The optional barrier is the host's click-time stop-epoch capture (see
   // MutationStopBarrier): a storage that honors it commits the record
   // canceled when a Stop landed between the capture and this transaction.
+  //
+  // The generated clientMutationId must be unique across ALL THREE active
+  // stores (outbox, optimistic, recovery), not merely within the outbox: a
+  // record that has already moved on to optimistic or recovery still owns its
+  // id, and a second active record holding it would let a settlement keyed on
+  // the id overwrite or discard that older one. An enqueue that collides with
+  // any of the three rejects in the same transaction - rolling the record's
+  // sequence allocation back with it - and never silently regenerates the id
+  // unless a host deliberately chooses that policy.
   enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>>;
   // Stop's combined durable write: cancel the ref's non-attempted rows and
   // enqueue the interrupt record in one transaction — both or neither.
+  // The generated id obeys enqueueIntent's cross-store uniqueness invariant.
   enqueueInterruptAndCancel(intent: MutationIntent<A>): Promise<MutationOutboxRecord<A>>;
   // Every ref with a record still waiting, for a full scan.
   listTargetRefs(): Promise<string[]>;

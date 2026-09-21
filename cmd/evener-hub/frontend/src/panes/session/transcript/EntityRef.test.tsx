@@ -1,4 +1,4 @@
-import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel, TurnModel } from "@evener/appwire-client";
+import type { ActivityJob, ActivityTree, ItemModel, TurnModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -6,6 +6,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/work
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { EntityRef } from "./EntityRef";
+import { delegateView } from "./entityView.testFixture";
 
 beforeAll(async () => {
   await import("../");
@@ -100,43 +101,6 @@ function watchView(
   const turns: TurnModel[] = [{ id: "turn-1", status: "completed", items: [item] }];
   const view = buildEntityView({ sessionRef: "local:s", turns, stale: false, ended: false }).get(id);
   if (!view) throw new Error("expected watch fixture to resolve");
-  return view;
-}
-
-function delegateView(
-  id = "dlg_x",
-  state: { stale?: boolean; ended?: boolean } = {},
-  overrides: Partial<EvenerDelegateInfo> = {},
-): EntityView {
-  const view = buildEntityView({
-    sessionRef: "local:s",
-    delegates: [
-      {
-        ownerSessionId: "s",
-        rootSessionId: "s",
-        childSessionId: "child",
-        transcriptRef: "local:child",
-        type: "delegate",
-        lifecycle: "running",
-        phase: "running",
-        status: "running",
-        resumable: true,
-        needsAttention: false,
-        projectionRevision: 1,
-        task: "Review the first line\nthen continue",
-        agentType: "reviewer",
-        resolvedModel: "gpt-test",
-        runningForMs: 2_000,
-        usage: { inputTokens: 1_200, outputTokens: 300 },
-        ...overrides,
-        delegateId: id,
-      },
-    ],
-    turns: [],
-    stale: state.stale ?? false,
-    ended: state.ended ?? false,
-  }).get(id);
-  if (!view) throw new Error("expected delegate fixture to resolve");
   return view;
 }
 

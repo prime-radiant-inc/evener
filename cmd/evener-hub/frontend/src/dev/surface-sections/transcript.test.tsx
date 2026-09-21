@@ -52,7 +52,6 @@ test("preview collaborators use the supplied owner projection, not the stale lau
     const cards = view.getAllByTestId("subagent-row");
     expect(cards.map((card) => card.dataset.kind)).toEqual([
       "running",
-      "running",
       "done",
       "failed",
       "stopped",
@@ -60,10 +59,8 @@ test("preview collaborators use the supplied owner projection, not the stale lau
       "unknown",
       "unknown",
     ]);
-    expect(cards[1]?.dataset.attention).toBe("true");
-    expect(view.getAllByTestId("delegate-lifecycle").map((label) => label.textContent)).toEqual([
+    expect(view.getAllByTestId("delegate-status-word").map((word) => word.textContent)).toEqual([
       "Running",
-      "Running◆ Needs attention",
       "Idle · reported",
       "Failed",
       "Stopped",

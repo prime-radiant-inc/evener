@@ -590,6 +590,20 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   switch (item.kind) {
     case "assistant":
       return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
+    case "attachments":
+      // Only the display name is bounded — it is plain display text the
+      // renderer inserts into accessibility labels and modal copy. src is a
+      // data URI or a resolved fetch URL, and cutting it yields something the
+      // renderer cannot decode, so it passes through verbatim.
+      return {
+        ...item,
+        items: item.items.map((attachment) => ({
+          ...attachment,
+          name: attachment.name
+            ? truncateText(attachment.name, MAX_ITEM_BYTES)
+            : attachment.name,
+        })),
+      };
     case "activity":
       return {
         ...item,
@@ -2559,16 +2573,21 @@ export function createConversationStore() {
                 : projectItemAttachments(params.item);
               markLiveOwned(timelineIdentity(projectedWithReasoning));
               if (attachments) {
-                replacement.push({
-                  kind: "attachments",
-                  id: attachmentId,
-                  items: attachments,
-                  ...(params.item.transcriptKey
-                    ? { sourceTranscriptKey: params.item.transcriptKey }
-                    : projectedWithReasoning.kind === "activity"
-                      ? { sourceTranscriptKey: params.item.id }
-                      : {}),
-                });
+                // The companion row is built from wire images, not projected
+                // here, so it takes the same per-item bound the authoritative
+                // install paths apply (truncateItem) — src passes through.
+                replacement.push(
+                  truncateItem({
+                    kind: "attachments",
+                    id: attachmentId,
+                    items: attachments,
+                    ...(params.item.transcriptKey
+                      ? { sourceTranscriptKey: params.item.transcriptKey }
+                      : projectedWithReasoning.kind === "activity"
+                        ? { sourceTranscriptKey: params.item.id }
+                        : {}),
+                  }),
+                );
                 markLiveOwned(attachmentId);
               }
               const items: MobileTimelineItem[] = [];
@@ -2853,14 +2872,46 @@ export function createConversationStore() {
             // Compose every non-blank part rather than picking one with ||:
             // a warning carrying both a message and a hint shows both, the
             // same as the web and TUI renderers. title stays its own field
-            // here (unlike the canonical projector's row, which has no
-            // separate title slot and joins it into this same string).
+            // here, matching the canonical projector's row
+            // (project.ts's warningItem), which also carries title as its own
+            // field; both join message+hint into this same detail string.
             const detail = joinWarningParts([folded.text, folded.hint]);
-            // The serial alone is already unique; embedding the title (as
-            // an earlier round did) bloats this id and the ownership keys
-            // it feeds — foldWarningParams only bounds it to 2000 code
-            // points, far short of "short".
-            const id = `warning:${++liveNoticeSerial}`;
+            // Share the canonical row's identity. The reducer's warning fold
+            // (applyThreadNotification, above) has already appended this
+            // frame's warning item to the active turn as `conv` was built, so
+            // the item it just created is that turn's last warning item, and
+            // projectConversation's warningItem (project.ts) keys the
+            // canonical row on that same item.id. Distinct ids would leave a
+            // reread seeing this live-owned row as an omitted tail beside the
+            // canonical row — the warning shown twice, and an identity remount
+            // for good measure. (A frame the reducer dropped — no active turn —
+            // has no model item and no canonical row either, so it takes the
+            // synthetic serial id below.)
+            const activeTurn = conv.turns.find(
+              (turn) => turn.id === conv.activeTurnId,
+            );
+            const modelWarning = activeTurn?.items
+              .filter((item) => item.type === "warning")
+              .at(-1);
+            // The model's warning ids are per-turn counts
+            // (`item_warning_live_<turn>_<count>`), and warnings are not
+            // transcript-persisted: a reread drops the model's warning items
+            // while this live-owned row stays, so the next warning in the same
+            // turn is handed the count-0 id again. Adopting it a second time
+            // would put two rows under one id (and one identity) — so only
+            // take the model id while no retained row already holds it, and
+            // fall back to the unique serial otherwise. The serial is unique;
+            // embedding the title (as an earlier round did) merely bloated
+            // this id, and the model id never carries it either.
+            const canonicalId = modelWarning?.id;
+            const id =
+              canonicalId !== undefined &&
+              !liveOwnedRevs.has(canonicalId) &&
+              !conv.items.some(
+                (row) => timelineIdentity(row) === canonicalId,
+              )
+                ? canonicalId
+                : `warning:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,

@@ -128,6 +128,8 @@ export interface StoreLifecycleOptions<S> {
    * it: the store lowers it here, through the guarded setter, which drops the
    * write if the store has been disposed (nobody is listening then). */
   onFence?(set: FrameworkFreeStore<S>["setState"]): void;
+  /** State fields that survive reset without becoming a new publication. */
+  resetState?(state: S): Partial<S>;
   /** Whether the store's OWN state wants this list: it has one, a read failed
    * and left its error, or a read is in flight. A list-producing write issued
    * before anything ever read the list touches none of those fields; that
@@ -144,8 +146,9 @@ export interface StoreLifecycle<S> {
   /** Subscribes to the notification. Idempotent, and refused after
    * dispose(). */
   start(): void;
-  /** Back to the initial state; requests still in flight publish nothing when
-   * they land. The notification subscription, if started, stays. */
+  /** Back to the reset state; fields selected by resetState may survive while
+   * requests still in flight publish nothing when they land. The notification
+   * subscription, if started, stays. */
   reset(): void;
   /** Tells the lifecycle which connection the list belongs to now, and what
    * state it is in - the host calls it for every transition its connection
@@ -243,7 +246,7 @@ export function createStoreLifecycle<S>(
       wanted = false;
       fenceInFlight();
       const store = options.store();
-      store.setState(store.getInitialState());
+      store.setState({ ...store.getInitialState(), ...options.resetState?.(store.getState()) });
     },
     connectionChanged(client, state) {
       const previous = connection;
