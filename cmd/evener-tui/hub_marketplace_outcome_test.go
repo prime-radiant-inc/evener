@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,15 +30,23 @@ func marketplaceCloneRemainsError(data any) error {
 	}
 }
 
-func TestClassifyMarketplaceCloneRemainsJSONData(t *testing.T) {
+func marketplaceRemoveAppliedError(data any) error {
+	return appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: `marketplace "removed": removed, but the updated list could not be read`,
+		Data:    data,
+	}
+}
+
+func TestClassifyMarketplaceRemovalOutcomeJSONData(t *testing.T) {
 	valid := map[string]any{
 		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
 		"applied": map[string]any{
 			"marketplaces": []any{map[string]any{"name": "kept"}},
 		},
 	}
-	state, applied := classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(valid))
-	if state != marketplaceCloneRemainsApplied || len(applied.Marketplaces) != 1 || applied.Marketplaces[0].Name != "kept" {
+	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(valid))
+	if state != marketplaceRemovalApplied || len(applied.Marketplaces) != 1 || applied.Marketplaces[0].Name != "kept" {
 		t.Fatalf("JSON applied outcome = %v/%+v, want applied kept snapshot", state, applied)
 	}
 
@@ -45,31 +54,80 @@ func TestClassifyMarketplaceCloneRemainsJSONData(t *testing.T) {
 		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": nil},
 		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "appliedUnavailable": true},
 	} {
-		state, applied = classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(data))
-		if state != marketplaceCloneRemainsUnavailable || applied.Marketplaces != nil {
+		state, applied = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(data))
+		if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
 			t.Fatalf("JSON uncertain outcome = %v/%+v, want unavailable zero snapshot", state, applied)
 		}
 	}
-	state, applied = classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(map[string]any{
+	state, applied = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(map[string]any{
 		"evenerErrorInfo": "other-error",
 		"applied": map[string]any{
 			"marketplaces": []any{map[string]any{"name": "kept"}},
 		},
 	}))
-	if state != marketplaceCloneRemainsNotTyped || applied.Marketplaces != nil {
+	if state != marketplaceRemovalNotMarked || applied.Marketplaces != nil {
 		t.Fatalf("unmarked JSON outcome = %v/%+v, want ordinary error", state, applied)
 	}
 }
 
-func TestClassifyMarketplaceCloneRemainsDiscardsPartialJSONSnapshot(t *testing.T) {
+func TestClassifyMarketplaceRemoveAppliedMarkerData(t *testing.T) {
+	typed := appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: `marketplace "removed": removed, but the updated list could not be read`,
+		Data: appwire.MarketplaceRemoveAppliedData{
+			EvenerErrorInfo:    appwire.ErrorMarketplaceRemoveApplied,
+			AppliedUnavailable: true,
+		},
+	}
+	state, applied := classifyMarketplaceRemovalOutcome(typed)
+	if state != marketplaceRemovalRemoved || applied.Marketplaces != nil {
+		t.Fatalf("typed removed outcome = %v/%+v, want removed with no snapshot", state, applied)
+	}
+
+	// The hub emits the marker from one site, always with AppliedUnavailable,
+	// so the marker alone is the proof: neither a missing flag nor a stray
+	// snapshot the marker never carries may demote a standing removal back to
+	// a retryable failure.
+	for _, data := range []map[string]any{
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceRemoveApplied)},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceRemoveApplied), "appliedUnavailable": true},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceRemoveApplied), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept"}},
+		}},
+	} {
+		state, applied = classifyMarketplaceRemovalOutcome(marketplaceRemoveAppliedError(data))
+		if state != marketplaceRemovalRemoved || applied.Marketplaces != nil {
+			t.Fatalf("JSON removed outcome %v = %v/%+v, want removed with no snapshot", data, state, applied)
+		}
+	}
+
+	// The removed-marker check must not swallow the clone-remains family: its
+	// own marker still classifies, and an unknown discriminator stays
+	// ordinary.
+	state, _ = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(map[string]any{
+		"evenerErrorInfo":    string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
+		"appliedUnavailable": true,
+	}))
+	if state != marketplaceRemovalUnavailable {
+		t.Fatalf("clone-remains marker after removed-marker check = %v, want unavailable", state)
+	}
+	state, _ = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(map[string]any{
+		"evenerErrorInfo": "other-error",
+	}))
+	if state != marketplaceRemovalNotMarked {
+		t.Fatalf("unmarked removal outcome = %v, want ordinary", state)
+	}
+}
+
+func TestClassifyMarketplaceRemovalOutcomeDiscardsPartialJSONSnapshot(t *testing.T) {
 	malformed := map[string]any{
 		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
 		"applied": map[string]any{
 			"marketplaces": []any{map[string]any{"name": 42}},
 		},
 	}
-	state, applied := classifyMarketplaceCloneRemains(marketplaceCloneRemainsError(malformed))
-	if state != marketplaceCloneRemainsUnavailable || applied.Marketplaces != nil {
+	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(malformed))
+	if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
 		t.Fatalf("malformed partial snapshot = %v/%+v, want unavailable zero snapshot", state, applied)
 	}
 }
@@ -211,5 +269,68 @@ func TestMarketplaceRemoveBlocksDuplicateWhileOutcomeUnconfirmed(t *testing.T) {
 	}
 	if got.(hubModel).marketplaceRemovePending != "removed" {
 		t.Fatal("duplicate remove changed the pending identity")
+	}
+}
+
+func TestMarketplaceMutateResultRemovedOutcomeReconcilesWithoutLitterWarning(t *testing.T) {
+	stale := appwire.MarketplaceEntry{Name: "removed"}
+	confirmed := appwire.MarketplaceEntry{Name: "kept"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{
+		client:                   client,
+		pluginsPanel:             marketplacePanelWithEntries(t, stale),
+		marketplaceRemovePending: stale.Name,
+	}
+	err := appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: `marketplace "removed": removed, but the updated list could not be read`,
+		Data: appwire.MarketplaceRemoveAppliedData{
+			EvenerErrorInfo:    appwire.ErrorMarketplaceRemoveApplied,
+			AppliedUnavailable: true,
+		},
+	}
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: stale.Name})
+	after := got.(hubModel)
+	if cmd == nil {
+		t.Fatal("removed outcome should request a fresh list")
+	}
+	if after.marketplaceRemovePending != stale.Name || !after.marketplaceReconcilePending {
+		t.Fatalf("removed outcome pending state = %q/%v, want fenced until list success", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	if after.err == nil {
+		t.Fatal("removed outcome should leave a visible account")
+	}
+	if strings.Contains(after.err.Error(), "clone") {
+		t.Fatalf("removed outcome warning = %q, want no clone-litter claim", after.err.Error())
+	}
+	if _, ok := errors.AsType[appwire.WireError](after.err); !ok {
+		t.Fatalf("removed outcome warning = %v, want original WireError in error chain", after.err)
+	}
+	if _, dup := after.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: stale.Name}); dup != nil {
+		t.Fatal("duplicate remove should stay blocked while the removed outcome reconciles")
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("removed outcome should preserve the stale marketplace row")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != stale.Name {
+		t.Fatalf("panel selected marketplace after removed outcome = %q, want %q", remove.Name, stale.Name)
+	}
+
+	list := cmd().(launchconfig.MarketplaceListResultMsg)
+	if list.Err != nil || list.ReconcileGeneration != after.marketplaceReconcileGeneration || len(list.List.Marketplaces) != 1 || list.List.Marketplaces[0].Name != confirmed.Name {
+		t.Fatalf("reconcile result = %+v, want confirmed list", list)
+	}
+	got, _ = after.handleMarketplaceListResult(list)
+	reconciled := got.(hubModel)
+	if reconciled.marketplaceRemovePending != "" || reconciled.marketplaceReconcilePending {
+		t.Fatalf("after reconciliation pending state = %q/%v, want cleared", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
 	}
 }

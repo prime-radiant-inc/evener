@@ -648,8 +648,8 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
 		if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
-			switch state, applied := classifyMarketplaceCloneRemains(msg.Err); state {
-			case marketplaceCloneRemainsApplied:
+			switch state, applied := classifyMarketplaceRemovalOutcome(msg.Err); state {
+			case marketplaceRemovalApplied:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
 				m.marketplaceRemovePending = ""
 				m.marketplaceReconcilePending = false
@@ -660,8 +660,21 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 					return m, cmd
 				}
 				return m, nil
-			case marketplaceCloneRemainsUnavailable:
+			case marketplaceRemovalUnavailable:
 				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
+				m.marketplaceReconcilePending = true
+				if m.client != nil {
+					m.marketplaceReconcileGeneration++
+					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+				}
+				return m, nil
+			case marketplaceRemovalRemoved:
+				// The removal and its clone cleanup both landed; only the
+				// fresh list read failed, and the marker carries no
+				// snapshot (appwire.MarketplaceRemoveAppliedData), so
+				// reconcile from a fresh read rather than retrying, and
+				// never claim litter - nothing was left on disk.
+				m.err = marketplaceRemovedWarning(msg.Err)
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
