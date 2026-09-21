@@ -9,6 +9,7 @@ import {
   resolveEffectiveConfig,
   type TranscriptDisplayConfigV1,
   type TranscriptDisplayStore,
+  type TranscriptDraft,
   transcriptDisplaySupport,
   type ViewportClass,
   WireError,
@@ -20,6 +21,7 @@ import { connectionStore } from "./connection";
 import { dualWriteTranscriptDisplayLegacy, migrateLegacyTranscriptDisplay, readTranscriptDisplayLocal } from "./prefs";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createBrowserSync } from "./transcriptDisplay/crossTabSync";
+import { browserDraftStorage } from "./transcriptDisplay/draftStorage";
 import {
   LOCAL_KEYS,
   removeLocal,
@@ -54,6 +56,13 @@ export interface TranscriptDisplayStoreState {
   hubErrors: Partial<Record<ViewportClass, string>>;
   storageWarning: string | null;
   hubSupport: "unknown" | "supported" | "unsupported";
+  draft: TranscriptDraft | null;
+  saving: boolean;
+  writeUncertain: boolean;
+  storageUnavailable: boolean;
+  draftUnreadable: boolean;
+  draftConflict: boolean;
+  draftError: string | null;
   setViewport(layout: ViewportClass): void;
   setLocal(layout: ViewportClass, config: TranscriptDisplayConfigV1): void;
   clearLocal(layout: ViewportClass): void;
@@ -61,11 +70,25 @@ export interface TranscriptDisplayStoreState {
   applyHubChange(change: TranscriptDisplayChange): void;
   refreshHubDefaults(): Promise<void>;
   patchHubDefault(layout: ViewportClass, config: TranscriptDisplayConfigV1): Promise<HubTranscriptDisplayDefault>;
+  editDraft(layout: ViewportClass, config: TranscriptDisplayConfigV1): void;
+  saveDraft(layout?: ViewportClass, config?: TranscriptDisplayConfigV1): Promise<HubTranscriptDisplayDefault>;
+  discardDraft(): void;
+  rebaseDraft(reviewedRevision: number): void;
 }
 
 function initialState(): Omit<
   TranscriptDisplayStoreState,
-  "setViewport" | "setLocal" | "clearLocal" | "effective" | "applyHubChange" | "refreshHubDefaults" | "patchHubDefault"
+  | "setViewport"
+  | "setLocal"
+  | "clearLocal"
+  | "effective"
+  | "applyHubChange"
+  | "refreshHubDefaults"
+  | "patchHubDefault"
+  | "editDraft"
+  | "saveDraft"
+  | "discardDraft"
+  | "rebaseDraft"
 > {
   return {
     viewport: "desktop",
@@ -77,6 +100,13 @@ function initialState(): Omit<
     hubErrors: {},
     storageWarning: null,
     hubSupport: "unknown",
+    draft: null,
+    saving: false,
+    writeUncertain: false,
+    storageUnavailable: false,
+    draftUnreadable: false,
+    draftConflict: false,
+    draftError: null,
   };
 }
 
@@ -129,6 +159,10 @@ let storeEpoch = 0;
 // adapter's preview restore below treat it exactly like the package's own
 // malformed-decode rejections.
 const MALFORMED_PATCH_MESSAGE = "Hub returned malformed transcript display PATCH response";
+// The package's own gate words, thrown by the adapter's draft actions when no
+// package store exists to forward to - the same refusal shape the package's
+// assertEditable produces when the hub is unusable.
+const UNAVAILABLE_MESSAGE = "Hub transcript display settings are unavailable.";
 
 function isExactPatchReply(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -216,6 +250,29 @@ function mirrorPackageState(store: TranscriptDisplayStore, next: PackageStoreSta
     }
     transcriptDisplayStore.setState({ drafts: { ...liveDrafts, ...restoredPreviews } });
   }
+  if (epoch !== storeEpoch) return;
+  // The draft editor's fields mirror the same way the hub fields do: each
+  // delta is only a trigger, the published value sourced from the store's
+  // live state at publish time. The package owns every gate and the whole
+  // settlement machinery; the adapter adds none of its own.
+  if (next.draft !== previous.draft) transcriptDisplayStore.setState({ draft: store.getState().draft });
+  if (epoch !== storeEpoch) return;
+  if (next.saving !== previous.saving) transcriptDisplayStore.setState({ saving: store.getState().saving });
+  if (epoch !== storeEpoch) return;
+  if (next.writeUncertain !== previous.writeUncertain)
+    transcriptDisplayStore.setState({ writeUncertain: store.getState().writeUncertain });
+  if (epoch !== storeEpoch) return;
+  if (next.storageUnavailable !== previous.storageUnavailable)
+    transcriptDisplayStore.setState({ storageUnavailable: store.getState().storageUnavailable });
+  if (epoch !== storeEpoch) return;
+  if (next.draftUnreadable !== previous.draftUnreadable)
+    transcriptDisplayStore.setState({ draftUnreadable: store.getState().draftUnreadable });
+  if (epoch !== storeEpoch) return;
+  if (next.draftConflict !== previous.draftConflict)
+    transcriptDisplayStore.setState({ draftConflict: store.getState().draftConflict });
+  if (epoch !== storeEpoch) return;
+  if (next.draftError !== previous.draftError)
+    transcriptDisplayStore.setState({ draftError: store.getState().draftError });
 }
 
 // A hub default the package just accepted, landing in the web store through
@@ -312,6 +369,13 @@ function syncMirrorToStore(store: TranscriptDisplayStore): void {
   if (web.hubError !== current.hubError) changed.hubError = current.hubError;
   if (web.hubErrors !== current.hubErrors) changed.hubErrors = current.hubErrors;
   if (web.drafts !== current.drafts) changed.drafts = { ...current.drafts };
+  if (web.draft !== current.draft) changed.draft = current.draft;
+  if (web.saving !== current.saving) changed.saving = current.saving;
+  if (web.writeUncertain !== current.writeUncertain) changed.writeUncertain = current.writeUncertain;
+  if (web.storageUnavailable !== current.storageUnavailable) changed.storageUnavailable = current.storageUnavailable;
+  if (web.draftUnreadable !== current.draftUnreadable) changed.draftUnreadable = current.draftUnreadable;
+  if (web.draftConflict !== current.draftConflict) changed.draftConflict = current.draftConflict;
+  if (web.draftError !== current.draftError) changed.draftError = current.draftError;
   if (Object.keys(changed).length > 0) transcriptDisplayStore.setState(changed);
 }
 
@@ -373,7 +437,9 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
-  const store = createTranscriptDisplayStore({ client: strictPatchReplyClient(client) });
+  // The draft port is stateless - the record lives in localStorage - so each
+  // per-client package store reads the same durable checkpoint.
+  const store = createTranscriptDisplayStore({ client: strictPatchReplyClient(client), drafts: browserDraftStorage() });
   packageStore = store;
   unsubscribeMirror = store.subscribe((next, previous) => mirrorPackageState(store, next, previous));
   syncMirrorToStore(store);
@@ -509,7 +575,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
     patchHubDefault: async (layout, input): Promise<HubTranscriptDisplayDefault> => {
       const store = packageStore;
       if (store === null) {
-        const error = "Hub transcript display settings are unavailable.";
+        const error = UNAVAILABLE_MESSAGE;
         transcriptDisplayStore.setState({
           hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: error },
         });
@@ -528,6 +594,31 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         restoreMalformedPreview(store, layout, preview, error, restoreEpoch);
         throw error;
       }
+    },
+    // The draft editor's actions forward to the package store unchanged: no
+    // second web gate, no settlement logic, nothing the package's own
+    // assertEditable/discard/rebase machinery does not already decide. With
+    // no package store there is nothing to forward to, and the refusal is
+    // the package's own gate words.
+    editDraft: (layout, input) => {
+      const store = packageStore;
+      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      store.getState().editDraft(layout, input);
+    },
+    saveDraft: async (layout, input): Promise<HubTranscriptDisplayDefault> => {
+      const store = packageStore;
+      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      return store.getState().saveDraft(layout, input);
+    },
+    discardDraft: () => {
+      const store = packageStore;
+      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      store.getState().discardDraft();
+    },
+    rebaseDraft: (reviewedRevision) => {
+      const store = packageStore;
+      if (store === null) throw new Error(UNAVAILABLE_MESSAGE);
+      store.getState().rebaseDraft(reviewedRevision);
     },
   }),
 );
