@@ -287,6 +287,61 @@ func TestReplaySurveyFailuresKeepsUnindentedFailureOutput(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsVerdictLikeTestOutput is the review finding on
+// the D1 fix: the boundary predicate matched `FAIL`, `PASS`, and `ok` by
+// prefix, so a failing test's own `FAIL: ...`, `PASS: ...`, `FAILURE: ...`,
+// `ok done`, or `PASSWORD=...` line was read as toolchain framing and became a
+// boundary that cut the diagnosis out of the excerpt it exists to show. Only
+// the toolchain's exact verdict forms may end a block.
+func TestReplaySurveyFailuresKeepsVerdictLikeTestOutput(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestLooksRed\n"+
+			"FAIL: fixture-gamma is green and only looks red\n"+
+			"ok done\n"+
+			"--- FAIL: TestLooksRed (0.00s)\n"+
+			"PASS: peer up\n"+
+			"FAILURE: cannot connect\n"+
+			"PASSWORD=hunter2\n"+
+			"=== RUN   TestNext\n")
+	want := []string{
+		"FAIL: fixture-gamma is green and only looks red",
+		"ok done",
+		"--- FAIL: TestLooksRed (0.00s)",
+		"PASS: peer up",
+		"FAILURE: cannot connect",
+		"PASSWORD=hunter2",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a failing test's verdict-like output ended the block: replayed %q, want %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresVerdictFormsStillBound pins the other side of the
+// same predicate: the toolchain's exact verdict forms still end a block. A
+// test's own `ok done` is output, while `go test`'s summary `ok  \tpkg` is
+// framing; the binary's bare `PASS` and the package verdict `FAIL\tpkg` follow
+// suit. Under the old prefix match the first block ended at the `ok done` line,
+// so this case was red too.
+func TestReplaySurveyFailuresVerdictFormsStillBound(t *testing.T) {
+	path := writeSurveyLog(t,
+		"--- FAIL: TestFirst (0.00s)\n"+
+			"ok done\n"+
+			"ok  \tpkg\t0.01s\n"+
+			"--- FAIL: TestSecond (0.00s)\n"+
+			"    thing_test.go:1: the second failure\n"+
+			"PASS\n"+
+			"FAIL\tpkg\t0.01s\n")
+	want := []string{
+		"--- FAIL: TestFirst (0.00s)",
+		"ok done",
+		"--- FAIL: TestSecond (0.00s)",
+		"    thing_test.go:1: the second failure",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("the toolchain's exact verdict forms no longer bound a block: replayed %q, want %q", got, want)
+	}
+}
+
 // TestReplaySurveyFailuresMarkerlessTailWithTestOKPrint is the D2 contract:
 // the excerpt runs only once the survey pass has already exited nonzero, so
 // there is no green verdict to consult. A log with no failure marker whose

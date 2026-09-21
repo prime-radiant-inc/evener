@@ -758,19 +758,37 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	}
 }
 
+// surveyVerdictLine matches a `go test -v` verdict line and nothing that
+// merely begins like one: the test binary's bare `PASS` or `FAIL`, the package
+// verdict `go test` prints (`FAIL\tpkg\t1.2s`), and its summary
+// (`ok  \tpkg\t1.2s`). A token followed by a colon or a longer word is a test's
+// own output that starts with the token — `FAIL: ...`, `FAILURE: ...`,
+// `PASSWORD=...`, `ok done` — and stays in the block rather than ending it.
+var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)(?:\s|$)|^ok\s{2}`)
+
 // surveyFrameworkLine reports whether a `go test -v` log line is the
 // toolchain's own framing rather than a test's output: a `=== RUN`/`=== PAUSE`
-// phase line, a test verdict (`--- PASS`/`--- FAIL`), the binary's `PASS` or
-// `FAIL` verdict, `go test`'s `ok  pkg` summary, or another failure marker
-// (`panic:`). A failure's excerpt runs until the next such line, so a test's
-// own unindented output — fmt.Println, log.Print, a child process — stays in
-// the block instead of being cut at the first line that is not indented.
+// phase line, a test verdict (`--- PASS`/`--- FAIL`/`--- SKIP`), one of the
+// binary's or `go test`'s own verdicts (`PASS` or `FAIL` alone,
+// `FAIL\tpkg\t1.2s`, `ok  \tpkg\t1.2s`), or another failure marker (`panic:`).
+// A failure's excerpt runs until the next such line, so a test's own
+// unindented output — fmt.Println, log.Print, a child process — stays in the
+// block instead of being cut at the first line that is not indented.
+//
+// `=== ` and `--- ` stay prefix matches: they are the toolchain's own phase and
+// verdict framing, and the block boundaries are built on them, so matching them
+// less strictly would swallow a following test's framing into the block. A
+// test's own top-level line of that shape cannot be told from the real framing
+// on the line alone — `go test` indents t.Log output, but a test's direct
+// fmt.Println stays unindented, as the fixture's own `FAIL: ...` line shows —
+// so the prefix stays the toolchain's, and `--- FAIL` is a marker besides. The
+// close calls are the token forms, and they break toward keeping a line:
+// mis-including a test's own line costs a bounded amount of context, while
+// mis-classifying one cuts the diagnosis out of the excerpt it exists to show.
 func surveyFrameworkLine(line string) bool {
 	return strings.HasPrefix(line, "=== ") ||
 		strings.HasPrefix(line, "--- ") ||
-		strings.HasPrefix(line, "ok ") ||
-		strings.HasPrefix(line, "FAIL") ||
-		strings.HasPrefix(line, "PASS") ||
+		surveyVerdictLine.MatchString(line) ||
 		surveyRedLine.MatchString(line)
 }
 
