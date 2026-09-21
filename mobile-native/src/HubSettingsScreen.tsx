@@ -60,7 +60,7 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			{display === "banner" ? <ConnectionStatus /> : null}
 			<HubSettings
 				client={renderClient}
-					connectionState={state}
+				connectionState={state}
 				hubId={activeProfile.id}
 				hubName={activeProfile.name}
 				openTranscript={() =>
