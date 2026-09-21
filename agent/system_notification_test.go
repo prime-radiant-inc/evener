@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSystemNotification(t *testing.T) {
@@ -25,19 +26,20 @@ func TestSystemNotificationf(t *testing.T) {
 	}
 }
 
-// TestSystemNotificationUsesApptranscriptMachineryTags pins the
-// producer-to-filter contract across the package boundary: apptranscript's
-// reloaded-bubble filtering recognizes exactly these tag spellings, and the
-// agent package is the sole producer of the machinery blocks. Building the
-// producer from the same exported constants the filter matches on makes tag
-// drift a compile error instead of a silent machinery-note leak into
-// bubbles, fork prefill, and titles.
-func TestSystemNotificationUsesApptranscriptMachineryTags(t *testing.T) {
+// TestSystemNotificationFilteredByApptranscriptRoundTrip pins the
+// producer-to-filter contract observably: the block systemNotification
+// builds is classified as machinery by apptranscript's reload projection
+// (filtered out) while the user's own prose in the same message survives.
+// The shared constants make tag drift a compile error; this round trip keeps
+// the behavior from drifting with the spellings.
+func TestSystemNotificationFilteredByApptranscriptRoundTrip(t *testing.T) {
 	t.Parallel()
-	got := systemNotification("hello")
-	want := apptranscript.SystemNotificationOpenTag + "hello" + apptranscript.SystemNotificationCloseTag
-	if got != want {
-		t.Fatalf("systemNotification = %q, want the shared apptranscript tag constants %q", got, want)
+	msg := llm.Message{Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: systemNotificationf("stored at %q", "/state/attachments/shot.png")},
+		{Kind: llm.ContentText, Text: "check this screenshot"},
+	}}
+	if got := apptranscript.UserFacingText(msg); got != "check this screenshot" {
+		t.Fatalf("UserFacingText round trip = %q, want the prose to survive with the machinery block filtered out", got)
 	}
 }
 

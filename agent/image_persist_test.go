@@ -36,6 +36,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -368,13 +369,18 @@ func TestProcessInput_UnwritableAttachmentsDir_DegradesWithoutAnnotation(t *test
 	t.Parallel()
 	stateDir := t.TempDir()
 	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	// The session records the canonical state dir, so the warning naming the
+	// blocked attachments path uses the resolved spelling; on hosts whose
+	// temp roots sit behind symlinks the raw and canonical spellings differ
+	// and a raw wantDir never matches (the resolvedPath rationale).
+	canonical := resolvedPath(t, stateDir)
 	// Block the attachments directory path with a regular file so MkdirAll
 	// fails at turn-build time.
-	blocking := filepath.Join(stateDir, "sessions", sess.ID(), "attachments")
+	blocking := filepath.Join(canonical, "sessions", sess.ID(), "attachments")
 	if err := os.WriteFile(blocking, []byte("not a directory"), 0o600); err != nil {
 		t.Fatalf("create blocking file: %v", err)
 	}
-	wantDir := filepath.Join(stateDir, "sessions", sess.ID(), "attachments")
+	wantDir := blocking
 	warnCh := collectWarnings(sess)
 
 	png := validPNGFixture(t)
@@ -689,6 +695,31 @@ func TestProcessInput_TightensPreexistingAttachmentsDirMode(t *testing.T) {
 		t.Fatalf("stat attachments dir: %v", err)
 	} else if perm := info.Mode().Perm(); perm != 0o700 {
 		t.Errorf("pre-existing attachments dir mode = %o, want 700 after a write into it", perm)
+	}
+}
+
+// TestLiveActivitySessionLabelExcludesMachineryNote pins the label surface
+// of the announcement contract: the live-activity label derives its prompt
+// from the first user turn, which for an image paste carries the machinery
+// note naming the stored path — the label must carry the user's prose, not
+// the note, the same rule reloaded bubbles, fork prefill, and metadata
+// already follow.
+func TestLiveActivitySessionLabelExcludesMachineryNote(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sess := newImagePersistenceSession(t, stateDir, replyStep("reply"))
+	png := validPNGFixture(t)
+	img := ImageAttachment{MediaType: "image/png", Data: png, Name: "shot.png"}
+	if _, err := sess.ProcessInput(context.Background(), "look at this", []ImageAttachment{img}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	label := liveActivitySessionLabel(sess)
+	if strings.Contains(label, apptranscript.SystemNotificationOpenTag) || strings.Contains(label, "read_file") {
+		t.Errorf("activity label leaks the machinery note: %q", label)
+	}
+	if !strings.Contains(label, "look at this") {
+		t.Errorf("activity label must carry the user's own prose: %q", label)
 	}
 }
 
