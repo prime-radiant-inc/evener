@@ -1618,6 +1618,93 @@ describe("ConversationStore", () => {
       // live tail.
       expect(conv?.items[499]?.id).toBe("existing-599");
     });
+
+    // F8's stop signal is "the cap discarded rows", not "the final count
+    // reached the cap": capItems slices to the newest RETAINED_ITEM_CAP rows
+    // and then drops a leading attachment whose source fell off the cut, so a
+    // full merge that drops an orphan ends below the cap. A count-based proxy
+    // then keeps paging enabled through a load that discarded its whole page,
+    // and stops paging after a merge that discarded nothing.
+    const pairSource = {
+      kind: "user" as const,
+      id: "src-1",
+      text: "source row",
+    };
+    const pairAttachment = {
+      kind: "attachments" as const,
+      id: "src-1:attachments",
+      items: [{ id: "img-1", src: "data:image/png;base64,AAA" }],
+    };
+    const fillers = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        kind: "user" as const,
+        id: `filler-${i}`,
+        text: `filler ${i}`,
+      }));
+
+    it("stops paging when the cap discards the whole page, even though the orphan drop leaves the count below the cap", async () => {
+      const service = new FakeConversationService();
+      // Open with 502 rows whose 500-cut splits the pair: the attachment
+      // survives the slice as its first row (index 2 of 502, the first the
+      // newest-500 slice keeps), its source one slot earlier does not, and
+      // the orphan drop leaves 499 retained rows.
+      service.openConv = makeConversation({
+        items: [
+          { kind: "user" as const, id: "head", text: "head row" },
+          pairSource,
+          pairAttachment,
+          ...fillers(499),
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      expect(store.getState().conversation?.items.length).toBe(499);
+      store.setState({ olderCursor: "cursor-1" });
+      // The page is the split pair again: the cap cuts the source and the
+      // orphan drop removes the attachment, so this load retains nothing.
+      service.olderItems = {
+        items: [pairSource, pairAttachment],
+        nextCursor: "cursor-2",
+        hasEarlierItems: true,
+      };
+      await store.getState().loadOlder(service);
+      const conv = store.getState().conversation;
+      expect(
+        conv?.items.some(
+          (row) => row.id === "src-1" || row.id === "src-1:attachments",
+        ),
+      ).toBe(false);
+      // A load that discarded everything it fetched must end paging.
+      expect(store.getState().olderCursor).toBeNull();
+      expect(store.getState().hasEarlierItems).toBe(false);
+    });
+
+    it("keeps paging after a merge the cap did not trim, even when the retained count reaches the cap", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          { kind: "user" as const, id: "head", text: "head row" },
+          pairSource,
+          pairAttachment,
+          ...fillers(499),
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // One older row: the merge reaches exactly the cap and discards
+      // nothing, so the wire's own paging signal stands.
+      service.olderItems = {
+        items: [pairSource],
+        nextCursor: "cursor-2",
+        hasEarlierItems: true,
+      };
+      await store.getState().loadOlder(service);
+      const conv = store.getState().conversation;
+      expect(conv?.items[0]?.id).toBe("src-1");
+      expect(store.getState().olderCursor).toBe("cursor-2");
+      expect(store.getState().hasEarlierItems).toBe(true);
+    });
   });
 
   // --- item lifecycle and delta notification tests (Step 2) -------------------

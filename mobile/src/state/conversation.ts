@@ -1964,22 +1964,28 @@ export function createConversationStore() {
             for (const id of truncatedItemIds) {
               if (currentIds.has(id)) priorFrozen.add(id);
             }
-            const pageMerged = capItems([...deduped, ...currentConv.items]);
+            const mergedInput = [...deduped, ...currentConv.items];
+            const pageMerged = capItems(mergedInput);
             reconcileTruncationFrom(pageMerged, priorFrozen);
             const merged = truncateAndRecord(pageMerged);
             // Prune ownership maps for evicted IDs (IDs not in the final merged
             // set). This prevents stale freeze/page/live entries from
             // affecting future page loads or re-introductions.
             pruneEvictedIds(merged);
-            // F8: If we're at the cap and the merge trimmed older items,
-            // disable further paging honestly — set cursor to null so
-            // we don't repeatedly load rows that will be discarded.
-            // capItems keeps the newest RETAINED_ITEM_CAP rows, so the older
-            // page this call prepended is exactly what the cap discards: once
-            // at cap, no further page can retain a row. The cap therefore ends
-            // paging, and hasEarlierItems must say so — a cursor of null with
-            // the flag still true offers a load that early-returns "ignored".
-            const atCap = merged.length >= RETAINED_ITEM_CAP;
+            // F8: When the merge trimmed rows — the pre-cap merged set
+            // overflowed the retained cap, so capItems discarded the overflow
+            // from the oldest end — disable further paging honestly: set
+            // cursor to null so we don't repeatedly load rows that will be
+            // discarded. The overflow, never the final row count, is the
+            // signal: capItems also drops a leading orphaned attachment whose
+            // source fell off the cut, so a trimmed merge can end below
+            // RETAINED_ITEM_CAP (a 501-row merge that drops one orphan ends at
+            // 499) while it discarded its whole page, and a merge that ends at
+            // exactly the cap may have discarded nothing at all. Paging
+            // therefore ends exactly when the cap discarded rows, and
+            // hasEarlierItems must say so — a cursor of null with the flag
+            // still true offers a load that early-returns "ignored".
+            const atCap = mergedInput.length > RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
             set({
               conversation: { ...currentConv, items: merged },
