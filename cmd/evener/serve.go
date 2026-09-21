@@ -1044,7 +1044,28 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if params.TimeoutMillis > maxIdleTimeoutMillis {
 			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
 		}
+		// idle_timeout_attempted marks the instant between the pre-retarget
+		// identity check and the controller write: the caller's generation has
+		// been accepted but Retarget has not run. Like claim_attempted above, it
+		// is an observability beat outside every lock (retirementObserve is nil
+		// in production) so a test can interleave a thread/clear into exactly
+		// the window the revalidation below must still defend.
+		retirementObserve("idle_timeout_attempted", getSession().ID())
 		if err := retirement.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
+		}
+		// The pre-retarget check and Retarget are not atomic: a thread/clear can
+		// run to completion between them (mutations do not serialize with each
+		// other), re-rooting the controller to the replacement — and the write
+		// above then moved the REPLACEMENT's deadline, so a bare conflict would
+		// leave the harm in place. Re-read ownership and, if it moved, restore
+		// the configured deadline this daemon was spawned with — the root swap
+		// never resets it (AttachRoot keeps the armed timeout), so the stale
+		// write must be undone here — then refuse like the retire path does
+		// after its claim. The restore is best-effort: a controller that refuses
+		// Retarget is preparing or retiring, and its deadline no longer matters.
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
+			_ = retirement.Retarget(*daemonIdleTimeout)
 			return appwire.DaemonIdleTimeoutSetResponse{}, err
 		}
 		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil

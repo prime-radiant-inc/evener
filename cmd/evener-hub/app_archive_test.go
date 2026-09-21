@@ -149,17 +149,31 @@ func dispatchArchiveSet(t *testing.T, web *WebServer, params appwire.ArchivePara
 
 // idleTimeoutRecordingDaemon runs one fixture daemon that records every
 // evener/daemon/idle-timeout/set request it receives, answering with the
-// resident lifecycle.
+// resident lifecycle, or refusing the change when fail is set.
 func idleTimeoutRecordingDaemon(t *testing.T, entry *rendezvous.Entry, fail bool) *[]appwire.DaemonIdleTimeoutSetParams {
 	t.Helper()
-	var got []appwire.DaemonIdleTimeoutSetParams
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		got = append(got, params)
+	return idleTimeoutFixtureDaemon(t, entry, func(appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
 		if fail {
 			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.Unavailable("fixture refuses the deadline change")
 		}
 		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: *residentLifecycleForTest()}, nil
+	})
+}
+
+// idleTimeoutFixtureDaemon runs one fixture daemon serving
+// evener/daemon/idle-timeout/set through handle, records every request it
+// receives under a mutex so concurrent connections stay race-safe, and points
+// entry at the fixture's endpoint.
+func idleTimeoutFixtureDaemon(t *testing.T, entry *rendezvous.Entry, handle func(params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error)) *[]appwire.DaemonIdleTimeoutSetParams {
+	t.Helper()
+	var mu sync.Mutex
+	var got []appwire.DaemonIdleTimeoutSetParams
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		mu.Lock()
+		got = append(got, params)
+		mu.Unlock()
+		return handle(params)
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
@@ -170,6 +184,13 @@ func idleTimeoutRecordingDaemon(t *testing.T, entry *rendezvous.Entry, fail bool
 // archiveTestHub builds a hub over one resident roster entry and returns the
 // server pair plus the archive store, mirroring the daemon-action fixtures.
 func archiveTestHub(t *testing.T, entry rendezvous.Entry, prober forceStopProberFunc) (*httptest.Server, *WebServer, *hubcore.ArchiveStore) {
+	t.Helper()
+	return archiveTestHubWithTimeout(t, entry, prober, 5*time.Minute)
+}
+
+// archiveTestHubWithTimeout is archiveTestHub with the Hub's configured daemon
+// idle timeout varying per test.
+func archiveTestHubWithTimeout(t *testing.T, entry rendezvous.Entry, prober forceStopProberFunc, idleTimeout time.Duration) (*httptest.Server, *WebServer, *hubcore.ArchiveStore) {
 	t.Helper()
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, entry)
@@ -182,7 +203,7 @@ func archiveTestHub(t *testing.T, entry rendezvous.Entry, prober forceStopProber
 		Archive:           archive,
 		HubStateRoot:      t.TempDir(),
 		Past:              hubcore.NewPastIndex(""),
-		DaemonIdleTimeout: 5 * time.Minute,
+		DaemonIdleTimeout: idleTimeout,
 	})
 	t.Cleanup(hub.Close)
 	return hub, web, archive
@@ -247,22 +268,9 @@ func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
 func TestArchiveSetNeverLengthensShorterConfiguredDeadline(t *testing.T) {
 	entry := residentEntryForTest(t, 4507)
 	got := idleTimeoutRecordingDaemon(t, &entry, false)
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, entry)
-	roster := hubcore.NewRoster(runDir, forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+	_, web, archive := archiveTestHubWithTimeout(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
-	})).SetProcessAlive(func(int) bool { return true })
-	roster.Refresh()
-	archive := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
-		RunDir:            runDir,
-		Roster:            roster,
-		Archive:           archive,
-		HubStateRoot:      t.TempDir(),
-		Past:              hubcore.NewPastIndex(""),
-		DaemonIdleTimeout: 30 * time.Second,
-	})
-	t.Cleanup(hub.Close)
+	}, 30*time.Second)
 
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
 		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true,
@@ -316,6 +324,45 @@ func TestArchiveSetSkipsIdleTimeoutForOlderProtocolDaemon(t *testing.T) {
 	assertSessionArchived(t, archive, entry.SessionID, true)
 	if len(*got) != 0 {
 		t.Fatalf("older-protocol daemon received %d idle-timeout sets, want 0", len(*got))
+	}
+}
+
+// TestArchiveSetNeverRetargetsClearedSuccessorsDaemon pins the nudge's
+// session-scoped lookup. A daemon that survived thread/clear now serves the
+// replacement session, and its stable WorkspaceRef still names the predecessor
+// it was spawned for. Archiving the predecessor must not retarget that daemon —
+// the decision belongs to the predecessor, whose own daemon no longer exists —
+// while archiving the replacement, the daemon's current session, still does.
+func TestArchiveSetNeverRetargetsClearedSuccessorsDaemon(t *testing.T) {
+	entry := residentEntryForTest(t, 4512)
+	predecessorID := entry.ThreadID
+	entry.SessionID = hubtest.SessionID(t) // thread/clear advanced the current session
+	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
+	})
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: predecessorID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive predecessor session: %v", err)
+	}
+	assertSessionArchived(t, archive, predecessorID, true)
+	if len(*got) != 0 {
+		t.Fatalf("predecessor archive reached its former daemon %d times, want 0 — the daemon now belongs to the replacement", len(*got))
+	}
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind: appwire.ArchiveTargetSession, ID: entry.SessionID, Archived: true,
+	}); err != nil {
+		t.Fatalf("archive replacement session: %v", err)
+	}
+	assertSessionArchived(t, archive, entry.SessionID, true)
+	if len(*got) != 1 {
+		t.Fatalf("replacement archive reached its daemon %d times, want 1", len(*got))
+	}
+	if set := (*got)[0]; set.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
+		t.Fatalf("forwarded identity generation = %q, want the current ownership fingerprint", set.Identity.Generation)
 	}
 }
 
@@ -436,24 +483,15 @@ func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
 	t.Cleanup(release)
-	var mu sync.Mutex
-	var landed []int64
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+	got := idleTimeoutFixtureDaemon(t, &entry, func(params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
 		// The first request parks until released; later ones answer at once.
 		select {
 		case entered <- params:
 			<-releaseFirst
 		default:
 		}
-		mu.Lock()
-		landed = append(landed, params.TimeoutMillis)
-		mu.Unlock()
 		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: *residentLifecycleForTest()}, nil
 	})
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	t.Cleanup(daemonHTTP.Close)
-	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
 	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
 	})
@@ -513,11 +551,13 @@ func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
 		}
 	}
 	assertSessionArchived(t, archive, entry.SessionID, false)
-	mu.Lock()
-	defer mu.Unlock()
 	want := []int64{60000, (5 * time.Minute).Milliseconds()}
-	if !slices.Equal(landed, want) {
-		t.Fatalf("daemon applied deadlines %v, want persist order %v", landed, want)
+	var applied []int64
+	for _, set := range *got {
+		applied = append(applied, set.TimeoutMillis)
+	}
+	if !slices.Equal(applied, want) {
+		t.Fatalf("daemon applied deadlines %v, want persist order %v", applied, want)
 	}
 }
 

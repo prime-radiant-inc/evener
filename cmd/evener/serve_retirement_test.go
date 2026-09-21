@@ -610,6 +610,106 @@ func TestServeIdleTimeoutSetRefusesBadIdentityAndNegativeDeadline(t *testing.T) 
 	})
 }
 
+// TestServeIdleTimeoutSetRevertsDeadlineWhenClearSwapsOwnership proves the
+// setter revalidates ownership after the retarget: a thread/clear that
+// completes between the pre-retarget fence and the controller write re-roots
+// the controller to the replacement, and the stale write must not leave its
+// deadline there — the configured timeout is restored and the stale caller
+// gets the same conflict the retire path returns, while a current generation
+// can still move the deadline afterwards.
+func TestServeIdleTimeoutSetRevertsDeadlineWhenClearSwapsOwnership(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	deps.retirementClock = newServeRetireClock()
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+	args = append(args, "--daemon-idle-timeout", "1h")
+	runDir := serveArgValue(args, "--run-dir")
+
+	runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	// Park the setter between its ownership fence and the controller write.
+	releaseSet := rec.gateAt("idle_timeout_attempted")
+	defer releaseSet()
+	type setOutcome struct {
+		resp appwire.DaemonIdleTimeoutSetResponse
+		err  error
+	}
+	outcomeCh := make(chan setOutcome, 1)
+	go func() {
+		out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+			appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(entry), TimeoutMillis: 60000})
+		outcome := setOutcome{err: err}
+		if resp, ok := out.(appwire.DaemonIdleTimeoutSetResponse); ok {
+			outcome.resp = resp
+		}
+		outcomeCh <- outcome
+	}()
+	rec.await(t, "idle_timeout_attempted")
+
+	// A real thread/clear runs to completion in that window: it rewrites the
+	// rendezvous ownership to the replacement and re-roots the controller.
+	oldSessionID := entry.SessionID
+	clearErr := make(chan error, 1)
+	go func() {
+		clearErr <- state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                "local:" + oldSessionID,
+			ClientMutationID:   "clear-during-idle-timeout-set",
+			ExpectedInstanceID: oldSessionID,
+		})
+	}()
+	if err := <-clearErr; err != nil {
+		t.Fatalf("thread/clear during the idle-timeout set window: %v", err)
+	}
+	replacement := state.session(1)
+	if replacement == nil {
+		t.Fatal("thread/clear did not build a replacement session")
+	}
+	awaitRetirementSettled(t, state.srv)
+
+	releaseSet()
+	outcome := <-outcomeCh
+	var wire appwire.WireError
+	if !errors.As(outcome.err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("idle-timeout set whose generation went stale = %v (resp %+v), want CodeConflict", outcome.err, outcome.resp)
+	}
+
+	// The stale write was reverted: the replacement's controller is back on
+	// the configured 1h, not the archived minute the stale caller pushed.
+	out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
+	if err != nil {
+		t.Fatalf("status after the refused set: %v", err)
+	}
+	status, ok := out.(appwire.DaemonStatusResponse)
+	if !ok {
+		t.Fatalf("status result = %T, want DaemonStatusResponse", out)
+	}
+	if status.Lifecycle.TimeoutMillis != 3600000 {
+		t.Fatalf("replacement deadline = %d ms, want the configured 3600000 restored", status.Lifecycle.TimeoutMillis)
+	}
+	if got := state.srv.GetStatus().SessionID; got != replacement.ID() {
+		t.Fatalf("live session = %q, want the replacement %q", got, replacement.ID())
+	}
+	if status.Lifecycle.Phase != "resident" {
+		t.Fatalf("lifecycle phase = %q, want resident", status.Lifecycle.Phase)
+	}
+
+	// A current generation still moves the deadline: the fence refuses stale
+	// callers without wedging the setter.
+	current := awaitRendezvousEntry(t, runDir)
+	out, err = dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonIdleTimeoutSet,
+		appwire.DaemonIdleTimeoutSetParams{Identity: daemonIdentityFor(current), TimeoutMillis: 90000})
+	if err != nil {
+		t.Fatalf("idle-timeout set with the current generation: %v", err)
+	}
+	resp, ok := out.(appwire.DaemonIdleTimeoutSetResponse)
+	if !ok || resp.Lifecycle.TimeoutMillis != 90000 {
+		t.Fatalf("current-generation set = %+v, want the 90000ms deadline applied", out)
+	}
+}
+
 // TestServeManualRetirementResponseSurvivesServeCancel proves the accepted
 // manual retire response is delivered over the wire. The manual trigger must
 // not cancel the serve context - which closes the HTTP server and aborts the

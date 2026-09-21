@@ -73,6 +73,18 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 	if cfg.Archive == nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
 	}
+	// persistNudge lands the durable decision and, once it persisted, pushes
+	// a session decision to that session's resident daemon: the decision is
+	// the durable fact, the daemon deadline beneath it best-effort.
+	persistNudge := func() error {
+		if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
+			return appwire.InternalError("archive store error: " + err.Error())
+		}
+		if params.Kind == appwire.ArchiveTargetSession {
+			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
+		}
+		return nil
+	}
 	if params.Kind == appwire.ArchiveTargetSession && cfg.ResumeLocks != nil {
 		// The session lock covers exactly the durable write and its daemon
 		// nudge: requests on different connections run handlers concurrently,
@@ -85,22 +97,13 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 		if err := lock.LockContext(ctx); err != nil {
 			return appwire.ArchiveResponse{}, err
 		}
-		err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now())
-		if err == nil {
-			// The decision is durable; the daemon deadline beneath it is best-effort.
-			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
-		}
+		err := persistNudge()
 		lock.Unlock()
 		if err != nil {
-			return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
+			return appwire.ArchiveResponse{}, err
 		}
-	} else {
-		if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
-			return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
-		}
-		if params.Kind == appwire.ArchiveTargetSession {
-			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
-		}
+	} else if err := persistNudge(); err != nil {
+		return appwire.ArchiveResponse{}, err
 	}
 
 	// An archive decision can move a session in or out of tier eligibility;
