@@ -1060,6 +1060,41 @@ const itemNonCoverageFields = new Set([
   "observedCompletedAt",
 ]);
 
+// The item fields mergePageItem merges with `??`: a null on the fresh side
+// falls through to the older side's value, so a fresh null cannot hide older
+// data the merged result keeps, and an older null carries no data of its own —
+// coverage reads both null and undefined as absent for these. Every other
+// field the coverage walk reaches is spread-merged ({ ...older, ...newer };
+// the fresh side's explicit null overwrites the older value), where undefined
+// alone remains the absence marker.
+const itemNullishMergedFields = new Set([
+  "toolName",
+  "callId",
+  "argumentsJSON",
+  "description",
+  "eventKind",
+  "steeringKind",
+  "raw",
+  "output",
+  "error",
+  "prevalOnly",
+  "exitCode",
+  "images",
+  "outputImages",
+  "source",
+  "startedAt",
+  "completedAt",
+]);
+
+// What "absent" means for coverage follows each field's merge rule: every
+// turnCoverageFields member merges with `??` in mergePageTurn (nullishMerged
+// is true there for that reason), so null counts as absent for them exactly
+// as it does for the item fields above; spread-merged fields keep undefined as
+// their only absence marker.
+function absentForCoverage(value: unknown, nullishMerged: boolean): boolean {
+  return value === undefined || (nullishMerged && value === null);
+}
+
 function sameModelFields(left: object, right: object): boolean {
   const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
   return [...keys].every((key) => {
@@ -1081,16 +1116,21 @@ function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean 
   }
   return Object.keys(older).some((field) => {
     if (itemNonCoverageFields.has(field)) return false;
-    return (
-      (older as unknown as Record<string, unknown>)[field] !== undefined &&
-      matches.every((item) => (item as unknown as Record<string, unknown>)[field] === undefined)
+    const nullishMerged = itemNullishMergedFields.has(field);
+    const olderValue = (older as unknown as Record<string, unknown>)[field];
+    if (absentForCoverage(olderValue, nullishMerged)) return false;
+    return matches.every((item) =>
+      absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged),
     );
   });
 }
 
 function olderTurnAddsCoverage(older: TurnModel, matches: TurnModel[]): boolean {
   if (
-    turnCoverageFields.some((field) => older[field] !== undefined && matches.every((turn) => turn[field] === undefined))
+    turnCoverageFields.some(
+      (field) =>
+        !absentForCoverage(older[field], true) && matches.every((turn) => absentForCoverage(turn[field], true)),
+    )
   ) {
     return true;
   }

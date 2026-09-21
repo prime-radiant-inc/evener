@@ -3971,6 +3971,58 @@ test("mergeTurnHistory counts canonical fields on an unmatched warning-only turn
   expect(merged.turns[0]?.items[0]).toMatchObject({ type: "warning", warning: { title: "Provider" } });
 });
 
+test("mergeTurnHistory counts older usage a fresh null does not overwrite", () => {
+  const item = { id: "item-1", turnId: "turn-1", type: "agentMessage", text: "shared", status: "completed" };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-1", status: "completed", usage: { inputTokens: 7, outputTokens: 2 }, items: [item] }],
+    [{ id: "turn-1", status: "completed", usage: null, items: [{ ...item }] }],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns[0]?.usage).toEqual({ inputTokens: 7, outputTokens: 2 });
+});
+
+test("mergeTurnHistory does not count an older null as persisted coverage", () => {
+  const item = { id: "item-1", turnId: "turn-1", type: "agentMessage", text: "shared", status: "completed" };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-1", status: "completed", usage: null, items: [item] }],
+    [{ id: "turn-1", status: "completed", items: [{ ...item }] }],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns[0]?.usage).toBeNull();
+});
+
+test("mergeTurnHistory counts older item raw a fresh null does not overwrite", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [
+          {
+            id: "item-1",
+            turnId: "turn-1",
+            type: "agentMessage",
+            raw: { roundTimings: { totalMs: 5 } },
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    [
+      {
+        id: "turn-1",
+        status: "completed",
+        items: [{ id: "item-1", turnId: "turn-1", type: "agentMessage", raw: null, status: "completed" }],
+      },
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns[0]?.items[0]?.raw).toEqual({ roundTimings: { totalMs: 5 } });
+});
+
 test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh fragments", () => {
   const sharedItem = {
     id: "shared-item",
