@@ -277,6 +277,18 @@ type SessionConfig struct {
 	// one. Off by default until the mechanism wins held-out validation.
 	CheckpointReminder bool `json:"checkpoint_reminder,omitempty"`
 
+	// LogReducer archives build/test shell logs of 4 KiB and up (from a
+	// declared command set; file reads and search results bypass) to the
+	// session artifact store and replaces the observation the model receives
+	// with a receipt extracted by the configured cheap model and verified by
+	// deterministic code (schema, command, exit status, source hash, quoted
+	// lines in the source, strict size reduction, credential scan). Any
+	// failure falls back to the original log; the durable transcript always
+	// keeps the original. Receipt extraction runs only when a cheap model is
+	// configured (--fast-cheap-model); unconfigured, no extraction is
+	// attempted. Off by default until the mechanism wins held-out validation.
+	LogReducer bool `json:"log_reducer,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -880,6 +892,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		ObservationPacking:          c.ObservationPacking,
 		ActionFusion:                c.ActionFusion,
 		CheckpointReminder:          c.CheckpointReminder,
+		LogReducer:                  c.LogReducer,
 	}
 }
 
@@ -926,6 +939,7 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		ObservationPacking:          s.ObservationPacking,
 		ActionFusion:                s.ActionFusion,
 		CheckpointReminder:          s.CheckpointReminder,
+		LogReducer:                  s.LogReducer,
 	}
 }
 
