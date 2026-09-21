@@ -3835,6 +3835,71 @@ test("mergeTurnHistory counts surviving output despite a folded result's discard
   expect(items[0]?.text).toBe("");
 });
 
+test("mergeTurnHistory counts an older result whose only call coalesced into a fresh result", () => {
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-call",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_1",
+            turnId: "turn-call",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-z",
+            transcriptKey: "shared-key",
+            text: "",
+            argumentsJSON: "same args",
+          },
+        ],
+      },
+      {
+        id: "turn-page",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_result_2",
+            turnId: "turn-page",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-z",
+            text: "",
+            output: "older output",
+            status: "completed",
+            completedAt: new Date(10).toISOString(),
+          },
+        ],
+      },
+    ],
+    [
+      {
+        id: "turn-fresh",
+        status: "completed",
+        items: [
+          {
+            id: "item_tool_result_9",
+            turnId: "turn-fresh",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-z",
+            transcriptKey: "shared-key",
+            text: "",
+            argumentsJSON: "same args",
+            output: "fresh output",
+            status: "completed",
+            completedAt: new Date(20).toISOString(),
+          },
+        ],
+      },
+    ],
+  );
+
+  expect(merged.olderCoverage).toBe(true);
+  expect(merged.turns.map((turn) => turn.id)).toEqual(["turn-fresh", "turn-page"]);
+  expect(merged.turns[1]?.items[0]).toMatchObject({ id: "item_tool_result_2", output: "older output" });
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [
