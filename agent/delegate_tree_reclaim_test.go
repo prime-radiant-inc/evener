@@ -709,7 +709,7 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
-	// TRIPWIRE: the retry re-arms with the same 1s grace, so the release
+	// TRIPWIRE: the retry re-arms with the same grace, so the release
 	// fires here in real time only as a goroutine handoff; 15s only bounds
 	// a genuine hang.
 	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after residue settled", func() bool {
@@ -717,6 +717,121 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 		tree.mu.Unlock()
 		return released
+	})
+}
+
+// TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle
+// release pre-gate must refuse on the same session-local residue retirement
+// refuses on — a delegate-delivery parcel the pump has not consumed, restore
+// side effects still settling on the manager's children, and a manager that
+// has begun closing — because a teardown through any of them would abandon
+// work mid-flight. Each refusal re-arms the retry, so the settled runtime
+// still releases through the timer, never through a forced teardown.
+func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &fakeAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	fake := agenttest.NewFakeClock()
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		clock:            fake,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{Task: "idle sentinel"})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	sub := sess.subagents.get(res.ChildSessionID)
+	if sub == nil {
+		t.Fatalf("delegate missing from manager: %+v", res)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("delegate runner did not finish")
+	}
+	tree := sess.delegateController
+	runtime := sub.sess
+
+	stillResident := func() bool {
+		tree.mu.Lock()
+		defer tree.mu.Unlock()
+		return tree.live[res.DelegateID] != nil && tree.live[res.DelegateID].runtime != nil
+	}
+
+	// Residue 1: a queued delegate-delivery parcel the pump has not consumed.
+	// Virtual time has not moved, so the finalize-armed grace timer cannot
+	// fire behind the plant.
+	runtime.delegateDeliveryMu.Lock()
+	runtime.pendingDelegateDeliveries = append(runtime.pendingDelegateDeliveries, delegateDeliveryPlan{})
+	runtime.delegateDeliveryMu.Unlock()
+	if runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release succeeded with a queued delegate delivery; the pre-gate must refuse")
+	}
+	if !stillResident() {
+		t.Fatal("refused release released the runtime anyway")
+	}
+	runtime.delegateDeliveryMu.Lock()
+	runtime.pendingDelegateDeliveries = nil
+	runtime.delegateDeliveryMu.Unlock()
+
+	// Residue 2: restore side effects still settling on this manager.
+	runtime.subagents.mu.Lock()
+	runtime.subagents.activeRestoreSideEffects++
+	runtime.subagents.mu.Unlock()
+	if runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release succeeded with restore side effects settling; the pre-gate must refuse")
+	}
+	if !stillResident() {
+		t.Fatal("refused release released the runtime anyway")
+	}
+	runtime.subagents.mu.Lock()
+	runtime.subagents.activeRestoreSideEffects--
+	runtime.subagents.mu.Unlock()
+
+	// Residue 3: the manager has begun closing.
+	runtime.subagents.mu.Lock()
+	runtime.subagents.closing = true
+	runtime.subagents.mu.Unlock()
+	if runtime.releaseIdleRuntimeAfterFinalize() {
+		t.Fatal("release succeeded with the manager closing; the pre-gate must refuse")
+	}
+	if !stillResident() {
+		t.Fatal("refused release released the runtime anyway")
+	}
+	runtime.subagents.mu.Lock()
+	runtime.subagents.closing = false
+	runtime.subagents.mu.Unlock()
+
+	// Every refusal re-armed a retry; one advance past the grace fires the
+	// finalize-armed timer and every re-armed retry in deadline order, and the
+	// first to run releases the now-quiescent runtime while the rest stand
+	// down on the already-released runtime.
+	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
+	// TRIPWIRE: every residue plant is cleared and the grace timers have all
+	// fired, so the release only needs a goroutine handoff; 15s bounds a
+	// genuine hang.
+	waitForCondition(t, 15*time.Second, "re-armed retry to release the runtime after local retirement residue settled", func() bool {
+		tree.mu.Lock()
+		defer tree.mu.Unlock()
+		return tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
 	})
 }
 

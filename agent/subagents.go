@@ -2020,8 +2020,15 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
-		// Quiescence is reported, so the resident runtime subtree can release
-		// after the follow-up grace; the retention rationale and the fixture
+		// The schedule is armed whether or not the quiescence report
+		// succeeded, and that is load-bearing: a failed report is
+		// stale-shaped — this generation superseded, the resident runtime
+		// replaced by a racing restore, or the controller closing — and the
+		// release's own generation and claim guards refuse on exactly those,
+		// while a replacement runtime of the still-current generation is the
+		// restored-idle resident this release exists to reap. Scheduling only
+		// on report success would strand that replacement, which has no
+		// finalize tail of its own. The retention rationale and the fixture
 		// opt-out live on the seam's field comment.
 		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
 			a.sess.scheduleIdleRuntimeRelease(lease.generation)

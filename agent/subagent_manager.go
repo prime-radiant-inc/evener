@@ -269,6 +269,15 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
+// closeOrRestoreResiduePending reports whether the manager has begun closing
+// or restore side effects are still settling on its children. Retirement
+// refuses on it, and the idle-release pre-gate refuses on it for the same
+// reason: a teardown through either would race the close or abandon a
+// settling side effect. Callers must hold m.mu.
+func (m *subagentManager) closeOrRestoreResiduePending() bool {
+	return m.closing || m.activeRestoreSideEffects != 0
+}
+
 // hasRunningChildren reports whether any tracked child has unfinished work:
 // a run still executing, a drive or committed start in flight, a finalization
 // still draining, a restoration still reconstructing, or a runner whose done

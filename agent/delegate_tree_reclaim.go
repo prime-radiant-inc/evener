@@ -605,10 +605,12 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 
 	// Gate EVERY member before unhooking or tearing ANY: these are the
 	// conditions releaseQuiescentRuntime refuses on mid-release (running jobs,
-	// pending terminal flush) plus the notification and watch-send residue a
-	// released runtime could strand. Claim entries are resident by
-	// construction — claimableRuntimeSubtreeLocked admits only live runtimes —
-	// so no member needs a nil skip.
+	// pending terminal flush) plus the session-local residue a released
+	// runtime could strand — queued notifications, pending watch sends,
+	// delegate-delivery parcels, a closing manager, and settling restore
+	// side effects. Claim entries are resident by construction —
+	// claimableRuntimeSubtreeLocked admits only live runtimes — so no member
+	// needs a nil skip.
 	for _, entry := range claim.entries {
 		if !entry.runtime.idleReleasePregatesClear() {
 			// The residue a pre-gate refuses on is transient by definition —
@@ -743,8 +745,15 @@ func (s *Session) rescheduleIdleRuntimeReleaseRetry() {
 // BEFORE a non-terminal teardown holds for this session: no queued
 // notifications, no pending watch sends, no job-manager runtime obligations
 // (running jobs or a pending terminal flush) that releaseQuiescentRuntime
-// would refuse on mid-release, and no manager child still running — an
-// opportunistic release must not abandon a subagent mid-execution.
+// would refuse on mid-release, no manager child still running — an
+// opportunistic release must not abandon a subagent mid-execution — and
+// none of the session-local residue retirement refuses on: a
+// delegate-delivery parcel the pump has not consumed, a manager already
+// closing, or restore side effects still settling on this manager's
+// children. In-flight notification and delivery consumers are absent here
+// deliberately: they hold the tree's shared retirement mutation, which
+// ClaimIdleRuntimeRelease takes before any pre-gate runs, so the claim
+// itself refuses while one is executing.
 func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
 		return false
@@ -754,6 +763,17 @@ func (s *Session) idleReleasePregatesClear() bool {
 	}
 	if s.subagents != nil && s.subagents.hasRunningChildren() {
 		return false
+	}
+	if s.delegateDeliveryResiduePending() {
+		return false
+	}
+	if s.subagents != nil {
+		s.subagents.mu.Lock()
+		residue := s.subagents.closeOrRestoreResiduePending()
+		s.subagents.mu.Unlock()
+		if residue {
+			return false
+		}
 	}
 	return true
 }
