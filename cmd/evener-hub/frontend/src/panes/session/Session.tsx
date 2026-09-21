@@ -41,7 +41,7 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { useBlockedMutationEntries } from "./composer/queue/pendingTurnsStore";
+import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
@@ -53,6 +53,7 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
+import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
 import {
@@ -295,6 +296,31 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // The pending set's activation counter: the pill edge keys on this (not
   // the boolean) so an atomic pending-set replacement on resync re-fires it.
   const askEpoch = useAskDockActivationEpoch(ref);
+  // Held steering (steer/drain/promote ghosts - HeldSteerStack) renders as
+  // the transcript's second trailing-row tenant, below the AskDock when both
+  // exist (steering-ghost spec §1). Read ahead of the !model early return,
+  // per the rules of hooks, same as askPending/askEpoch above.
+  const pendingEntries = usePendingTurnEntries(ref);
+  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
+  const heldEpoch = useHeldSteerEpoch(ref, heldSteers);
+  // One predicate decides the row and the count (spec §1): renderedRowCount
+  // derives from the trailingRow handed to the list - the same form
+  // TranscriptBody itself uses - so the count and the row cannot drift and
+  // jump-to-bottom/append-follow cannot land one row short. Live-gated: no
+  // ghost on a notLoaded surface (spec §6 accepts that window).
+  const heldVisible = model !== undefined && model.status.type !== "notLoaded" && heldSteers.length > 0;
+  const trailingRow =
+    askPending || heldVisible
+      ? {
+          id: "live-edge",
+          content: (
+            <>
+              {askPending && <AskDock ref={ref} />}
+              {heldVisible && <HeldSteerStack ref={ref} />}
+            </>
+          ),
+        }
+      : undefined;
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
@@ -332,11 +358,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     loadOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    // The pending-questions dock is a real virtual row (trailingRow below),
-    // so every end-targeted scroll path - initial positioning, append-follow,
-    // jump-to-bottom - must count it or it lands one row short, leaving the
-    // answering surface below the viewport.
-    renderedRowCount: renderRows.length + (askPending ? 1 : 0),
+    // The transcript's trailing row - the ONE live-edge row the AskDock and
+    // the held-steer ghost stack share below - is a real virtual row
+    // (trailingRow below), so every end-targeted scroll path - initial
+    // positioning, append-follow, jump-to-bottom - must count it or it lands
+    // one row short, leaving the answering surface or the ghost below the
+    // viewport. The count derives from that same trailingRow value - the
+    // form TranscriptBody itself uses - so the row and the count cannot
+    // drift.
+    renderedRowCount: renderRows.length + (trailingRow !== undefined ? 1 : 0),
     sourceTurnRowIndexes,
     // ...and its activation is new content: an ask_user item completing
     // changes no turn/item shape, so without this signal a scrolled-away
@@ -346,6 +376,12 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     // the boolean never leaves true.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
+    // ...and a held steer APPEARING is new content the same way an ask
+    // activation is: it changes no turn/item shape, so the pill's edge
+    // detector never sees it without this signal. Arrival is the only edge
+    // (useHeldSteerEpoch never bumps on removal - departures are announced
+    // by HeldSteerAnnouncements, not counted as new content).
+    heldEpoch,
   });
   // The transcript's keyboard scroll (Alt+Arrow/Alt+Shift+Arrow, Phase 3):
   // per-pane handlers against the shared registry that decline unless THIS
@@ -478,14 +514,19 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
-        // The pending-questions dock is the transcript's last row while any
-        // batch is pending: it scrolls with the content (a reader scrolling
-        // back for context scrolls it away), its answer state lives in
-        // askDockStore so the virtual list unmounting the row loses nothing,
-        // and the list's end-anchoring surfaces a new question for a reader
-        // at the bottom without yanking one who scrolled up. Passed only
-        // while pending so no empty zero-height row pads the list otherwise.
-        trailingRow={askPending ? { id: "ask-dock", content: <AskDock ref={ref} /> } : undefined}
+        // The live-edge row is the transcript's last row while either
+        // bottom-dwelling tenant exists: the pending-questions dock while any
+        // batch is pending, and the held-steer ghost stack while any held
+        // steering is in flight, rendered below the dock when both exist
+        // (the one-row decision steering-ghost spec §1 makes). It scrolls
+        // with the content (a reader scrolling back for context scrolls it
+        // away), its tenants' interactive state lives in their own stores
+        // (askDockStore, the shared pendingTurnsStore) so the virtual list
+        // unmounting the row loses nothing, and the list's end-anchoring
+        // surfaces new content for a reader at the bottom without yanking
+        // one who scrolled up. Passed only while a tenant exists so no
+        // empty zero-height row pads the list otherwise.
+        trailingRow={trailingRow}
       />
       <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
         <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>

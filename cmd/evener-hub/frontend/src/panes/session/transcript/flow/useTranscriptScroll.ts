@@ -88,6 +88,14 @@ export interface UseTranscriptScrollOptions {
    * already told.
    */
   askDockActivationEpoch?: number;
+  /**
+   * The held-steering ghost stack's arrival counter (Session's
+   * useHeldSteerEpoch). Same role as askDockActivationEpoch: a held steer
+   * APPEARING changes no turn/item shape, so this carries the arrival edge
+   * for the pill. Removals never bump it (announced, not counted), so a
+   * departure leaves the pill alone.
+   */
+  heldEpoch?: number;
 }
 
 export interface ViewAnchorPosition {
@@ -769,6 +777,7 @@ export function useTranscriptScroll({
   sourceTurnRowIndexes,
   askDockPending = false,
   askDockActivationEpoch = 0,
+  heldEpoch = 0,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -1632,6 +1641,19 @@ export function useTranscriptScroll({
     if (!initializedRef.current || wasAtBottomRef.current) return;
     setPillCount((count) => count + 1);
   }, [askDockActivationEpoch]);
+
+  // The held-steer stack's arrival edge (see the option's doc comment):
+  // keyed on the epoch, never on stack presence, and a pane opened with a
+  // hold already in flight never fires it (initial mount scrolls to the
+  // end; the first observation baselines without a bump).
+  const prevHeldEpochRef = useRef(heldEpoch);
+  useLayoutEffect(() => {
+    const previous = prevHeldEpochRef.current;
+    prevHeldEpochRef.current = heldEpoch;
+    if (heldEpoch === previous || heldEpoch === 0) return;
+    if (!initializedRef.current || wasAtBottomRef.current) return;
+    setPillCount((count) => count + 1);
+  }, [heldEpoch]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn

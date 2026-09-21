@@ -692,6 +692,24 @@ async function seedPendingSend(ref = "ref_a"): Promise<string> {
   return record.clientMutationId;
 }
 
+// seedPendingSend's steer twin: the same durable write through this file's
+// own mutationStorage, with the steer family's wire method, so the pending
+// projection reconciles a held-steer entry exactly the way a real composer
+// steer does. The live-edge tests below use it as their arrival edge.
+async function seedPendingSteer(ref = "ref_a"): Promise<string> {
+  const record = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/steer",
+    payload: { ref, input: [{ type: "text", text: "focus on the parser" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/steer", input: [{ type: "text", text: "focus on the parser" }] },
+  });
+  await refreshPendingTurnsProjection(ref);
+  await flushPendingTurnsProjectionForTests();
+  return record.clientMutationId;
+}
+
 test("cold-start skeleton stays through optimistic send and user echo, then ends on the first authoritative frame", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -2236,6 +2254,201 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
   } finally {
     spy.mockRestore();
   }
+});
+
+// The steering-ghost spec's live-edge row: ONE trailing virtual row hosts
+// both bottom-of-transcript tenants - the AskDock and the held-steer ghost
+// stack - because a second synthetic row would double-count against every
+// end-targeted scroll path. The tests below pin that row's composition, the
+// derived count the scroll coordinator needs (a held steer without an ask
+// used to land those paths one row short), the heldEpoch arrival signal the
+// pill consumes, and the live-surface gate that keeps a notLoaded stub from
+// showing a ghost.
+
+// isDormantTranscript otherwise swaps Session's transcript branch for the
+// EmptyTranscript one, so every live-edge test hydrates a thread carrying
+// one real turn - the same readResponse-override fixture shape
+// readOnlyEntityThread uses above. Fresh object per call, never shared
+// across tests.
+function liveSurfaceThread(): Partial<Thread> {
+  return {
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "item_1", turnId: "turn_1", type: "agentMessage", text: "earlier reply", status: "completed" }],
+      },
+    ],
+  };
+}
+
+test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await seedPendingSteer("ref_a");
+  });
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector("[data-testid='held-steer-stack']")).not.toBeNull();
+  });
+
+  // With the ask dock pending too, both live in the ONE trailing row, dock
+  // first. Same ask_user drive the ask-dock trailing-row test above uses (a
+  // completed, unanswered ask_user call is a live pending question -
+  // deriveAskQuestions), on its own turn so it never rewrites the hydrated one.
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+    });
+    const item = {
+      type: "commandExecution",
+      id: "item_2",
+      turnId: "turn_2",
+      toolName: "ask_user",
+      callId: "call_2",
+      argumentsJson: JSON.stringify({
+        questions: [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }],
+      }),
+    };
+    fake.emitNotification({
+      method: "item/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "inProgress" } },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "completed" } },
+    });
+    fake.emitNotification(askPendingStatusChanged("ref_a"));
+  });
+  await waitFor(() => {
+    const stack = document.querySelector("[data-testid='held-steer-stack']");
+    expect(stack).not.toBeNull();
+    const dock = document.querySelector("[data-ask-response-dock]");
+    expect(dock).not.toBeNull();
+    // DOM order: the dock precedes the stack inside the same row.
+    expect(dock!.compareDocumentPosition(stack!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+test("no trailing row renders when neither an ask nor held steering exists", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  // Scoped to the trailing row's id: ordinary turn rows carry their own
+  // data-row-id values and must keep rendering.
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+test("a held steer without an ask still counts in renderedRowCount (the one-row-short regression)", async () => {
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const captured: Array<{ renderedRowCount?: number; heldEpoch?: number }> = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      captured.push({ renderedRowCount: options.renderedRowCount, heldEpoch: options.heldEpoch });
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => {
+      expect(captured.length).toBeGreaterThan(0);
+      expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
+    });
+    const beforeSeed = captured.at(-1)?.renderedRowCount;
+    await act(async () => {
+      await seedPendingSteer("ref_a");
+    });
+    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    const afterSeed = captured.at(-1)?.renderedRowCount;
+    expect(afterSeed).toBe((beforeSeed ?? 0) + 1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("heldEpoch bumps on arrival only - never on removal", async () => {
+  // Same spy shape as above, capturing options.heldEpoch instead: this is
+  // useHeldSteerEpoch's one end-to-end pin - the epoch Session feeds the
+  // scroll coordinator, observed through the options the coordinator
+  // actually received.
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const epochs: number[] = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      epochs.push(options.heldEpoch ?? 0);
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await act(async () => {
+      await seedPendingSteer("ref_a");
+    });
+    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
+    // A departure: Stop-cancel the ref's unattempted rows through the same
+    // real write every Stop path makes (PendingChips.test.tsx's shape).
+    await act(async () => {
+      const storage = new MutationOutboxIndexedDB();
+      await storage.cancelUnattempted("ref_a");
+      storage.close();
+      await refreshPendingTurnsProjection("ref_a");
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
+    expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("held steering renders only on a live surface: a notLoaded session shows no ghost", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { ...liveSurfaceThread(), status: { type: "notLoaded" } }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  // Wait for hydration first: with the model still pending there is no row
+  // for a different reason, and this test must fail on the status gate alone.
+  await waitFor(() => expect(screen.getByText("earlier reply")).toBeTruthy());
+  await act(async () => {
+    await seedPendingSteer("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(document.querySelector("[data-row-id='live-edge']")).toBeNull();
 });
 
 test("explains that an incompatible daemon needs an explicit restart", async () => {
