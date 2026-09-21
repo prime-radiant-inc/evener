@@ -48,21 +48,22 @@ type RetirementSnapshot struct {
 // This primitive is not a runtime eligibility proof; integration must add the
 // complete tree predicate before enabling retirement.
 type RetirementController struct {
-	mu            sync.Mutex
-	root          *Session
-	generation    uint64
-	phase         string
-	active        map[uint64]RetirementBlocker
-	nextLease     uint64
-	readers       int
-	readersDone   chan struct{}
-	changed       chan struct{}
-	clock         RetirementClock
-	timeout       time.Duration
-	timeoutWrites uint64
-	eligibleSince time.Time
-	failure       string
-	claim         *RetirementClaim
+	mu                sync.Mutex
+	root              *Session
+	generation        uint64
+	phase             string
+	active            map[uint64]RetirementBlocker
+	nextLease         uint64
+	readers           int
+	readersDone       chan struct{}
+	changed           chan struct{}
+	clock             RetirementClock
+	timeout           time.Duration
+	configuredTimeout time.Duration
+	timeoutWrites     uint64
+	eligibleSince     time.Time
+	failure           string
+	claim             *RetirementClaim
 	// evidenceGate is a test-only observation seam: when set it runs inside
 	// nonBlockingEvidence, with the caller's captured root and generation already
 	// fixed, so a test can change the controller identity while that read is in
@@ -96,14 +97,19 @@ func NewRetirementController(timeout time.Duration, clk RetirementClock) (*Retir
 	}
 	return &RetirementController{
 		phase: "resident", active: make(map[uint64]RetirementBlocker),
-		changed: make(chan struct{}, 1), clock: clk, timeout: timeout,
+		changed: make(chan struct{}, 1), clock: clk, timeout: timeout, configuredTimeout: timeout,
 	}, nil
 }
 
-// AttachRoot publishes the current serve root. The caller retains its mutation
-// lease through construction, publication and old-root settlement. Atomic Session
-// publication lets the phase check and generation change share one short critical
-// section without acquiring a Session lock or exposing a split-publication race.
+// AttachRoot publishes the current serve root and resets the idle deadline to
+// the configured baseline: the fresh root starts from the same deadline a
+// fresh spawn would boot with, not whatever the predecessor's archive
+// decision left armed, and minting that reset as a timeout write supersedes
+// every pending undo token, so a stale setter can never undo past the root
+// swap. The caller retains its mutation lease through construction,
+// publication and old-root settlement. Atomic Session publication lets the
+// phase check and generation change share one short critical section without
+// acquiring a Session lock or exposing a split-publication race.
 func (c *RetirementController) AttachRoot(root *Session) error {
 	if root == nil {
 		return errors.New("retirement root is required")
@@ -120,6 +126,8 @@ func (c *RetirementController) AttachRoot(root *Session) error {
 	c.root = root
 	c.generation++
 	c.eligibleSince = time.Time{}
+	c.timeout = c.configuredTimeout
+	c.timeoutWrites++
 	c.mu.Unlock()
 	c.Changed()
 	return nil
@@ -218,6 +226,13 @@ func (c *RetirementController) RetargetStamped(timeout time.Duration) (previous 
 // restore ran; a controller that is no longer resident never restores, since
 // the process is preparing or retiring and the deadline no longer matters.
 func (c *RetirementController) UndoRetarget(token uint64, to time.Duration) bool {
+	// Token 0 never names a stamped write on a fresh controller (whose write
+	// count starts at 0), and a negative restore target is refused exactly
+	// like a negative Retarget: neither may bypass the stamped write's
+	// validation.
+	if token == 0 || to < 0 {
+		return false
+	}
 	c.mu.Lock()
 	if c.phase != "resident" || c.timeoutWrites != token {
 		c.mu.Unlock()

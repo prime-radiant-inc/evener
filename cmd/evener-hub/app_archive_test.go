@@ -150,7 +150,7 @@ func dispatchArchiveSet(t *testing.T, web *WebServer, params appwire.ArchivePara
 // idleTimeoutRecordingDaemon runs one fixture daemon that records every
 // evener/daemon/idle-timeout/set request it receives, answering with the
 // resident lifecycle, or refusing the change when fail is set.
-func idleTimeoutRecordingDaemon(t *testing.T, entry *rendezvous.Entry, fail bool) *[]appwire.DaemonIdleTimeoutSetParams {
+func idleTimeoutRecordingDaemon(t *testing.T, entry *rendezvous.Entry, fail bool) *idleTimeoutRecorder {
 	t.Helper()
 	return idleTimeoutFixtureDaemon(t, entry, func(appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
 		if fail {
@@ -160,25 +160,43 @@ func idleTimeoutRecordingDaemon(t *testing.T, entry *rendezvous.Entry, fail bool
 	})
 }
 
+// idleTimeoutRecorder collects the requests one fixture daemon has answered.
+// Handler writes and test reads both go through its lock: concurrent
+// connections make an unlocked read of the collected slice a data race even
+// when the dispatch's own roundtrip looks synchronized.
+type idleTimeoutRecorder struct {
+	mu  sync.Mutex
+	got []appwire.DaemonIdleTimeoutSetParams
+}
+
+func (r *idleTimeoutRecorder) record(params appwire.DaemonIdleTimeoutSetParams) {
+	r.mu.Lock()
+	r.got = append(r.got, params)
+	r.mu.Unlock()
+}
+
+// recorded returns a copy of every recorded request under the lock.
+func (r *idleTimeoutRecorder) recorded() []appwire.DaemonIdleTimeoutSetParams {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]appwire.DaemonIdleTimeoutSetParams(nil), r.got...)
+}
+
 // idleTimeoutFixtureDaemon runs one fixture daemon serving
-// evener/daemon/idle-timeout/set through handle, records every request it
-// receives under a mutex so concurrent connections stay race-safe, and points
-// entry at the fixture's endpoint.
-func idleTimeoutFixtureDaemon(t *testing.T, entry *rendezvous.Entry, handle func(params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error)) *[]appwire.DaemonIdleTimeoutSetParams {
+// evener/daemon/idle-timeout/set through handle, recording every request it
+// receives, and points entry at the fixture's endpoint.
+func idleTimeoutFixtureDaemon(t *testing.T, entry *rendezvous.Entry, handle func(params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error)) *idleTimeoutRecorder {
 	t.Helper()
-	var mu sync.Mutex
-	var got []appwire.DaemonIdleTimeoutSetParams
+	rec := &idleTimeoutRecorder{}
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodEvenerDaemonIdleTimeoutSet, func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		mu.Lock()
-		got = append(got, params)
-		mu.Unlock()
+		rec.record(params)
 		return handle(params)
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	entry.Endpoint = "ws" + daemonHTTP.URL[len("http"):]
-	return &got
+	return rec
 }
 
 // archiveTestHub builds a hub over one resident roster entry and returns the
@@ -227,7 +245,7 @@ func assertSessionArchived(t *testing.T, archive *hubcore.ArchiveStore, sessionI
 // the exact ownership fingerprint, so a replacement daemon refuses it.
 func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
 	entry := residentEntryForTest(t, 4501)
-	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	rec := idleTimeoutRecordingDaemon(t, &entry, false)
 	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
 	})
@@ -238,10 +256,11 @@ func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
 		t.Fatalf("archive session: %v", err)
 	}
 	assertSessionArchived(t, archive, entry.SessionID, true)
-	if len(*got) != 1 {
-		t.Fatalf("resident daemon received %d idle-timeout sets, want 1", len(*got))
+	got := rec.recorded()
+	if len(got) != 1 {
+		t.Fatalf("resident daemon received %d idle-timeout sets, want 1", len(got))
 	}
-	if set := (*got)[0]; set.TimeoutMillis != 60000 {
+	if set := got[0]; set.TimeoutMillis != 60000 {
 		t.Fatalf("archive TimeoutMillis = %d, want 60000", set.TimeoutMillis)
 	} else if set.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
 		t.Fatalf("forwarded identity generation = %q, want the exact ownership fingerprint", set.Identity.Generation)
@@ -253,10 +272,11 @@ func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
 		t.Fatalf("unarchive session: %v", err)
 	}
 	assertSessionArchived(t, archive, entry.SessionID, false)
-	if len(*got) != 2 {
-		t.Fatalf("resident daemon received %d idle-timeout sets after unarchive, want 2", len(*got))
+	got = rec.recorded()
+	if len(got) != 2 {
+		t.Fatalf("resident daemon received %d idle-timeout sets after unarchive, want 2", len(got))
 	}
-	if set := (*got)[1]; set.TimeoutMillis != (5 * time.Minute).Milliseconds() {
+	if set := got[1]; set.TimeoutMillis != (5 * time.Minute).Milliseconds() {
 		t.Fatalf("unarchive TimeoutMillis = %d, want the configured 300000", set.TimeoutMillis)
 	}
 }
@@ -267,7 +287,7 @@ func TestArchiveSetRetargetsResidentDaemonIdleDeadline(t *testing.T) {
 // one-minute constant.
 func TestArchiveSetNeverLengthensShorterConfiguredDeadline(t *testing.T) {
 	entry := residentEntryForTest(t, 4507)
-	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	rec := idleTimeoutRecordingDaemon(t, &entry, false)
 	_, web, archive := archiveTestHubWithTimeout(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
 	}, 30*time.Second)
@@ -278,8 +298,8 @@ func TestArchiveSetNeverLengthensShorterConfiguredDeadline(t *testing.T) {
 		t.Fatalf("archive session: %v", err)
 	}
 	assertSessionArchived(t, archive, entry.SessionID, true)
-	if len(*got) != 1 || (*got)[0].TimeoutMillis != (30*time.Second).Milliseconds() {
-		t.Fatalf("daemon received %+v, want the configured 30000 — archiving must never lengthen the deadline", *got)
+	if got := rec.recorded(); len(got) != 1 || got[0].TimeoutMillis != (30*time.Second).Milliseconds() {
+		t.Fatalf("daemon received %+v, want the configured 30000 — archiving must never lengthen the deadline", got)
 	}
 }
 
@@ -311,7 +331,7 @@ func TestArchiveSetWithoutResidentDaemonPersistsDecision(t *testing.T) {
 func TestArchiveSetSkipsIdleTimeoutForOlderProtocolDaemon(t *testing.T) {
 	entry := residentEntryForTest(t, 4502)
 	entry.Protocol = "evener-appwire-v3"
-	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	rec := idleTimeoutRecordingDaemon(t, &entry, false)
 	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
 	})
@@ -322,8 +342,8 @@ func TestArchiveSetSkipsIdleTimeoutForOlderProtocolDaemon(t *testing.T) {
 		t.Fatalf("archive session: %v", err)
 	}
 	assertSessionArchived(t, archive, entry.SessionID, true)
-	if len(*got) != 0 {
-		t.Fatalf("older-protocol daemon received %d idle-timeout sets, want 0", len(*got))
+	if got := rec.recorded(); len(got) != 0 {
+		t.Fatalf("older-protocol daemon received %d idle-timeout sets, want 0", len(got))
 	}
 }
 
@@ -337,7 +357,7 @@ func TestArchiveSetNeverRetargetsClearedSuccessorsDaemon(t *testing.T) {
 	entry := residentEntryForTest(t, 4512)
 	predecessorID := entry.ThreadID
 	entry.SessionID = hubtest.SessionID(t) // thread/clear advanced the current session
-	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	rec := idleTimeoutRecordingDaemon(t, &entry, false)
 	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
 	})
@@ -348,8 +368,8 @@ func TestArchiveSetNeverRetargetsClearedSuccessorsDaemon(t *testing.T) {
 		t.Fatalf("archive predecessor session: %v", err)
 	}
 	assertSessionArchived(t, archive, predecessorID, true)
-	if len(*got) != 0 {
-		t.Fatalf("predecessor archive reached its former daemon %d times, want 0 — the daemon now belongs to the replacement", len(*got))
+	if got := rec.recorded(); len(got) != 0 {
+		t.Fatalf("predecessor archive reached its former daemon %d times, want 0 — the daemon now belongs to the replacement", len(got))
 	}
 
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -358,10 +378,11 @@ func TestArchiveSetNeverRetargetsClearedSuccessorsDaemon(t *testing.T) {
 		t.Fatalf("archive replacement session: %v", err)
 	}
 	assertSessionArchived(t, archive, entry.SessionID, true)
-	if len(*got) != 1 {
-		t.Fatalf("replacement archive reached its daemon %d times, want 1", len(*got))
+	got := rec.recorded()
+	if len(got) != 1 {
+		t.Fatalf("replacement archive reached its daemon %d times, want 1", len(got))
 	}
-	if set := (*got)[0]; set.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
+	if set := got[0]; set.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
 		t.Fatalf("forwarded identity generation = %q, want the current ownership fingerprint", set.Identity.Generation)
 	}
 }
@@ -371,7 +392,7 @@ func TestArchiveSetNeverRetargetsClearedSuccessorsDaemon(t *testing.T) {
 // shortening is the session decision's behavior alone.
 func TestArchiveSetProjectDecisionNeverTouchesDaemons(t *testing.T) {
 	entry := residentEntryForTest(t, 4503)
-	got := idleTimeoutRecordingDaemon(t, &entry, false)
+	rec := idleTimeoutRecordingDaemon(t, &entry, false)
 	_, web, archive := archiveTestHub(t, entry, func(e rendezvous.Entry) hubcore.ProbeResult {
 		return hubcore.ProbeResult{OK: true, SessionID: e.SessionID, Status: appwire.ThreadStatusIdle}
 	})
@@ -392,8 +413,8 @@ func TestArchiveSetProjectDecisionNeverTouchesDaemons(t *testing.T) {
 	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
 		t.Fatalf("project archive decision not persisted: %v", decisions)
 	}
-	if len(*got) != 0 {
-		t.Fatalf("project archive retargeted a daemon %d times, want 0", len(*got))
+	if got := rec.recorded(); len(got) != 0 {
+		t.Fatalf("project archive retargeted a daemon %d times, want 0", len(got))
 	}
 }
 
@@ -483,7 +504,7 @@ func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
 	t.Cleanup(release)
-	got := idleTimeoutFixtureDaemon(t, &entry, func(params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+	rec := idleTimeoutFixtureDaemon(t, &entry, func(params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
 		// The first request parks until released; later ones answer at once.
 		select {
 		case entered <- params:
@@ -553,7 +574,7 @@ func TestArchiveSetSerializesConcurrentDecisions(t *testing.T) {
 	assertSessionArchived(t, archive, entry.SessionID, false)
 	want := []int64{60000, (5 * time.Minute).Milliseconds()}
 	var applied []int64
-	for _, set := range *got {
+	for _, set := range rec.recorded() {
 		applied = append(applied, set.TimeoutMillis)
 	}
 	if !slices.Equal(applied, want) {

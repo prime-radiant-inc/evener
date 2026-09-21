@@ -720,12 +720,13 @@ func TestServeIdleTimeoutSetRevertsDeadlineWhenClearSwapsOwnership(t *testing.T)
 	}
 }
 
-// TestServeIdleTimeoutSetRevertsToPreWriteDeadline proves the revert is a pure
-// undo of the stale write, never a configured-deadline opinion: on drift the
-// setter restores the deadline that was in effect before the stale write, and
-// when a later legitimate writer has already replaced the stale value, that
-// writer's deadline survives the refusal.
-func TestServeIdleTimeoutSetRevertsToPreWriteDeadline(t *testing.T) {
+// TestServeIdleTimeoutSetUndoYieldsToNewerWrites proves the undo is a pure
+// undo by write identity: the setter reverts its own write only while that
+// write is still the newest, and yields to anything newer — the root swap's
+// configured reset, a later legitimate writer, and an aliased later write
+// (the common same-value case a value comparison cannot distinguish) all
+// survive the refusal.
+func TestServeIdleTimeoutSetUndoYieldsToNewerWrites(t *testing.T) {
 	// runParkedSetter serves one daemon, retargets it to a non-configured
 	// pre-write deadline, then dispatches a second set parked (via the
 	// idle_timeout_written gate) immediately after its controller write, and
@@ -781,17 +782,19 @@ func TestServeIdleTimeoutSetRevertsToPreWriteDeadline(t *testing.T) {
 		}
 		return status.Lifecycle.TimeoutMillis
 	}
-	t.Run("revert restores the deadline in effect before the stale write", func(t *testing.T) {
+	t.Run("the root swap's configured reset supersedes the stale write", func(t *testing.T) {
 		release, outcome, srv, _, entry := runParkedSetter(t, 60000, 120000)
 		defer release()
+		// The clear completing after the parked write resets the deadline to
+		// the configured baseline and mints a newer write, so the parked
+		// write's token is superseded: the refusal must leave the reset in
+		// place, not revert to the pre-write 60000.
 		clearDuringWindow(t, srv, entry.SessionID, "clear-during-parked-idle-timeout-set")
 
 		release()
 		assertConflict(t, <-outcome)
-		// The parked write put 120000 on the controller; the revert must restore
-		// the 60000 that preceded it, not the configured 3600000.
-		if got := controllerDeadline(t, srv); got != 60000 {
-			t.Fatalf("deadline after the refused stale set = %d ms, want the pre-write 60000 restored", got)
+		if got := controllerDeadline(t, srv); got != 3600000 {
+			t.Fatalf("deadline after the refused stale set = %d ms, want the root swap's configured 3600000 reset", got)
 		}
 	})
 	t.Run("a later writer's deadline survives the refused stale set", func(t *testing.T) {

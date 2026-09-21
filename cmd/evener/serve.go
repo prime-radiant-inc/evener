@@ -1070,12 +1070,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// replaced, but only while this request's write is still the newest — a
 		// later legitimate writer (the replacement's own archive decision) owns
 		// the deadline now and must survive the refusal, even when it chose the
-		// same value, which a value comparison could not tell apart. The root
-		// swap never resets the armed timeout (AttachRoot keeps it), so the
-		// stale write is undone here or nowhere. Refuse like the retire path
-		// does after its claim. The undo is best-effort: a controller that is no
-		// longer resident never restores (the process is preparing or retiring
-		// and the deadline no longer matters).
+		// same value, which a value comparison could not tell apart. A clear
+		// that completed before this write reset the fresh root to the
+		// configured baseline, so this write landed after that reset and the
+		// undo below is the only thing that can take it back; a clear that
+		// completes after the write has already superseded this write's token
+		// with its own reset, and the undo correctly yields. Refuse like the
+		// retire path does after its claim. The undo is best-effort: a
+		// controller that is no longer resident never restores (the process is
+		// preparing or retiring and its deadline no longer matters).
 		if err := requireExactOwnership(params.Identity.Generation); err != nil {
 			retirement.UndoRetarget(token, prev)
 			return appwire.DaemonIdleTimeoutSetResponse{}, err

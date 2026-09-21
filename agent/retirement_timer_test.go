@@ -882,3 +882,94 @@ func TestRetirementUndoRetargetRefusesWhilePreparing(t *testing.T) {
 		t.Fatalf("timeout after undo = %v, want the restored 1h", got)
 	}
 }
+
+// TestRetirementAttachRootResetsDeadlineToConfigured proves a fresh root
+// starts from the configured deadline, not whatever the predecessor's
+// archive decision left armed: attaching the replacement root restores the
+// constructed timeout and mints a write of its own, so a predecessor-era
+// token can never undo past the reset.
+func TestRetirementAttachRootResetsDeadlineToConfigured(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	_, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	replacement := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(replacement); err != nil {
+		t.Fatalf("AttachRoot for the replacement: %v", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("replacement root deadline = %v, want the configured 1h", got)
+	}
+	if ctrl.UndoRetarget(token, time.Minute) {
+		t.Fatal("UndoRetarget with a predecessor-era token = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("deadline after refused undo = %v, want the configured 1h", got)
+	}
+}
+
+// TestRetirementAttachRootResetsDisabledDeadline proves the root-swap reset
+// also restores the disabled (zero) configured baseline: an archived
+// predecessor's shortened deadline must not outlive the Hub-wide disable the
+// replacement was configured with.
+func TestRetirementAttachRootResetsDisabledDeadline(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(0, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	if _, _, err := ctrl.RetargetStamped(time.Minute); err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	replacement := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(replacement); err != nil {
+		t.Fatalf("AttachRoot for the replacement: %v", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != 0 {
+		t.Fatalf("replacement root deadline = %v, want the disabled 0", got)
+	}
+}
+
+// TestRetirementUndoRetargetRejectsUnguardedWrites proves the undo's own
+// write path is fenced like Retarget: token 0 never names a real write, and a
+// negative restore target is refused — neither may bypass the stamped-write
+// validation.
+func TestRetirementUndoRetargetRejectsUnguardedWrites(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	if ctrl.UndoRetarget(0, 5*time.Minute) {
+		t.Fatal("UndoRetarget with token 0 = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("timeout after token-0 undo = %v, want the unchanged 1h", got)
+	}
+	_, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	if ctrl.UndoRetarget(token, -time.Minute) {
+		t.Fatal("UndoRetarget with a negative target = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("timeout after refused negative undo = %v, want the unchanged 1m", got)
+	}
+}
