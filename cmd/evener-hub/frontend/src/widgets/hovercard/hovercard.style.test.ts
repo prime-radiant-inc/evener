@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { mediaBlock, topRuleBlock } from "../../styles/cssBlock";
+import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 
 // The hover card is a floating layer of the design system, not an oversized
 // tooltip. Every other overlay (popover, menu, dialog, sheet) sits on
@@ -11,12 +8,12 @@ import { mediaBlock, topRuleBlock } from "../../styles/cssBlock";
 // a second border (docs/web-ui/design-system.md §2). The tooltip keeps its
 // inverted mini-palette precisely because a one-line label is not a card, so
 // the card must not borrow it either. This pins the bubble to the overlay
-// family so the card can never quietly slide back into the tooltip's clothes.
-//
-// Read straight off disk for the same reason token-contract.test.ts does:
-// vitest leaves .module.css imports unprocessed (test.css defaults to false),
-// so no rendered-DOM assert could ever see these declarations.
-const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "hovercard.module.css"), "utf8");
+// family so the card can never quietly slide back into the tooltip's clothes;
+// the tooltip-palette non-leak law itself lives centrally in
+// token-contract.test.ts (§b2). The CSS declarations are read straight off
+// disk because vitest leaves .module.css imports unprocessed (test.css
+// defaults to false), so no rendered-DOM assert could ever see them.
+const CSS = readModuleCss(import.meta.url, "hovercard.module.css");
 
 // --- the contract ----------------------------------------------------------
 
@@ -34,10 +31,6 @@ test("the bubble rides the overlay surface family, not the tooltip mini-palette"
   expect(bubble).toMatch(/font-size:\s*var\(--font-size-ui\)/);
   // Still tooltip-classed in stacking: it must beat menus.
   expect(bubble).toMatch(/z-index:\s*var\(--z-tooltip\)/);
-});
-
-test("the card file never reaches for the tooltip palette", () => {
-  expect(CSS).not.toMatch(/--tooltip-/);
 });
 
 test("the bubble fades and scales in on the shared overlay motion budget", () => {

@@ -1,8 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { topRuleBlock } from "../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 
 // The entity card's internals follow the design system's card vocabulary, not
 // the inverted tooltip palette the card used to inherit from its bubble: the
@@ -11,8 +8,9 @@ import { topRuleBlock } from "../../../styles/cssBlock";
 // states stay on the ink ramp - the hue law reserves green for ACTIVE work, so
 // a completed job is a fact, not a success signal), and the meta rows follow
 // the meta-table idiom (ink-mid labels, ink-hi values). Hierarchy comes from
-// the ink ramp, never from opacity fades.
-const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "entityref.module.css"), "utf8");
+// the ink ramp, never from opacity fades. The tooltip-palette non-leak law
+// itself lives centrally in token-contract.test.ts (§b2).
+const CSS = readModuleCss(import.meta.url, "entityref.module.css");
 
 test("the kind label is the eyebrow recipe, one container label inside the card", () => {
   const kind = topRuleBlock(CSS, ".kind");
@@ -25,12 +23,13 @@ test("the kind label is the eyebrow recipe, one container label inside the card"
 
 test("status reads color-by-meaning: failure is danger, live work is alive, everything else is ink", () => {
   expect(topRuleBlock(CSS, ".status")).toMatch(/color:\s*var\(--ink-mid\)/);
-  expect(topRuleBlock(CSS, '.status\\[data-state="failed"\\]')).toMatch(/color:\s*var\(--danger-ink\)/);
-  expect(topRuleBlock(CSS, '.status\\[data-state="running"\\]')).toMatch(/color:\s*var\(--alive-ink\)/);
-  // Done is NOT alive: a completed job is a neutral fact, and no other state
-  // invents a hue (design-system §1 "Color is meaning").
-  expect(CSS).not.toMatch(/data-state="done"/);
-  expect(CSS).not.toMatch(/data-state="stopped"/);
+  expect(topRuleBlock(CSS, '.status[data-state="failed"]')).toMatch(/color:\s*var\(--danger-ink\)/);
+  expect(topRuleBlock(CSS, '.status[data-state="running"]')).toMatch(/color:\s*var\(--alive-ink\)/);
+  // The complete set of hue-carrying states, exhaustively: done is NOT alive (a
+  // completed job is a neutral fact), and no future state can sneak a hue in
+  // unreviewed (design-system §1 "Color is meaning").
+  const hueStates = [...CSS.matchAll(/\.status\[data-state="([^"]+)"\]/g)].map((match) => match[1]);
+  expect(hueStates).toEqual(["failed", "running"]);
 });
 
 test("the card's hierarchy comes from the ink ramp", () => {
@@ -42,7 +41,6 @@ test("the card's hierarchy comes from the ink ramp", () => {
   expect(topRuleBlock(CSS, ".caption")).toMatch(/color:\s*var\(--ink-low\)/);
 });
 
-test("no opacity fades fake the hierarchy, and no tooltip palette leaks in", () => {
+test("no opacity fades fake the hierarchy", () => {
   expect(CSS).not.toMatch(/(^|\s)opacity:/);
-  expect(CSS).not.toMatch(/--tooltip-/);
 });

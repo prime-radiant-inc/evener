@@ -20,9 +20,10 @@ import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 import { textAround } from "./transcriptTestUtils";
 // The failure-glyph and exit-code tests below drive the REAL shell descriptor
-// (its failed()/detail() hooks are the whole point of A2), so this file has to
-// register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
-// those assertions test nothing. Same precedent as ToolCallItem.test.tsx.
+// (its failed() hook is the A2 signal, and the exit code's one home is the raw
+// output's own trailing footer), so this file has to register it - without
+// this import "shell" resolves to DEFAULT_DESCRIPTOR and those assertions
+// test nothing. Same precedent as ToolCallItem.test.tsx.
 import "./tools/shellTool";
 
 afterEach(() => {
