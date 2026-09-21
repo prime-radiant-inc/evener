@@ -181,15 +181,16 @@ and the compensation paths in one shape:
     cache generation still owns its rows, and the retained list is still this
     host's. An edit that changes only the SSH address or a path must not blank
     the host's sessions in the tree.
-  On failure, roll the sidecar back to the live set — the file **and** the
-  in-memory sidecar store together, in one write, so a later save cannot
-  resurrect the entry the refusal was supposed to leave in place — clear the
-  mark, and return the error. The host ends the call as it started apart from
-  its attach record, which stays cleared: derived state the next attach
-  repopulates, and the only part of the call deliberately not compensated. The
-  caller may retry, because nothing is half-applied: the entry, the file, the
-  store row and the live registry all agree on the old entry, or on the new
-  one.
+  On failure, roll the sidecar back to the live set — one atomic write of the
+  live contents, which puts the file and the in-memory sidecar store back on
+  the same entries in the same order they had before the commit, so a later
+  save cannot resurrect the entry the refusal was supposed to leave in place —
+  clear the mark, and return the error. The host ends the call as it started
+  apart from its attach record, which stays cleared: derived state the next
+  attach repopulates, and the only part of the call deliberately not
+  compensated. The caller may retry, because nothing is half-applied: the
+  entry, the file, the store row and the live registry all agree on the old
+  entry, or on the new one.
 
 ### 3.5 Frontend
 
@@ -309,11 +310,12 @@ reversal.
     §13 implies cannot be built from it. It belongs with the pipeline slice's
     verified post-operation facts refresh.
 12. **The wire says `address` where the schema and the record's dialog say
-    `ssh`.** Slice 1 shipped that spelling and the refusal mapping follows the
-    wire, so the dialog's inputs and the refusals agree with each other; the
-    record's §13 names the field after the config schema instead. Nothing
-    depends on the label but the generated client, and aligning it later is a
-    rename, not a shape change.
+    `ssh`.** Slice 1 shipped that spelling, and the refusal mapping follows it,
+    so the dialog's inputs and the refusals agree with each other; the record's
+    §13 names the field after the config schema instead. The label is
+    load-bearing on this side — an input and a refusal have to match — so
+    aligning it with the record later is a rename across the wire, the
+    generated client and the pane, not a shape change.
 
 ## 7. Tests and acceptance criteria
 
@@ -365,9 +367,10 @@ Every item is pinned by a test in this slice's PR.
     included, since the mark now guards every mutation on the name.
 15. An edit neither dials, deploys nor attaches: no new SSH dial appears during
     an update, and the row changes only as the teardown's own events describe.
-16. A failed live phase leaves the file, the in-memory store row, the live
-    registry and the rendered row all describing the old entry, and a retry of
-    the same edit then succeeds.
+16. A failed live phase leaves the file, the in-memory store row and the live
+    registry all describing the old entry — the row's attach-derived facts are
+    the one part deliberately not compensated, so they may be cleared — and a
+    retry of the same edit then succeeds.
 17. `Registry.Update` preserves the name's upstream edges, and the file's order
     is unchanged: the edit replaced one entry rather than moving it.
 
