@@ -294,6 +294,20 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ field: string | null; message: string } | null>(null);
 
+  // A backend refusal may name an input this mode deliberately omits (notably
+  // immutable name in Edit). Only rendered fields get an inline slot; every
+  // other blamed field falls back to the form-level alert instead of vanishing.
+  const renderedFields = new Set<string>([
+    ...(mode === "add" ? ["name"] : []),
+    "address",
+    "user",
+    "keyPath",
+    "evenerPath",
+    "configPath",
+    "addr",
+    "roots",
+  ]);
+
   const fieldError = (field: string): string | undefined =>
     error !== null && error.field === field ? error.message : undefined;
   const formError = error !== null && error.field === null ? error.message : null;
@@ -319,7 +333,11 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
       // Remove's posture, carried over: the failure is shown, never swallowed.
       // A refusal that names an input goes on that input; everything else is
       // form-level.
-      setError({ field: hostFieldError(err) ?? null, message: friendlyErrorMessage(err) });
+      const field = hostFieldError(err);
+      setError({
+        field: field !== undefined && renderedFields.has(field) ? field : null,
+        message: friendlyErrorMessage(err),
+      });
     } finally {
       setBusy(false);
     }

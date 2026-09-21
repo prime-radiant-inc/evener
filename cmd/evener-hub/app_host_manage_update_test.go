@@ -325,6 +325,71 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	}
 }
 
+// TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes drives the defensive
+// finish arm that only a directly driven registry can reach: UpdateHost swaps
+// successfully, then its synchronous Detached observer removes that new entry
+// before the hub can reread it. The failed hub update must remove its committed
+// store row and file entry too, so re-adding the name cannot persist a duplicate.
+func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
+	f := newUpdateFixture(t)
+	removed := make(chan error, 1)
+	manager := sshconn.New(f.hosts, sshconn.Options{
+		Runner: &attachedUpdateRunner{},
+		OnEvent: func(ev sshconn.Event) {
+			f.m.observeEvent(ev)
+			if ev.Host == "side" && ev.Kind == sshconn.EventDetached {
+				// OnEvent runs synchronously after UpdateHost's registry swap. Drive
+				// the registry directly, bypassing the hub mutation mark, to make the
+				// finish-phase reread observe the vanished live entry.
+				removed <- f.hosts.Remove(ev.Host)
+			}
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	f.m.cfg.manager = manager
+	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
+		t.Fatalf("Ensure before Update: %v", err)
+	}
+
+	_, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
+		Name:  "side",
+		Entry: appwire.HostEntry{Address: "edited.example"},
+	})
+	if err == nil {
+		t.Fatal("Update whose live entry vanished succeeded, want the defensive refusal")
+	}
+	assertWireCode(t, err, appwire.CodeInvalidParams)
+	if removeErr := <-removed; removeErr != nil {
+		t.Fatalf("direct registry removal: %v", removeErr)
+	}
+	if _, ok := f.hosts.Get("side"); ok {
+		t.Fatal("the directly removed live entry reappeared")
+	}
+	if stored := f.m.cfg.sidecar.snapshot(); len(stored) != 0 {
+		t.Fatalf("store rows after the failed edit = %+v, want the empty live set", stored)
+	}
+	onDisk, loadErr := loadHostSidecar(sidecarPathFor(f.configPath))
+	if loadErr != nil {
+		t.Fatalf("reload sidecar after the failed edit: %v", loadErr)
+	}
+	if len(onDisk) != 0 {
+		t.Fatalf("sidecar after the failed edit = %+v, want the empty live set", onDisk)
+	}
+
+	if _, addErr := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"},
+	}); addErr != nil {
+		t.Fatalf("re-add after the failed edit: %v", addErr)
+	}
+	reloaded, loadErr := loadHostSidecar(sidecarPathFor(f.configPath))
+	if loadErr != nil {
+		t.Fatalf("reload sidecar after the re-add: %v", loadErr)
+	}
+	if len(reloaded) != 1 || reloaded[0].Name != "side" || reloaded[0].SSH != "fresh.example" {
+		t.Fatalf("sidecar after the re-add = %+v, want one fresh entry", reloaded)
+	}
+}
+
 // updateOutcome carries the parked Update's result back to the test.
 type updateOutcome struct {
 	resp appwire.HostUpdateResponse
@@ -560,6 +625,45 @@ func TestHostManageUpdateLeavesTheRowOffline(t *testing.T) {
 	}
 	if row.Host.Address != "edited.example" || row.Host.Origin != hostOriginSidecar {
 		t.Fatalf("row = %+v, want the edited entry under its sidecar origin", row.Host)
+	}
+}
+
+// TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate pins the
+// swap-before-clear ordering: while UpdateHost waits, a row built from the old
+// registration may still honestly retain its attached facts. Once the registry
+// swaps, that old registration is fenced out and the final clear must remove the
+// facts it recorded during the wait.
+func TestHostManageUpdateClearsFactsRecordedWhileWaitingForTheGate(t *testing.T) {
+	pu := startParkedUpdate(t, "side")
+
+	// Simulate the fenced fold of a concurrent row built from the still-current
+	// old entry. observeEvent and recordKnown are the same seams lifecycle events
+	// and attached hostRow calls use to repopulate the name-keyed record.
+	pu.m.cfg.mu.Lock()
+	pu.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "side", Attached: true, ServerName: "old-server", ServerVersion: "0.1.0",
+		HubVersion: "9.9.9", OS: "linux", Arch: "arm64",
+	}, hostFactsValidity{handshake: true, facts: true})
+	pu.m.cfg.mu.Unlock()
+	pu.m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("old attach failed")})
+
+	pu.release()
+	if err := <-pu.ensureDone; err == nil {
+		t.Fatal("the parked Ensure succeeded; the blocking runner must fail the probe")
+	}
+	done := pu.waitUpdateDone(t)
+	if done.err != nil {
+		t.Fatalf("Update: %v", done.err)
+	}
+	row := done.resp.Host
+	if row.Name != "side" || row.Address != "edited.example" || row.Origin != hostOriginSidecar {
+		t.Fatalf("finished row = %+v, want the edited configured entry", row)
+	}
+	if row.ServerName != "" || row.ServerVersion != "" || row.HubVersion != "" || row.OS != "" || row.Arch != "" {
+		t.Fatalf("finished row = %+v, want no facts retained from the old identity", row)
+	}
+	if row.LastAttachErr != "" {
+		t.Fatalf("finished row = %+v, want no attach error retained from the old identity", row)
 	}
 }
 

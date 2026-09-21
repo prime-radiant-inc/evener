@@ -31,9 +31,10 @@ The registry spec defines update (§4) and the UI (§13). This slice implements:
   explanation; a name absent from both files, or present solely as a tombstone,
   is refused as not found; every field except `name` is mutable; `name` is
   immutable — it keys source IDs, cached rows, manager state and file entries;
-  **every update advances the registry generation**, and the staged commit
-  clears or re-keys name-keyed resolved state before rebinding; commit first,
-  then rebind or tear down, gate released last.
+  **every update advances the registry generation**, and the staged update
+  rebinds before it clears or re-keys name-keyed resolved state, so the retiring
+  identity is fenced out first; commit first, then rebind or tear down, gate
+  released last.
 - §13 — the Add/Edit dialog covers **all seven** `HostConfig` fields, none
   invented and none hidden, each with its validation message mapped from the
   backend's refusal; Edit does not offer `name`; the row renders the host's
@@ -153,23 +154,24 @@ and the compensation paths in one shape:
   rename already committed compensates back to the live contents exactly as add
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
-- **Live, mutex-free, in this order.** Clear the name's attach record on every
-  update — §4 requires an update to clear the name-keyed resolved state
-  wholesale, and the record is exactly that: the retiring identity's last-known
-  facts and attach error, which an edit otherwise leaves lying about an entry
-  that no longer exists (most visibly on an offline host whose address changed,
-  where no channel exists to tear down). It is derived state, not a fence:
-  clearing it here, before the manager call, is best-effort by construction —
-  an attach that was already in flight can legitimately record again
-  afterwards, and the authority for what the row shows is that attach's outcome
-  and the events the teardown emits, not this write. Then
-  `manager.UpdateHost(entry)` when a manager is wired; otherwise the registry's
+- **Live, mutex-free, in this order.** Call `manager.UpdateHost(entry)` when a
+  manager is wired; otherwise call the registry's
   own `Update`, mirroring how remove falls back when no manager is wired
   (tests, embedders). The registry re-runs the same validation under its own
   lock; the commit phase's check is what keeps an invalid or unnormalized entry
   out of the file, and is not a substitute for it. The manager's swap is atomic
   under the host gate — the registry entry is replaced and the channel retired,
-  or neither — so an error from it means nothing live changed.
+  or neither — so an error from it means nothing live changed. After a successful
+  swap, clear the name's attach record on every update. §4 requires the
+  name-keyed resolved state to be cleared wholesale, and the record is exactly
+  that: the retiring identity's last-known facts and attach error, which an edit
+  otherwise leaves lying about an entry that no longer exists (most visibly on
+  an offline host whose address changed, where no channel exists to tear down).
+  The post-swap placement is load-bearing: while the manager waits for the gate,
+  the old registry entry is still current and a concurrent row can legitimately
+  record its facts again. Once the swap advances the generation, that old row
+  fails the `hostEntryCurrent` fence and cannot repopulate the record; the new
+  entry has no channel until a later attach, so the clear sticks.
 - **Finish, under the mutex.** Clear the mark. On success:
   - when `roots` changed, retire both old identities first — the remote-thread
     cache's source entry and the source registration — then clear the last-good
@@ -187,12 +189,13 @@ and the compensation paths in one shape:
   live set as it stands now, not a pre-commit copy: a concurrent add or removal
   that committed in this window must survive — which puts the file and the
   in-memory sidecar store back on the same entries in the same order, clear the
-  mark, and return the error. The host ends the call as it started apart from
-  its attach record, which stays cleared: derived state the next attach
-  repopulates, and the only part of the call deliberately not compensated. The
-  caller may retry, because nothing is half-applied: the entry, the file, the
-  store row and the live registry all agree on the old entry, or on the new
-  one.
+  mark, and return the error. A live-phase refusal happens before the swap and
+  leaves the retiring identity's attach record intact. If a directly driven
+  registry instead drops the entry after a successful live phase, remove the
+  committed store row and write that live snapshot before returning not found.
+  The caller may retry, because nothing is half-applied: the entry, the file,
+  the store row and the live registry agree on the old entry, the new one, or
+  its absence.
 
 ### 3.5 Frontend
 

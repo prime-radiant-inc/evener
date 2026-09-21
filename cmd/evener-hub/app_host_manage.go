@@ -1417,12 +1417,12 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 //     reaches the file — persist durable-first with one atomic write that
 //     replaces the entry in place, replace the store row in the same critical
 //     section, set the mark, release the mutex.
-//   - Live, mutex-free: clear the name's retained attach record; with a manager
-//     wired, manager.UpdateHost replaces the registry entry and retires the
-//     channel under the per-host gate as one atomic step; without one the
-//     registry's own Update is the whole story, exactly as remove falls back. An
-//     error means nothing in the registry or manager changed: the registry
-//     refuses ahead of its own swap.
+//   - Live, mutex-free: with a manager wired, manager.UpdateHost replaces the
+//     registry entry and retires the channel under the per-host gate as one
+//     atomic step; without one the registry's own Update is the whole story,
+//     exactly as remove falls back. After a successful swap, clear the name's
+//     retained attach record. An error means nothing in the registry or manager
+//     changed: the registry refuses ahead of its own swap.
 //   - Finish, under the mutex: clear the mark, compensate a failed live phase
 //     by rolling the sidecar back to the live set as it stands now — not a
 //     pre-commit copy, so a concurrent add or removal that committed in this
@@ -1490,16 +1490,6 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	m.markMutating(name)
 	m.cfg.mu.Unlock()
 
-	// Live phase, mutex-free. The name's attach record goes first: the retiring
-	// identity's last-known facts and attach error are exactly the name-keyed
-	// resolved state an edit must clear wholesale, and an edit that leaves the
-	// host offline has no teardown of its own to invalidate them (most visibly
-	// when its address changed). It is derived state, not a fence: it is
-	// best-effort by construction, an attach already in flight can legitimately
-	// record again afterwards, and the row's authority for what it shows is that
-	// attach's outcome and the events the teardown emits.
-	m.cfg.state.remove(name)
-
 	// Live phase, mutex-free: the manager's swap blocks on the per-host gate a
 	// supervisor can hold for a whole reconnect/ensure cycle, so holding the
 	// mutation mutex across it would freeze every concurrent host/list,
@@ -1511,6 +1501,16 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		}
 	} else if err := m.cfg.hosts.Update(entry); err != nil {
 		liveErr = err
+	}
+	if liveErr == nil {
+		// Clear the retiring identity's name-keyed attach record only after the
+		// registry swap. While UpdateHost waits for the per-host gate, the old entry
+		// is still current and a concurrent row can legitimately record its facts
+		// again. Once the swap advances the generation, that row fails
+		// hostEntryCurrent and cannot repopulate the record; the new entry has no
+		// channel until a later attach. This also clears an offline host's retained
+		// error and facts when an address edit has no channel to tear down.
+		m.cfg.state.remove(name)
 	}
 
 	// Finish phase: the mutex comes back for the bookkeeping, and the mark clears
@@ -1535,9 +1535,15 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		// A concurrent removal took the name while this edit's teardown ran —
 		// impossible for the same name through this manager (the mark fences it),
 		// but a directly driven registry could still have dropped it: the entry
-		// is gone, so there is no row to render.
+		// is gone, so there is no row to render. Remove the committed store row
+		// and save that live snapshot before refusing; otherwise a later Add would
+		// append beside the stale edit and poison the next sidecar load as a
+		// duplicate name.
+		refusal := appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+		m.cfg.sidecar.remove(name)
+		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), refusal)
 		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+		return appwire.HostUpdateResponse{}, err
 	}
 	// The source's identity owns its derived rows, so a roots edit changes what
 	// the source addresses and everything keyed to the old roots goes with it:

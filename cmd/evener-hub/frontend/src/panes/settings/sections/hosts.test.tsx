@@ -193,6 +193,29 @@ test("a validation refusal lands on the input the hub blamed", async () => {
   expect(within(dialog).queryByText(/Something went wrong/)).toBeNull();
 });
 
+test("an edit refusal blaming the unrendered name is form-level", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/update", () => {
+    throw new WireError('host "beta": invalid host name', -32602, {
+      evenerErrorInfo: "invalidHostField",
+      field: "name",
+    });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const rowEl = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(rowEl).getByRole("button", { name: "Edit" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+  const alert = await within(dialog).findByRole("alert");
+  expect(alert.textContent).toMatch(/invalid host name/);
+  expect(alert.parentElement?.contains(within(dialog).getByLabelText("SSH address"))).toBe(true);
+  expect(alert.parentElement?.contains(within(dialog).getByLabelText("Roots"))).toBe(true);
+  expect(within(dialog).queryByLabelText("Name")).toBeNull();
+});
+
 test("add validation error renders inline", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

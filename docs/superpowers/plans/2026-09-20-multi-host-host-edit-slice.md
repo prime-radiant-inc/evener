@@ -2051,9 +2051,13 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		// A concurrent removal took the name while this edit's teardown ran —
 		// impossible for the same name through this manager (the mark fences it),
 		// but a directly driven registry could still have dropped it: the entry
-		// is gone, so there is no row to render.
+		// is gone, so there is no row to render. Remove the committed store row
+		// and save that live snapshot before refusing.
+		refusal := appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+		m.cfg.sidecar.remove(name)
+		err := m.rollbackSidecar(m.cfg.sidecar.snapshot(), refusal)
 		m.cfg.mu.Unlock()
-		return appwire.HostUpdateResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
+		return appwire.HostUpdateResponse{}, err
 	}
 	m.cfg.mu.Unlock()
 	// The row's retained-state fold is fenced on the entry's generation, so the
@@ -2107,7 +2111,7 @@ git commit -m "feat(hosts): add the hub's evener/host/update flow over commit/li
 
 **Interfaces:**
 - Consumes: everything Task 5 produced, plus `hostAttachState.remove`/`recordKnown`/`apply`, `remoteCache.RemoveSource`, `forgetLastGoodThreads`, `sources.Remove`, `registerSource`, `hubcore.RemoteThreadCache.SourceGeneration`.
-- Produces: no new exported surface — `Update`'s live phase clears the attach record before the swap, and its finish phase re-registers the source only when the edit changed the host's roots.
+- Produces: no new exported surface — `Update`'s live phase clears the attach record after the successful swap, and its finish phase re-registers the source only when the edit changed the host's roots.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2249,20 +2253,21 @@ func TestHostManageUpdateReregistersTheSourceOnlyWhenRootsChange(t *testing.T) {
 Run: `go test ./cmd/evener-hub/ -run 'TestHostManageUpdateClears|TestHostManageUpdateReregisters' -v`
 Expected: FAIL — the record survives the edit, and neither the source nor the cache generation changes on a roots edit (`hostFactsValidity`/`appsource`/`hubcore` imports may need adding to the test file).
 
-- [ ] **Step 3: Clear the attach record in the live phase**
+- [ ] **Step 3: Clear the attach record after the live swap**
 
-In `Update`, at the top of the live phase, before the manager call:
+In `Update`, after the manager or registry update succeeds:
 
 ```go
-	// Live phase, mutex-free. The name's attach record goes first: the retiring
-	// identity's last-known facts and attach error are exactly the name-keyed
-	// resolved state an edit must clear wholesale, and an edit that leaves the
-	// host offline has no teardown of its own to invalidate them (most visibly
-	// when its address changed). It is derived state, not a fence: it is
-	// best-effort by construction, an attach already in flight can legitimately
-	// record again afterwards, and the row's authority for what it shows is that
-	// attach's outcome and the events the teardown emits.
-	m.cfg.state.remove(name)
+	if liveErr == nil {
+		// Clear the retiring identity's name-keyed attach record only after the
+		// registry swap. While UpdateHost waits for the per-host gate, the old entry
+		// is still current and a concurrent row can legitimately record its facts
+		// again. Once the swap advances the generation, that row fails
+		// hostEntryCurrent and cannot repopulate the record; the new entry has no
+		// channel until a later attach. This also clears an offline host's retained
+		// error and facts when an address edit has no channel to tear down.
+		m.cfg.state.remove(name)
+	}
 ```
 
 The finish phase below compares the edited roots against the roots this call replaced, so the commit phase's liveness read keeps its result instead of discarding it (the mark fences the name from its commit to its finish, so the capture is stable for the whole call). Change:
