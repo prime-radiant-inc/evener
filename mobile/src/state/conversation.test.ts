@@ -6158,6 +6158,694 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
+    it("no-sink open(): an askPending resolve via a model-only frame reprojects the question rows with the sheet", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const askTurn = makeTurn({
+        id: "t1",
+        items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+        status: "completed",
+      });
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [askTurn],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      expect(
+        store
+          .getState()
+          .conversation?.items.some((row) => row.kind === "question"),
+      ).toBe(true);
+      // A plain open() binds no activity sink, so the rehydrate the
+      // sink-bound path takes is a no-op here — the compatibility path must
+      // reconcile the question rows itself.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      expect(conv?.askPending).toBe(false);
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+      // The resolved ask renders canonically: the question row became the
+      // settled tool-call activity, exactly what a sink-bound reread yields.
+      expect(
+        conv?.items.some(
+          (row) => row.kind === "activity" && row.id === "ask-1",
+        ),
+      ).toBe(true);
+    });
+
+    it("no-sink open(): an askPending raise via a model-only frame gains the sheet's question row", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const askTurn = makeTurn({
+        id: "t1",
+        items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+        status: "completed",
+      });
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: false,
+          },
+          turns: [askTurn],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // Not pending: the ask renders as a settled tool activity, and the
+      // sheet is empty.
+      expect(
+        store
+          .getState()
+          .conversation?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+          askPending: true,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      expect(conv?.askPending).toBe(true);
+      const row = conv?.items.find((i) => i.kind === "question");
+      expect(row).toBeDefined();
+      // The row matches the sheet: the same canonical refs pendingQuestions
+      // composes answers from.
+      if (row?.kind === "question") {
+        expect(row.questions).toHaveLength(1);
+        expect(row.questions[0]?.callId).toBe("ask-1");
+        expect(row.questions[0]?.question).toBe("Pick one");
+        expect(row.questions[0]?.options).toHaveLength(2);
+      }
+      // The settled-ask activity row it replaced is gone.
+      expect(
+        conv?.items.some(
+          (row) => row.kind === "activity" && row.id === "ask-1",
+        ),
+      ).toBe(false);
+    });
+
+    it("no-sink open(): a status-only frame that does not move askPending leaves the timeline untouched", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      const before = store.getState().conversation?.items;
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+        },
+      } as AnyNotification);
+      // No askPending move, no reconciliation: the items array is not even
+      // replaced (the model-only publish preserves it).
+      expect(store.getState().conversation?.items).toBe(before);
+    });
+
+    it("no-sink open(): an askPending transition preserves live-owned rows the model cannot reproject", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // An idle warning — no active turn, so the reducer folds no model
+      // item and the live row applier carries it in the timeline alone.
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Sandbox blocked",
+          message: "retry later",
+        },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toBeDefined();
+      const failureId = failureRow?.id;
+      // The askPending resolve reconciles the question row — and must not
+      // disturb the live-owned warning: it exists only in items, so a
+      // whole-timeline reprojection from the model would silently drop it.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+      expect(conv?.items.some((row) => row.id === failureId)).toBe(true);
+    });
+
+    it("no-sink raise: an ask leading a tool cluster splits it without dropping members", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: false,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                askUserItem("ask-1", VALID_ASK_ARGS),
+                commandExecItem("tool-1", "bash"),
+                commandExecItem("tool-2", "ls"),
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // askPending false: the three same-family tools form one cluster row.
+      const clusterBefore = store.getState().conversation?.items[0];
+      expect(clusterBefore?.kind).toBe("activity");
+      if (clusterBefore?.kind === "activity") {
+        expect(clusterBefore.members?.map((m) => m.id)).toEqual([
+          "ask-1",
+          "tool-1",
+          "tool-2",
+        ]);
+      }
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+          askPending: true,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The question row takes the ask's place…
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(true);
+      // …and the cluster rebuilds from its remaining members — the
+      // neighboring tools survive, exactly as a sink-bound reread yields.
+      const rebuilt = conv?.items.find(
+        (row) => row.kind === "activity" && row.id === "tool-1",
+      );
+      if (rebuilt?.kind === "activity") {
+        expect(rebuilt.members?.map((m) => m.id)).toEqual([
+          "tool-1",
+          "tool-2",
+        ]);
+      } else {
+        expect(rebuilt).toBeDefined();
+      }
+    });
+
+    it("no-sink raise: an ask inside a tool cluster rebuilds it without the stale member", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: false,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                commandExecItem("tool-1", "bash"),
+                askUserItem("ask-1", VALID_ASK_ARGS),
+                commandExecItem("tool-2", "ls"),
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      const clusterBefore = store.getState().conversation?.items[0];
+      expect(clusterBefore?.kind).toBe("activity");
+      if (clusterBefore?.kind === "activity") {
+        expect(clusterBefore.members?.map((m) => m.id)).toEqual([
+          "tool-1",
+          "ask-1",
+          "tool-2",
+        ]);
+      }
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+          askPending: true,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The question row appears at the ask's canonical position…
+      expect(conv?.items.map((row) => row.id)).toEqual([
+        "tool-1",
+        "ask-1",
+        "tool-2",
+      ]);
+      // …and no row still carries the ask as a stale cluster member.
+      expect(
+        conv?.items.some(
+          (row) =>
+            row.kind === "activity" &&
+            (row.members ?? []).some((m) => m.id === "ask-1"),
+        ),
+      ).toBe(false);
+    });
+
+    it("no-sink resolve: a settled ask joins its neighbors' cluster", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                commandExecItem("tool-1", "bash"),
+                askUserItem("ask-1", VALID_ASK_ARGS),
+                commandExecItem("tool-2", "ls"),
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // The pending question splits the tool run into standalone rows.
+      expect(store.getState().conversation?.items.map((row) => row.id)).toEqual(
+        ["tool-1", "ask-1", "tool-2"],
+      );
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The resolved ask folds into the one cluster a reread would build.
+      expect(conv?.items).toHaveLength(1);
+      const merged = conv?.items[0];
+      if (merged?.kind === "activity") {
+        expect(merged.members?.map((m) => m.id)).toEqual([
+          "tool-1",
+          "ask-1",
+          "tool-2",
+        ]);
+      } else {
+        expect(merged?.kind).toBe("activity");
+      }
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+    });
+
+    it("no-sink askPending transition keeps a frozen truncated row frozen", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                // Multibyte content: the cutoff leaves spare bytes under
+                // the cap, so an appended delta would fit verbatim after
+                // the marker if the freeze were lost.
+                agentMessageItem("msg-1", "é".repeat(40_000)),
+                askUserItem("ask-1", VALID_ASK_ARGS),
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      const before = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "msg-1");
+      expect(before?.kind).toBe("assistant");
+      const beforeText = before?.kind === "assistant" ? before.markdown : "";
+      expect(beforeText.endsWith("… truncated")).toBe(true);
+      // The askPending resolve reconciles the question row and must carry
+      // the assistant row's truncation freeze through untouched.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "msg-1",
+          delta: "x",
+        },
+      } as AnyNotification);
+      const after = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "msg-1");
+      const afterText = after?.kind === "assistant" ? after.markdown : "";
+      // Frozen display: the delta cannot append after the marker.
+      expect(afterText).toBe(beforeText);
+    });
+
+    it("no-sink resolve: a transcript-keyed neighbor row still joins the ask's cluster", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                askUserItem("ask-1", VALID_ASK_ARGS),
+                {
+                  ...commandExecItem("tool-2", "bash"),
+                  transcriptKey: "tk-2",
+                },
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // A live completion re-applies the neighbor row carrying its wire
+      // transcript key — the row's timeline identity is now the key, not
+      // its wire id, while the canonical projection knows the item only
+      // under the wire id.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            ...commandExecItem("tool-2", "bash"),
+            transcriptKey: "tk-2",
+          },
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.map((row) => row.id),
+      ).toEqual(["ask-1", "tool-2"]);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The resolved ask folds into one cluster with its neighbor — the
+      // key-carrying row is replaced, not duplicated beside the cluster.
+      expect(conv?.items).toHaveLength(1);
+      const merged = conv?.items[0];
+      if (merged?.kind === "activity") {
+        expect(merged.members?.map((m) => m.id)).toEqual(["ask-1", "tool-2"]);
+      } else {
+        expect(merged?.kind).toBe("activity");
+      }
+    });
+
+    it("no-sink resolve keeps a live warning between the ask and its cluster neighbor", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // An idle warning lands after the pending ask…
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Sandbox blocked",
+          message: "retry later",
+        },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow).toBeDefined();
+      const failureId = failureRow?.id;
+      // …and a live tool completion lands after the warning, sandwiching
+      // it between the ask and its canonical cluster neighbor.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: commandExecItem("tool-2", "bash"),
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.map((row) => row.id),
+      ).toEqual(["ask-1", failureId, "tool-2"]);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The warning survives the reconciliation, and the ask settles as
+      // its own row — the live warning is a display boundary the model
+      // cannot see, so the canonical cluster does not merge across it.
+      expect(conv?.items.some((row) => row.id === failureId)).toBe(true);
+      expect(conv?.items.map((row) => row.id)).toEqual([
+        "ask-1",
+        failureId,
+        "tool-2",
+      ]);
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(false);
+    });
+
+    it("no-sink resolve: an ask carrying a distinct transcript key still settles into its cluster", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                {
+                  ...askUserItem("ask-1", VALID_ASK_ARGS),
+                  transcriptKey: "tk-1",
+                },
+                commandExecItem("tool-2", "bash"),
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      expect(
+        store.getState().conversation?.items.map((row) => row.id),
+      ).toEqual(["ask-1", "tool-2"]);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "idle" },
+          askPending: false,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The resolved ask folds into the cluster with its neighbor — the
+      // canonical rows know it only under the transcript key, while the
+      // stale question row knew it only under its wire id.
+      expect(conv?.items).toHaveLength(1);
+      const merged = conv?.items[0];
+      if (merged?.kind === "activity") {
+        expect(merged.members?.map((m) => m.id)).toEqual(["ask-1", "tool-2"]);
+      } else {
+        expect(merged?.kind).toBe("activity");
+      }
+    });
+
+    it("no-sink raise: an ask carrying a distinct transcript key replaces its settled row", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: false,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                {
+                  ...askUserItem("ask-1", VALID_ASK_ARGS),
+                  transcriptKey: "tk-1",
+                },
+                commandExecItem("tool-2", "bash"),
+              ],
+              status: "completed",
+            }),
+          ],
+        }),
+      ).conversation;
+      await store.getState().open(service, "ref-1");
+      // Settled: the ask clusters with its neighbor under the key identity.
+      expect(store.getState().conversation?.items).toHaveLength(1);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+          askPending: true,
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The question row appears at the ask's place…
+      expect(
+        conv?.items.some((row) => row.kind === "question"),
+      ).toBe(true);
+      // …the settled row for the same item is replaced, not left stale in
+      // the cluster beside it.
+      expect(
+        conv?.items.some(
+          (row) =>
+            row.kind === "activity" &&
+            (row.members ?? []).some((m) => m.id === "ask-1"),
+        ),
+      ).toBe(false);
+      expect(conv?.items.map((row) => row.id)).toEqual(["ask-1", "tool-2"]);
+    });
+
     it("malformed ask_user remains conservative — schedules reread, no question rows", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
