@@ -74,6 +74,7 @@ import {
   createStartupDeadline,
   evaluate,
   forcePseudoStates,
+  harnessStylesheetsLoadedInPage,
   navigateTo,
   realizedViewport,
   waitForFonts,
@@ -101,25 +102,16 @@ const GENERATED_ROOT = path.join(FRONTEND, `layoutguard-generated-${process.pid}
 // change can kill the dev-server burst mid-boot while the page still fires its
 // load event. A layoutguard case has no entry module that could leave a boot
 // global: harness.html is static and window.measure comes from an inline
-// script that always runs. The case's boot contract is that every stylesheet
-// link actually loaded - tokens.css and resolved.css in the top document, plus
-// whatever any srcdoc fixture iframe links for itself, one document at a time
-// for the same reason waitForFonts checks fonts that way. A request the burst
-// died on leaves link.sheet null, and a page whose stylesheets died measures
-// a fontless, unstyled page - exactly the "declares no web fonts" misfire.
+// script that always runs. The case's boot contract lives in the shared seam
+// (harnessStylesheetsLoadedInPage in browserGuardCdp.mjs): every document
+// linked its stylesheets and every link loaded, one document at a time. A page
+// whose stylesheets died measures a fontless, unstyled page - exactly the
+// "declares no web fonts" misfire - and a page that never recovers fails with
+// the boot cause.
 const BOOT = {
-  bootExpression: `(() => {
-    const docs = [document];
-    for (const frame of document.querySelectorAll("iframe")) {
-      try {
-        if (frame.contentDocument) docs.push(frame.contentDocument);
-      } catch {}
-    }
-    return docs.every((doc) =>
-      Array.from(doc.querySelectorAll('link[rel="stylesheet"]')).every((link) => link.sheet !== null),
-    );
-  })()`,
-  bootLabel: "every stylesheet link loaded (tokens.css/resolved.css, plus fixture frames)",
+  bootExpression: `(${harnessStylesheetsLoadedInPage.toString()})()`,
+  bootLabel:
+    "every document linked its stylesheets and every link loaded (tokens.css/resolved.css, plus fixture frames)",
 };
 
 // kata eevs (docs/developing-evener/testing.md: "a guard that has never failed is a

@@ -30,6 +30,7 @@ import {
   FONT_POLL_DEADLINE_MS,
   FONT_READY_TIMEOUT_MS,
   forcePseudoStates,
+  harnessStylesheetsLoadedInPage,
   navigateTo,
   PROBE_ATTEMPT_TIMEOUT_MS,
   STARTUP_DEADLINE_MS,
@@ -683,6 +684,232 @@ test("a booted page is not re-navigated and its empty font set still fails the f
   // failure, and still the fonts check's own diagnostic.
   await assert.rejects(waitForFonts(send), /declares no web fonts/);
   assert.equal(socket.listenerCount("message"), 0);
+});
+
+// Attribution (review M1): the marker can be missing without anything dying
+// on the wire - a harness entry whose module-init path throws at top level, a
+// bad script href, or a broken import graph all leave the boot global unset
+// and report no Network.loadingFailed event. That failure is deterministic
+// code, and blaming a network flake would invite retrying it instead of
+// investigating it, so the environment framing must be earned: only a boot
+// death that actually captured failed requests may call itself one.
+test("navigateTo blames the harness entry, not the environment, when no request failure was captured", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  const before = liveTimers();
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/spawnguard.html", {
+        bootExpression: "typeof window.settledSpawn !== 'undefined'",
+        bootLabel: "the spawnguard entry global window.settledSpawn",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /spawnguard\.html/);
+        assert.match(error.message, /window\.settledSpawn/);
+        // No request died on the wire, so nothing may claim an environment
+        // flake: the diagnostic must point at the harness entry instead.
+        assert.doesNotMatch(error.message, /environment problem/);
+        assert.doesNotMatch(error.message, /transient network change/);
+        assert.match(error.message, /harness entry/);
+        assert.match(error.message, /No request failures were captured/);
+        assert.doesNotMatch(error.message, /font/i);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT, "the bounded retry budget is unchanged");
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.ok(liveTimers() <= before);
+});
+
+// layoutguard's boot predicate (review M2): [].every(...) is vacuously true,
+// so a document that links NO stylesheet at all - an error page, a wrong-page
+// harness, a stripped document - used to pass the boot check and walk into
+// waitForFonts to die as the fonts misfire. Every document the predicate
+// visits must have linked at least one stylesheet, and every link must have
+// loaded.
+const sheetLoaded = () => ({ sheet: { cssRules: [] } });
+const sheetFailed = () => ({ sheet: null });
+
+function stubStylesheetPage({ top, frames = [] }) {
+  const frameStubs = frames.map((links) => ({
+    contentDocument: {
+      querySelectorAll: (selector) => (selector.includes("stylesheet") ? [...links] : []),
+    },
+  }));
+  return {
+    querySelectorAll: (selector) => {
+      if (selector === "iframe") return frameStubs;
+      return selector.includes("stylesheet") ? [...top] : [];
+    },
+  };
+}
+
+test("the stylesheet boot predicate passes a case whose every document linked and loaded its links", async () => {
+  vi.stubGlobal(
+    "document",
+    stubStylesheetPage({ top: [sheetLoaded(), sheetLoaded()], frames: [[sheetLoaded(), sheetLoaded()]] }),
+  );
+  assert.equal(harnessStylesheetsLoadedInPage(), true);
+});
+
+test("the stylesheet boot predicate rejects a link whose sheet never arrived", async () => {
+  vi.stubGlobal("document", stubStylesheetPage({ top: [sheetLoaded(), sheetFailed()] }));
+  assert.equal(harnessStylesheetsLoadedInPage(), false);
+});
+
+test("the stylesheet boot predicate rejects a document that links no stylesheet at all", async () => {
+  vi.stubGlobal("document", stubStylesheetPage({ top: [] }));
+  assert.equal(harnessStylesheetsLoadedInPage(), false);
+});
+
+test("the stylesheet boot predicate rejects a fixture frame that links no stylesheet at all", async () => {
+  vi.stubGlobal(
+    "document",
+    stubStylesheetPage({ top: [sheetLoaded(), sheetLoaded()], frames: [[], [sheetLoaded(), sheetLoaded()]] }),
+  );
+  assert.equal(harnessStylesheetsLoadedInPage(), false);
+});
+
+// The boot listener is a handler on the guards' shared CDP socket (review L1):
+// a frame it cannot parse, or a loadingFailed event without params, must be
+// survived - an exception in this listener would break the dispatch of every
+// later event on the same socket the guards reuse across cases.
+test("a CDP frame the boot listener cannot parse cannot break the navigation", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  let enables = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.enable":
+        // The garbage frame arrives while ONLY the seam's boot listener is
+        // attached: between attempts, after navigateToOnce's load tripwire
+        // has taken its own listener off.
+        enables++;
+        if (enables === 2) socket.dispatch("message", { data: "this is not a CDP message" });
+        return {};
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        // The first page is dead; the re-navigation boots.
+        return { result: { result: { value: navigations > 1 } } };
+      default:
+        return {};
+    }
+  };
+
+  await navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+    bootExpression: "typeof window.settledShell !== 'undefined'",
+    bootLabel: "the shellguard entry global window.settledShell",
+    retryDelayMs: 0,
+  });
+
+  assert.equal(navigations, 2, "a garbage frame must not turn a recovering page into a failure");
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+test("a loadingFailed event without params is survived and never miscounts as captured evidence", async () => {
+  const socket = fakeSocket();
+  let navigations = 0;
+  const send = async (method) => {
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+        if (navigations === 1) {
+          socket.dispatch("message", { data: JSON.stringify({ method: "Network.loadingFailed" }) });
+        }
+        return { result: { frameId: "fixture-frame" } };
+      case "Runtime.evaluate":
+        return { result: { result: { value: false } } };
+      default:
+        return {};
+    }
+  };
+  const noteError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  try {
+    await assert.rejects(
+      navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/transcriptscrollguard.html", {
+        bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
+        bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
+        retryDelayMs: 0,
+      }),
+      (error) => {
+        // The event carried nothing usable, so it is not evidence: the
+        // rejection must still be the boot diagnostic naming no captured
+        // failures, never a TypeError out of the summarizer.
+        assert.match(error.message, /never booted/);
+        assert.match(error.message, /No request failures were captured/);
+        return true;
+      },
+    );
+  } finally {
+    noteError.mockRestore();
+  }
+
+  assert.equal(navigations, 1 + BOOT_RETRY_LIMIT);
+  assert.equal(socket.listenerCount("message"), 0);
+});
+
+// An inner navigation failure with boot options enabled (review L2): the
+// original CDP error must propagate unchanged - no retry, no rewrapping - and
+// the seam must still tear the Network domain down and remove its listener.
+test("an inner navigation failure with boot options propagates without a retry", async () => {
+  const socket = fakeSocket();
+  const sent = [];
+  let navigations = 0;
+  let bootChecks = 0;
+  const send = async (method) => {
+    sent.push(method);
+    switch (method) {
+      case "Page.navigate":
+        navigations++;
+        throw new Error('Page.navigate: {"code":-32000,"message":"Cannot navigate to invalid URL"}');
+      case "Runtime.evaluate":
+        bootChecks++;
+        return { result: { result: { value: true } } };
+      default:
+        return {};
+    }
+  };
+
+  const before = liveTimers();
+  await assert.rejects(
+    navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/shellguard.html", {
+      bootExpression: "typeof window.settledShell !== 'undefined'",
+      bootLabel: "the shellguard entry global window.settledShell",
+      retryDelayMs: 0,
+    }),
+    /Cannot navigate to invalid URL/,
+  );
+
+  assert.equal(navigations, 1, "a navigation that failed must not be retried as if it had booted");
+  assert.equal(bootChecks, 0, "the boot check must not run on a page that never navigated");
+  assert.ok(sent.includes("Network.disable"), "the Network domain must be torn down on the failure path");
+  assert.equal(socket.listenerCount("message"), 0);
+  assert.ok(liveTimers() <= before, "the failure path must not leave a timer holding the event loop");
 });
 
 // waitForFonts runs on one coordinated in-page deadline: the registration

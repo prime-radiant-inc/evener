@@ -291,6 +291,37 @@ export const BOOT_RETRY_LIMIT = 2;
 export const BOOT_RETRY_DELAY_MS = 250;
 
 /**
+ * layoutguard's half of the boot seam, exported so the wire tests can call it
+ * against a stub document. It runs in the page via toString(), so it must not
+ * close over anything outside its own body: the documents come from the page's
+ * own globals and the answer is a plain boolean.
+ *
+ * A layoutguard case has no entry module that could leave a boot global -
+ * harness.html is static and window.measure comes from an inline script that
+ * always runs - so the case's boot contract is that every stylesheet link
+ * actually loaded, one document at a time (the top document's tokens.css and
+ * resolved.css, plus whatever any same-origin srcdoc fixture iframe links for
+ * itself): a request the burst died on leaves link.sheet null, and a page
+ * whose stylesheets died measures a fontless, unstyled page. A document that
+ * links NO stylesheet at all is not a booted case either - [].every(...) is
+ * vacuously true, so that shape has to be refused explicitly or an error page
+ * would pass as booted and die in waitForFonts as the fonts misfire.
+ */
+export function harnessStylesheetsLoadedInPage() {
+  const docs = [document];
+  for (const frame of document.querySelectorAll("iframe")) {
+    try {
+      if (frame.contentDocument) docs.push(frame.contentDocument);
+    } catch {}
+  }
+  return docs.every((doc) => {
+    const links = Array.from(doc.querySelectorAll('link[rel="stylesheet"]'));
+    if (links.length === 0) return false;
+    return links.every((link) => link.sheet !== null);
+  });
+}
+
+/**
  * Group the Network.loadingFailed events captured during one boot window by
  * what failed and how often, so the terminal error reports the burst
  * ("Script net::ERR_NETWORK_CHANGED x3") instead of 40 near-identical lines.
@@ -299,7 +330,7 @@ function summarizeLoadingFailures(failures) {
   if (failures.length === 0) return null;
   const counts = new Map();
   for (const failure of failures) {
-    const kind = `${failure.type ?? "Unknown"} ${failure.errorText ?? "(no error text)"}`;
+    const kind = `${failure?.type ?? "Unknown"} ${failure?.errorText ?? "(no error text)"}`;
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
   }
   return [...counts.entries()].map(([kind, count]) => (count === 1 ? kind : `${kind} x${count}`)).join("; ");
@@ -364,6 +395,13 @@ async function navigateToOnce({ ws, send }, url) {
  * never recovers fails with the boot cause - never the fonts error - plus the
  * Network.loadingFailed evidence captured inside the window.
  *
+ * THE ATTRIBUTION IS EARNED, NOT ASSUMED: a missing boot marker alone does
+ * not name the cause. A harness entry whose module-init path throws at top
+ * level, a bad script href, or a broken import graph all leave the marker
+ * unset while every request succeeds - a deterministic code failure. Only a
+ * boot death that captured failed requests is framed as the environment
+ * flake; without that evidence the terminal error points at the harness.
+ *
  * The legacy two-argument call is unchanged: no boot options, no Network
  * domain, no extra evaluate - skillguard's driver and editorial-preview keep
  * exactly the behavior they had.
@@ -384,8 +422,18 @@ export async function navigateTo(
   const { ws, send } = page;
   const loadingFailures = [];
   const onLoadingFailed = (event) => {
-    const message = JSON.parse(event.data);
-    if (message.method === "Network.loadingFailed") loadingFailures.push(message.params);
+    // This handler sits on the guards' shared CDP socket, which other
+    // listeners (connectPage's pending-command resolver, the load tripwire)
+    // share: a frame it cannot parse, or an event without params, must be
+    // skipped, never thrown - an exception here breaks the dispatch of every
+    // later event on the socket.
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (message?.method === "Network.loadingFailed" && message.params) loadingFailures.push(message.params);
   };
   ws.addEventListener("message", onLoadingFailed);
   let attempts = 0;
@@ -401,18 +449,24 @@ export async function navigateTo(
         if (await evaluate(send, bootExpression)) return;
         if (attempts > BOOT_RETRY_LIMIT) {
           const evidence = summarizeLoadingFailures(loadingFailures);
+          const budget =
+            `after ${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
+            `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed)`;
+          const verdict =
+            `${bootLabel ?? bootExpression} did not hold even though the page's load event fired, ` +
+            `so the page is a dead document no measurement can read`;
           throw new Error(
-            `environment problem, not a test case failure: the harness page at ${url} never booted after ` +
-              `${attempts} navigation${attempts === 1 ? "" : "s"} (${BOOT_RETRY_LIMIT} ` +
-              `re-navigation${BOOT_RETRY_LIMIT === 1 ? "" : "s"} allowed): ${bootLabel ?? bootExpression} did not hold ` +
-              `even though the page's load event fired, so the harness entry module never ran and the page is a dead ` +
-              `document no measurement can read. The usual cause on the affected host is a transient network change ` +
-              `(net::ERR_NETWORK_CHANGED) killing the Vite dev-server module burst mid-boot - an environment flake, ` +
-              `not a test case regression. ` +
-              (evidence
-                ? `Chrome reported these failed requests during the boot window: ${evidence}.`
-                : "No request failures were captured during the boot window, so the burst died without reporting a " +
-                  "Network.loadingFailed event."),
+            evidence
+              ? `environment problem, not a test case failure: the harness page at ${url} never booted ${budget}: ` +
+                  `${verdict}. Chrome reported these failed requests during the boot window: ${evidence}. A burst ` +
+                  `dying on the wire like that is the transient network change this seam exists for ` +
+                  `(net::ERR_NETWORK_CHANGED is its signature) - an environment flake, not a test case regression.`
+              : `harness boot failure - likely a test case regression, not an environment flake: the harness page ` +
+                  `at ${url} never booted ${budget}: ${verdict}. No request failures were captured during the boot ` +
+                  `window, so no request died on the wire: check what the boot check measures - the harness entry and ` +
+                  `the product modules it imports (a top-level throw in module init, a bad script href, or a broken ` +
+                  `import graph all leave the boot marker unset without reporting a failed request), or the case's ` +
+                  `own stylesheet links.`,
           );
         }
         const captured = loadingFailures.length;
