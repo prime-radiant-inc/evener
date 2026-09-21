@@ -688,6 +688,63 @@ func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
 	}
 }
 
+// TestLocalDaemonSourceListUsesProbedCapabilities pins the probe-carried row:
+// when the roster's probe captured the daemon's own capability set, the list
+// row mirrors it rather than the fallback approximation — the same one-answer
+// rule the status follows (#1840). The hub's fork overlay still applies on
+// top (the hub serves fork itself, and every hub list path re-fences the bit
+// precisely), and the restart-required and read-only alias branches keep
+// replacing the set wholesale.
+func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
+	// An under-wired daemon's idle answer, a set the fallback approximation
+	// would never produce: no steer, no queue, no skill-input surface, but its
+	// vision-model seam is wired.
+	probed := appwire.ThreadCapabilities{
+		Send: true, Compact: true, Clear: true, Shutdown: true,
+		ChangeModel: true, ChangeVisionModel: true, Rename: true,
+		Goal: true, SharedNotes: true,
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed", SessionID: "sess_probed"},
+				Status: "idle", Capabilities: probed, CapabilitiesKnown: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/unprobed", ThreadID: "th_unprobed", SessionID: "sess_unprobed"},
+				Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probedrestart", ThreadID: "th_probed_restart", SessionID: "sess_probed_restart"},
+				Status: appwire.ThreadStatusRestartRequired, Capabilities: probed, CapabilitiesKnown: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probedalias", ThreadID: "th_probed_alias"},
+				SessionID: "sess_probed_alias", OwnerSessionID: "sess_probed", Status: "idle",
+				ReadOnlyAlias: true, Capabilities: probed, CapabilitiesKnown: true},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	// Keyed by session: an alias's thread id derives from the session it
+	// mirrors, which is not the id this test names it by.
+	capsBySession := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsBySession[thread.SessionID] = thread.Evener.Capabilities
+	}
+	want := probed
+	want.ForkFromTurn = true
+	if got := capsBySession["sess_probed"]; got != want {
+		t.Fatalf("probed row capabilities = %+v, want the probe's set with the hub's fork overlay %+v", got, want)
+	}
+	unprobed := capsBySession["sess_unprobed"]
+	if !unprobed.SkillInput || !unprobed.Queue || !unprobed.ChangeVisionModel {
+		t.Fatalf("unprobed row lost the fallback advertisement: %+v", unprobed)
+	}
+	if restart := capsBySession["sess_probed_restart"]; restart != (appwire.ThreadCapabilities{SharedNotes: true}) {
+		t.Fatalf("restart-required row must replace even a probed set with the read-only one: %+v", restart)
+	}
+	if alias := capsBySession["sess_probed_alias"]; alias != (appwire.ThreadCapabilities{}) {
+		t.Fatalf("read-only alias must zero even a probed set: %+v", alias)
+	}
+}
+
 // TestLocalDaemonSourceListCarriesAskPending guards the TUI attach path (Task
 // 29's per-row ask marker): when the hub's entries() feed reports PendingAsk
 // on a LocalDaemonEntry, threadFromEntry must carry it through to

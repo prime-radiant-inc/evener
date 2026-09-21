@@ -26,12 +26,21 @@ import (
 // rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID          string
-	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags        []string // the status flags the daemon reported alongside Status
-	Crashed            bool     // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
-	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	SessionID         string
+	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags       []string // the status flags the daemon reported alongside Status
+	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
+	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	// Capabilities mirrors the daemon's own Evener capability set from the
+	// probe that produced this entry, so list projections can advertise the
+	// daemon's answer instead of a hand approximation (#1840's one-answer
+	// rule: the same session must not read differently from ListThreads and
+	// from ThreadRead). CapabilitiesKnown false means no probe read one and
+	// the approximation takes over; the zero value alone is not that signal,
+	// because a daemon can legitimately answer an all-false set.
+	Capabilities       appwire.ThreadCapabilities
+	CapabilitiesKnown  bool
 	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
 	// RunningSubagentStates carries each listed child's projected status
 	// ("active", "idle", ...) when the daemon reports it. Retained stable
@@ -74,11 +83,18 @@ type LiveEntry struct {
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID             string
-	Status                string
-	ActiveFlags           []string
-	PendingAsk            bool
-	PendingEscalation     bool
+	SessionID         string
+	Status            string
+	ActiveFlags       []string
+	PendingAsk        bool
+	PendingEscalation bool
+	// Capabilities is the daemon's own Evener capability set from the same
+	// projection cut as Status. CapabilitiesKnown reports whether this probe
+	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
+	// absent, and consumers fall back to their approximation — never to an
+	// empty set they would mistake for the daemon's answer.
+	Capabilities          appwire.ThreadCapabilities
+	CapabilitiesKnown     bool
 	RunningSubagentIDs    []string
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
@@ -1229,6 +1245,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
+		Capabilities:          result.Capabilities,
+		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
 		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
 		RunningJobs:           cloneRunningJobs(result.RunningJobs),
@@ -1301,6 +1319,12 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		RunningJobs: runningJobs, CompletedJobs: completedJobs,
 		Watches: diagnosticsWatches(root.Evener.Diagnostics)}
+	// The identity checks above already require a current-protocol daemon,
+	// and every current daemon stamps its capability set on the thread
+	// projection this read answered from, so the caps beside the status are
+	// the daemon's own answer — not an approximation.
+	result.Capabilities = root.Evener.Capabilities
+	result.CapabilitiesKnown = true
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

@@ -190,6 +190,74 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	}
 }
 
+// TestStatusProberCarriesDaemonCapabilities pins the other half of thread
+// parity: beside the status the probe already carries, it must carry the
+// daemon's own Evener capabilities from the same projection cut, so the
+// hub's list rows can advertise the daemon's answer rather than a hand
+// approximation. The set comes from the LISTED root, so it is the same
+// snapshot cut as the status and the diagnostics the probe carries.
+func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
+	// Wire every seam appCapabilitiesLocked consults, the way
+	// cmd/evener/serve.go does, so the daemon's idle answer is the
+	// production shape: every capability but fork is true at idle.
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_caps",
+		state:     appwire.ThreadStatusIdle,
+		setup: func(srv *server.Server) {
+			srv.SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions{
+				Start: func(appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					return appwire.TurnStartResponse{}, nil
+				},
+				Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+					return appwire.TurnSteerResponse{}, nil
+				},
+				Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+					return appwire.TurnQueueResponse{}, nil
+				},
+				Drain: func(appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+					return appwire.TurnDrainAsSteerResponse{}, nil
+				},
+				Promote: func(appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+					return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
+				},
+				Cancel: func(appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+					return appwire.TurnCancelQueuedResponse{}, nil
+				},
+				Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+					return appwire.TurnInterruptResponse{}, nil
+				},
+			})
+			srv.SetCompactFunc(func(context.Context) error { return nil })
+			srv.SetClearFunc(func(context.Context, appwire.ThreadClearParams) error { return nil })
+			srv.SetShutdownFunc(func() {})
+			srv.SetModelFunc(func(string) error { return nil })
+			srv.SetVisionModelFunc(func(string) error { return nil })
+			srv.SetNameFunc(func(string) error { return nil })
+			srv.SetGoalFunc(func(string) (bool, error) { return false, nil })
+			srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
+				return appwire.NotesHumanSetResponse{}, nil
+			})
+			srv.SetUrlsRemoveFunc(func(outerID, id string) (bool, error) { return false, nil })
+		},
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if !got.CapabilitiesKnown {
+		t.Fatal("CapabilitiesKnown = false, want true: the probe must carry the daemon's capabilities answer")
+	}
+	want := appwire.ThreadCapabilities{
+		Send: true, Steer: true, Interrupt: true, Queue: true,
+		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
+		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
+		SkillInput: true, // ForkFromTurn stays the daemon's hardwired false.
+	}
+	if got.Capabilities != want {
+		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)
+	}
+}
+
 func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
 	// A retained child can still have an active descendant projection even after
 	// its stable delegate run has settled. The stable delegate lifecycle is the
