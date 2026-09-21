@@ -1192,11 +1192,12 @@ func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCap
 		Clear:       !item.ReadOnlyAlias,
 		Shutdown:    true,
 		ChangeModel: true,
-		// The daemon's idle answer advertises this whenever its vision-model
-		// seam is wired, which every current daemon wires at startup; the
-		// live-hub probe showed list rows understating it while the same
-		// session's read advertised it, the same drift class SkillInput had.
-		ChangeVisionModel: true,
+		// The daemon advertises this whenever its vision-model seam is wired
+		// (every current daemon wires it at startup) and withholds it when
+		// closed, like its siblings here; the live-hub probe showed list rows
+		// understating it while the same session's read advertised it, the
+		// same drift class SkillInput had.
+		ChangeVisionModel: status != appwire.ThreadStatusClosed,
 		// Folding `active` into Queue made ListThreads disagree with
 		// ThreadRead and the status frames for the same session.
 		Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,

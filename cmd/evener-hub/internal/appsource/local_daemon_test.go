@@ -686,6 +686,14 @@ func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
 	if !capsByID["th_closed"].SkillInput {
 		t.Fatalf("closed entry withheld skillInput: %+v", capsByID["th_closed"])
 	}
+	// The daemon does not close-gate skillInput, but it does close-gate
+	// changeVisionModel (appCapabilitiesLocked), so the closed row must not
+	// advertise the one while keeping the other — a closed row that differs
+	// from the read of the same session is the drift this file exists to
+	// remove.
+	if capsByID["th_closed"].ChangeVisionModel {
+		t.Fatalf("closed entry advertised changeVisionModel: %+v", capsByID["th_closed"])
+	}
 }
 
 // TestLocalDaemonSourceListUsesProbedCapabilities pins the probe-carried row:
