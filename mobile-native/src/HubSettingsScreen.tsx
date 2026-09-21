@@ -20,6 +20,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AppwireClient,
+	type ConnectionState,
 	createHubOverviewStore,
 	friendlyErrorMessage,
 } from "@evener/appwire-client";
@@ -59,6 +60,7 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			{display === "banner" ? <ConnectionStatus /> : null}
 			<HubSettings
 				client={renderClient}
+					connectionState={state}
 				hubId={activeProfile.id}
 				hubName={activeProfile.name}
 				openTranscript={() =>
@@ -121,6 +123,7 @@ const HUB_OVERVIEW_REFRESH_FAILED =
 
 function HubSettings({
 	client,
+	connectionState,
 	hubId,
 	hubName,
 	openTranscript,
@@ -130,6 +133,7 @@ function HubSettings({
 	openLaunchSettings,
 }: {
 	client: ConversationClientLike;
+	connectionState: ConnectionState;
 	hubId: string;
 	hubName: string;
 	openTranscript(): void;
@@ -163,6 +167,25 @@ function HubSettings({
 			void upgrade.reconcileAfterReconnect();
 		}, [model, upgrade]),
 	);
+	// useFocusEffect covers a screen the user comes back to; a passive
+	// reconnect never refocuses it, and the client a manual retry replaces
+	// this one with is still connecting when the focus effect re-runs, so
+	// that read fails with nothing left to re-run it once the connection is
+	// ready. The overview store keeps the last successful load through a
+	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
+	// data stays usable meanwhile; this is the recovery read: one refresh and
+	// one upgrade reconcile per transition back to ready.
+	const refreshedAtReady = useRef(false);
+	useEffect(() => {
+		if (connectionState !== "ready") {
+			refreshedAtReady.current = false;
+			return;
+		}
+		if (refreshedAtReady.current) return;
+		refreshedAtReady.current = true;
+		void model.getState().refresh();
+		void upgrade.reconcileAfterReconnect();
+	}, [connectionState, model, upgrade]);
 	const data = state.data;
 	const hub = data?.hub;
 	return (

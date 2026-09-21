@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { marketplaceSourceLabel } from "@evener/appwire-client";
+import { marketplaceSourceLabel, type ConnectionState } from "@evener/appwire-client";
 import type {
   MarketplaceAddParams,
   PluginRefParams,
@@ -47,12 +47,14 @@ const WRITE_FAILED =
 
 export function MarketplaceBrowser({
   client,
+  connectionState,
   hubName,
   installed,
   gate,
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
+  connectionState: ConnectionState;
   hubName: string;
   installed: PluginsStore;
   // The screen's plugin-mutation gate, shared with the installed list: a
@@ -74,6 +76,15 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // Wired the way PluginsScreen wires its plugins store: the marketplaces
+  // store hears every connection transition through connectionChanged, so a
+  // reconnection re-reads a list this view has already asked for and retires
+  // the catalogs a change away may have invalidated (storeLifecycle.ts). A
+  // layout effect, so the store knows its connection before the mount
+  // effect's first read issues.
+  useLayoutEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchMarketplaces();

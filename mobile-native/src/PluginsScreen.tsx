@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
   useEffect,
+	useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,7 +21,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { AppwireClient, PluginRefParams } from "@evener/appwire-client";
+import type {
+	AppwireClient,
+	ConnectionState,
+	PluginRefParams,
+} from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
@@ -81,6 +86,7 @@ export function PluginsScreen({
       <Plugins
         key={activeProfile.id}
         client={renderClient}
+        connectionState={state}
         hubName={activeProfile.name}
         gate={gate}
       />
@@ -90,10 +96,12 @@ export function PluginsScreen({
 
 function Plugins({
   client,
+  connectionState,
   hubName,
   gate,
 }: {
   client: ConversationClientLike;
+  connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
 }) {
@@ -119,6 +127,20 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  // The store's own reconnect recovery is what a banner over a live screen
+  // needs: the hub broadcasts a change only to clients connected when it
+  // happens, so everything that moved while this one was away arrives as
+  // nothing at all, and the store re-reads a list something wants once
+  // connectionChanged says the connection is ready again (storeLifecycle.ts).
+  // The wall this screen used to show remounted the store on every recovery,
+  // so that read happened for free with the remount; keeping the screen
+  // mounted behind a banner removes it, and this drives the store through
+  // every transition itself, the way useCredentialStore drives the credential
+  // store (credentialStore.ts). A layout effect, so the store knows its
+  // connection before the mount effect's first read issues.
+  useLayoutEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchPlugins();
@@ -195,6 +217,7 @@ function Plugins({
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
+          connectionState={connectionState}
           hubName={hubName}
           installed={model}
           gate={gate}

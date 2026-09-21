@@ -1,0 +1,185 @@
+// Screen-level tests for the recovery the reconnect banners promise: a
+// screen that survives a connection flap behind a banner must also catch up
+// on what changed while it was away. The wall this screen used to show
+// remounted the plugins store on every recovery, so the catch-up read came
+// free with the remount; keeping the store mounted hands that duty to the
+// store's own reconnect recovery (storeLifecycle.ts), which only runs when a
+// host drives connectionChanged - the way useCredentialStore drives the
+// credential store (credentialStore.ts). Mirrors ProvidersScreen.test.tsx's
+// mocking: every native edge the screen reaches is mocked here and nowhere
+// else, and the hub is the SDK's FakeClient.
+import type { ComponentProps } from "react";
+import { act } from "react-test-renderer";
+import { expect, it, vi } from "vitest";
+import type {
+	ConnectionState,
+	MarketplaceEntry,
+	PluginEntry,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { MarketplaceBrowser } from "./MarketplaceBrowser";
+import { PluginsScreen } from "./PluginsScreen";
+import { createPluginMutationGate } from "./pluginMutationGate";
+import { nativeModuleMock, render, renderedText } from "./renderNative.testkit";
+
+// What useConnection answers with. vi.hoisted because vi.mock's factory is
+// hoisted above every module import and may not close over a module-level let.
+const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+vi.mock("react-native", async () => ({
+	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	Switch: "Switch",
+}));
+vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+
+const props = {
+	route: { params: { hubId: "hub-1" } },
+} as unknown as ComponentProps<typeof PluginsScreen>;
+
+const ACME: MarketplaceEntry = {
+	name: "acme",
+	source: { kind: "github", repo: "acme/plugins" },
+	lastUpdated: 1,
+};
+
+function plugin(name: string): PluginEntry {
+	return {
+		plugin: name,
+		marketplace: "acme",
+		version: "1.0.0",
+		enabled: true,
+		autoUpgrade: false,
+		broken: false,
+		installPath: "/plugins",
+		installedAt: 1,
+		lastUpdated: 1,
+	};
+}
+
+function connection(client: unknown, state: ConnectionState) {
+	return {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client,
+		state,
+		fatal: false,
+		retry: () => {},
+	};
+}
+
+it("reads the plugin list again once a flap the screen survived is ready again", async () => {
+	const hub = new FakeClient("ready");
+	let reads = 0;
+	hub.on("evener/plugin/list", () => {
+		reads += 1;
+		return {
+			plugins:
+				reads === 1
+					? [plugin("kept")]
+					: [plugin("kept"), plugin("added-while-away")],
+		};
+	});
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("kept");
+	expect(reads).toBe(1);
+
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	harness.connection = connection(hub, "ready");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	await act(async () => {});
+	await act(async () => {});
+	// The hub broadcasts a change only to clients connected when it happens, so
+	// everything that moved while this one was away arrives as nothing at all;
+	// the recovery read is what catches the screen up on it.
+	expect(reads).toBe(2);
+	expect(renderedText(tree)).toContain("added-while-away");
+});
+
+it("recovers a replacement client's failed first read when it becomes ready", async () => {
+	const first = new FakeClient("ready");
+	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(first, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("kept");
+
+	// A manual retry opens a fresh client, and the screen sees it before it is
+	// ready: the replacement store's first read fails with the banner already
+	// over it, and only a recovery read once the connection is ready can land
+	// the list.
+	const second = new FakeClient("connecting");
+	second.on("evener/plugin/list", () => ({
+		plugins: [plugin("kept"), plugin("added-on-retry")],
+	}));
+	harness.connection = connection(second, "connecting");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	expect(renderedText(tree)).toContain("Could not load installed plugins");
+
+	second.state = "ready";
+	harness.connection = connection(second, "ready");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("added-on-retry");
+	expect(renderedText(tree)).not.toContain("Could not load installed plugins");
+});
+
+it("re-reads the marketplaces the browse panel shows when the connection is ready again", async () => {
+	const hub = new FakeClient("ready");
+	let reads = 0;
+	hub.on("evener/marketplace/list", () => {
+		reads += 1;
+		return {
+			marketplaces:
+				reads === 1
+					? [ACME]
+					: [
+							ACME,
+							{
+								name: "added-while-away",
+								source: { kind: "github", repo: "late/plugins" },
+								lastUpdated: 1,
+							},
+						],
+		};
+	});
+	const client = hub as unknown as ConversationClientLike;
+	const browser = (state: ConnectionState) => (
+		<MarketplaceBrowser
+			client={client}
+			connectionState={state}
+			hubName="Work hub"
+			installed={createPluginsStore(client)}
+			gate={createPluginMutationGate()}
+			onOpenPlugin={() => {}}
+		/>
+	);
+	const tree = render(browser("ready"));
+	await act(async () => {});
+	expect(reads).toBe(1);
+
+	await act(async () => {
+		tree.update(browser("reconnecting"));
+	});
+	await act(async () => {
+		tree.update(browser("ready"));
+	});
+	await act(async () => {});
+	await act(async () => {});
+	// The marketplaces store is driven through the same recovery: the list it
+	// already read is read again, and a change made while it was away lands.
+	expect(reads).toBe(2);
+	expect(renderedText(tree)).toContain("added-while-away");
+});

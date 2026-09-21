@@ -57,6 +57,7 @@ async function removalUnderTest(fake: FakeClient, reject: () => Error) {
   const tree = render(
     <MarketplaceBrowser
       client={client}
+      connectionState="ready"
       hubName="Work hub"
       installed={createPluginsStore(client)}
       gate={createPluginMutationGate()}
