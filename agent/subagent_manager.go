@@ -293,6 +293,14 @@ func (m *subagentManager) hasRunningChildren() bool {
 		if busy {
 			return true
 		}
+		if done == nil {
+			// A restored-idle record is built without a runner channel and
+			// keeps it until its first run starts (resetSubagentForRunLocked
+			// sets running and done under one hold), so nil done is the
+			// restored-idle steady state, not liveness — treating it as busy
+			// would pin the owner's release forever.
+			continue
+		}
 		select {
 		case <-done:
 		default:
