@@ -1035,14 +1035,14 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 
 // One question's prose and option text, bounded like every other row's:
 // header, question, why, ifUnanswered, and every option's label and detail
-// (AskUserOption.detail is a required string, never undefined). Shared by
-// truncateItem's "question" case below and the question sheet
-// (mobile-native/src/questionAnswers.ts, mobile-native/src/QuestionSheet.tsx),
-// so a row a reader scrolls and the sheet a reader answers from are cut the
-// same way. The answer this client composes does NOT read either bounded
-// copy — it asks the model for the canonical refs (questionAnswers.ts's
-// pendingQuestions, through liveAsksFor) — so a cut label here can never
-// name a choice the agent did not offer.
+// (AskUserOption.detail is a required string, never undefined). Used only by
+// truncateItem's "question" case below: the DISPLAY rows a reader scrolls
+// carry these cut copies. Nothing that answers a question reads them —
+// mobile-native's pendingQuestions (questionAnswers.ts) asks the model for
+// the canonical refs through liveAsksFor, the same call these rows were
+// projected from — so a submitted answer always names exactly the label the
+// agent offered, never a cut remnant, and two options sharing a prefix
+// longer than the bound stay distinguishable to the answer composer.
 export function boundQuestion(
   question: AskQuestionRef,
   bound: BoundText,
