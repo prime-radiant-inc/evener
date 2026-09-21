@@ -247,3 +247,126 @@ func navigationProjectSessionIDs(t *testing.T, resource hubapi.NavigationProject
 	}
 	return ids
 }
+
+// navigationMergeGraphID renders a two-digit row suffix without pulling fmt into
+// this test file (which imports no formatter).
+func navigationMergeGraphID(n int) string {
+	return string(rune('0'+n/10)) + string(rune('0'+n%10))
+}
+
+// The catalog merge must not only keep every group's sessions; it must describe
+// them the way a tree-built project does. hubcore caps a tree-built project's
+// public tier at maxSidebarSessionsPerTier and reports the rows beyond it as the
+// per-tier overflow (More*), and its tiers are globally most-recent-first. A
+// merged row colliding on one Key must match: two groups that each exceed the
+// cap collapse to a project whose current overflow is the number of rows beyond
+// the cap, whose retained tier keeps every row so paging still reaches them, and
+// whose rows stay ordered by recency across both groups rather than in
+// group-append order.
+func TestNavigationCatalogGraphMergeCapsTiersAndKeepsRecency(t *testing.T) {
+	generation := "00112233445566778899aabbccddeeff"
+	const capacity = hubcore.SidebarSessionPageSize
+	base := time.Unix(1_700_000_000, 0).UTC()
+	// capacity+5 current rows per group: each group overflows the cap on its
+	// own, so neither group's own MoreCurrent is set, yet the merged project
+	// overflows it. The "a" rows are two hours older than the "b" rows, so the
+	// newest session overall lives in the SECOND group and only a global
+	// re-sort lifts it above the whole first group.
+	group := func(prefix string, offset time.Duration) []hubcore.TreeNode {
+		rows := make([]hubcore.TreeNode, capacity+5)
+		for index := range rows {
+			updated := base.Add(-offset - time.Duration(index)*time.Minute)
+			id := prefix + "-" + navigationMergeGraphID(index)
+			rows[index] = hubcore.TreeNode{
+				ID:        id,
+				Title:     id,
+				Project:   prefix,
+				Kind:      "session",
+				State:     "idle",
+				CreatedAt: updated,
+				UpdatedAt: updated,
+			}
+		}
+		return rows
+	}
+	first := hubcore.TreeProject{Key: "no-project", Name: "one", Current: group("a", 2*time.Hour)}
+	second := hubcore.TreeProject{Key: "no-project", Name: "two", Current: group("b", 0)}
+	total := len(first.Current) + len(second.Current)
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: generation, Revision: 1,
+		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{first, second}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The merged row states the overflow a tree-built project with the same
+	// sessions would: rows beyond the cap, not the sum of the groups' own
+	// (zero) overflow counts. The retained tier keeps every row, because
+	// TierRows falls back to it once the merge cannot carry hubcore's private
+	// slices forward.
+	merged := projection.projects["no-project"]
+	if len(merged.Current) != total {
+		t.Errorf("merged current tier = %d rows, want all %d retained for TierRows", len(merged.Current), total)
+	}
+	if merged.MoreCurrent != total-capacity {
+		t.Errorf("merged MoreCurrent = %d, want %d (total %d minus the kept cap)", merged.MoreCurrent, total-capacity, total)
+	}
+	if merged.MoreRecent != 0 || merged.MoreArchived != 0 {
+		t.Errorf("merged MoreRecent/MoreArchived = %d/%d, want 0/0", merged.MoreRecent, merged.MoreArchived)
+	}
+
+	// The catalog row a client reads carries the same shape: every session
+	// counted and the overflow beyond the cap stated.
+	catalog, err := projection.CatalogPage(navigationResourceProjects, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Projects) != 1 {
+		t.Fatalf("catalog rows = %d, want one row per project key", len(catalog.Projects))
+	}
+	if summary := catalog.Projects[0]; summary.SessionCount != total || summary.MoreCurrent != total-capacity {
+		t.Errorf("catalog summary = %d sessions, %d more current; want %d and %d", summary.SessionCount, summary.MoreCurrent, total, total-capacity)
+	}
+
+	// The retained rows are globally most-recent-first: the newest session of
+	// the second group sorts ahead of every row of the older first group.
+	// Appending group one before group two would leave "a-00" first.
+	if merged.Current[0].ID != "b-00" {
+		t.Errorf("merged current[0] = %q, want the newest row across both groups (b-00); tiers kept group-append order", merged.Current[0].ID)
+	}
+
+	// The project detail serves the same order, caps the initial page at the
+	// public tier, and pages through the retained rows beyond the cap instead of
+	// losing them to the merge.
+	project, ok := projection.Project("no-project")
+	if !ok {
+		t.Fatal("merged project missing from the project map")
+	}
+	if len(project.Current.Sessions) != capacity || project.Current.Sessions[0].SessionID != "b-00" {
+		t.Errorf("project current page = %d rows starting %q, want %d starting b-00", len(project.Current.Sessions), project.Current.Sessions[0].SessionID, capacity)
+	}
+	if project.Current.Remaining != total-capacity {
+		t.Errorf("project current remaining = %d, want %d", project.Current.Remaining, total-capacity)
+	}
+	page, err := projection.ProjectPage("no-project", "current", capacity, capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Sessions) != capacity || page.Sessions[0].SessionID != "b-50" || page.Remaining != total-2*capacity {
+		t.Errorf("project page at offset %d = %d rows starting %q, %d remaining; want %d starting b-50, %d remaining", capacity, len(page.Sessions), page.Sessions[0].SessionID, page.Remaining, capacity, total-2*capacity)
+	}
+
+	// A session that only the retained union reaches keeps its location, so a
+	// direct lookup still resolves it after the merge.
+	last := "a-54"
+	ref := hubapi.LocalRef(last).String()
+	object, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
+	if err != nil {
+		t.Fatalf("location for beyond-cap session %q: %v", last, err)
+	}
+	location, ok := object.(hubapi.NavigationSessionLocation)
+	if !ok || location.Session == nil || location.Session.SessionID != last {
+		t.Fatalf("location for %q = %T %+v", last, object, location)
+	}
+}

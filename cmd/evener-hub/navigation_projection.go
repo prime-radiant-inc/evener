@@ -340,7 +340,7 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 // catalog slices (:171-179) and manifest counts (:184-199), of the p.projects
 // map built from buckets.all() (:174-179), and of the location index that
 // indexLocationsContext walks to mint a hubapi.NavigationSessionLocation per
-// session (:1284-1313). Dropping a duplicate group therefore does not just trim
+// session (:1370-1399). Dropping a duplicate group therefore does not just trim
 // a row: its sessions vanish from the catalog and from their project entry, and
 // a location lookup for one of them answers "not found" - a silent session loss
 // that is worse than the visible error it replaces.
@@ -390,14 +390,27 @@ func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.Tree
 // label and address. Everything else is combined the way the projection's
 // consumers read the struct:
 //
-//   - Current / Recent / Archived concatenate in group order, and the per-tier
-//     overflow counts (MoreCurrent / MoreRecent / MoreArchived) add, so every
-//     group's sessions reach TierRows, TotalSessionCount, the project detail's
-//     tier paging, and the location index. Each tier is read through TierRows so
-//     a group whose private uncapped slice holds more than
-//     maxSidebarSessionsPerTier rows contributes all of them; the rebuilt value
-//     exposes them through the public tier, which is exactly what TierRows falls
-//     back to once the merge cannot carry the private slices forward.
+//   - Current / Recent / Archived are the union of both groups' rows, ordered
+//     the way hubcore orders its own tiers (most recent first: UpdatedAt desc,
+//     CreatedAt desc, then the title and id tie-break sessionMetaLess uses).
+//     The per-tier overflow counts (MoreCurrent / MoreRecent / MoreArchived)
+//     are recomputed against maxSidebarSessionsPerTier rather than summed:
+//     More* is how many rows of the union lie beyond the cap a tree-built
+//     project keeps public, so a merged row states the same overflow a
+//     tree-built project holding the same sessions would. Summing the groups'
+//     counts was wrong because a group's own More* is zero whenever that group
+//     fits the cap, even when the merged union does not - the counts then
+//     described rows already present in the very slice they claimed to be
+//     beyond.
+//   - Each tier is read through TierRows, so a group whose private uncapped
+//     slice holds more than maxSidebarSessionsPerTier rows contributes all of
+//     them, and the union is kept whole in the rebuilt value's public tier:
+//     the merge must not cap it away. TierRows falls back to the public tier
+//     once the merge cannot carry the private slices forward, and both the
+//     project detail's paging and the service's logical fingerprints read
+//     TierRows, so a capped public tier would drop every row past the cap from
+//     paging and from change detection - the silent session loss this merge
+//     exists to prevent.
 //   - LastActivity takes the later moment, and Age comes with it.
 //   - RollupState takes the higher hubapi.RollupRank, and RollupLive / RollupAttn
 //     add, so the merged header still counts every working and awaiting session.
@@ -407,7 +420,10 @@ func navigationMergeProjectGroups(projects []hubcore.TreeProject) []hubcore.Tree
 //   - Expanded is the OR, matching its own "RollupLive > 0 || RollupAttn > 0"
 //     rule.
 //   - Worktrees adds: the delete confirmation's distinct-worktree count can only
-//     grow when more sessions join the project.
+//     grow when more sessions join the project. It is a distinct-PATH count and
+//     the struct carries the count alone, not the paths, so a worktree path two
+//     merged groups share is counted once per group: the merged value is an
+//     upper bound on the distinct paths, not the exact count.
 func navigationMergeProject(first, next hubcore.TreeProject) hubcore.TreeProject {
 	lastActivity, age := first.LastActivity, first.Age
 	if next.LastActivity.After(lastActivity) {
@@ -417,13 +433,16 @@ func navigationMergeProject(first, next hubcore.TreeProject) hubcore.TreeProject
 	if hubapi.RollupRank(next.RollupState) > hubapi.RollupRank(rollupState) {
 		rollupState = next.RollupState
 	}
+	current, moreCurrent := navigationMergeProjectTier(first, next, "current")
+	recent, moreRecent := navigationMergeProjectTier(first, next, "recent")
+	archived, moreArchived := navigationMergeProjectTier(first, next, "archived")
 	return hubcore.TreeProject{
 		Name:         first.Name,
 		Key:          first.Key,
 		WorkingDir:   first.WorkingDir,
-		Current:      navigationMergeProjectTier(first, next, "current"),
-		Recent:       navigationMergeProjectTier(first, next, "recent"),
-		Archived:     navigationMergeProjectTier(first, next, "archived"),
+		Current:      current,
+		Recent:       recent,
+		Archived:     archived,
 		IsArchived:   first.IsArchived,
 		IsTestRun:    first.IsTestRun,
 		LastActivity: lastActivity,
@@ -432,25 +451,93 @@ func navigationMergeProject(first, next hubcore.TreeProject) hubcore.TreeProject
 		RollupAttn:   first.RollupAttn + next.RollupAttn,
 		Sources:      navigationMergeProjectSources(first.Sources, next.Sources),
 		Expanded:     first.Expanded || next.Expanded,
-		MoreCurrent:  first.MoreCurrent + next.MoreCurrent,
-		MoreRecent:   first.MoreRecent + next.MoreRecent,
-		MoreArchived: first.MoreArchived + next.MoreArchived,
+		MoreCurrent:  moreCurrent,
+		MoreRecent:   moreRecent,
+		MoreArchived: moreArchived,
 		Age:          age,
 		Worktrees:    first.Worktrees + next.Worktrees,
 	}
 }
 
-// navigationMergeProjectTier returns one tier's authoritative rows across two
-// groups that share a Key, in group order. It reads TierRows rather than the
-// public slice because a tree-built project keeps its overflow in the private
-// uncapped tier, and the merged project must carry that overflow too.
-func navigationMergeProjectTier(first, next hubcore.TreeProject, tier string) []hubcore.TreeNode {
+// navigationMergeProjectTier returns one tier across two groups that share a
+// Key: the full union in the tree's own order and the count of rows beyond the
+// cap a tree-built project keeps public.
+//
+// It reads TierRows rather than the public slice because a tree-built project
+// keeps its overflow in the private uncapped tier, and the merged project must
+// carry that overflow too. The union must then be re-ordered: each group is
+// internally most-recent-first, but appending one group after the other is not
+// globally ordered, so the merge sorts by the field and tie-break the tree and
+// capTier rely on (navigationTreeNodeLess). The rows are returned whole - the
+// caller keeps every one in the public tier, which is what TierRows falls back
+// to - and the overflow is the part beyond maxSidebarSessionsPerTier, exactly
+// the More* a tree-built project reports for the same rows.
+func navigationMergeProjectTier(first, next hubcore.TreeProject, tier string) ([]hubcore.TreeNode, int) {
 	firstRows, _ := first.TierRows(tier)
 	nextRows, _ := next.TierRows(tier)
 	rows := make([]hubcore.TreeNode, 0, len(firstRows)+len(nextRows))
 	rows = append(rows, firstRows...)
 	rows = append(rows, nextRows...)
-	return rows
+	sort.SliceStable(rows, func(i, j int) bool { return navigationTreeNodeLess(rows[i], rows[j]) })
+	return rows, navigationTierOverflow(len(rows), hubcore.SidebarSessionPageSize)
+}
+
+// navigationTierOverflow is the per-tier overflow a tree-built project reports
+// for n rows: how many lie beyond the cap it keeps public. It mirrors hubcore's
+// capTier overflow return (capTier is unexported) without slicing the rows
+// away, because a merged tier must keep every row for TierRows.
+func navigationTierOverflow(n, capacity int) int {
+	if n <= capacity {
+		return 0
+	}
+	return n - capacity
+}
+
+// navigationTreeNodeLess orders two tree rows the way hubcore orders its own
+// session rows (sessionOrderLess over sessionMetaOrderKey): most recently
+// updated first, then most recently created, then the trimmed, case-insensitive
+// title, then the id. A TreeNode's UpdatedAt / CreatedAt / Title are already the
+// normalized values the tree's order key is built from, so a merged tier sorted
+// with this comparator interleaves correctly with the rows capTier keeps and
+// the rows ProjectPage serves.
+func navigationTreeNodeLess(a, b hubcore.TreeNode) bool {
+	au := hubcore.OrderUpdatedAt(a.UpdatedAt, a.CreatedAt)
+	bu := hubcore.OrderUpdatedAt(b.UpdatedAt, b.CreatedAt)
+	if !au.Equal(bu) {
+		return au.After(bu)
+	}
+	ac := hubcore.OrderCreatedAt(a.CreatedAt, a.UpdatedAt)
+	bc := hubcore.OrderCreatedAt(b.CreatedAt, b.UpdatedAt)
+	if !ac.Equal(bc) {
+		return ac.After(bc)
+	}
+	if cmp := navigationCompareOrderText(a.Title, b.Title); cmp != 0 {
+		return cmp < 0
+	}
+	return navigationCompareOrderText(a.ID, b.ID) < 0
+}
+
+// navigationCompareOrderText matches hubcore's compareOrderText: trimmed,
+// case-insensitive text compares first, and the raw text breaks a
+// case-insensitive tie.
+func navigationCompareOrderText(a, b string) int {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	af := strings.ToLower(a)
+	bf := strings.ToLower(b)
+	if af < bf {
+		return -1
+	}
+	if af > bf {
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
 }
 
 // navigationMergeProjectSources is the distinct, sorted union of two projects'
