@@ -500,15 +500,17 @@ function appendToolItemCandidates(
   }
 }
 
-type ToolResultField =
-  | "output"
-  | "error"
-  | "prevalOnly"
-  | "exitCode"
-  | "completedAt"
-  | "status"
-  | "outputImages"
-  | "raw";
+const toolResultFields = [
+  "output",
+  "error",
+  "prevalOnly",
+  "exitCode",
+  "completedAt",
+  "status",
+  "outputImages",
+  "raw",
+] as const;
+type ToolResultField = (typeof toolResultFields)[number];
 
 function collectToolCandidates(
   normalizedTurns: TurnModel[],
@@ -542,6 +544,36 @@ function collectDirectToolCandidates(turns: TurnModel[]): Map<string, ToolCandid
   return candidates;
 }
 
+// The fold's own view of a turn list, factored out of mergeToolCallsByCallId
+// so the coverage walk can ask exactly what the fold will do instead of
+// re-deriving it: which call ids exist, the candidates each call id draws
+// fields from (per source, through the merge provenance), and which call ids
+// have results to fold in.
+type ToolFoldView = {
+  callIds: Set<string>;
+  fresh: Map<string, ToolCandidates>;
+  older: Map<string, ToolCandidates>;
+  resultCallIds: Set<string>;
+  // The fold rewrites calls and drops emptied turns only when some call id
+  // has a result to fold in; otherwise it returns the turns unchanged.
+  noOp: boolean;
+};
+
+function toolFoldView(turns: TurnModel[], context?: ToolItemMergeContext): ToolFoldView {
+  const callIds = new Set<string>();
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
+    }
+  }
+  const fresh = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
+  const older = context ? collectToolCandidates(turns, context, "older") : new Map<string, ToolCandidates>();
+  const resultCallIds = new Set(
+    [...fresh, ...older].flatMap(([callId, candidates]) => (candidates.results.length > 0 ? [callId] : [])),
+  );
+  return { callIds, fresh, older, resultCallIds, noOp: resultCallIds.size === 0 };
+}
+
 function preferredToolField<K extends ToolResultField>(
   item: ItemModel,
   field: K,
@@ -556,30 +588,18 @@ function preferredToolField<K extends ToolResultField>(
   return item[field];
 }
 
-function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel[] {
-  const callIds = new Set<string>();
-  for (const turn of turns) {
-    for (const item of turn.items) {
-      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
-    }
-  }
-  const freshCandidates = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
-  const olderCandidates = context ? collectToolCandidates(turns, context, "older") : new Map<string, ToolCandidates>();
-  const resultCallIds = new Set(
-    [...freshCandidates, ...olderCandidates].flatMap(([callId, candidates]) =>
-      candidates.results.length > 0 ? [callId] : [],
-    ),
-  );
-  if (resultCallIds.size === 0) return turns;
+function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext, view?: ToolFoldView): TurnModel[] {
+  const fold = view ?? toolFoldView(turns, context);
+  if (fold.noOp) return turns;
 
   const merged: TurnModel[] = [];
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
-      if (item.callId && isToolResultId(item.id) && callIds.has(item.callId)) continue; // folded into its call
-      if (item.callId && isToolCallId(item.id) && resultCallIds.has(item.callId)) {
-        const fresh = freshCandidates.get(item.callId) ?? { calls: [], results: [] };
-        const older = olderCandidates.get(item.callId) ?? { calls: [], results: [] };
+      if (item.callId && isToolResultId(item.id) && fold.callIds.has(item.callId)) continue; // folded into its call
+      if (item.callId && isToolCallId(item.id) && fold.resultCallIds.has(item.callId)) {
+        const fresh = fold.fresh.get(item.callId) ?? { calls: [], results: [] };
+        const older = fold.older.get(item.callId) ?? { calls: [], results: [] };
         if (fresh.results.length > 0 || older.results.length > 0) {
           const field = <K extends ToolResultField>(name: K) =>
             preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
@@ -1038,6 +1058,421 @@ function placeCoalescedTurns(groups: CoalescedTurn[], olderCount: number): TurnM
   return result.map((group) => group.turn);
 }
 
+export interface TurnHistoryMergeResult {
+  // When olderCoverage is false, this can still include older local
+  // observations; when it is true, it includes persisted transcript fields.
+  turns: TurnModel[];
+  // Coverage is persisted transcript evidence. Local observations can still
+  // be folded into turns while this remains false.
+  olderCoverage: boolean;
+  // A turn id alone is not overlap evidence; a non-warning item identity is.
+  transcriptOverlap: boolean;
+}
+
+const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
+const itemIdentityFields = new Set(["id", "turnId", "transcriptKey", "clientMutationId"]);
+const itemNonCoverageFields = new Set([
+  ...itemIdentityFields,
+  "pendingText",
+  "reasoningSummaries",
+  "warning",
+  "observedStartedAt",
+  "observedCompletedAt",
+]);
+
+// The item fields the page merge preserves through `??` — mergePageItem's
+// per-field list, plus position, which mergeItemIdentityMetadata keeps the
+// same way: a null or undefined on the fresh side falls through to the older
+// side's value, so a fresh nullish cannot hide older data the merged result
+// keeps, and an older nullish carries no data of its own. Every other field
+// the coverage walk reaches is spread-merged ({ ...older, ...newer }; the
+// fresh side's own property wins, even when its value is undefined), where
+// the property's presence — read below — is the absence marker.
+const itemNullishMergedFields = new Set([
+  "position",
+  "toolName",
+  "callId",
+  "argumentsJSON",
+  "description",
+  "eventKind",
+  "steeringKind",
+  "raw",
+  "output",
+  "error",
+  "prevalOnly",
+  "exitCode",
+  "images",
+  "outputImages",
+  "source",
+  "startedAt",
+  "completedAt",
+]);
+
+// What "absent" means for coverage follows each field's merge rule: every
+// turnCoverageFields member merges with `??` in mergePageTurn (nullishMerged
+// is true there for that reason), so null counts as absent for them exactly
+// as it does for the item fields above; spread-merged fields keep undefined as
+// their only absence marker.
+function absentForCoverage(value: unknown, nullishMerged: boolean): boolean {
+  return value === undefined || (nullishMerged && value === null);
+}
+
+function sameModelFields(left: object, right: object): boolean {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  return [...keys].every((key) => {
+    const leftValue = (left as Record<string, unknown>)[key];
+    const rightValue = (right as Record<string, unknown>)[key];
+    return leftValue === rightValue || (leftValue === undefined && rightValue === undefined);
+  });
+}
+
+function olderItemContributes(older: ItemModel, newer: ItemModel): boolean {
+  const merged = mergePageItem(older, newer);
+  return !sameModelFields(merged, newer) || itemTextPresence(merged) !== itemTextPresence(newer);
+}
+
+// The fold (mergeToolCallsByCallId) removes an older tool RESULT from the
+// merged items entirely, folding its toolResultFields into the surviving call
+// by source precedence; every other field it carried goes with it. A result
+// whose every foldable field the fresh side already supplies is therefore
+// fully superseded — the merged output retains nothing from it, so it must
+// not claim persisted coverage. The fold removes a result only when a CALL
+// item for its callId survives in the placed turns — identity coalescing can
+// merge an older call into a fresh result, leaving no call behind, and the
+// result then survives as its own item. A result with no fresh counterpart
+// for its callId, with or without that call, keeps its fields on its own item
+// or on the surviving older call. Both still claim. The call ids and fresh
+// candidates both come from the fold's own view of the placed turns, so the
+// supersession asks exactly what the fold will do.
+function fullySupersededToolResult(older: ItemModel, view: ToolFoldView) {
+  if (older.callId === undefined || !isToolResultId(older.id)) return false;
+  if (!view.callIds.has(older.callId)) return false;
+  const fresh = view.fresh.get(older.callId);
+  if (fresh === undefined) return false;
+  for (const field of toolResultFields) {
+    const value = (older as unknown as Record<string, unknown>)[field];
+    if (value === undefined) continue;
+    const freshSupplies = [...fresh.results, ...fresh.calls].some(
+      (item) => (item as unknown as Record<string, unknown>)[field] !== undefined,
+    );
+    if (!freshSupplies) return false;
+  }
+  return true;
+}
+
+// Coverage reports persisted transcript history the returned turns actually
+// keep, and the fold runs after the claims do. Each gated claim therefore
+// proves its older data survives the fold, through the fold's own view of
+// the placed turns:
+// - Turn fields only ever land on the merged group turn, never on another
+//   turn, and the fold drops a turn it has emptied of items — a claim riding
+//   a dropped turn reports history the merge throws away.
+// - The fold removes a tool RESULT whose call survives elsewhere, carrying
+//   only its toolResultFields onto the surviving call by fresh-first
+//   precedence. A claimed fallback field outside toolResultFields dies with
+//   the removed result; a toolResultField survives only while no fresh
+//   candidate for that call id supplies a value of its own.
+function turnSurvivesFold(turn: TurnModel, view: ToolFoldView): boolean {
+  return view.noOp || turn.items.some((item) => !isFoldedResult(item, view));
+}
+
+function isFoldedResult(item: ItemModel, view: ToolFoldView): boolean {
+  return !view.noOp && item.callId !== undefined && isToolResultId(item.id) && view.callIds.has(item.callId);
+}
+
+function foldRewritesCall(item: ItemModel, view: ToolFoldView): boolean {
+  return !view.noOp && item.callId !== undefined && isToolCallId(item.id) && view.resultCallIds.has(item.callId);
+}
+
+function isToolResultField(field: string): boolean {
+  return (toolResultFields as readonly string[]).includes(field);
+}
+
+function freshSuppliesToolField(callId: string, field: string, view: ToolFoldView): boolean {
+  const candidates = view.fresh.get(callId);
+  if (candidates === undefined) return false;
+  return [...candidates.results, ...candidates.calls].some(
+    (item) => (item as unknown as Record<string, unknown>)[field] !== undefined,
+  );
+}
+
+// Walks a merge-provenance membership tree to the original items at its
+// leaves — the merge records membership at every identity-match edge, so the
+// leaves are exactly the inputs a merged item combined.
+function membershipLeaves(membership: ToolItemSourceMembership | undefined, leaves: ItemModel[] = []): ItemModel[] {
+  if (membership === undefined) return leaves;
+  if ("item" in membership) {
+    leaves.push(membership.item);
+    return leaves;
+  }
+  membershipLeaves(membership.left, leaves);
+  membershipLeaves(membership.right, leaves);
+  return leaves;
+}
+
+function membershipHasLeaf(membership: ToolItemSourceMembership | undefined, leaf: ItemModel): boolean {
+  if (membership === undefined) return false;
+  if ("item" in membership) return membership.item === leaf;
+  return membershipHasLeaf(membership.left, leaf) || membershipHasLeaf(membership.right, leaf);
+}
+
+// Status merges by rank (mergePageItem and mergePageTurn), not by
+// later-wins: a later contributor's status only takes over when it is
+// defined and not LOWER-ranked than what came before, so an older completed
+// status outlives a later inProgress one. The chain walks the later
+// contributors in merge order — once any of them takes over, the older
+// value is gone for good.
+function statusOutlives(base: string | undefined, later: readonly { status?: string }[]): boolean {
+  const status = base;
+  for (const contributor of later) {
+    const next = contributor.status;
+    if (next === undefined || (statusRank[next] ?? 0) < (statusRank[status ?? ""] ?? 0)) continue;
+    return false;
+  }
+  return true;
+}
+
+// The merged item in the group turn hosting the older item's data. Identity
+// alone stops at the first hop: coalescing can chain an older item through a
+// fresh alias into a second fresh item that no longer matches the original
+// identity (older --id--> fresh1 --transcriptKey--> fresh2), so the merge
+// provenance is the authoritative membership test; identity is the fallback
+// where no context recorded one.
+function matchedItemHost(older: ItemModel, groupTurn: TurnModel, context?: ToolItemMergeContext): ItemModel {
+  const hosting = groupTurn.items.find(
+    (item) => item !== older && membershipHasLeaf(context?.provenance.get(item)?.older, older),
+  );
+  if (hosting !== undefined) return hosting;
+  return groupTurn.items.find((item) => item === older || itemIdentityMatches(item, older)) ?? older;
+}
+
+// Every fresh item that merged into the host — the direct identity matches
+// plus whatever an alias chain pulled in after them. The merged field value
+// is the last fresh contributor's that supplies it, so the claim checks every
+// contributor, not just the items matching the original older identity.
+function freshContributorItems(
+  host: ItemModel,
+  matches: TurnModel[],
+  older: ItemModel,
+  context?: ToolItemMergeContext,
+): ItemModel[] {
+  const viaProvenance = context ? membershipLeaves(context.provenance.get(host)?.fresh) : [];
+  if (viaProvenance.length > 0) return viaProvenance;
+  return matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, older)));
+}
+
+// Every item the merge combined into the host, in merge order: a group turn
+// folds its older fragments before its fresh ones, and every provenance edge
+// keeps the earlier side on the left, so the leaves read in the order the
+// merges applied. A contributor can only discard a field for everything
+// merged before it, so a claim survives coalescing exactly while every LATER
+// contributor leaves the field alone — a fresh item supplying it, or a later
+// older fragment owning the property with an explicit undefined, both erase
+// the value the earlier item claimed.
+function contributorChain(
+  host: ItemModel,
+  older: ItemModel,
+  matches: ItemModel[],
+  context?: ToolItemMergeContext,
+): ItemModel[] {
+  const olderLeaves = context ? membershipLeaves(context.provenance.get(host)?.older) : [];
+  const freshLeaves = context ? membershipLeaves(context.provenance.get(host)?.fresh) : [];
+  if (olderLeaves.length === 0 && freshLeaves.length === 0) return [older, ...matches];
+  return [...olderLeaves, ...freshLeaves];
+}
+
+// Whether a claimed field on a matched item outlives the fold. The host keeps
+// every field when the fold neither removes it nor rewrites it as a call; a
+// rewritten call keeps non-toolResultFields through the spread and takes
+// toolResultFields from the candidates (fresh first); a removed result keeps
+// only toolResultFields, and again only while the fresh side supplies none.
+function matchedFieldSurvivesFold(field: string, host: ItemModel, view: ToolFoldView): boolean {
+  if (host.callId === undefined) return true;
+  if (isFoldedResult(host, view)) {
+    return isToolResultField(field) && !freshSuppliesToolField(host.callId, field, view);
+  }
+  if (!isToolResultField(field)) return true;
+  return !foldRewritesCall(host, view) || !freshSuppliesToolField(host.callId, field, view);
+}
+
+function olderItemAddsCoverage(
+  older: ItemModel,
+  matches: ItemModel[],
+  groupTurn: TurnModel,
+  view: ToolFoldView,
+  context?: ToolItemMergeContext,
+): boolean {
+  if (matches.length === 0) {
+    // An item with no fresh match may still have coalesced with another older
+    // fragment's item, and the fold judges the merged host, not the original:
+    // an older call folded into a shared-transcriptKey result is removable
+    // exactly like that result is, fields and all.
+    const host = matchedItemHost(older, groupTurn, context);
+    return !fullySupersededToolResult(host, view);
+  }
+  const host = matchedItemHost(older, groupTurn, context);
+  const chain = contributorChain(host, older, matches, context);
+  const selfIndex = chain.indexOf(older);
+  const later = selfIndex === -1 ? chain : chain.slice(selfIndex + 1);
+  if (itemTextPresence(older) === "provided" && later.every((item) => itemTextPresence(item) === "omitted")) {
+    // The fold carries no text onto a surviving call: the older text counts
+    // only while the merged item hosting it survives. A discarded result can
+    // still contribute surviving fields, so keep walking instead of returning.
+    if (matchedFieldSurvivesFold("text", host, view)) return true;
+  }
+  return Object.keys(older).some((field) => {
+    if (itemNonCoverageFields.has(field)) return false;
+    const nullishMerged = itemNullishMergedFields.has(field);
+    // Status merges by rank, so its claim follows the rank chain above rather
+    // than treating any defined later status as superseding. Every other field
+    // the walk reaches outside the ?? list merges by spread ({ ...older, ...newer }:
+    // the later side's own property wins, even when its value is undefined),
+    // so a later contributor that OWNS the property blocks the claim however
+    // undefined its value reads — the spread discards the older value, and
+    // coverage must not report history the merge throws away.
+    const presenceMerged = !nullishMerged && field !== "status";
+    const olderValue = (older as unknown as Record<string, unknown>)[field];
+    if (absentForCoverage(olderValue, nullishMerged)) return false;
+    const freshLacks =
+      field === "status"
+        ? statusOutlives(older.status, later)
+        : later.every((item) => {
+            if (presenceMerged) return !Object.hasOwn(item, field);
+            return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
+          });
+    return freshLacks && matchedFieldSurvivesFold(field, host, view);
+  });
+}
+
+function olderTurnAddsCoverage(
+  older: TurnModel,
+  matches: TurnModel[],
+  laterTurns: TurnModel[],
+  groupTurn: TurnModel,
+  view: ToolFoldView,
+  context?: ToolItemMergeContext,
+): boolean {
+  if (
+    // The canonical-fields check stays ahead of the unmatched early return:
+    // an unmatched turn carrying persisted fields still claims even when its
+    // items cannot (naming-trap regression: a warning-only turn with usage).
+    turnCoverageFields.some(
+      (field) =>
+        !absentForCoverage(older[field], true) && matches.every((turn) => absentForCoverage(turn[field], true)),
+    )
+  ) {
+    // The claimed turn fields ride the merged group turn, which the fold
+    // drops once it has folded every item away — usage on a turn the fold
+    // drops never reaches the returned history. The turn's items can still
+    // contribute data the fold carries onto a surviving call, so keep
+    // checking instead of returning.
+    if (turnSurvivesFold(groupTurn, view)) return true;
+  }
+  if (matches.length > 0 && statusOutlives(older.status, laterTurns)) {
+    // Turn status merges by rank (mergePageTurn) exactly as item status does:
+    // a matched older turn's completed outlives fresh inProgress fragments and
+    // the group turn keeps that persisted state. Unmatched retained turns
+    // keep their status with the turn itself and claim through their items or
+    // canonical fields instead. The status rides the group turn, so it is
+    // gated on the same fold survival — and keeps walking when the gate fails.
+    if (turnSurvivesFold(groupTurn, view)) return true;
+  }
+  // The fold is global across turns: an older result in a turn that matches
+  // nothing can still be superseded by a fresh call living in another turn,
+  // so the unmatched-turn claim runs the same per-item check instead of
+  // taking every non-warning item on faith.
+  if (matches.length === 0) {
+    return (
+      (older.items.length === 0 && turnSurvivesFold(groupTurn, view)) ||
+      older.items.some((item) => item.type !== "warning" && olderItemAddsCoverage(item, [], groupTurn, view, context))
+    );
+  }
+  return older.items.some((olderItem) => {
+    if (olderItem.type === "warning") return false;
+    const host = matchedItemHost(olderItem, groupTurn, context);
+    const matchingItems = freshContributorItems(host, matches, olderItem, context);
+    return olderItemAddsCoverage(olderItem, matchingItems, groupTurn, view, context);
+  });
+}
+
+function foldTurnFragments(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel | undefined {
+  const first = turns[0];
+  return first === undefined
+    ? undefined
+    : turns.slice(1).reduce((current, turn) => mergePageTurn(current, turn, context), first);
+}
+
+function olderTurnContributes(merged: TurnModel, fresh: TurnModel): boolean {
+  for (const field of ["id", "status", ...turnCoverageFields] as const) {
+    if (merged[field] !== fresh[field]) return true;
+  }
+  return merged.items.some((item) => {
+    const freshItem = fresh.items.find((candidate) => itemIdentityMatches(candidate, item));
+    return freshItem === undefined || olderItemContributes(item, freshItem);
+  });
+}
+
+function mergeTurnHistoryWithContext(
+  older: TurnModel[],
+  newer: TurnModel[],
+  context?: ToolItemMergeContext,
+): TurnHistoryMergeResult {
+  const groups = coalesceTurnFragments(older, newer, context);
+  let olderContributed = false;
+  let olderCoverage = false;
+  let transcriptOverlap = false;
+  // Coverage must only report older history the fold keeps, so the claims
+  // below read the fold's own view of the turns they will return.
+  const placed = placeCoalescedTurns(groups, older.length);
+  const view = toolFoldView(placed, context);
+
+  for (const group of groups) {
+    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
+    for (const [position, olderIndex] of group.olderIndexes.entries()) {
+      const turn = older[olderIndex];
+      if (turn === undefined) continue;
+      if (
+        turn.items.some(
+          (item) =>
+            item.type !== "warning" &&
+            freshTurns.some((candidate) => candidate.items.some((next) => itemIdentityMatches(item, next))),
+        )
+      ) {
+        transcriptOverlap = true;
+      }
+      // A group turn folds its older fragments before its fresh ones, so the
+      // turns merged after this one are the later older fragments followed by
+      // every fresh fragment — the rank chain a turn-status claim walks.
+      const laterTurns = [
+        ...group.olderIndexes.slice(position + 1).flatMap((index): TurnModel[] => {
+          const laterTurn = older[index];
+          return laterTurn === undefined ? [] : [laterTurn];
+        }),
+        ...freshTurns,
+      ];
+      if (olderTurnAddsCoverage(turn, freshTurns, laterTurns, group.turn, view, context)) olderCoverage = true;
+    }
+
+    if (group.olderIndexes.length === 0) continue;
+    if (group.freshIndexes.length === 0) {
+      olderContributed = true;
+      continue;
+    }
+    const fresh = foldTurnFragments(freshTurns, context);
+    if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
+  }
+
+  return {
+    turns: olderContributed ? mergeToolCallsByCallId(placed, context, view) : newer,
+    olderCoverage,
+    transcriptOverlap,
+  };
+}
+
+export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHistoryMergeResult {
+  return mergeTurnHistoryWithContext(older, newer, createToolItemMergeContext(newer, older));
+}
+
 export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
   // The page response carries no ref of its own (ThreadTurnsListResponse is
   // bare turns); the model it merges into already knows the serving session,
@@ -1046,11 +1481,21 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
   const imageSessionRoute = imageSessionRouteForSession(model.imageSessionId ?? model.threadId);
   const olderTurns = (resp.data ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute));
   const context = createToolItemMergeContext(model.turns, olderTurns);
-  const coalesced = coalesceTurnFragments(olderTurns, model.turns, context);
+  const merged = mergeTurnHistoryWithContext(olderTurns, model.turns, context);
+  // The public merge keeps a no-op fresh array by reference. Pagination has
+  // historically normalized fresh fragment chains whenever a page arrives,
+  // so retain that adapter behavior without changing the public no-op result.
+  const turns =
+    merged.turns === model.turns
+      ? mergeToolCallsByCallId(
+          placeCoalescedTurns(coalesceTurnFragments(olderTurns, model.turns, context), olderTurns.length),
+          context,
+        )
+      : merged.turns;
 
   return {
     ...model,
-    turns: mergeToolCallsByCallId(placeCoalescedTurns(coalesced, olderTurns.length), context),
+    turns,
     olderCursor: resp.nextCursor,
   };
 }
