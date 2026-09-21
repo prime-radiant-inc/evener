@@ -1218,7 +1218,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       endReadyGeneration();
       missedChangeNotification = false;
       previewBases.clear();
-      setState(initialState());
+      // The persisted draft outlives the hub lifecycle: reset re-reads it -
+      // the same restore the store was built with - instead of wiping it.
+      // Wiping the draft fields would leave the record still classified on
+      // the port while the memory said nothing was there, so the next edit's
+      // compare-and-swap would succeed against it and overwrite an
+      // unresolved write the flags no longer carried.
+      setState({ ...initialState(), ...restoreDraft({ loaded: false, hub: {} }) });
     },
     dispose() {
       if (fence.disposed) return;

@@ -1717,6 +1717,41 @@ describe("the checkpointed draft editor", () => {
     expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
   });
 
+  test("reset re-reads the persisted draft instead of losing it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // A lifecycle reset re-reads the checkpoint rather than wiping it: the
+    // unresolved write survives reset with its uncertainty, so nothing may
+    // compose past the still-classified record.
+    store.reset();
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: proposed,
+      generation: null,
+    });
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(() => store.getState().editDraft("mobile", proposed)).toThrow(/unavailable/);
+
+    // Reuse settles the retained uncertainty under a fresh generation and
+    // reopens the editor.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+  });
+
   test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",
