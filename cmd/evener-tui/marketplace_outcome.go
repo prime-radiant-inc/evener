@@ -42,7 +42,9 @@ const (
 // classifyMarketplaceRemovalOutcome accepts both the typed values used by
 // local handlers and the maps decoded from a JSON-RPC error. A nil Applied
 // slice is deliberately uncertain: JSON null or a missing field is not an
-// empty list.
+// empty list, and neither is a member that does not decode as a real
+// marketplace row - a null or empty-object member unmarshals into a zero
+// entry, so the snapshot it sits in never looks authoritative.
 func classifyMarketplaceRemovalOutcome(err error) (marketplaceRemovalState, appwire.MarketplaceListResponse) {
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
@@ -55,10 +57,26 @@ func classifyMarketplaceRemovalOutcome(err error) (marketplaceRemovalState, appw
 	if !marked {
 		return marketplaceRemovalNotMarked, appwire.MarketplaceListResponse{}
 	}
-	if data.AppliedUnavailable || data.Applied.Marketplaces == nil {
+	if data.AppliedUnavailable || data.Applied.Marketplaces == nil || !validMarketplaceSnapshot(data.Applied) {
 		return marketplaceRemovalUnavailable, appwire.MarketplaceListResponse{}
 	}
 	return marketplaceRemovalApplied, data.Applied
+}
+
+// validMarketplaceSnapshot reports whether every member of a decoded applied
+// snapshot is a real marketplace row, the same trust-boundary re-check the
+// SDK's classifier performs: json.Unmarshal succeeding does not make a null
+// or empty-object member a row, and a snapshot carrying one must never look
+// authoritative - the rule a partially decoded snapshot already follows.
+// Real rows always carry a name and a source kind; an empty list is a valid
+// one, since the marketplace just removed can be the last.
+func validMarketplaceSnapshot(snapshot appwire.MarketplaceListResponse) bool {
+	for _, entry := range snapshot.Marketplaces {
+		if entry.Name == "" || entry.Source.Kind == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // marketplaceRemovalAppliedMarker reports whether raw WireError.Data carries

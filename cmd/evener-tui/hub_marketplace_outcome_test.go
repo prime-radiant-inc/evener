@@ -42,7 +42,7 @@ func TestClassifyMarketplaceRemovalOutcomeJSONData(t *testing.T) {
 	valid := map[string]any{
 		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
 		"applied": map[string]any{
-			"marketplaces": []any{map[string]any{"name": "kept"}},
+			"marketplaces": []any{map[string]any{"name": "kept", "source": map[string]any{"kind": "url"}}},
 		},
 	}
 	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(valid))
@@ -120,21 +120,27 @@ func TestClassifyMarketplaceRemoveAppliedMarkerData(t *testing.T) {
 }
 
 func TestClassifyMarketplaceRemovalOutcomeDiscardsPartialJSONSnapshot(t *testing.T) {
-	malformed := map[string]any{
-		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
-		"applied": map[string]any{
+	for _, malformed := range []map[string]any{
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
 			"marketplaces": []any{map[string]any{"name": 42}},
-		},
-	}
-	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(malformed))
-	if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
-		t.Fatalf("malformed partial snapshot = %v/%+v, want unavailable zero snapshot", state, applied)
+		}},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{nil},
+		}},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{}},
+		}},
+	} {
+		state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(malformed))
+		if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
+			t.Fatalf("malformed partial snapshot %v = %v/%+v, want unavailable zero snapshot", malformed, state, applied)
+		}
 	}
 }
 
 func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T) {
 	removed := appwire.MarketplaceEntry{Name: "removed"}
-	kept := appwire.MarketplaceEntry{Name: "kept"}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	m := hubModel{
 		pluginsPanel:             marketplacePanelWithEntries(t, removed, kept),
 		marketplaceRemovePending: removed.Name,
@@ -552,7 +558,7 @@ func TestMarketplaceListResultDiscardsTaggedReadsOlderThanTheLatestRemoval(t *te
 }
 
 func TestMarketplaceMutateResultSuccessAdvancesTheRemovalBoundary(t *testing.T) {
-	kept := appwire.MarketplaceEntry{Name: "kept"}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
 	// A removal is in flight on a model whose reads are already ordered:
 	// the read tagged 2 was issued before the removal landed.
@@ -640,8 +646,58 @@ func TestMarketplaceListResultOverlappingReadsSettleDespiteNewerFailure(t *testi
 	}
 }
 
+func TestMarketplaceMutateResultMalformedMemberSnapshotStaysFenced(t *testing.T) {
+	stale := appwire.MarketplaceEntry{Name: "removed"}
+	confirmed := appwire.MarketplaceEntry{Name: "kept"}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{
+		client:                   client,
+		pluginsPanel:             marketplacePanelWithEntries(t, stale),
+		marketplaceRemovePending: stale.Name,
+	}
+	// The clone-remains marker carrying a snapshot whose members are not
+	// real rows: json.Unmarshal succeeds, but a null or empty-object member
+	// is not a marketplace.
+	err := marketplaceCloneRemainsError(map[string]any{
+		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
+		"applied":         map[string]any{"marketplaces": []any{nil}},
+	})
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: stale.Name})
+	after := got.(hubModel)
+	if cmd == nil {
+		t.Fatal("malformed-member snapshot should request a fresh list")
+	}
+	if after.marketplaceRemovePending != stale.Name || !after.marketplaceReconcilePending {
+		t.Fatalf("malformed-member snapshot pending = %q/%v, want fenced until a fresh list", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("malformed-member snapshot should preserve the stale marketplace row")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != stale.Name {
+		t.Fatalf("panel row after malformed-member snapshot = %q, want the stale %q", remove.Name, stale.Name)
+	}
+
+	list := cmd().(launchconfig.MarketplaceListResultMsg)
+	if list.Err != nil || len(list.List.Marketplaces) != 1 || list.List.Marketplaces[0].Name != confirmed.Name {
+		t.Fatalf("reconcile result = %+v, want confirmed list", list)
+	}
+	got, _ = after.handleMarketplaceListResult(list)
+	reconciled := got.(hubModel)
+	if reconciled.marketplaceRemovePending != "" || reconciled.marketplaceReconcilePending {
+		t.Fatalf("after reconciliation pending state = %q/%v, want cleared", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
+	}
+}
+
 func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
-	kept := appwire.MarketplaceEntry{Name: "kept"}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
 	added := appwire.MarketplaceEntry{Name: "added"}
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
@@ -710,7 +766,7 @@ func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing
 }
 
 func TestMarketplaceMutateResultAppliedSnapshotRefetchesPastTheAdvancingFloor(t *testing.T) {
-	kept := appwire.MarketplaceEntry{Name: "kept"}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
 	added := appwire.MarketplaceEntry{Name: "added"}
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
