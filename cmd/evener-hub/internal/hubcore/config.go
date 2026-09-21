@@ -98,7 +98,7 @@ type WebConfig struct {
 	// RemoteHostRegistry is the controller's live host registry: the one
 	// *hostreg.Registry the SSH manager dials through (sshconn.New), the
 	// attach handler validates against, and the host-management surface
-	// (evener/host/add|list|status|remove) mutates — one shared instance, so
+	// (evener/host/add|list|status|remove|update) mutates — one shared instance, so
 	// a host added at runtime is attachable without a restart. nil (tests,
 	// embedders) makes the constructors' fallback build one registry and
 	// share it across every surface: the SSH manager's own registry when a

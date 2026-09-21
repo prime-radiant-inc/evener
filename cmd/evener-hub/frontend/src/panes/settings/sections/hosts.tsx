@@ -1,7 +1,18 @@
-import { friendlyErrorMessage, type HostRow } from "@evener/appwire-client";
+import { friendlyErrorMessage, type HostEntry, type HostRow, hostFieldError } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { hostsStore, useHostsStore } from "../../../stores/hosts";
-import { Button, Chip, ConfirmDialog, Dialog, EmptyState, FormRow, Input, Skeleton, useToasts } from "../../../widgets";
+import {
+  Button,
+  Chip,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  FormRow,
+  Input,
+  Skeleton,
+  Textarea,
+  useToasts,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hosts.module.css";
 import { Code } from "./settingsField";
@@ -14,7 +25,6 @@ export const HOST_POLL_MS = 2000;
 const CLASS = {
   root: requireClass(styles.root, "hosts.module.css", "root"),
   help: requireClass(styles.help, "hosts.module.css", "help"),
-  error: requireClass(styles.error, "hosts.module.css", "error"),
   list: requireClass(styles.list, "hosts.module.css", "list"),
   row: requireClass(styles.row, "hosts.module.css", "row"),
   rowName: requireClass(styles.rowName, "hosts.module.css", "rowName"),
@@ -29,6 +39,8 @@ export interface HostsSectionProps {
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
 }
+
+type HostDialogState = { mode: "add" } | { mode: "edit"; row: HostRow } | null;
 
 function stateChip(row: HostRow, connecting: boolean) {
   if (row.removed) return <Chip tone="neutral">removed</Chip>;
@@ -57,20 +69,18 @@ function rowDetail(row: HostRow): string | null {
  * Settings -> Hosts (component 08 slice 1): the host registry surface. Rows
  * come from evener/host/list with truthful online state (attached rows read
  * the live channel, offline rows render last-known state, never dialing);
- * Add opens the name/address/key dialog over evener/host/add; Connect drives
- * the same evener/host/attach the spawn picker uses, with a retry affordance
- * on failure; Remove confirms over evener/host/remove. hub.toml-declared
- * rows cannot be removed here — the confirm explains to edit the file.
+ * Add opens the full-entry Add/Edit dialog over evener/host/add, and a row's
+ * Edit reopens the same dialog over evener/host/update with the name held
+ * fixed — it is the immutable target, so edit mode only ever changes the
+ * entry's other fields; Connect drives the same evener/host/attach the spawn
+ * picker uses, with a retry affordance on failure; Remove confirms over
+ * evener/host/remove. hub.toml-declared rows cannot be removed here — the
+ * confirm explains to edit the file.
  */
 export function HostsSection(_props: HostsSectionProps) {
   const load = useHostsStore((s) => s.load);
   const toasts = useToasts();
-  const [addOpen, setAddOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [address, setAddress] = useState("");
-  const [keyPath, setKeyPath] = useState("");
-  const [addError, setAddError] = useState<string | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [dialog, setDialog] = useState<HostDialogState>(null);
   const [connecting, setConnecting] = useState<ReadonlySet<string>>(() => new Set());
   const [pendingRemove, setPendingRemove] = useState<HostRow | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -94,21 +104,14 @@ export function HostsSection(_props: HostsSectionProps) {
     return () => clearInterval(id);
   }, []);
 
-  async function handleAdd(): Promise<void> {
-    setAdding(true);
-    setAddError(null);
-    try {
-      await hostsStore.getState().add({ name: name.trim(), address: address.trim(), keyPath: keyPath.trim() });
-      setAddOpen(false);
-      setName("");
-      setAddress("");
-      setKeyPath("");
-      toasts.push("success", "Host added");
-    } catch (err) {
-      setAddError(friendlyErrorMessage(err));
-    } finally {
-      setAdding(false);
-    }
+  async function handleAdd(entry: HostEntry): Promise<void> {
+    await hostsStore.getState().add(entry);
+    toasts.push("success", `Added ${entry.name}`);
+  }
+
+  async function handleEdit(row: HostRow, entry: HostEntry): Promise<void> {
+    await hostsStore.getState().update({ name: row.name, entry });
+    toasts.push("success", `Updated ${row.name}`);
   }
 
   async function handleConnect(row: HostRow): Promise<void> {
@@ -171,8 +174,7 @@ export function HostsSection(_props: HostsSectionProps) {
         <Button
           size="sm"
           onClick={() => {
-            setAddOpen(true);
-            setAddError(null);
+            setDialog({ mode: "add" });
           }}
         >
           Add host
@@ -201,6 +203,17 @@ export function HostsSection(_props: HostsSectionProps) {
                     </Button>
                   )}
                   {row.origin === "sidecar" && !row.removed && (
+                    <Button
+                      size="sm"
+                      variant="quiet"
+                      onClick={() => {
+                        setDialog({ mode: "edit", row });
+                      }}
+                    >
+                      Edit
+                    </Button>
+                  )}
+                  {row.origin === "sidecar" && !row.removed && (
                     <Button size="sm" variant="quiet" onClick={() => setPendingRemove(row)}>
                       Remove
                     </Button>
@@ -211,57 +224,21 @@ export function HostsSection(_props: HostsSectionProps) {
           })}
         </ul>
       )}
-      <Dialog
-        open={addOpen}
-        onClose={() => {
-          if (!adding) setAddOpen(false);
-        }}
-        title="Add host"
-        footer={
-          <>
-            <Button variant="quiet" disabled={adding} onClick={() => setAddOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              disabled={adding || name.trim() === "" || address.trim() === ""}
-              onClick={() => void handleAdd()}
-            >
-              {adding ? "Adding…" : "Add host"}
-            </Button>
-          </>
-        }
-      >
-        <div className={CLASS.form}>
-          <FormRow label="Name" htmlFor="hosts-add-name" help="The source ID used in refs and URLs.">
-            <Input id="hosts-add-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
-          </FormRow>
-          <FormRow
-            label="SSH address"
-            htmlFor="hosts-add-address"
-            help="SSH destination, e.g. host.example or user@host.example."
-          >
-            <Input
-              id="hosts-add-address"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              autoComplete="off"
-            />
-          </FormRow>
-          <FormRow
-            label="Key path"
-            htmlFor="hosts-add-key"
-            help="Optional SSH private-key path used when dialing this host."
-          >
-            <Input id="hosts-add-key" value={keyPath} onChange={(e) => setKeyPath(e.target.value)} autoComplete="off" />
-          </FormRow>
-          {addError !== null && (
-            <p className={CLASS.formError} role="alert">
-              {addError}
-            </p>
-          )}
-        </div>
-      </Dialog>
+      {dialog !== null && (
+        <HostEntryDialog
+          // The key is what makes an edit dialog start from its row: a dialog
+          // opened for a different host (or for Add after an Edit) is a fresh
+          // mount with fresh field state, never the previous host's values.
+          key={dialog.mode === "edit" ? `edit:${dialog.row.name}` : "add"}
+          mode={dialog.mode}
+          row={dialog.mode === "edit" ? dialog.row : undefined}
+          onClose={() => setDialog(null)}
+          onSubmit={async (entry) => {
+            if (dialog.mode === "edit") await handleEdit(dialog.row, entry);
+            else await handleAdd(entry);
+          }}
+        />
+      )}
       <ConfirmDialog
         open={pendingRemove !== null}
         title={pendingRemove !== null ? `Remove ${pendingRemove.name}?` : "Remove host?"}
@@ -275,5 +252,207 @@ export function HostsSection(_props: HostsSectionProps) {
         {`Remove "${pendingRemove?.name}"? Its channel drops and the entry is gone until re-added. Sessions on the remote host itself are untouched.`}
       </ConfirmDialog>
     </div>
+  );
+}
+
+// rootsFromText parses the roots field: one root per line, trimmed, with blank
+// lines dropped — so a stray blank line is not an empty root the hub refuses
+// (hostreg's ErrEmptyRoot). The field is a Textarea rather than the settings
+// cluster's browse-assisted PathListEditor because these paths live on the
+// REMOTE host: a controller-side directory picker would offer the wrong
+// machine's directories.
+function rootsFromText(text: string): string[] {
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+function rootsToText(roots: readonly string[] | undefined): string {
+  return (roots ?? []).join("\n");
+}
+
+// HostEntryDialog is the one Add/Edit dialog (spec §3.5, §13): every mutable
+// HostConfig field under the wire's own spelling — the spelling a refusal's
+// field uses, so a message lands on the input it names — plus slice 1's Key path
+// control. Add carries the name; Edit does not, because a name is immutable and
+// the host being edited is named in the title. A refusal the hub blames on an
+// input is placed in that row's own error slot; anything else is form-level.
+interface HostEntryDialogProps {
+  mode: "add" | "edit";
+  row?: HostRow;
+  onClose: () => void;
+  onSubmit: (entry: HostEntry) => Promise<void>;
+}
+
+function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps) {
+  const [name, setName] = useState("");
+  const [address, setAddress] = useState(row?.address ?? "");
+  const [user, setUser] = useState(row?.user ?? "");
+  const [keyPath, setKeyPath] = useState(row?.keyPath ?? "");
+  const [evenerPath, setEvenerPath] = useState(row?.evenerPath ?? "");
+  const [configPath, setConfigPath] = useState(row?.configPath ?? "");
+  const [addr, setAddr] = useState(row?.addr ?? "");
+  const [roots, setRoots] = useState(rootsToText(row?.roots));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<{ field: string | null; message: string } | null>(null);
+
+  // A backend refusal may name an input this mode deliberately omits (notably
+  // immutable name in Edit). Only rendered fields get an inline slot; every
+  // other blamed field falls back to the form-level alert instead of vanishing.
+  const renderedFields = new Set<string>([
+    ...(mode === "add" ? ["name"] : []),
+    "address",
+    "user",
+    "keyPath",
+    "evenerPath",
+    "configPath",
+    "addr",
+    "roots",
+  ]);
+
+  const fieldError = (field: string): string | undefined =>
+    error !== null && error.field === field ? error.message : undefined;
+  const formError = error !== null && error.field === null ? error.message : null;
+  // Submission stays available for invalid values so the hub remains the one
+  // validator and can blame the precise input. It is disabled only in flight.
+
+  async function handleSubmit(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSubmit({
+        ...(mode === "add" ? { name: name.trim() } : {}),
+        address: address.trim(),
+        user: user.trim(),
+        keyPath: keyPath.trim(),
+        evenerPath: evenerPath.trim(),
+        configPath: configPath.trim(),
+        addr: addr.trim(),
+        roots: rootsFromText(roots),
+      });
+      onClose();
+    } catch (err) {
+      // Remove's posture, carried over: the failure is shown, never swallowed.
+      // A refusal that names an input goes on that input; everything else is
+      // form-level.
+      const field = hostFieldError(err);
+      setError({
+        field: field !== undefined && renderedFields.has(field) ? field : null,
+        message: friendlyErrorMessage(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const prefix = `hosts-${mode}`;
+  return (
+    <Dialog
+      open
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      title={mode === "add" ? "Add host" : `Edit ${row?.name ?? ""}`.trim()}
+      footer={
+        <>
+          <Button variant="quiet" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" disabled={busy} onClick={() => void handleSubmit()}>
+            {busy ? "Saving…" : mode === "add" ? "Add host" : "Save"}
+          </Button>
+        </>
+      }
+    >
+      <div className={CLASS.form}>
+        {mode === "add" && (
+          <FormRow
+            label="Name"
+            htmlFor={`${prefix}-name`}
+            help="The source ID used in refs and URLs. A name is fixed once the host exists."
+            error={fieldError("name")}
+          >
+            <Input id={`${prefix}-name`} value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
+          </FormRow>
+        )}
+        <FormRow
+          label="SSH address"
+          htmlFor={`${prefix}-address`}
+          help="SSH destination, e.g. host.example or user@host.example."
+          error={fieldError("address")}
+        >
+          <Input
+            id={`${prefix}-address`}
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            autoComplete="off"
+          />
+        </FormRow>
+        <FormRow
+          label="User"
+          htmlFor={`${prefix}-user`}
+          help="Optional SSH user; leave empty when the address already names one."
+          error={fieldError("user")}
+        >
+          <Input id={`${prefix}-user`} value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" />
+        </FormRow>
+        <FormRow
+          label="Key path"
+          htmlFor={`${prefix}-key`}
+          help="Optional SSH private-key path used when dialing this host."
+          error={fieldError("keyPath")}
+        >
+          <Input id={`${prefix}-key`} value={keyPath} onChange={(e) => setKeyPath(e.target.value)} autoComplete="off" />
+        </FormRow>
+        <FormRow
+          label="Evener path"
+          htmlFor={`${prefix}-evener`}
+          help="Optional path to the evener binary on the host, when it is not on PATH."
+          error={fieldError("evenerPath")}
+        >
+          <Input
+            id={`${prefix}-evener`}
+            value={evenerPath}
+            onChange={(e) => setEvenerPath(e.target.value)}
+            autoComplete="off"
+          />
+        </FormRow>
+        <FormRow
+          label="Hub config path"
+          htmlFor={`${prefix}-config`}
+          help="Optional path to the host's hub.toml, when it is not the default."
+          error={fieldError("configPath")}
+        >
+          <Input
+            id={`${prefix}-config`}
+            value={configPath}
+            onChange={(e) => setConfigPath(e.target.value)}
+            autoComplete="off"
+          />
+        </FormRow>
+        <FormRow
+          label="Hub address"
+          htmlFor={`${prefix}-addr`}
+          help="Optional listen address of the host's hub, when it is not the default."
+          error={fieldError("addr")}
+        >
+          <Input id={`${prefix}-addr`} value={addr} onChange={(e) => setAddr(e.target.value)} autoComplete="off" />
+        </FormRow>
+        <FormRow
+          label="Roots"
+          htmlFor={`${prefix}-roots`}
+          help="Optional directories on the host to serve. One per line."
+          error={fieldError("roots")}
+        >
+          <Textarea id={`${prefix}-roots`} value={roots} onChange={(e) => setRoots(e.target.value)} rows={3} />
+        </FormRow>
+        {formError !== null && (
+          <p className={CLASS.formError} role="alert">
+            {formError}
+          </p>
+        )}
+      </div>
+    </Dialog>
   );
 }

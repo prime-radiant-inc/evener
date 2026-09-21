@@ -49,7 +49,7 @@ func TestHostManageRemoveReAddDuringInFlightListSkipsLastGoodStoreWithoutCache(t
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestHostManageRemoveReAddDuringInFlightListSkipsLastGoodStoreWithoutCache(t
 	if threads := web.lastGoodThreadsForSource("web-side"); len(threads) != 0 {
 		t.Fatalf("lastGoodThreads after the in-flight remove = %+v, want none", threads)
 	}
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {
 		t.Fatalf("evener/host/add (re-add): %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestHostManageRowAfterRemoveReAddDoesNotRecordStaleFacts(t *testing.T) {
 
 	// The victim enters as a sidecar host (so Remove accepts it), rendered
 	// offline so no facts read runs yet.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "old.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "old.example"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestHostManageRowAfterRemoveReAddDoesNotRecordStaleFacts(t *testing.T) {
 	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
 		t.Fatalf("Remove = %v", err)
 	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "fresh.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
 		t.Fatalf("re-Add = %v", err)
 	}
 

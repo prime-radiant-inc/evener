@@ -193,10 +193,11 @@ no router (reserved).
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostRow` | Registers one sidecar host entry (name + SSH address + key path); validates like hub.toml loading and refuses a name hub.toml or the live set already holds. |
+| `evener/host/add` | hub | `HostAddParams` | `HostRow` | Registers one sidecar host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots); validates like hub.toml loading and refuses a name hub.toml or the live set already holds. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
 | `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused. |
 
 ## Notifications (server → client)
 
@@ -765,9 +766,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `name` | `string` |  |  |
-| `address` | `string` |  |  |
-| `keyPath` | `string` | yes |  |
+| `entry` | `appwire.HostEntry` |  |  |
 
 
 ### `HostAttachParams`
@@ -790,6 +789,20 @@ _(no fields)_
 | `os` | `string` | yes |  |
 | `arch` | `string` | yes |  |
 | `features` | `*appwire.FeatureSet` | yes |  |
+
+
+### `HostEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
+| `address` | `string` |  |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
 
 
 ### `HostForwardedResult`
@@ -842,7 +855,12 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `address` | `string` | yes |  |
+| `user` | `string` | yes |  |
 | `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
 | `origin` | `string` |  |  |
 | `attached` | `bool` |  |  |
 | `serverName` | `string` | yes |  |
@@ -863,6 +881,21 @@ _(no fields)_
 
 
 ### `HostStatusResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `appwire.HostRow` |  |  |
+
+
+### `HostUpdateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `entry` | `appwire.HostEntry` |  |  |
+
+
+### `HostUpdateResponse`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|

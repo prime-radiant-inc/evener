@@ -941,9 +941,7 @@ export interface HarnessListResponse {
 }
 
 export interface HostAddParams {
-  name: string;
-  address: string;
-  keyPath?: string;
+  entry: HostEntry;
 }
 
 export interface HostAttachParams {
@@ -960,6 +958,17 @@ export interface HostAttachResponse {
   os?: string;
   arch?: string;
   features?: FeatureSet;
+}
+
+export interface HostEntry {
+  name?: string;
+  address: string;
+  user?: string;
+  keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
 }
 
 export interface HostForwardedResult {
@@ -992,7 +1001,12 @@ export interface HostRequestParams {
 export interface HostRow {
   name: string;
   address?: string;
+  user?: string;
   keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
   origin: string;
   attached: boolean;
   serverName?: string;
@@ -1010,6 +1024,15 @@ export interface HostStatusParams {
 }
 
 export interface HostStatusResponse {
+  host: HostRow;
+}
+
+export interface HostUpdateParams {
+  name: string;
+  entry: HostEntry;
+}
+
+export interface HostUpdateResponse {
   host: HostRow;
 }
 
@@ -3475,6 +3498,7 @@ export const METHOD_NAMES = [
   "evener/host/list",
   "evener/host/status",
   "evener/host/remove",
+  "evener/host/update",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3684,6 +3708,7 @@ export interface MethodTypes {
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
+  "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
 }
 
 export interface NotificationTypes {

@@ -53,13 +53,13 @@ func testHostManager(hubHosts []hostreg.Host, sources *appsource.Registry) *hubH
 func TestHostManageAddValidation(t *testing.T) {
 	m := testHostManager(nil, nil)
 	for _, params := range []appwire.HostAddParams{
-		{Name: "", Address: "h.example"},
-		{Name: "   ", Address: "h.example"},
-		{Name: "m4", Address: ""},
-		{Name: "m4", Address: "   "},
-		{Name: "local", Address: "h.example"},
-		{Name: "a/b", Address: "h.example"},
-		{Name: "a..b", Address: "h.example"},
+		{Entry: appwire.HostEntry{Name: "", Address: "h.example"}},
+		{Entry: appwire.HostEntry{Name: "   ", Address: "h.example"}},
+		{Entry: appwire.HostEntry{Name: "m4", Address: ""}},
+		{Entry: appwire.HostEntry{Name: "m4", Address: "   "}},
+		{Entry: appwire.HostEntry{Name: "local", Address: "h.example"}},
+		{Entry: appwire.HostEntry{Name: "a/b", Address: "h.example"}},
+		{Entry: appwire.HostEntry{Name: "a..b", Address: "h.example"}},
 	} {
 		_, err := m.Add(context.Background(), params)
 		if err == nil {
@@ -76,19 +76,108 @@ func TestHostManageAddValidation(t *testing.T) {
 	}
 }
 
+// TestHostManageValidationRefusalsNameTheInput pins the mapping: each refusal
+// the add path can raise names the input the operator can fix, in the spelling
+// the dialog's own inputs use (HostEntry's wire fields) — so a message lands on
+// the right control without anyone parsing prose. Add-only fields (name) are
+// named too, because the edit dialog has no name input to land on.
+func TestHostManageValidationRefusalsNameTheInput(t *testing.T) {
+	m := testHostManager(nil, nil)
+	for _, tc := range []struct {
+		entry appwire.HostEntry
+		field string
+	}{
+		{appwire.HostEntry{Name: "m4", Address: "   "}, "address"},
+		{appwire.HostEntry{Name: "m4", Address: "u@h.example", User: "bob"}, "user"},
+		{appwire.HostEntry{Name: "m4", Address: "h.example", Roots: []string{"  "}}, "roots"},
+		{appwire.HostEntry{Name: "bad name", Address: "h.example"}, "name"},
+		{appwire.HostEntry{Name: "local", Address: "h.example"}, "name"},
+	} {
+		_, err := m.Add(context.Background(), appwire.HostAddParams{Entry: tc.entry})
+		if err == nil {
+			t.Errorf("Add(%+v) accepted, want a validation refusal", tc.entry)
+			continue
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Errorf("Add(%+v) error = %v, want a WireError", tc.entry, err)
+			continue
+		}
+		data, ok := wire.Data.(appwire.HostFieldErrorData)
+		if !ok {
+			t.Errorf("Add(%+v) data = %T, want HostFieldErrorData", tc.entry, wire.Data)
+			continue
+		}
+		if data.EvenerErrorInfo != appwire.ErrorInvalidHostField || data.Field != tc.field {
+			t.Errorf("Add(%+v) blamed %q (%s), want %q", tc.entry, data.Field, data.EvenerErrorInfo, tc.field)
+		}
+	}
+}
+
+// TestHostManageAddCarriesEveryEntryField pins the apply half of the wire
+// reshape: the add request's entry is stored whole — the seven HostConfig
+// fields under the wire's spellings plus the slice-1 key path — and the row
+// reports them back, so an edit dialog prefilled from a row sees what the host
+// actually is.
+func TestHostManageAddCarriesEveryEntryField(t *testing.T) {
+	m := testHostManager(nil, nil)
+	entry := appwire.HostEntry{
+		Name:       "m4",
+		Address:    "m4.example",
+		User:       "operator",
+		KeyPath:    "/keys/m4",
+		EvenerPath: "/opt/evener",
+		ConfigPath: "/etc/evener/hub.toml",
+		Addr:       "127.0.0.1:9180",
+		Roots:      []string{"/srv/one"},
+	}
+	row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: entry})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for _, tc := range []struct {
+		field string
+		got   string
+		want  string
+	}{
+		{"address", row.Address, entry.Address},
+		{"user", row.User, entry.User},
+		{"keyPath", row.KeyPath, entry.KeyPath},
+		{"evenerPath", row.EvenerPath, entry.EvenerPath},
+		{"configPath", row.ConfigPath, entry.ConfigPath},
+		{"addr", row.Addr, entry.Addr},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("row.%s = %q, want %q", tc.field, tc.got, tc.want)
+		}
+	}
+	if !slices.Equal(row.Roots, entry.Roots) {
+		t.Errorf("row.Roots = %v, want %v", row.Roots, entry.Roots)
+	}
+	stored, ok := m.cfg.hosts.Get("m4")
+	if !ok {
+		t.Fatal("the added host is not in the registry")
+	}
+	if stored.SSH != entry.Address || stored.User != entry.User || stored.KeyPath != entry.KeyPath ||
+		stored.EvenerPath != entry.EvenerPath || stored.ConfigPath != entry.ConfigPath ||
+		stored.Addr != entry.Addr || !slices.Equal(stored.Roots, entry.Roots) {
+		t.Fatalf("stored entry = %+v, want the request's entry", stored)
+	}
+}
+
 // TestHostManageAddDuplicateRefusal pins that add refuses a name hub.toml or
 // the live set already holds — and that a failed add commits nothing.
 func TestHostManageAddDuplicateRefusal(t *testing.T) {
 	m := testHostManager([]hostreg.Host{{Name: "m4", SSH: "m4.example"}}, nil)
 	for _, name := range []string{"m4", "  m4  "} {
-		if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: name, Address: "other.example"}); err == nil {
+		if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: name, Address: "other.example"}}); err == nil {
 			t.Errorf("Add(%q) accepted over a hub.toml name, want refusal", name)
 		}
 	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf("Add(side) = %v, want success", err)
 	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s2.example"}); err == nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s2.example"}}); err == nil {
 		t.Error("Add(side) twice accepted, want duplicate refusal")
 	}
 	if got := m.cfg.hosts.All(); len(got) != 2 {
@@ -100,7 +189,7 @@ func TestHostManageAddDuplicateRefusal(t *testing.T) {
 // sidecar origin while hub.toml entries keep theirs.
 func TestHostManageAddListsWithOrigin(t *testing.T) {
 	m := testHostManager([]hostreg.Host{{Name: "m4", SSH: "m4.example"}}, nil)
-	row, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example", KeyPath: "/keys/s"})
+	row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example", KeyPath: "/keys/s"}})
 	if err != nil {
 		t.Fatalf("Add = %v", err)
 	}
@@ -220,7 +309,7 @@ func TestHostManageRemoveRefusals(t *testing.T) {
 // and sidecar row are gone, the response renders removed, and re-add works.
 func TestHostManageRemoveThenReAdd(t *testing.T) {
 	m := testHostManager(nil, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example", KeyPath: "/keys/s"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example", KeyPath: "/keys/s"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 	resp, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"})
@@ -254,7 +343,7 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 		}
 	}
 	// Re-add works with a different address: no resurrection of the old row.
-	row, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s2.example"})
+	row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s2.example"}})
 	if err != nil {
 		t.Fatalf("re-Add = %v", err)
 	}
@@ -297,7 +386,7 @@ func TestHostManageRemoveDetachesManager(t *testing.T) {
 	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, "", reg, nil)
 	// Add inserts into the one live registry the manager consults, so Ensure
 	// would find it (no dial happens here: the refusing runner guards that).
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 	if _, ok := reg.Get("side"); !ok {
@@ -323,16 +412,18 @@ func TestHostManageRemoveDetachesManager(t *testing.T) {
 	}
 }
 
-// TestHostManageNotForwarded pins the spec's negative requirement: the four
-// slice-1 methods are controller-local and MUST NOT be added to
-// remoteHostAdminMethods — otherwise the proxy would forward them to a remote
-// hub instead of acting on the controller's own config.
+// TestHostManageNotForwarded pins the spec's negative requirement: the
+// host-management methods (add/list/status/remove/update) are controller-local
+// and MUST NOT be added to remoteHostAdminMethods — otherwise the proxy would
+// forward them to a remote hub instead of acting on the controller's own
+// config.
 func TestHostManageNotForwarded(t *testing.T) {
 	for _, name := range []string{
 		appwire.MethodEvenerHostAdd,
 		appwire.MethodEvenerHostList,
 		appwire.MethodEvenerHostStatus,
 		appwire.MethodEvenerHostRemove,
+		appwire.MethodEvenerHostUpdate,
 	} {
 		if _, ok := remoteHostAdminMethods[name]; ok {
 			t.Errorf("controller-local %q is on the remote forward allow-list", name)
@@ -475,7 +566,7 @@ func TestHostManageAddPersistsSidecar(t *testing.T) {
 		t.Fatalf("write hub.toml: %v", err)
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, nil, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example", KeyPath: "/k/s"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example", KeyPath: "/k/s"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 	data, err := os.ReadFile(sidecarPathFor(configPath))
@@ -536,7 +627,7 @@ func TestHostManageRemovePersists(t *testing.T) {
 		t.Fatalf("write hub.toml: %v", err)
 	}
 	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, nil, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
@@ -550,14 +641,14 @@ func TestHostManageRemovePersists(t *testing.T) {
 
 // TestHostManageRefusesRemoteOrigin pins HIGH 3's controller-local rule from
 // the request side: a bridge-originated request (a peer hub calling over its
-// attach bridge) may not add, list, status, or remove the controller's hosts.
-// Every method fails InvalidParams and none of them mutates or exposes host
-// data; the same calls from a local origin succeed, so the guard is
+// attach bridge) may not add, list, status, remove, or update the controller's
+// hosts. Every method fails InvalidParams and none of them mutates or exposes
+// host data; the same calls from a local origin succeed, so the guard is
 // origin-keyed rather than broken.
 func TestHostManageRefusesRemoteOrigin(t *testing.T) {
 	m := testHostManager([]hostreg.Host{{Name: "m4", SSH: "m4.example"}}, nil)
 	ctx := withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge)
-	if _, err := m.Add(ctx, appwire.HostAddParams{Name: "side", Address: "s.example"}); err == nil {
+	if _, err := m.Add(ctx, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
 		t.Fatal("bridge-originated Add accepted, want refusal")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
@@ -577,6 +668,11 @@ func TestHostManageRefusesRemoteOrigin(t *testing.T) {
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
 	}
+	if _, err := m.Update(ctx, appwire.HostUpdateParams{Name: "m4", Entry: appwire.HostEntry{Address: "edited.example"}}); err == nil {
+		t.Fatal("bridge-originated Update accepted, want refusal")
+	} else {
+		assertWireCode(t, err, appwire.CodeInvalidParams)
+	}
 	// Nothing was mutated or exposed: the registry still holds exactly the
 	// hub.toml host, and the refused add committed nothing anywhere.
 	if got := m.cfg.hosts.All(); len(got) != 1 || got[0].Name != "m4" {
@@ -587,7 +683,7 @@ func TestHostManageRefusesRemoteOrigin(t *testing.T) {
 	}
 	// The same add from a local origin succeeds, so the guard is the only
 	// thing refusing.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf("local Add = %v, want success", err)
 	}
 }
@@ -650,7 +746,7 @@ func TestHostManageAddWiresAttachableSource(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, manager, cfg, "", reg, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example", KeyPath: "/keys/side"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example", KeyPath: "/keys/side"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 	// The added host is not an unknown name on the attach path: the dial the
@@ -782,7 +878,7 @@ func TestHostManageRuntimeSourceMatchesStartupNilOnlineSignal(t *testing.T) {
 	}
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, nil, cfg, "", hosts, nil)
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf("Add = %v", err)
 	}
 
@@ -942,7 +1038,7 @@ func TestHostManageSidecarLoadFailureIsLoudAndKeepsFile(t *testing.T) {
 	}
 	// The poisoned store refuses to persist: the add fails and commits
 	// nothing.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err == nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
 		t.Fatal("Add over a corrupt sidecar succeeded, want a loud refusal")
 	}
 	if _, ok := m.cfg.hosts.Get("side"); ok {
@@ -973,7 +1069,7 @@ func TestHostManageSaveFailureCommitsNothing(t *testing.T) {
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, configPath, nil, nil)
 	// First add succeeds and creates the sidecar file.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "keep", Address: "k.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "keep", Address: "k.example"}}); err != nil {
 		t.Fatalf("Add(keep) = %v, want success", err)
 	}
 	// Make the atomic write fail: replace the sidecar file with a directory,
@@ -986,7 +1082,7 @@ func TestHostManageSaveFailureCommitsNothing(t *testing.T) {
 		t.Fatalf("mkdir sidecar: %v", err)
 	}
 	// Add fails and commits nothing.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err == nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
 		t.Fatal("Add over a failing save succeeded, want refusal")
 	}
 	if _, ok := m.cfg.hosts.Get("side"); ok {
@@ -1039,7 +1135,7 @@ func TestHostManageAddRollsSidecarBackWhenLiveInsertFails(t *testing.T) {
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, nil, nil)
 
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "resurrect", Address: "r.example"}); err == nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "resurrect", Address: "r.example"}}); err == nil {
 		t.Fatal("Add over a manager with no registry succeeded, want the live-insert refusal")
 	}
 	// The live set committed nothing...
@@ -1101,7 +1197,7 @@ func TestHostManageSidecarInvalidEntryIsLoudAndKeepsFile(t *testing.T) {
 	}
 	// The poisoned store refuses to persist: an add fails loudly and the file
 	// keeps both entries.
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err == nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
 		t.Fatal("Add over a partially loaded sidecar succeeded, want a loud refusal")
 	}
 	entries, err := loadHostSidecar(sidecar)
@@ -1147,7 +1243,7 @@ func TestHostManageSidecarSchemaIsLoudAndKeepsFile(t *testing.T) {
 		}
 		// The poisoned store refuses to persist: the add fails and commits
 		// nothing.
-		if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err == nil {
+		if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
 			t.Errorf("Add over %q succeeded, want a loud refusal", doc)
 		}
 		if _, ok := m.cfg.hosts.Get("side"); ok {
@@ -1185,7 +1281,7 @@ func TestHostManageSidecarEmptyArrayAcceptsAdd(t *testing.T) {
 	if len(logs) != 0 {
 		t.Fatalf(`{"hosts":[]} logged at startup: %v, want a legitimate empty sidecar`, logs)
 	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"}); err != nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err != nil {
 		t.Fatalf(`Add over {"hosts":[]} = %v, want success`, err)
 	}
 	// The add rewrote the file with the entry: a reload serves it.
@@ -1332,7 +1428,7 @@ func TestHostManageListStatusSerializeWithCommit(t *testing.T) {
 	var adders sync.WaitGroup
 	for i := range adds {
 		adders.Go(func() {
-			if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: fmt.Sprintf("side-%02d", i), Address: "s.example"}); err != nil {
+			if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: fmt.Sprintf("side-%02d", i), Address: "s.example"}}); err != nil {
 				fail("Add(%d): %v", i, err)
 			}
 		})
@@ -1590,7 +1686,7 @@ func TestHostManageRemoveRollsSidecarBackWhenLiveTeardownFails(t *testing.T) {
 			t.Fatalf("the retried Remove = %v; the removal-in-progress mark leaked past the failed teardown", retryErr)
 		}
 	}
-	if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "x.example"}); err == nil {
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "x.example"}}); err == nil {
 		t.Fatal("Add over the intact host succeeded, want the duplicate refusal")
 	} else {
 		assertWireCode(t, err, appwire.CodeInvalidParams)
@@ -1663,7 +1759,7 @@ func TestHostManageListStatusReleaseLockDuringRowReads(t *testing.T) {
 			// mutation mutex, so a slow facts read cannot block a commit.
 			addDone := make(chan error, 1)
 			go func() {
-				_, err := m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "s.example"})
+				_, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}})
 				addDone <- err
 			}()
 			select {
@@ -1782,11 +1878,11 @@ func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
 	sources := appsource.NewRegistry()
 	m := newHubHostManager(sources, manager, hubcore.WebConfig{}, configPath, reg, nil)
 	for _, host := range []appwire.HostAddParams{
-		{Name: "keep", Address: "keep.example"},
-		{Name: name, Address: name + ".example"},
+		{Entry: appwire.HostEntry{Name: "keep", Address: "keep.example"}},
+		{Entry: appwire.HostEntry{Name: name, Address: name + ".example"}},
 	} {
 		if _, err := m.Add(context.Background(), host); err != nil {
-			t.Fatalf("Add(%s): %v", host.Name, err)
+			t.Fatalf("Add(%s): %v", host.Entry.Name, err)
 		}
 	}
 	// Park an Ensure for the host inside its first probe: it holds the
@@ -1995,7 +2091,7 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 
 	// The fenced name refuses both callers with the typed conflict...
 	if err := served(t, "host/add", func() error {
-		_, err := pr.m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "resurrect.example"})
+		_, err := pr.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "resurrect.example"}})
 		return err
 	}); err == nil {
 		t.Fatal("Add of the mid-removal name committed, want the removal conflict")
@@ -2018,7 +2114,7 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	// up no other host's add — and its save derives from the live store,
 	// which no longer holds the entry being removed.
 	if err := served(t, "host/add (other)", func() error {
-		_, err := pr.m.Add(context.Background(), appwire.HostAddParams{Name: "other", Address: "other.example"})
+		_, err := pr.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "other", Address: "other.example"}})
 		return err
 	}); err != nil {
 		t.Fatalf("Add(other) during the removal window: %v", err)
@@ -2059,7 +2155,7 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	}
 
 	// The fence lifted with the removal: the name is addable again.
-	if _, err := pr.m.Add(context.Background(), appwire.HostAddParams{Name: "side", Address: "fresh.example"}); err != nil {
+	if _, err := pr.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
 		t.Fatalf("re-Add after the removal finished: %v", err)
 	}
 	assertSidecarNames(t, pr.configPath, "keep", "other", "side")

@@ -66,7 +66,7 @@ func guardRemoteHostDial(ctx context.Context) error {
 }
 
 // guardControllerLocalHosts refuses a remote-originated host-management
-// request (evener/host/add|list|status|remove). Those methods act on the
+// request (evener/host/add|list|status|remove|update). Those methods act on the
 // controller's own config and channels — a peer hub reached over its attach
 // bridge must not enumerate or mutate this hub's host registry — the same
 // controller-local rule that keeps them off the remote forward allow-list

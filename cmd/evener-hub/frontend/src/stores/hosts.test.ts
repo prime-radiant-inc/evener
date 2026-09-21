@@ -5,9 +5,10 @@
 // Pattern mirrors daemonResidents.test.ts: each test resets store +
 // connection in beforeEach.
 
-import type { HostListResponse, HostRow } from "@evener/appwire-client";
+import { AppwireClient, type HostListResponse, type HostRow } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { beforeEach, describe, expect, test } from "vitest";
+import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
 import { hostsStore } from "./hosts";
 
@@ -108,6 +109,181 @@ describe("fetch", () => {
 });
 
 describe("mutations", () => {
+  test("update remains pending past the ordinary RPC deadline and ultimately resolves", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
+    try {
+      const ready = client.connect();
+      socket.open();
+      await ready;
+      // Prove the transport remains live independently of the mutation under
+      // test while the hub is legitimately waiting on the host gate.
+      await client.request("ping", {});
+      expect(client.state).toBe("ready");
+      connectionStore.getState().connect(client);
+
+      const updatedRow = { ...row("side"), address: "edited.example" };
+      let outcome: { status: "resolved"; row: HostRow } | { status: "rejected"; error: unknown } | undefined;
+      const done = hostsStore
+        .getState()
+        .update({ name: "side", entry: { address: "edited.example" } })
+        .then(
+          (result) => {
+            outcome = { status: "resolved", row: result };
+          },
+          (error: unknown) => {
+            outcome = { status: "rejected", error };
+          },
+        );
+      const updateRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/update");
+      if (typeof updateRequest?.id !== "number") throw new Error("missing evener/host/update request id");
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(client.state).toBe("ready");
+      expect(outcome, "Update must keep waiting under the same minutes-long budget as Connect").toBeUndefined();
+
+      // The held update now succeeds, then its quiet list re-read succeeds too:
+      // the store promise must resolve rather than merely avoiding the 30s error.
+      socket.receive({ id: updateRequest.id, result: { host: updatedRow } });
+      await vi.advanceTimersByTimeAsync(0);
+      const listRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/list");
+      if (typeof listRequest?.id !== "number") throw new Error("missing post-update evener/host/list request id");
+      socket.receive({ id: listRequest.id, result: { hosts: [updatedRow] } });
+      await done;
+      expect(outcome).toEqual({ status: "resolved", row: updatedRow });
+    } finally {
+      client.close();
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      vi.useRealTimers();
+    }
+  });
+
+  test("remove remains pending past the ordinary RPC deadline and ultimately resolves", async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://test/rpc", socketFactory: () => socket });
+    try {
+      const ready = client.connect();
+      socket.open();
+      await ready;
+      // Prove the transport remains live independently of the mutation under
+      // test while the hub is legitimately waiting on the host gate.
+      await client.request("ping", {});
+      expect(client.state).toBe("ready");
+      connectionStore.getState().connect(client);
+
+      let outcome: { status: "resolved" } | { status: "rejected"; error: unknown } | undefined;
+      const done = hostsStore
+        .getState()
+        .remove("side")
+        .then(
+          () => {
+            outcome = { status: "resolved" };
+          },
+          (error: unknown) => {
+            outcome = { status: "rejected", error };
+          },
+        );
+      const removeRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/remove");
+      if (typeof removeRequest?.id !== "number") throw new Error("missing evener/host/remove request id");
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(client.state).toBe("ready");
+      expect(outcome, "Remove must keep waiting under the same minutes-long host-gate budget").toBeUndefined();
+
+      // The held removal now succeeds, then its quiet list re-read succeeds too:
+      // the store promise must resolve rather than merely avoiding the 30s error.
+      socket.receive({ id: removeRequest.id, result: { host: { ...row("side"), removed: true } } });
+      await vi.advanceTimersByTimeAsync(0);
+      const listRequest = socket.sent
+        .map((frame) => JSON.parse(frame) as { id?: number; method?: string })
+        .find((frame) => frame.method === "evener/host/list");
+      if (typeof listRequest?.id !== "number") throw new Error("missing post-remove evener/host/list request id");
+      socket.receive({ id: listRequest.id, result: { hosts: [] } });
+      await done;
+      expect(outcome).toEqual({ status: "resolved" });
+    } finally {
+      client.close();
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      vi.useRealTimers();
+    }
+  });
+
+  test("update sends the target name and the entry, then re-reads quietly", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    fake.on("evener/host/update", () => ({ host: { ...row("alpha"), address: "a2.example" } }));
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), address: "a2.example" }] }));
+    const updated = await hostsStore.getState().update({
+      name: "alpha",
+      entry: { address: "a2.example", user: "operator" },
+    });
+
+    expect(updated.address).toBe("a2.example");
+    expect(fake.calls.find((c) => c.method === "evener/host/update")?.params).toEqual({
+      name: "alpha",
+      entry: { address: "a2.example", user: "operator" },
+    });
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts[0]?.address).toBe("a2.example");
+  });
+
+  test("a rejected update reaches the caller and keeps the rows", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    fake.on("evener/host/update", () => Promise.reject(new Error('host "alpha": missing ssh destination')));
+    await expect(hostsStore.getState().update({ name: "alpha", entry: { address: "" } })).rejects.toThrowError(
+      /missing ssh destination/,
+    );
+
+    const load = hostsStore.getState().load;
+    expect(load.phase).toBe("ready");
+    if (load.phase !== "ready") throw new Error("unreachable");
+    expect(load.hosts).toEqual([row("alpha")]);
+  });
+
+  test("the publish guard does not swallow an edit that changes an entry field only", async () => {
+    // hostRowEqual's field list is what decides whether the quiet re-read's rows
+    // replace the rendered ones; a comparator that ignores user/evenerPath/
+    // configPath/addr/roots would leave the pane rendering the pre-edit row.
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("alpha")] }));
+    await hostsStore.getState().fetch();
+
+    const changes: Partial<HostRow>[] = [
+      { user: "operator" },
+      { evenerPath: "/opt/evener" },
+      { configPath: "/etc/evener/hub.toml" },
+      { addr: "127.0.0.1:9180" },
+      { roots: ["/srv/one"] },
+    ];
+    const accumulated: Partial<HostRow> = {};
+    for (const change of changes) {
+      Object.assign(accumulated, change);
+      // Keep every previous change in both the published row and the next
+      // response, so the field added by this iteration is their only difference.
+      fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), ...accumulated }] }));
+      await hostsStore.getState().refresh();
+      const load = hostsStore.getState().load;
+      expect(load.phase).toBe("ready");
+      if (load.phase !== "ready") throw new Error("unreachable");
+      expect(load.hosts[0]).toMatchObject(change);
+    }
+  });
+
   test("a successful add whose list re-read fails keeps the rows and does not error the section", async () => {
     // The mutation's own response already proved the add landed, so the
     // re-read behind it must stay quiet: a failed list read flips neither
