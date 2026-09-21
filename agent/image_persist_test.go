@@ -148,7 +148,7 @@ func awaitWarningNaming(t *testing.T, ch <-chan events.SessionEvent, want string
 	// TRIPWIRE: warnings are emitted synchronously during the turn, so the
 	// receive above is the await; 30s only fires on a hang.
 	case <-time.After(30 * time.Second):
-		t.Fatalf("no diagnostic warning naming %q was emitted", want)
+		t.Fatalf("no warning naming %q was emitted", want)
 	}
 }
 
@@ -242,7 +242,7 @@ func TestProcessInput_NoStateDir_LeavesImageUnpersisted(t *testing.T) {
 // TestProcessInput_UnwritableAttachmentsDir_DegradesWithoutAnnotation pins
 // the failure mode: when the attachments directory cannot be created, the
 // turn still succeeds with the image inline, no path is announced, and a
-// diagnostic warning reports the write failure.
+// warning reports the write failure.
 func TestProcessInput_UnwritableAttachmentsDir_DegradesWithoutAnnotation(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()

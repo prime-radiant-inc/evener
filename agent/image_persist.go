@@ -36,16 +36,17 @@ const attachmentPathPrefixLen = 16
 // directory (library/test shape) get their input back untouched, and a
 // write failure degrades the same way: the image still rides the turn
 // inline and its Path stays empty, so nothing is announced that a reader
-// could not fetch. Each failure is reported as a diagnostic warning
-// instead of failing the turn — the inline copy is unaffected and the
-// turn's own acceptance must not hinge on disk writes.
+// could not fetch. Each failure is reported as a warning on the general
+// channel — firing the Notification hook like every other session file
+// I/O failure — instead of failing the turn: the inline copy is
+// unaffected and the turn's own acceptance must not hinge on disk writes.
 func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment {
 	if s == nil || len(images) == 0 || s.stateDir == "" {
 		return images
 	}
 	dir := filepath.Join(s.stateDir, sessionsSubdir, s.id, attachmentsSubdir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachments: %v", err)})
 		return images
 	}
 	out := slices.Clone(images)
@@ -57,7 +58,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		sum := sha256.Sum256(out[i].Data)
 		path := filepath.Join(dir, hex.EncodeToString(sum[:attachmentPathPrefixLen/2])+"-"+name)
 		if err := os.WriteFile(path, out[i].Data, 0o600); err != nil {
-			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
 		out[i].Path = path
