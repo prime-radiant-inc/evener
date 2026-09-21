@@ -164,15 +164,28 @@ function currentSupport(): "unknown" | "supported" | "unsupported" {
 // their identity across publications that do not touch them, so a reference
 // comparison identifies exactly the fields this publication changed.
 function mirrorPackageState(next: PackageStoreState, previous: PackageStoreState): void {
+  // A synchronous web subscriber can replace or detach the store mid-loop -
+  // the same re-entrant window the restore's fence closes - and every
+  // remaining publication of this loop would then write the outgoing
+  // store's values into the replacement's freshly anchored state. The
+  // epoch is rechecked before each publication: whatever bumped it owns
+  // the mirror now.
+  const epoch = lifecycleEpoch;
   if (next.hub !== previous.hub) {
     for (const layout of ["desktop", "mobile"] as const) {
+      if (epoch !== lifecycleEpoch) return;
       if (next.hub[layout] !== previous.hub[layout]) applyMirroredHubDefault(layout, next.hub[layout]);
     }
   }
+  if (epoch !== lifecycleEpoch) return;
   if (next.hubSupport !== previous.hubSupport) transcriptDisplayStore.setState({ hubSupport: next.hubSupport });
+  if (epoch !== lifecycleEpoch) return;
   if (next.hubLoading !== previous.hubLoading) transcriptDisplayStore.setState({ hubLoading: next.hubLoading });
+  if (epoch !== lifecycleEpoch) return;
   if (next.hubError !== previous.hubError) transcriptDisplayStore.setState({ hubError: next.hubError });
+  if (epoch !== lifecycleEpoch) return;
   if (next.hubErrors !== previous.hubErrors) transcriptDisplayStore.setState({ hubErrors: next.hubErrors });
+  if (epoch !== lifecycleEpoch) return;
   if (next.drafts !== previous.drafts) {
     // A newer package write on a layout owns that layout's preview again,
     // superseding any malformed-reply preview the adapter restored for it.
@@ -255,9 +268,14 @@ function disposePackageStore(): void {
 // "unknown" only survives where the connection genuinely does not know.
 function syncMirrorToStore(store: TranscriptDisplayStore): void {
   lifecycleEpoch += 1;
+  const epoch = lifecycleEpoch;
   restoredPreviews = {};
   const next = store.getState();
-  for (const layout of ["desktop", "mobile"] as const) applyMirroredHubDefault(layout, next.hub[layout]);
+  for (const layout of ["desktop", "mobile"] as const) {
+    if (epoch !== lifecycleEpoch) return;
+    applyMirroredHubDefault(layout, next.hub[layout]);
+  }
+  if (epoch !== lifecycleEpoch) return;
   const web = transcriptDisplayStore.getState();
   const changed: Partial<TranscriptDisplayStoreState> = {};
   if (web.hubSupport !== next.hubSupport) changed.hubSupport = next.hubSupport;

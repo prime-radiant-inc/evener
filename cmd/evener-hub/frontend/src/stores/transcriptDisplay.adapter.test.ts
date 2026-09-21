@@ -247,4 +247,58 @@ describe("transcript display adapter (package store delegation)", () => {
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 7, config: preset("full") });
     expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   });
+
+  test("an outgoing client's remaining publication lands nothing after a mid-publication replacement", async () => {
+    const client = new FakeClient("ready");
+    let getReply = {
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    };
+    client.on("evener/settings/transcriptDisplay/get", () => getReply);
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1);
+
+    const second = new FakeClient("ready");
+    second.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 7, config: preset("full") },
+      mobile: { revision: 7, config: shippedMobileConfig },
+    }));
+
+    // A synchronous web subscriber replaces the client during the Desktop
+    // layout's transition publication, inside the mirror's own loop: the
+    // outgoing client's Mobile default and remaining fields must not land in
+    // the replacement's freshly anchored state afterwards.
+    let stopSwapping: (() => void) | undefined;
+    const stop = transcriptDisplayStore.subscribe((state) => {
+      if (state.hub.desktop?.revision !== 2) return;
+      stopSwapping?.();
+      connectionStore.getState().connect(second);
+    });
+    stopSwapping = stop;
+
+    getReply = {
+      desktop: { revision: 2, config: preset("activity") },
+      mobile: { revision: 2, config: preset("chat") },
+    };
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    // The rewire's anchor owns the web store: the outgoing client's Mobile
+    // default never lands, and the support follows the replacement's pending
+    // handshake.
+    expect(transcriptDisplayStore.getState().hub).toEqual({});
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("unknown");
+
+    connectionStore.setState({
+      features: { ...(await second.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub).toEqual({
+      desktop: { revision: 7, config: preset("full") },
+      mobile: { revision: 7, config: shippedMobileConfig },
+    });
+  });
 });
