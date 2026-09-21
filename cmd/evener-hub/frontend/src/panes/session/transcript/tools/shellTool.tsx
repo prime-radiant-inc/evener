@@ -198,10 +198,11 @@ registerToolRenderer({
   fold: "consequential",
   // The exit code is NOT in the summary: a nonzero exit is announced by the
   // row's failure glyph instead (A2 - "exit 1" as the headline made every
-  // failure look like a footnote). The number's one home is the real text at
-  // the tail of the expanded body: formatShellResult bakes "[exit N]" into the
-  // captured output itself (agent/session_tools_shell.go), so no
-  // client-synthesized copy exists anywhere else.
+  // failure look like a footnote). The number's home is the real text at the
+  // tail of the expanded body: formatShellResult bakes "[exit N]" into the
+  // captured output itself (agent/session_tools_shell.go) — and when the
+  // output carries no trailer of either shape, the body synthesizes the typed
+  // code's line instead (see ShellBodyContent's exitFooter).
   summary(item: ItemModel, ctx?: ToolSummaryContext) {
     const command = stripRedundantCd(shellCommand(parseArgs(item.argumentsJSON)), ctx?.cwd);
     return `Ran ${command}`;
