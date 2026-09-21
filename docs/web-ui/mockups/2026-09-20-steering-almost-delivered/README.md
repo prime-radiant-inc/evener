@@ -32,7 +32,10 @@ What the frontend already receives (all three ideas build only on this — no
 wire changes):
 
 1. The pending entry itself: method `steer`/`drain`, state
-   `submitting → accepted → claimed`, with text, skill markers, `createdAt`.
+   `submitting` → `accepted`, with text, skill markers, `createdAt`.
+   (Steering never enters `claimed` — the daemon keeps a client steer
+   `accepted` until its transcript append lands; `claimed` belongs to the
+   start/queue methods only.)
 2. The active turn's live items — the running tool call's name and status, the
    streaming thinking/text — i.e. *the thing the steer is queued behind*.
 3. `evener/steering/injected` with `clientMutationId` — the delivery moment.
@@ -87,8 +90,11 @@ the ghost settles on reflection.
 
 The chip strip becomes a small queue of held rows. Each row: status word
 `Held`, reason `delivers when this step finishes` (or `…when this response
-ends`, during a thinking block), a ticking mono `held 0:42`, queue position
-`1st` / `2nd`, ellipsized preview, and the existing dismiss affordance. Every
+ends`, during a thinking block), a mono `held 0:42` counter (the same 3 s
+cadence the liveness line ticks at), queue position `1st` / `2nd`, and an
+ellipsized preview. (The row-level ✕ in the mockup is schematic: no wire
+method can withdraw accepted steering today, so a real dismiss would be new
+protocol work, outside this direction's frontend-only premise.) Every
 steering-producing action seeds a row (the shared foundation), so promote and
 drain become visible here too. The composer's Steer button grows a held-count
 badge so the queue is discoverable even when the footer is out of view.
