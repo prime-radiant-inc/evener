@@ -429,23 +429,17 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 		t.Fatal("grandchild record missing from the parent runtime's manager before the release")
 	}
 
-	// The claim refuses until every member is terminal-idle; poll rather than
-	// assume the finalize tail has fully settled.
-	claimDeadline := time.Now().Add(15 * time.Second)
 	var claim *delegateRuntimeReclamationClaim
-	for {
+	// The claim refuses until every member is terminal-idle; poll rather than
+	// assume the finalize tail has fully settled. TRIPWIRE: settle normally
+	// takes milliseconds; 15s only bounds a deadlock.
+	waitForCondition(t, 15*time.Second, "terminal subtree of "+parentRes.DelegateID+" to become claimable", func() bool {
 		claim, err = tree.ClaimIdleRuntimeRelease(parentRes.DelegateID)
 		if err != nil {
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
-		if claim != nil {
-			break
-		}
-		if time.Now().After(claimDeadline) {
-			t.Fatalf("terminal subtree of %s never became claimable", parentRes.DelegateID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return claim != nil
+	})
 	if got, want := reclamationDelegateIDs(claim), []string{grandchildID, parentRes.DelegateID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claim entries = %v, want leaf-first %v", got, want)
 	}
@@ -470,7 +464,7 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 	aggregates := []*delegatestore.Aggregate{tree.durable[parentRes.DelegateID], tree.durable[grandchildID]}
 	tree.mu.Unlock()
 	if parentLive == nil || parentLive.runtime != nil || grandchildLive == nil || grandchildLive.runtime != nil {
-		t.Fatalf("live runtime pointers after release: parent=%v grandchild=%v", parentLive.runtime, grandchildLive.runtime)
+		t.Fatalf("live runtime pointers after release: parent=%+v grandchild=%+v", parentLive, grandchildLive)
 	}
 	for _, agg := range aggregates {
 		if agg == nil || agg.Phase != delegatestore.PhaseIdle || agg.LatestOutcome == nil {

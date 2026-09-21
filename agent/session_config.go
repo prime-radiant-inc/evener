@@ -504,9 +504,9 @@ type testConfig struct {
 
 	// delegateIdleReleaseDelay overrides the production idle-release grace
 	// (delegateIdleReleaseDelayDefault) for tests: the idle-release contract
-	// test shrinks it to exercise the scheduled release deterministically, and
-	// zero makes the release synchronous. Nil keeps the production default.
-	// Inherited by child configs like every testOnly field.
+	// test shrinks it to 100ms so the scheduled release fires within its poll
+	// window. Nil keeps the production default. Inherited by child configs
+	// like every testOnly field.
 	delegateIdleReleaseDelay *time.Duration
 
 	// namerClient, when non-nil, is the llm.Client the background session namer

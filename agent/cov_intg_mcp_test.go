@@ -483,23 +483,12 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 
 	// The release runs on a timer after the (here tiny) follow-up grace, so
 	// poll for the child's MCP server to exit rather than assuming ordering.
-	markerDeadline := time.Now().Add(15 * time.Second)
-	for {
-		if _, statErr := os.Stat(marker); statErr == nil {
-			break
-		}
-		if time.Now().After(markerDeadline) {
-			t.Fatalf("delegate %s finalized but its stdio MCP server subprocess is still alive: idle delegates must release their resident runtime (marker %s missing)", delegateID, marker)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for idle runtime release: %v", ctx.Err())
-		// TRIPWIRE: poll cadence, not a bound — the release runs on the finalize
-		// tail with no completion signal to await, so this only sets how often
-		// the marker file is re-checked.
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
+	// TRIPWIRE: the release normally fires well inside a second of the 100ms
+	// grace; 15s only bounds a genuine hang.
+	waitForCondition(t, 15*time.Second, "idle release of delegate "+delegateID+" to stop its stdio MCP server (marker "+marker+")", func() bool {
+		_, statErr := os.Stat(marker)
+		return statErr == nil
+	})
 
 	// Scope: the parent's own plugin MCP server stays connected and callable.
 	if out := intg_mcpEcho(t, sess, "plugin_mcpplug_svc__echo", "parent-alive"); out != "echo: parent-alive" {
@@ -512,31 +501,20 @@ func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
 	if send.Err != nil {
 		t.Fatalf("delegate_send after idle release: %+v", send)
 	}
-	restoredDeadline := time.Now().Add(15 * time.Second)
-	for {
-		restored := sess.subagents.get(childID)
-		if restored != nil && restored != child {
-			restored.mu.Lock()
-			rdone := restored.done
-			restored.mu.Unlock()
-			select {
-			case <-rdone:
-			case <-ctx.Done():
-				t.Fatalf("restored run did not finish: %v", ctx.Err())
-			}
-			break
-		}
-		if time.Now().After(restoredDeadline) {
-			t.Fatalf("delegate %s was not cold-restored by delegate_send after idle release", delegateID)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for cold restore: %v", ctx.Err())
-		// TRIPWIRE: poll cadence, not a bound — the restored record appears via
-		// the manager map with no completion signal to await, so this only sets
-		// how often the map is re-checked.
-		case <-time.After(10 * time.Millisecond):
-		}
+	var restored *subagent
+	// TRIPWIRE: the cold restore normally appears within milliseconds of the
+	// send; 15s only bounds a genuine hang.
+	waitForCondition(t, 15*time.Second, "cold-restored record for delegate "+delegateID, func() bool {
+		restored = sess.subagents.get(childID)
+		return restored != nil && restored != child
+	})
+	restored.mu.Lock()
+	rdone := restored.done
+	restored.mu.Unlock()
+	select {
+	case <-rdone:
+	case <-ctx.Done():
+		t.Fatalf("restored run did not finish: %v", ctx.Err())
 	}
 	// The cold restore reuses the restoring parent's client — the same
 	// binding a post-restart restore gets — so the spawn factory must have

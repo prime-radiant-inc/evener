@@ -844,7 +844,7 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	}
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
-	if len(jm.running) != 0 || len(jm.terminalFlush) != 0 {
+	if jm.hasRuntimeObligationsLocked() {
 		jm.mu.Unlock()
 		jm.watchNotifyMu.Unlock()
 		return errors.New("job manager still has runtime obligations")
@@ -869,17 +869,28 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	return jm.closeStoreOnly()
 }
 
-// hasRuntimeObligations reports whether the manager still holds work that
+// hasRuntimeObligationsLocked is the single definition of the work
 // releaseQuiescentRuntime refuses to abandon: a running job or a pending
-// terminal flush. Callers gate a non-terminal runtime release on this so the
-// refusal cannot fire mid-release, after the single teardown pass was spent.
+// terminal flush. releaseQuiescentRuntime consults it under watchNotifyMu plus
+// jm.mu, hasRuntimeObligations under jm.mu alone, and the idle-release
+// pre-gate through the latter — so a new obligation kind reaches every
+// refusal at once and the pre-gate can never stop being a superset that lets
+// a mid-release refusal strand an already-spent teardown pass.
+func (jm *jobManager) hasRuntimeObligationsLocked() bool {
+	return len(jm.running) != 0 || len(jm.terminalFlush) != 0
+}
+
+// hasRuntimeObligations reports whether the manager still holds work that
+// releaseQuiescentRuntime refuses to abandon. Callers gate a non-terminal
+// runtime release on this so the refusal cannot fire mid-release, after the
+// single teardown pass was spent.
 func (jm *jobManager) hasRuntimeObligations() bool {
 	if jm == nil {
 		return false
 	}
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	return len(jm.running) != 0 || len(jm.terminalFlush) != 0
+	return jm.hasRuntimeObligationsLocked()
 }
 
 func (jm *jobManager) abandonRunningJobs() {
