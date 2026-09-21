@@ -22,10 +22,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -753,13 +755,96 @@ func TestWriteAttachmentFileRemovesPartialWriteOnFailure(t *testing.T) {
 	path := filepath.Join(dir, "shot.png")
 	png := validPNGFixture(t)
 
+	var synced []string
 	err := writeAttachmentFile(path, png, func(*os.File, []byte) error {
 		return errors.New("injected write failure")
+	}, func(d string) error {
+		synced = append(synced, d)
+		return nil
 	})
 	if err == nil {
 		t.Fatal("writeAttachmentFile must propagate the content-write error")
 	}
 	if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("partial file left at %q after a failed write (a retry of the same bytes must find the name free)", path)
+	}
+	if len(synced) != 0 {
+		t.Errorf("parent dir synced after a failed write (%v); nothing was created, so there is nothing to flush", synced)
+	}
+}
+
+// TestWriteAttachmentFileSyncsParentDirAfterCreate pins the durability tail:
+// the directory entry that names the synced file must itself be flushed
+// before writeAttachmentFile reports success, or a crash can leave the
+// transcript holding a promised path whose name never landed. The dir-sync
+// step is a parameter, like the content-write step, so tests observe and
+// inject it without process-global seams.
+func TestWriteAttachmentFileSyncsParentDirAfterCreate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	png := validPNGFixture(t)
+
+	var synced []string
+	if err := writeAttachmentFile(path, png, writeAttachmentContents, func(d string) error {
+		if d != dir {
+			t.Errorf("dir sync named %q, want the parent %q", d, dir)
+		}
+		synced = append(synced, d)
+		return nil
+	}); err != nil {
+		t.Fatalf("writeAttachmentFile: %v", err)
+	}
+	if len(synced) != 1 {
+		t.Errorf("parent dir synced %d times after create, want 1", len(synced))
+	}
+}
+
+// TestFsyncAttachmentDirSyncsRealDir exercises the production dir-sync step
+// against a real directory: open, sync, and close must succeed on the same
+// filesystems the state dir lives on.
+func TestFsyncAttachmentDirSyncsRealDir(t *testing.T) {
+	t.Parallel()
+	if err := fsyncAttachmentDir(t.TempDir()); err != nil {
+		t.Fatalf("fsyncAttachmentDir: %v", err)
+	}
+}
+
+// TestWriteAttachmentFileSyncFailurePropagates pins the failure half of the
+// dir sync: a directory that cannot be flushed fails the write (the path
+// stays unannounced), while the synced file itself remains on disk for later
+// readers — the same posture the jobs output store takes.
+func TestWriteAttachmentFileSyncFailurePropagates(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	png := validPNGFixture(t)
+
+	err := writeAttachmentFile(path, png, writeAttachmentContents, func(string) error {
+		return errors.New("injected dir-sync failure")
+	})
+	if err == nil {
+		t.Fatal("writeAttachmentFile must propagate the dir-sync error")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("the synced attachment must remain after a dir-sync failure: %v", statErr)
+	}
+}
+
+// TestWriteAttachmentFileToleratesUnsupportedDirSync pins the tolerance the
+// client-mutation store already applies: on a filesystem that cannot sync a
+// directory at all, the synced file is as durable as the platform allows and
+// the write still succeeds.
+func TestWriteAttachmentFileToleratesUnsupportedDirSync(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	png := validPNGFixture(t)
+
+	err := writeAttachmentFile(path, png, writeAttachmentContents, func(string) error {
+		return fmt.Errorf("sync attachments dir: %w", syscall.ENOSYS)
+	})
+	if err != nil {
+		t.Fatalf("an unsupported dir sync must be tolerated: %v", err)
 	}
 }

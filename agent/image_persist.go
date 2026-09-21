@@ -77,7 +77,7 @@ func (s *Session) persistInputImages(images []ImageAttachment) []ImageAttachment
 		name := sanitizeAttachmentName(out[i])
 		sum := sha256.Sum256(out[i].Data)
 		path := filepath.Join(dir, hex.EncodeToString(sum[:attachmentPathPrefixLen/2])+"-"+name)
-		if err := writeAttachmentFile(path, out[i].Data, writeAttachmentContents); err != nil {
+		if err := writeAttachmentFile(path, out[i].Data, writeAttachmentContents, fsyncAttachmentDir); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist input attachment %q: %v", name, err)})
 			continue
 		}
@@ -107,8 +107,10 @@ func writeAttachmentContents(f *os.File, data []byte) error {
 // which dedupes to a no-op; anything else there — a planted file, a symlink,
 // a non-regular entry — is a write failure the caller reports like any
 // other. A failed content write removes the partial file so the
-// content-addressed name is never poisoned for a retry.
-func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) error) error {
+// content-addressed name is never poisoned for a retry. A fresh create is
+// flushed all the way out: the file's contents, then the directory entry
+// naming it, before the caller can record the path.
+func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) error, syncDir func(string) error) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if !errors.Is(err, os.ErrExist) {
@@ -144,6 +146,15 @@ func writeAttachmentFile(path string, data []byte, write func(*os.File, []byte) 
 		_ = os.Remove(path)
 		return err
 	}
+	// The directory entry is what makes the synced bytes reachable by name;
+	// flush it before the caller can record the path in the transcript, or a
+	// crash can leave the model holding a promised path whose name never
+	// landed. A filesystem that cannot sync a directory at all reports the
+	// same unsupported-sync errors the client-mutation store tolerates; the
+	// file's own contents are already flushed there.
+	if err := syncDir(filepath.Dir(path)); err != nil && !clientMutationSyncUnsupported(err) {
+		return err
+	}
 	return nil
 }
 
@@ -158,6 +169,23 @@ func readAttachmentForDedupe(path string) ([]byte, error) {
 	}
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 	return io.ReadAll(f)
+}
+
+// fsyncAttachmentDir flushes the directory entry naming a just-created
+// attachment, so a crash cannot leave the transcript holding a promised path
+// whose file never became reachable by name. Same write-then-fsync-the-
+// directory shape the jobs output store and the sandbox retention writer
+// use for their durable files.
+func fsyncAttachmentDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open attachments dir for sync: %w", err)
+	}
+	defer func() { _ = handle.Close() }()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("sync attachments dir: %w", err)
+	}
+	return nil
 }
 
 // fileToolsCanRead reports whether the session's in-process file tools — the
