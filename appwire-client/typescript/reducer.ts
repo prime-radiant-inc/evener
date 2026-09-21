@@ -1196,11 +1196,53 @@ function freshSuppliesToolField(callId: string, field: string, view: ToolFoldVie
   );
 }
 
-// The merged item in the group turn hosting the older item's data — the page
-// merge replaces the older item in place, so the first group item matching
-// its identity is where the claimed fields live.
-function matchedItemHost(older: ItemModel, groupTurn: TurnModel): ItemModel {
+// Walks a merge-provenance membership tree to the original items at its
+// leaves — the merge records membership at every identity-match edge, so the
+// leaves are exactly the inputs a merged item combined.
+function membershipLeaves(membership: ToolItemSourceMembership | undefined, leaves: ItemModel[] = []): ItemModel[] {
+  if (membership === undefined) return leaves;
+  if ("item" in membership) {
+    leaves.push(membership.item);
+    return leaves;
+  }
+  membershipLeaves(membership.left, leaves);
+  membershipLeaves(membership.right, leaves);
+  return leaves;
+}
+
+function membershipHasLeaf(membership: ToolItemSourceMembership | undefined, leaf: ItemModel): boolean {
+  if (membership === undefined) return false;
+  if ("item" in membership) return membership.item === leaf;
+  return membershipHasLeaf(membership.left, leaf) || membershipHasLeaf(membership.right, leaf);
+}
+
+// The merged item in the group turn hosting the older item's data. Identity
+// alone stops at the first hop: coalescing can chain an older item through a
+// fresh alias into a second fresh item that no longer matches the original
+// identity (older --id--> fresh1 --transcriptKey--> fresh2), so the merge
+// provenance is the authoritative membership test; identity is the fallback
+// where no context recorded one.
+function matchedItemHost(older: ItemModel, groupTurn: TurnModel, context?: ToolItemMergeContext): ItemModel {
+  const hosting = groupTurn.items.find(
+    (item) => item !== older && membershipHasLeaf(context?.provenance.get(item)?.older, older),
+  );
+  if (hosting !== undefined) return hosting;
   return groupTurn.items.find((item) => item === older || itemIdentityMatches(item, older)) ?? older;
+}
+
+// Every fresh item that merged into the host — the direct identity matches
+// plus whatever an alias chain pulled in after them. The merged field value
+// is the last fresh contributor's that supplies it, so the claim checks every
+// contributor, not just the items matching the original older identity.
+function freshContributorItems(
+  host: ItemModel,
+  matches: TurnModel[],
+  older: ItemModel,
+  context?: ToolItemMergeContext,
+): ItemModel[] {
+  const viaProvenance = context ? membershipLeaves(context.provenance.get(host)?.fresh) : [];
+  if (viaProvenance.length > 0) return viaProvenance;
+  return matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, older)));
 }
 
 // Whether a claimed field on a matched item outlives the fold. The host keeps
@@ -1208,8 +1250,7 @@ function matchedItemHost(older: ItemModel, groupTurn: TurnModel): ItemModel {
 // rewritten call keeps non-toolResultFields through the spread and takes
 // toolResultFields from the candidates (fresh first); a removed result keeps
 // only toolResultFields, and again only while the fresh side supplies none.
-function matchedFieldSurvivesFold(older: ItemModel, field: string, groupTurn: TurnModel, view: ToolFoldView): boolean {
-  const host = matchedItemHost(older, groupTurn);
+function matchedFieldSurvivesFold(field: string, host: ItemModel, view: ToolFoldView): boolean {
   if (host.callId === undefined) return true;
   if (isFoldedResult(host, view)) {
     return isToolResultField(field) && !freshSuppliesToolField(host.callId, field, view);
@@ -1223,13 +1264,15 @@ function olderItemAddsCoverage(
   matches: ItemModel[],
   groupTurn: TurnModel,
   view: ToolFoldView,
+  context?: ToolItemMergeContext,
 ): boolean {
   if (matches.length === 0) return !fullySupersededToolResult(older, view);
+  const host = matchedItemHost(older, groupTurn, context);
   if (itemTextPresence(older) === "provided" && matches.every((item) => itemTextPresence(item) === "omitted")) {
     // The fold carries no text onto a surviving call: the older text counts
     // only while the merged item hosting it survives. A discarded result can
     // still contribute surviving fields, so keep walking instead of returning.
-    if (matchedFieldSurvivesFold(older, "text", groupTurn, view)) return true;
+    if (matchedFieldSurvivesFold("text", host, view)) return true;
   }
   return Object.keys(older).some((field) => {
     if (itemNonCoverageFields.has(field)) return false;
@@ -1248,7 +1291,7 @@ function olderItemAddsCoverage(
       if (presenceMerged) return !Object.hasOwn(item, field);
       return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
     });
-    return freshLacks && matchedFieldSurvivesFold(older, field, groupTurn, view);
+    return freshLacks && matchedFieldSurvivesFold(field, host, view);
   });
 }
 
@@ -1257,6 +1300,7 @@ function olderTurnAddsCoverage(
   matches: TurnModel[],
   groupTurn: TurnModel,
   view: ToolFoldView,
+  context?: ToolItemMergeContext,
 ): boolean {
   if (
     // The canonical-fields check stays ahead of the unmatched early return:
@@ -1281,13 +1325,14 @@ function olderTurnAddsCoverage(
   if (matches.length === 0) {
     return (
       (older.items.length === 0 && turnSurvivesFold(groupTurn, view)) ||
-      older.items.some((item) => item.type !== "warning" && olderItemAddsCoverage(item, [], groupTurn, view))
+      older.items.some((item) => item.type !== "warning" && olderItemAddsCoverage(item, [], groupTurn, view, context))
     );
   }
   return older.items.some((olderItem) => {
     if (olderItem.type === "warning") return false;
-    const matchingItems = matches.flatMap((turn) => turn.items.filter((item) => itemIdentityMatches(item, olderItem)));
-    return olderItemAddsCoverage(olderItem, matchingItems, groupTurn, view);
+    const host = matchedItemHost(olderItem, groupTurn, context);
+    const matchingItems = freshContributorItems(host, matches, olderItem, context);
+    return olderItemAddsCoverage(olderItem, matchingItems, groupTurn, view, context);
   });
 }
 
@@ -1336,7 +1381,7 @@ function mergeTurnHistoryWithContext(
       ) {
         transcriptOverlap = true;
       }
-      if (olderTurnAddsCoverage(turn, freshTurns, group.turn, view)) olderCoverage = true;
+      if (olderTurnAddsCoverage(turn, freshTurns, group.turn, view, context)) olderCoverage = true;
     }
 
     if (group.olderIndexes.length === 0) continue;

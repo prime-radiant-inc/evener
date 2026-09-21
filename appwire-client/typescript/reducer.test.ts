@@ -3900,6 +3900,60 @@ test("mergeTurnHistory counts an older result whose only call coalesced into a f
   expect(merged.turns[1]?.items[0]).toMatchObject({ id: "item_tool_result_2", output: "older output" });
 });
 
+test("mergeTurnHistory does not count an older field a fresh alias chain replaces", () => {
+  const newer: TurnModel[] = [
+    {
+      id: "turn-f1",
+      status: "completed",
+      items: [
+        {
+          id: "a",
+          turnId: "turn-f1",
+          type: "agentMessage",
+          text: "",
+          transcriptKey: "k",
+        },
+      ],
+    },
+    {
+      id: "turn-f2",
+      status: "completed",
+      items: [
+        {
+          id: "b",
+          turnId: "turn-f2",
+          type: "agentMessage",
+          text: "",
+          transcriptKey: "k",
+          output: "fresh",
+        },
+      ],
+    },
+  ];
+  const merged = mergeTurnHistory(
+    [
+      {
+        id: "turn-old",
+        status: "completed",
+        items: [
+          {
+            id: "a",
+            turnId: "turn-old",
+            type: "agentMessage",
+            text: "",
+            output: "old",
+          },
+        ],
+      },
+    ],
+    newer,
+  );
+
+  expect(merged.turns).toBe(newer);
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.transcriptOverlap).toBe(true);
+});
+
 test("mergeTurnHistory counts a result the fold keeps when no call item exists", () => {
   const merged = mergeTurnHistory(
     [
