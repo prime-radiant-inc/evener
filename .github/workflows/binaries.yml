@@ -100,9 +100,14 @@ jobs:
           security unlock-keychain -p "$keychain_password" "$keychain"
           security import "$certificate" \
             -P "$MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$keychain"
-          security find-identity -v -p codesigning "$keychain" | \
-            grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION ($APPLE_TEAM_ID)"
+            -A -f pkcs12 -k "$keychain" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          identities="$(security find-identity -v -p codesigning "$keychain")"
+          printf '%s\n' "$identities"
+          grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION ($APPLE_TEAM_ID)" <<<"$identities" || {
+            echo "Imported keychain does not contain the expected Developer ID identity" >&2
+            exit 1
+          }
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s -k "$keychain_password" "$keychain"
