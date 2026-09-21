@@ -1117,11 +1117,20 @@ function olderItemAddsCoverage(older: ItemModel, matches: ItemModel[]): boolean 
   return Object.keys(older).some((field) => {
     if (itemNonCoverageFields.has(field)) return false;
     const nullishMerged = itemNullishMergedFields.has(field);
+    // Status merges by rank and falls back to the older side on an undefined
+    // fresh value, so its absence still reads the value. Every other field the
+    // walk reaches outside the ?? list merges by spread ({ ...older, ...newer }:
+    // the fresh side's own property wins, even when its value is undefined), so
+    // a match that OWNS the property blocks the claim however undefined its
+    // value reads — the spread discards the older value, and coverage must not
+    // report history the merge throws away.
+    const presenceMerged = !nullishMerged && field !== "status";
     const olderValue = (older as unknown as Record<string, unknown>)[field];
     if (absentForCoverage(olderValue, nullishMerged)) return false;
-    return matches.every((item) =>
-      absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged),
-    );
+    return matches.every((item) => {
+      if (presenceMerged) return !Object.hasOwn(item, field);
+      return absentForCoverage((item as unknown as Record<string, unknown>)[field], nullishMerged);
+    });
   });
 }
 

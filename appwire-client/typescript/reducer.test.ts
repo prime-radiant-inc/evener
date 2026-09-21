@@ -4004,6 +4004,7 @@ test("mergeTurnHistory counts older item raw a fresh null does not overwrite", (
             id: "item-1",
             turnId: "turn-1",
             type: "agentMessage",
+            text: "",
             raw: { roundTimings: { totalMs: 5 } },
             status: "completed",
           },
@@ -4014,13 +4015,24 @@ test("mergeTurnHistory counts older item raw a fresh null does not overwrite", (
       {
         id: "turn-1",
         status: "completed",
-        items: [{ id: "item-1", turnId: "turn-1", type: "agentMessage", raw: null, status: "completed" }],
+        items: [{ id: "item-1", turnId: "turn-1", type: "agentMessage", text: "", raw: null, status: "completed" }],
       },
     ],
   );
 
   expect(merged.olderCoverage).toBe(true);
   expect(merged.turns[0]?.items[0]?.raw).toEqual({ roundTimings: { totalMs: 5 } });
+});
+
+test("mergeTurnHistory does not count a spread-overwritten transcript index as coverage", () => {
+  const item = { id: "item-1", turnId: "turn-1", type: "agentMessage", text: "shared", status: "completed" };
+  const merged = mergeTurnHistory(
+    [{ id: "turn-1", status: "completed", items: [{ ...item, transcriptEntryIndex: 5 }] }],
+    [{ id: "turn-1", status: "completed", items: [{ ...item, transcriptEntryIndex: undefined }] }],
+  );
+
+  expect(merged.olderCoverage).toBe(false);
+  expect(merged.turns[0]?.items[0]?.transcriptEntryIndex).toBeUndefined();
 });
 
 test("mergeTurnHistory does not duplicate an older turn consumed by shared fresh fragments", () => {
