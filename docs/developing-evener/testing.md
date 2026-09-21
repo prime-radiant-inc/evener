@@ -270,12 +270,13 @@ destination already names one), and `EVENER_SSH_E2E_EVENER_PATH` overrides the
 host's evener path (default `~/.local/bin/evener`).
 
 `EVENER_SSH_E2E_REMOTE_DIR` is required as well: a directory that exists on the
-host and not on this controller. The check forwards `evener/paths/complete` for
-that prefix through `evener/host/request` and requires the host's own entries
-back, then asks this hub the same prefix directly and requires none. Only the
-host can see that directory, so the pair pins the answer's origin where the
-forwarded call alone could still have been served locally. Without it the test
-skips.
+host and not on this controller, holding at least one visible child entry (a
+file or a subdirectory). The check forwards `evener/paths/complete` for that
+prefix through `evener/host/request` with `IncludeFiles` set, so files count as
+entries too, and requires the host's own entries back; then it asks this hub the
+same prefix directly and requires none. Only the host can see that directory, so
+the pair pins the answer's origin where the forwarded call alone could still have
+been served locally. Without it the test skips.
 
 The host must be disposable and reachable over non-interactive ssh
 (`ssh -T -o BatchMode=yes`), and it must already carry a matching evener build
