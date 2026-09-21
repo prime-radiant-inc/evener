@@ -2,22 +2,46 @@
   display: inline-block;
 }
 
+/* A floating layer of the design system, not an oversized tooltip: the card
+ * rides the same ground as popover/menu/dialog (--surface-1 with the
+ * --shadow-overlay ring-and-shadow), while the tooltip keeps its inverted
+ * mini-palette for one-line labels. The overlay shadow supplies the boundary
+ * ring, so no second border is declared - design-system §2 forbids doubling
+ * it. */
 .bubble {
   position: fixed;
   z-index: var(--z-tooltip);
   width: max-content;
   max-width: min(320px, calc(100vw - var(--space-4)));
   padding: var(--space-3);
-  background: var(--tooltip-bg);
-  border: 1px solid var(--tooltip-border);
-  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  border-radius: var(--radius-pane);
   box-shadow: var(--shadow-overlay);
-  color: var(--tooltip-fg);
+  color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
   white-space: normal;
   pointer-events: none;
+  animation: hovercardFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes hovercardFadeScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble {
+    animation: none;
+  }
 }
 
 @media (hover: none) {

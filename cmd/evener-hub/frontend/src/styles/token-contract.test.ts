@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { blockBody } from "./cssBlock";
 
 // Every stylesheet under src, keyed by a path relative to src/ itself, read
 // straight off disk with node:fs (types: src/styles/node-fs-shim.d.ts).
@@ -521,6 +522,17 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // failed outcome reason. Error text is the danger hue's canonical, ungateable
 // job, the same as railDialog.module.css's .pickerError above.
 //
+// hover-card-glow-up: panes/session/transcript/entityref.module.css earns the
+// same exception for the same structural reason - it lives under
+// panes/session/transcript/, not widgets/<name>/, so it can never match
+// WIDGET_STYLESHEET_RE either. Its two semantic reaches are the entity hover
+// card's status word: .status[data-state="failed"] in --danger-ink and
+// .status[data-state="running"] in --alive-ink. Color-by-meaning on a
+// lifecycle status is exactly the hue law's job (failure / agent working),
+// the same meaning-per-hue split RailRow.module.css's signal-row family and
+// the subagent row's attribute-keyed state colors already established; every
+// terminal or neutral state stays on the ink ramp.
+//
 // webui-keybindings-p4 task 6: panes/settings/sections/keybindings.module.css
 // earns the same exception for the same structural reason - it lives under
 // panes/settings/sections/, not widgets/<name>/, so it can never match
@@ -567,6 +579,7 @@ const SEMANTIC_PATH_EXCEPTIONS = new Set([
   "panes/settings/sections/keybindings.module.css",
   "panes/settings/sections/marketplacesPlugins/marketplacesPlugins.module.css",
   "panes/settings/sections/hosts.module.css",
+  "panes/session/transcript/entityref.module.css",
 ]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
@@ -614,6 +627,62 @@ test("the sandboxescalation.module.css semantic-var exception is scoped to its e
   expect(SEMANTIC_PATH_EXCEPTIONS.has("sandboxescalation.module.css")).toBe(false);
 });
 
+test("the entityref.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/transcript/entityref.module.css")).toBe(true);
+  // A same-named decoy anywhere else must still go through the normal
+  // widget-allowlist check, exactly like the dockview-theme.css precedent.
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/entityref.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("entityref.module.css")).toBe(false);
+});
+
+// --- (b2) the tooltip's inverted mini-palette belongs to the tooltip ------
+//
+// --tooltip-* is the one-line label's own near-black palette (§2: "Tooltips
+// retain their inverted mini-palette"), not a general floating-layer
+// palette. A card, menu, popover or sheet borrowing it silently opts out of
+// the design system's surface family - both hovercard.module.css and
+// entityref.module.css carried exactly this borrowing before their 2026-09
+// glow-up, which is why the law lives here rather than in any one widget's
+// own test: it walks every stylesheet under src, so the next floating
+// component to reach for --tooltip-* fails CI instead of shipping a
+// hand-written per-file negative that only exists after someone notices.
+const TOOLTIP_PALETTE_RE = /--tooltip-/;
+const TOOLTIP_PALETTE_ALLOWED = new Set(["styles/tokens.css", "widgets/tooltip/tooltip.module.css"]);
+
+function tooltipPaletteViolations(css: string): boolean {
+  // Comments stripped first, the same shape requireclass-contract.test.ts's
+  // COMMENT_RE removes: the law bans real reachability, and prose explaining
+  // the ban is not a borrowing.
+  return TOOLTIP_PALETTE_RE.test(css.replace(/\/\*[\s\S]*?\*\//g, " "));
+}
+
+test("tooltipPaletteViolations flags a stylesheet that borrows the tooltip palette", () => {
+  expect(tooltipPaletteViolations(".card { background: var(--tooltip-bg); }")).toBe(true);
+});
+
+test("tooltipPaletteViolations is silent for a stylesheet on the surface family", () => {
+  expect(tooltipPaletteViolations(".panel { background: var(--surface-1); }")).toBe(false);
+});
+
+test("tooltipPaletteViolations ignores a comment that names the palette it bans", () => {
+  // The law targets real reachability, not prose: a stylesheet explaining why
+  // it does NOT borrow --tooltip-bg (this very rule's rationale, say) must
+  // not fail its own gate. Block comments only - CSS comments are always
+  // /* */, the same shape requireclass-contract.test.ts strips.
+  expect(tooltipPaletteViolations("/* never use --tooltip-bg here */ .card { color: red; }")).toBe(false);
+});
+
+test("the tooltip palette's allowlist is exactly the token definitions and the tooltip itself", () => {
+  expect(TOOLTIP_PALETTE_ALLOWED).toEqual(new Set(["styles/tokens.css", "widgets/tooltip/tooltip.module.css"]));
+});
+
+for (const [path, text] of OTHER_STYLESHEETS) {
+  if (TOOLTIP_PALETTE_ALLOWED.has(path)) continue;
+  test(`${path} does not borrow the tooltip's inverted mini-palette`, () => {
+    expect(tooltipPaletteViolations(text)).toBe(false);
+  });
+}
+
 // --- (c) dark and light blocks declare the same color tokens -----------
 //
 // tokens.css defines one canonical dark block for `:root` plus nested
@@ -621,24 +690,16 @@ test("the sandboxescalation.module.css semantic-var exception is scoped to its e
 // (light overrides). A color token declared in only one of the two silently
 // breaks the other theme - it either falls back to the wrong hue or resolves
 // to nothing.
-// This does a bracket-depth extraction rather than pulling in a CSS
-// parser dependency; it works because tokens.css (authored alongside this
-// test) never nests braces inside either block.
+// The block extraction itself lives in cssBlock.ts (the one shared
+// brace-depth walk every off-disk style test uses); this wrapper keeps the
+// startPattern-anywhere entry this file's callers rely on.
 function extractBlock(css: string, startPattern: RegExp): string {
   const start = css.search(startPattern);
   if (start === -1) {
     throw new Error(`token-contract test: could not find a block matching ${startPattern}`);
   }
   const braceStart = css.indexOf("{", start);
-  let depth = 0;
-  for (let i = braceStart; i < css.length; i++) {
-    if (css[i] === "{") depth++;
-    else if (css[i] === "}") {
-      depth--;
-      if (depth === 0) return css.slice(braceStart + 1, i);
-    }
-  }
-  throw new Error("token-contract test: unbalanced braces while extracting a block");
+  return blockBody(css, braceStart);
 }
 
 const DECLARATION_RE = /(--[a-z0-9-]+)\s*:\s*([^;]+);/gi;
