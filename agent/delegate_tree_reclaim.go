@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
@@ -705,14 +706,18 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 // of cutting the newer generation's grace short. Grace is measured from the
 // most recent finalize, never from an earlier one.
 //
-// The timer is deliberately NOT tracked by any WaitGroup a session's Close
-// joins: Close's bounded joins must never wait out a grace period, and a
-// timer that fires after the session or tree has closed is harmless — the
-// stale-generation guard and the release claim refuse on a closing
-// controller, a superseded generation, or an already-released runtime, and
-// every gate re-checks state at fire time. A delegate that runs again within
-// the grace supersedes this timer with its own finalize's, so no
-// cancellation path is needed.
+// At most one grace timer per delegate is ever armed: the arm swaps the
+// delegate's outstanding handle and stops the replaced one, so the finalize
+// tail's timer and each refusal's retry collapse into a single timer instead
+// of stacking one per refusal. The handle lives on the controller keyed by
+// delegate — a cold restore replaces the *Session, and the new generation's
+// arm must still retire the window the previous runtime armed, which a
+// session-keyed map could not find. It is deliberately NOT joined by any
+// WaitGroup a session's Close joins: Close's bounded joins must never wait
+// out a grace period, and a timer that fires after the session or tree has
+// closed is harmless — the stale-generation guard and the release claim
+// refuse on a closing controller, a superseded generation, or an
+// already-released runtime, and every gate re-checks state at fire time.
 func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 	if s == nil || s.delegateController == nil {
 		return
@@ -721,12 +726,35 @@ func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 	if override := s.cfg.testOnly.delegateIdleReleaseDelay; override != nil {
 		delay = *override
 	}
-	s.sclock().AfterFunc(delay, func() {
+	timer := s.sclock().AfterFunc(delay, func() {
 		if !s.delegateController.idleReleaseGenerationCurrent(s.owningDelegateID, finalizedGeneration) {
 			return
 		}
 		_ = s.releaseIdleRuntimeAfterFinalize()
 	})
+	// Stop the replaced handle outside the controller mutex: Timer.Stop takes
+	// the clock seam's own lock, and callbacks dispatch on their own
+	// goroutines, so holding c.mu across the stop buys nothing.
+	if replaced := s.delegateController.swapIdleReleaseTimer(s.owningDelegateID, timer); replaced != nil {
+		replaced.Stop()
+	}
+}
+
+// swapIdleReleaseTimer installs handle as delegateID's one outstanding
+// idle-release grace timer and returns the handle it replaced for the caller
+// to stop outside c.mu. Every arm site — the finalize tail and each
+// transient-refusal retry — funnels through this swap, so a delegate holds
+// at most one armed grace timer no matter how many refusals or superseding
+// finalizes intervene.
+func (c *delegateTreeController) swapIdleReleaseTimer(delegateID string, handle clock.Timer) clock.Timer {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	replaced := c.idleReleaseTimers[delegateID]
+	c.idleReleaseTimers[delegateID] = handle
+	return replaced
 }
 
 // idleReleaseGenerationCurrent reports whether the delegate's durable

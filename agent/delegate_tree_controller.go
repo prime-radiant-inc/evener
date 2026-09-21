@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -73,6 +74,7 @@ type delegateTreeController struct {
 	quietClaims           map[uint64]*delegateQuietAttentionClaim
 	attentionWakeIDs      map[string]map[string]struct{}
 	attentionRestoreHolds map[string]int
+	idleReleaseTimers     map[string]clock.Timer
 	watchEnqueues         map[uint64]*delegateWatchReceipt
 	watchDeliveries       map[uint64]*delegateWatchReceipt
 	reclamations          map[uint64]*delegateRuntimeReclamationClaim
@@ -290,6 +292,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attentionWakeIDs:    make(map[string]map[string]struct{}),
+		idleReleaseTimers:   make(map[string]clock.Timer),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),

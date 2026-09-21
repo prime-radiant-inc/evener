@@ -702,9 +702,9 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 	}
 
 	// The residue settles; the re-armed retry — not this test — must do the
-	// release. One advance past the grace fires both the original timer and
-	// the re-armed retry in deadline order; either may release, and the
-	// other stands down on the already-released runtime.
+	// release. The re-arm replaced the original timer, so one advance past
+	// the grace fires the single outstanding retry, which releases the
+	// runtime.
 	runtime.pendingJobNotifsMu.Lock()
 	runtime.pendingJobNotifs = nil
 	runtime.pendingJobNotifsMu.Unlock()
@@ -718,6 +718,100 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 		tree.mu.Unlock()
 		return released
 	})
+}
+
+// TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer: every transient
+// refusal re-arms the grace window through the same funnel the finalize tail
+// armed, and the re-arm must REPLACE the outstanding timer, never stack a
+// second one — at most one grace timer per delegate is ever armed, however
+// many refusals intervene. The single surviving timer still owns the
+// release: once the residue settles, one advance releases the runtime
+// exactly once, and the success re-arms nothing.
+func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
+	workspace := t.TempDir()
+	adapter := &fakeAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
+	fake := agenttest.NewFakeClock()
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		ForceRealIO:      true,
+		clock:            fake,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+
+	timersBefore := fake.BlockedCount()
+	res := sess.createDelegate(context.Background(), delegateArgs{Task: "idle sentinel"})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	sub := sess.subagents.get(res.ChildSessionID)
+	if sub == nil {
+		t.Fatalf("delegate missing from manager: %+v", res)
+	}
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
+		t.Fatal("delegate runner did not finish")
+	}
+	// The finalize tail arms the grace timer after the done handshake, so wait
+	// for exactly one waiter above the pre-delegate baseline.
+	fake.BlockUntil(timersBefore + 1)
+	tree := sess.delegateController
+	runtime := sub.sess
+
+	// Plant the residue and refuse twice through the entrypoint the timer
+	// fires into: each refusal re-arms through the same funnel, so the two
+	// retries must collapse onto the one outstanding grace timer.
+	runtime.pendingJobNotifsMu.Lock()
+	runtime.pendingJobNotifs = append(runtime.pendingJobNotifs, jobNotification{
+		Kind:   jobNotificationKindTerminal,
+		JobID:  "job-residue-sentinel",
+		Status: "completed",
+	})
+	runtime.pendingJobNotifsMu.Unlock()
+	for range 2 {
+		if runtime.releaseIdleRuntimeAfterFinalize() {
+			t.Fatal("release succeeded with queued residue; the pre-gate must refuse")
+		}
+	}
+	if got := fake.BlockedCount() - timersBefore; got != 1 {
+		t.Fatalf("two transient refusals left %d grace timers armed, want the single re-armed one", got)
+	}
+
+	// The residue settles; the one surviving timer — not any caller — must
+	// release the runtime exactly once, and the success re-arms nothing.
+	runtime.pendingJobNotifsMu.Lock()
+	runtime.pendingJobNotifs = nil
+	runtime.pendingJobNotifsMu.Unlock()
+	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
+	// TRIPWIRE: the surviving timer already fired during the advance, so the
+	// release lands here in real time only as a goroutine handoff; 15s only
+	// bounds a genuine hang.
+	waitForCondition(t, 15*time.Second, "surviving grace timer to release the runtime after residue settled", func() bool {
+		tree.mu.Lock()
+		released := tree.live[res.DelegateID] == nil || tree.live[res.DelegateID].runtime == nil
+		tree.mu.Unlock()
+		return released
+	})
+	fake.Drain()
+	if got := fake.BlockedCount() - timersBefore; got != 0 {
+		t.Fatalf("successful release left %d grace timers armed, want none", got)
+	}
 }
 
 // TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle
