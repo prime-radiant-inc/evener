@@ -394,4 +394,76 @@ describe("transcript display adapter (package store delegation)", () => {
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("full") });
     expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   });
+
+  test("handshake features supplied during the anchor publication survive the anchor", async () => {
+    const first = new FakeClient("ready");
+    first.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    }));
+    connectionStore.getState().connect(first);
+    connectionStore.setState({
+      features: { ...(await first.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    const second = new FakeClient("ready");
+    second.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 7, config: preset("full") },
+      mobile: { revision: 7, config: shippedMobileConfig },
+    }));
+    const secondFeatures = { ...(await second.connect()).features, transcriptDisplaySettings: true };
+
+    let stopSwapping: (() => void) | undefined;
+    const stop = transcriptDisplayStore.subscribe((state) => {
+      if (state.hub.desktop !== undefined) return;
+      stopSwapping?.();
+      // The replacement's handshake completes during the anchor's own
+      // publication: the package publishes its "supported" transition, and
+      // the anchor must not overwrite it with the state it captured before
+      // its layout publications began.
+      connectionStore.setState({ features: secondFeatures });
+    });
+    stopSwapping = stop;
+
+    connectionStore.getState().connect(second);
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("supported");
+    stop();
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 7, config: preset("full") });
+  });
+
+  test("a disconnect during one layout's publication does not strand the other layout's update", async () => {
+    const client = new FakeClient("ready");
+    let getReply = {
+      desktop: { revision: 1, config: preset("tools") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    };
+    client.on("evener/settings/transcriptDisplay/get", () => getReply);
+    connectionStore.getState().connect(client);
+    connectionStore.setState({
+      features: { ...(await client.connect()).features, transcriptDisplaySettings: true },
+    });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    let stopSwapping: (() => void) | undefined;
+    const stop = transcriptDisplayStore.subscribe((state) => {
+      if (state.hub.desktop?.revision !== 2) return;
+      stopSwapping?.();
+      // The connection drops while the mirror is mid-way through the GET's
+      // two-layout publication: the same store keeps its confirmed values,
+      // so the interrupted publication must finish, not strand Mobile.
+      connectionStore.setState({ state: "connecting" });
+    });
+    stopSwapping = stop;
+
+    getReply = {
+      desktop: { revision: 2, config: preset("activity") },
+      mobile: { revision: 2, config: preset("chat") },
+    };
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("activity") });
+    expect(transcriptDisplayStore.getState().hub.mobile).toEqual({ revision: 2, config: preset("chat") });
+  });
 });

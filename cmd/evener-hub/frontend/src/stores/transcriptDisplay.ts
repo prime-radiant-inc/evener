@@ -109,6 +109,15 @@ let restoredPreviews: ConfigByLayout = {};
 // ready-generation begin/end - whichever of those a pending write outlived,
 // its restore is dead.
 let lifecycleEpoch = 0;
+// The store-replacement fence the mirror and anchor abort on. Generation
+// changes on the SAME store (ready loss, a restart) do not bump this: the
+// store's live state remains the source the mirror reconciles from, so an
+// interrupted publication resumes and finishes from live state - exactly
+// like the old web, which applied a fetched GET's both layouts without
+// re-checking its fence between them. Only a replacement or detach kills
+// the interrupted publication outright: the outgoing store's values must
+// never land in the successor's anchored state.
+let storeEpoch = 0;
 
 // The web's PATCH reply contract is stricter than the package's decoder: the
 // web-owned decoder it replaces treated a reply with any unexpected key as
@@ -164,40 +173,41 @@ function currentSupport(): "unknown" | "supported" | "unsupported" {
 // their identity across publications that do not touch them, so a reference
 // comparison identifies exactly the fields this publication changed.
 function mirrorPackageState(store: TranscriptDisplayStore, next: PackageStoreState, previous: PackageStoreState): void {
-  // Two re-entrant hazards shape this loop, and the epoch is rechecked
-  // before every publication for both. A synchronous web subscriber can
-  // replace or detach the store mid-loop (a rewire, detach, or
-  // ready-generation change bumps the epoch - whatever bumped it owns the
-  // mirror now), and a subscriber can also drive the SAME store to publish
-  // again mid-loop (an error subscriber starting a retry), which does not
-  // bump anything. The deltas below are only triggers; every published
-  // value is sourced from the store's live state, so a resuming outer call
-  // can at worst re-publish what the nested call already made current -
-  // never the stale values its own publication carried.
-  const epoch = lifecycleEpoch;
+  // Two re-entrant hazards shape this loop. A synchronous web subscriber
+  // can replace or detach the store mid-loop - the storeEpoch recheck
+  // before every publication aborts the loop then, because the outgoing
+  // store's values must never land in the successor's anchored state. A
+  // subscriber can also drive the SAME store to publish again mid-loop (an
+  // error subscriber starting a retry, a ready-loss retirement), which
+  // bumps no store fence: the deltas below are only triggers, and every
+  // published value is sourced from the store's live state at publish
+  // time, so a resuming outer call can at worst re-publish what the nested
+  // call already made current - never the stale values its own publication
+  // carried.
+  const epoch = storeEpoch;
   if (next.hub !== previous.hub) {
     for (const layout of ["desktop", "mobile"] as const) {
-      if (epoch !== lifecycleEpoch) return;
+      if (epoch !== storeEpoch) return;
       if (next.hub[layout] !== previous.hub[layout]) applyMirroredHubDefault(layout, store.getState().hub[layout]);
     }
   }
-  if (epoch !== lifecycleEpoch) return;
+  if (epoch !== storeEpoch) return;
   if (next.hubSupport !== previous.hubSupport) {
     transcriptDisplayStore.setState({ hubSupport: store.getState().hubSupport });
   }
-  if (epoch !== lifecycleEpoch) return;
+  if (epoch !== storeEpoch) return;
   if (next.hubLoading !== previous.hubLoading) {
     transcriptDisplayStore.setState({ hubLoading: store.getState().hubLoading });
   }
-  if (epoch !== lifecycleEpoch) return;
+  if (epoch !== storeEpoch) return;
   if (next.hubError !== previous.hubError) {
     transcriptDisplayStore.setState({ hubError: store.getState().hubError });
   }
-  if (epoch !== lifecycleEpoch) return;
+  if (epoch !== storeEpoch) return;
   if (next.hubErrors !== previous.hubErrors) {
     transcriptDisplayStore.setState({ hubErrors: store.getState().hubErrors });
   }
-  if (epoch !== lifecycleEpoch) return;
+  if (epoch !== storeEpoch) return;
   if (next.drafts !== previous.drafts) {
     // A newer package write on a layout owns that layout's preview again,
     // superseding any malformed-reply preview the adapter restored for it.
@@ -281,21 +291,28 @@ function disposePackageStore(): void {
 // "unknown" only survives where the connection genuinely does not know.
 function syncMirrorToStore(store: TranscriptDisplayStore): void {
   lifecycleEpoch += 1;
-  const epoch = lifecycleEpoch;
+  storeEpoch += 1;
+  const epoch = storeEpoch;
   restoredPreviews = {};
-  const next = store.getState();
   for (const layout of ["desktop", "mobile"] as const) {
-    if (epoch !== lifecycleEpoch) return;
-    applyMirroredHubDefault(layout, next.hub[layout]);
+    if (epoch !== storeEpoch) return;
+    applyMirroredHubDefault(layout, store.getState().hub[layout]);
   }
-  if (epoch !== lifecycleEpoch) return;
+  if (epoch !== storeEpoch) return;
+  // Sourced at publish time, not from a state captured before the layout
+  // publications above: a synchronous subscriber can supply the replacement
+  // client's handshake features during one of them, the package publishes
+  // its "supported" transition through the nested mirror call, and this
+  // block must not overwrite that with a captured "unknown" - the package
+  // would never publish the transition again.
+  const current = store.getState();
   const web = transcriptDisplayStore.getState();
   const changed: Partial<TranscriptDisplayStoreState> = {};
-  if (web.hubSupport !== next.hubSupport) changed.hubSupport = next.hubSupport;
-  if (web.hubLoading !== next.hubLoading) changed.hubLoading = next.hubLoading;
-  if (web.hubError !== next.hubError) changed.hubError = next.hubError;
-  if (web.hubErrors !== next.hubErrors) changed.hubErrors = next.hubErrors;
-  if (web.drafts !== next.drafts) changed.drafts = { ...next.drafts };
+  if (web.hubSupport !== current.hubSupport) changed.hubSupport = current.hubSupport;
+  if (web.hubLoading !== current.hubLoading) changed.hubLoading = current.hubLoading;
+  if (web.hubError !== current.hubError) changed.hubError = current.hubError;
+  if (web.hubErrors !== current.hubErrors) changed.hubErrors = current.hubErrors;
+  if (web.drafts !== current.drafts) changed.drafts = { ...current.drafts };
   if (Object.keys(changed).length > 0) transcriptDisplayStore.setState(changed);
 }
 
@@ -332,7 +349,8 @@ function detachPackageStore(): void {
   // only the captured outgoing handles.
   unsubscribeMirror = null;
   lifecycleEpoch += 1;
-  const epoch = lifecycleEpoch;
+  storeEpoch += 1;
+  const epoch = storeEpoch;
   restoredPreviews = {};
   unwireReady?.();
   unwireReady = null;
@@ -343,7 +361,7 @@ function detachPackageStore(): void {
   // The reset only belongs to this detach when no replacement took the
   // publication window: the replacement's anchor already owns the web
   // store in that case.
-  if (epoch === lifecycleEpoch) {
+  if (epoch === storeEpoch) {
     transcriptDisplayStore.setState({ hub: {}, drafts: {}, hubLoading: false, hubError: null, hubErrors: {} });
   }
 }
