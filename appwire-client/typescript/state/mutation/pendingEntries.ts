@@ -3,7 +3,7 @@ import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
 
-export type PendingMethod = "send" | "steer" | "queue" | "drain";
+export type PendingMethod = "send" | "steer" | "queue" | "drain" | "promote";
 // "canceled" is the durable Stop cancellation state surfaced as-is: the entry
 // stays visible (with its Retry affordance) until the user retries it or the
 // thread goes away.
@@ -33,11 +33,15 @@ export interface PendingTurnEntry {
   fromThisClient: boolean;
 }
 
+// The wire-method → PendingMethod mapping that names the entry method family:
+// promote is its own method so labels and tests stay honest (spec §3), never
+// folded into `steer`.
 function pendingMethod(method: string): PendingMethod | undefined {
   if (method === "turn/start") return "send";
   if (method === "turn/steer") return "steer";
   if (method === "turn/queue") return "queue";
   if (method === "turn/drainAsSteer") return "drain";
+  if (method === "turn/promoteQueuedAsSteer") return "promote";
   return undefined;
 }
 
@@ -79,6 +83,22 @@ export function skillMarkers(names: readonly string[]): string {
   return names.map((name) => `[skill: ${name}]`).join(" ");
 }
 
+// The one entry-body composition every in-flight surface renders - the
+// chips for sends, the held-steer ghost stack for steer/drain/promote
+// (steering-ghost spec §2): the matching text-plus-markers preview
+// PendingChips used to compose inline, extracted so the ghost is not a
+// second copy of the chip's composition. Contentless input still composes
+// to "" - the matching-key contract queueEntryPreviewText carries above.
+export function pendingEntryPreview(entry: {
+  text: string;
+  imageCount: number;
+  skillNames: readonly string[];
+}): string {
+  return [queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
+    .filter((part) => part !== "")
+    .join(" ");
+}
+
 const DEFAULT_MAX_DISPLAY_LENGTH = 140;
 
 // The client-side visual cap layered on top of the daemon's own first-line
@@ -113,7 +133,12 @@ function outboxInput(record: PendingRecord): InputItem[] | undefined {
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : undefined;
 }
 
-function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
+// The ONE home of the reflected-identity rule - which client mutation ids
+// have landed in the live model (queue rows or transcript items). Both the
+// pending reconciliation below and the held-steer announcements region
+// consume it, so a departure's outcome classification can never diverge
+// from reconcile's own settle rule.
+export function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   const ids = new Set(model?.queue?.clientMutationIds ?? []);
   for (const turn of model?.turns ?? []) {
     for (const item of turn.items) {
@@ -151,6 +176,8 @@ function authoritativeEntry(
   ref: string,
   mutation: PendingMutation,
   fromThisClient: boolean,
+  submittedHere: ReadonlyMap<string, number>,
+  durableCreatedAt: number | undefined,
 ): PendingTurnEntry | undefined {
   const method = pendingMethod(mutation.method);
   if (!method) return undefined;
@@ -159,6 +186,10 @@ function authoritativeEntry(
     ref,
     method,
     ...inputPreview(mutation.input),
+    // The wire's PendingMutation carries no timestamp. Prefer this client's
+    // page-session carrier after settle; while a matching durable record
+    // exists, its timestamp is known regardless of which client submitted it.
+    createdAt: submittedHere.get(mutation.clientMutationId) ?? durableCreatedAt,
     state: mutation.executionState === "claimed" ? "claimed" : "accepted",
     source: "authoritative",
     fromThisClient,
@@ -170,12 +201,14 @@ function authoritativeEntry(
 // not-yet-reflected input until pendingMutations, queue, or transcript state
 // replaces it.
 //
-// submittedHere is the set of client mutation ids this client itself submitted
-// (the host's pending-turns store owns it). The durable records answer that
-// for as long as they exist, and they do not outlast the hydrate that reports
-// the same id: publishing a read settles every authoritative identity out of
-// durable storage (the host's own reconcileIdentities). This set is what
-// carries provenance past that settlement.
+// submittedHere is the id -> createdAt map of the mutations this client
+// itself submitted (the host's pending-turns store owns it). The durable
+// records answer that for as long as they exist, and they do not outlast the
+// hydrate that reports the same id: publishing a read settles every
+// authoritative identity out of durable storage (the host's own
+// reconcileIdentities). This map is what carries provenance past that
+// settlement - the `fromThisClient` carrier, widened to also carry
+// `createdAt` across the settle.
 //
 // isOwnMutationRecord is the host's ClientIdentity capability
 // (createClientIdentity's own method in records.ts) - required, not
@@ -186,7 +219,7 @@ export function reconcilePendingEntries(
   ref: string,
   outbox: PendingRecord[],
   model: ThreadModel | undefined,
-  submittedHere: ReadonlySet<string>,
+  submittedHere: ReadonlyMap<string, number>,
   isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
@@ -202,14 +235,26 @@ export function reconcilePendingEntries(
     if (reflected.has(mutation.clientMutationId)) continue;
     // An entry already placed came from a durable record - which may be
     // another client's, since the outbox is shared - so the daemon's
-    // projection inherits THAT entry's provenance rather than assuming every
-    // durable record is this client's. No durable record means submittedHere
-    // is the only provenance carrier for the id.
+    // projection inherits THAT entry's provenance and timestamp rather than
+    // assuming every durable record is this client's. No durable record means
+    // submittedHere is the only provenance and timestamp carrier for the id.
     const existing = entries.get(mutation.clientMutationId);
     const fromThisClient = existing ? existing.fromThisClient : submittedHere.has(mutation.clientMutationId);
-    const entry = authoritativeEntry(ref, mutation, fromThisClient);
+    const entry = authoritativeEntry(ref, mutation, fromThisClient, submittedHere, existing?.createdAt);
     if (entry) entries.set(entry.id, entry);
   }
 
-  return [...entries.values()].sort((left, right) => (left.createdAt ?? 0) - (right.createdAt ?? 0));
+  // Known-createdAt first, ascending; entries without one after them (the
+  // daemon sorts pendingMutations lexicographically by id, so their
+  // relative order is stable within a snapshot only). The stable sort keeps
+  // array order for equal createdAt - a same-millisecond double-submit
+  // keeps submission order in-session, a corner the spec accepts. This is
+  // the ONE home of the rule: queue rows, chips, and the held-steer ghost
+  // stack all render this order.
+  return [...entries.values()].sort((left, right) => {
+    if (left.createdAt === undefined && right.createdAt === undefined) return 0;
+    if (left.createdAt === undefined) return 1;
+    if (right.createdAt === undefined) return -1;
+    return left.createdAt - right.createdAt;
+  });
 }

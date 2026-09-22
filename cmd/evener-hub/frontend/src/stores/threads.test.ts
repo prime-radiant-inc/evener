@@ -4498,7 +4498,7 @@ describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
     await ensureActiveMutationTarget(fake, "ref_a");
     fake.on("turn/promoteQueuedAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2");
+    await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2", { text: "queued message" });
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/promoteQueuedAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
@@ -10587,9 +10587,9 @@ test("a recovery-fenced local session's non-send durable admissions refuse at th
   await expect(threadsStore.getState().drainAsSteer(ref, "drain text")).rejects.toThrow(
     "Drain isn't available until this session is resumed",
   );
-  await expect(threadsStore.getState().promoteQueuedAsSteer(ref, 0, "entry_1")).rejects.toThrow(
-    "Queue actions aren't available until this session is resumed",
-  );
+  await expect(
+    threadsStore.getState().promoteQueuedAsSteer(ref, 0, "entry_1", { text: "queued text" }),
+  ).rejects.toThrow("Queue actions aren't available until this session is resumed");
   await expect(threadsStore.getState().cancelQueued(ref, 0, "entry_1")).rejects.toThrow(
     "Queue actions aren't available until this session is resumed",
   );
