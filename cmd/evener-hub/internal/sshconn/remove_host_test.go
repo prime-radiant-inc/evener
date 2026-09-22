@@ -616,7 +616,7 @@ func TestRemoveHostLeavesAHostAddedInItsWindowAlone(t *testing.T) {
 	if !ok {
 		t.Fatal("reg.Get after the add: not registered")
 	}
-	m.publishChannel("alpha", &Channel{host: added, lost: make(chan struct{}), done: make(chan struct{})})
+	m.publishChannel("alpha", &Channel{host: added, lost: make(chan struct{}), done: make(chan struct{})}, added)
 
 	hold.Unlock()
 	m.releaseHostLock("alpha")
@@ -760,7 +760,7 @@ func TestRemoveHostLeavesAReplacedIdentityRegistered(t *testing.T) {
 		t.Fatal("reg.Get after the re-add: not registered")
 	}
 	// The re-added identity's own attach, mapped under the name it was added to.
-	m.publishChannel("alpha", &Channel{host: readded, lost: make(chan struct{}), done: make(chan struct{})})
+	m.publishChannel("alpha", &Channel{host: readded, lost: make(chan struct{}), done: make(chan struct{})}, readded)
 
 	hold.Unlock()
 	m.releaseHostLock("alpha")
