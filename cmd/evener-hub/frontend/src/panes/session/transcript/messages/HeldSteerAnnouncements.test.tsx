@@ -225,6 +225,68 @@ test("delivery is announced once when the transcript reflects the id", async () 
   expect(screen.getByTestId("held-steer-announcements").textContent).toBe(before);
 });
 
+// The same-batch collision: a delivery (steer A reflected in a turn item)
+// and a new arrival (steer B) landing in ONE effect run. Departure priority
+// (review ruling): the departure is the outcome of a message the reader was
+// already told about and is the event's only audible trace - the departed id
+// never comes back, so an appeared-first short-circuit loses "delivered."
+// permanently - while the same-batch arrival still reaches the reader two
+// other ways: the visible ghost in place and the pill's heldEpoch edge.
+test("a same-batch delivery plus a new arrival announces the delivery", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  const idA = await seedHeld("steer", "alpha");
+  render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  // One batch after the mount observation. Staging note: a same-batch
+  // collision needs BOTH transitions in ONE effect run, and the two
+  // separate stores cannot deliver that - React flushes the model-only
+  // render at the await boundary before a storage-seeded arrival lands in
+  // the projection (probed: the delivery run and the arrival run come out
+  // as two). One wire snapshot can: this hydrate reflects A in a turn item
+  // AND carries B - another client's steer, the real wire path for a
+  // foreign held entry, the same pendingMutations shape HeldSteerStack's
+  // foreign-entry test drives - so ONE store publication reaches the effect
+  // with both transitions: A departed, B arrived.
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "alpha", clientMutationId: idA }],
+        },
+      ],
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        pendingMutations: [
+          {
+            clientMutationId: "mutation_b",
+            method: "turn/steer",
+            input: [{ type: "text", text: "beta" }],
+            executionState: "accepted",
+            projectionState: "pending",
+          },
+        ],
+      },
+    }),
+  );
+  await act(async () => {
+    await threadsStore.getState().refreshThread("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
+  );
+});
+
 // seedKind names the STORAGE WRITE, not a literal recovery-kind string: the
 // same real durable writes QueueStrip.test.tsx's seedRecovery / seedCanceled /
 // seedBlockedUnknown perform, driven here on the seeded steer's own id - the

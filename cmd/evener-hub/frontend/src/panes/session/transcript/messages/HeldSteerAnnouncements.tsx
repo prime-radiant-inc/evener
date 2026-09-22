@@ -62,30 +62,36 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     if (prev?.ref !== sessionRef) return;
     const announce = (text: string) => setAnnouncement((a) => ({ text, key: a.key + 1 }));
     const appeared = held.some((entry: PendingTurnEntry) => !prev.ids.has(entry.id));
-    if (appeared) {
-      announce("Steering message held.");
-      return;
-    }
     const disappeared = [...prev.ids].filter((id) => !ids.has(id));
-    if (disappeared.length === 0) return;
-    const reflected = reflectedIds(model);
-    const why = (id: string): string => {
-      if (reflected.has(id)) return "Steering message delivered.";
-      if (recovery.some((record) => record.clientMutationId === id))
-        return "Steering message was rejected. It's kept with the queue.";
-      if (canceled.some((record) => record.clientMutationId === id))
-        return "Steering message was canceled by Stop. It's kept with the queue.";
-      if (blocked.some((record) => record.clientMutationId === id))
-        return "Steering message delivery is uncertain. It's kept with the queue.";
-      // Post-settle failed delivery: nothing holds the id anywhere. No
-      // QueueStrip row exists for this departure (spec §5) - the
-      // announcement is the message's only trace; the failed turn's error
-      // surface is the explanation.
-      return "Steering message failed to deliver.";
-    };
-    // One announcement per transition batch, classified by the first
-    // departed id - a batch departure is one audible event, not a burst.
-    announce(why(disappeared[0] ?? ""));
+    // Departure priority in a same-batch collision (review ruling): a
+    // departure is the outcome of a message the reader was already told
+    // about and is the event's only audible trace - the departed id never
+    // comes back, so an appeared-first short-circuit lost the departure
+    // announcement permanently - while a same-batch arrival still reaches
+    // the reader two other ways: the visible ghost in place and the pill's
+    // heldEpoch edge.
+    if (disappeared.length > 0) {
+      const reflected = reflectedIds(model);
+      const why = (id: string): string => {
+        if (reflected.has(id)) return "Steering message delivered.";
+        if (recovery.some((record) => record.clientMutationId === id))
+          return "Steering message was rejected. It's kept with the queue.";
+        if (canceled.some((record) => record.clientMutationId === id))
+          return "Steering message was canceled by Stop. It's kept with the queue.";
+        if (blocked.some((record) => record.clientMutationId === id))
+          return "Steering message delivery is uncertain. It's kept with the queue.";
+        // Post-settle failed delivery: nothing holds the id anywhere. No
+        // QueueStrip row exists for this departure (spec §5) - the
+        // announcement is the message's only trace; the failed turn's
+        // error surface is the explanation.
+        return "Steering message failed to deliver.";
+      };
+      // One announcement per transition batch, classified by the first
+      // departed id - a batch departure is one audible event, not a burst.
+      announce(why(disappeared[0] ?? ""));
+    } else if (appeared) {
+      announce("Steering message held.");
+    }
   }, [sessionRef, held, recovery, blocked, canceled, model]);
 
   return (
