@@ -820,6 +820,65 @@ test("an interval retries a ready transport failure with the same mutation id", 
 	expect(cleared).toEqual([1, 2]);
 });
 
+test("stop cancels queued never-attempted work and the interrupt still dispatches", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("connecting");
+	client.on("turn/interrupt", appliedReceipt);
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	await runtime.submit(request("send"));
+	await runtime.submit(request("queue"));
+	await runtime.submit(request("interrupt"));
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "canceled" });
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({ state: "canceled" });
+	expect(client.calls).toHaveLength(0);
+
+	client.emitStateChange("ready");
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	expect(client.calls[0]?.params).toMatchObject({
+		ref: "ref-1",
+		clientMutationId: "mutation-3",
+	});
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "canceled" });
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-3")).toBeUndefined();
+	});
+	await runtime.stop();
+});
+
+test("a stop landing between a submission's capture and its commit cancels the row", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	const client = new FakeClient("connecting");
+	client.on("turn/interrupt", appliedReceipt);
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+
+	// The send captures its click-time stop epoch first; the Stop's combined
+	// write commits while the send is still between that capture and its
+	// durable commit, so the send must commit born-canceled.
+	const submission = runtime.submit(request("send"));
+	await runtime.submit(request("interrupt"));
+	await submission;
+	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({ state: "canceled" });
+	expect(client.calls).toHaveLength(0);
+
+	client.emitStateChange("ready");
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	expect(client.calls[0]?.params).toMatchObject({ clientMutationId: "mutation-1" });
+	await runtime.stop();
+});
+
 test("the storage's cross-store id rejection never fences the runtime's same-id retry", async () => {
 	// The id source is adversarial on purpose: #2043's guard exists for a
 	// generator that repeats an id, and every enqueue below asks for

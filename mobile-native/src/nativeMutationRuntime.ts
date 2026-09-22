@@ -14,6 +14,7 @@ import {
 	type MutationIntent,
 	type MutationOutboxRecord,
 	type MutationOutboxOptions,
+	type MutationStopBarrier,
 	type MutationOutboxStorage,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
@@ -37,6 +38,7 @@ export interface NativeMutationRuntimeOptions {
 
 type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
+	readStopEpoch(targetRef: string): Promise<number>;
 };
 
 export interface NativeMutationReadLease {
@@ -271,8 +273,26 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 	}
 
 	async submit(request: NativeMutationRequest): Promise<MutationReceipt | undefined> {
+		const intent = intentFor(request);
+		if (request.kind === "interrupt") {
+			// Stop's click is the cancel moment: the combined durable write
+			// cancels the target's never-attempted rows and enqueues the
+			// interrupt in one savepoint, bumping the ref's stop epoch with
+			// them. The interrupt itself passes no barrier - it IS the click
+			// the epoch records.
+			await this.start();
+			await this.#outbox.enqueueInterruptAndCancel(intent);
+			return undefined;
+		}
+		// The click-time half of the stop barrier, captured before the
+		// startup await like the web runtime's enqueue funnel: a Stop whose
+		// cancel transaction commits while this submission is in flight makes
+		// the row commit born-canceled, never dispatched.
+		const barrier: MutationStopBarrier = {
+			stopEpoch: await this.storage.readStopEpoch(intent.targetRef),
+		};
 		await this.start();
-		await this.#outbox.enqueueIntent(intentFor(request));
+		await this.#outbox.enqueueIntent(intent, undefined, barrier);
 		return undefined;
 	}
 }
