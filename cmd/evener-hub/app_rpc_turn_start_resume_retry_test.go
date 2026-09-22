@@ -243,3 +243,208 @@ func TestHubRPCTurnStartRetryCorrelation(t *testing.T) {
 		})
 	}
 }
+
+// TestCorrelateRetryFailureEnrichesUnnamedTargetDeletion pins that a target
+// deletion which names no mutation is enriched with the caller's
+// clientMutationId, while one that already names it is returned unchanged.
+//
+// A preflight thread/read deletion relayed from a remote hub names no
+// clientMutationId; the web outbox correlates by that id alone, so without the
+// stamp the dispatcher cannot classify the failure at all and leaves the record
+// submitting. Enriching keeps the deletion's own outcome
+// (MutationOutcomeTargetDeleted) so it settles as orphaned instead of being
+// reported as a generic outage.
+func TestCorrelateRetryFailureEnrichesUnnamedTargetDeletion(t *testing.T) {
+	const mutationID = "mutation-deleted-enrich"
+
+	sessionID := webTestSessionID
+	ref := localAppRef(sessionID)
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{DeletionStore: store}
+
+	unnamed := deletionFenceError(cfg, ref, sessionID, "")
+	if errorNamesClientMutation(unnamed, mutationID) {
+		t.Fatalf("precondition: the deletion under test must name no mutation: %v", unnamed)
+	}
+	enriched := correlateRetryFailure(mutationID, unnamed)
+	if enriched == nil {
+		t.Fatal("an unnamed target deletion must be enriched, not passed through unchanged")
+	}
+	var wire appwire.WireError
+	if !errors.As(enriched, &wire) {
+		t.Fatalf("enriched error %T=%v, want a WireError", enriched, enriched)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+	}
+	if data.ClientMutationID != mutationID {
+		t.Fatalf("enriched deletion names clientMutationId %q, want %q: the dispatcher cannot settle the record without it (wire=%+v)",
+			data.ClientMutationID, mutationID, wire)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeTargetDeleted || data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("enriching must keep the deletion's own outcome: outcome=%q retryDisposition=%q (wire=%+v)",
+			data.MutationOutcome, data.RetryDisposition, wire)
+	}
+
+	named := deletionFenceError(cfg, ref, sessionID, mutationID)
+	if got := correlateRetryFailure(mutationID, named); got != nil {
+		t.Fatalf("an already-correlated target deletion must be returned unchanged, got %v", got)
+	}
+}
+
+// TestHubRPCTurnStartRetryKeepsPreDispatchRefusalOutcome pins that a
+// pre-dispatch refusal of the post-resume retry keeps its own outcome rather
+// than being blanket-rewritten as not-accepted.
+//
+// turn/start's retry runs because the request's own resume made it possible, so
+// a retry that never reached a source is normally reported as not-accepted. But
+// two refusals are raised before dispatch yet already carry this caller's
+// clientMutationId and a meaning of their own, because the first attempt in the
+// same handler deliberately preserves them: a target deletion (the target is
+// gone, MutationOutcomeTargetDeleted) and a recovery-admission /
+// daemon-restart-required refusal (MutationOutcomeUnknown with
+// RetryDispositionBlocked). Rewriting either as not-accepted tells the caller a
+// lie it can act on: the deletion is attributed to a dispatch that never
+// happened, and the blocked outcome is downgraded to a plain rejection.
+func TestHubRPCTurnStartRetryKeepsPreDispatchRefusalOutcome(t *testing.T) {
+	const mutationID = "mutation-retry-pre-dispatch"
+
+	cases := []struct {
+		name     string
+		refusal  func(t *testing.T, ref, sessionID string) error
+		outcome  appwire.MutationOutcome
+		retry    appwire.RetryDisposition
+		infoCode appwire.ErrorInfo
+	}{
+		{
+			name: "deletion fence keeps targetDeleted",
+			refusal: func(t *testing.T, ref, sessionID string) error {
+				t.Helper()
+				store, err := hubcore.NewDeletionStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+					Ref:      ref,
+					ThreadID: sessionID,
+				}}); err != nil {
+					t.Fatal(err)
+				}
+				return deletionFenceError(hubcore.WebConfig{DeletionStore: store}, ref, sessionID, mutationID)
+			},
+			outcome:  appwire.MutationOutcomeTargetDeleted,
+			retry:    appwire.RetryDispositionNone,
+			infoCode: appwire.ErrorActionUnavailable,
+		},
+		{
+			name: "recovery admission keeps blocked-unknown",
+			refusal: func(t *testing.T, _, _ string) error {
+				t.Helper()
+				restartRequired := appwire.WireError{
+					Code:    appwire.CodeConflict,
+					Message: "Session restart required: daemon uses an incompatible protocol",
+					Data:    appwire.ErrorData{EvenerErrorInfo: appwire.ErrorConflict, Cause: "daemonRestartRequired"},
+				}
+				return blockedAdmissionMutationError(restartRequired, mutationID)
+			},
+			outcome:  appwire.MutationOutcomeUnknown,
+			retry:    appwire.RetryDispositionBlocked,
+			infoCode: appwire.ErrorConflict,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+			t.Cleanup(func() {
+				resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+			})
+
+			// The ref must be one the hub knows, or the handler returns the first
+			// failure unchanged and never resumes at all.
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + sessionID
+			retryRefusal := tc.refusal(t, ref, sessionID)
+
+			resolveCalls := 0
+			source := &scriptedAppSource{
+				id: "local",
+				thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+					},
+				},
+				startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					// The first send finds the exited session and triggers the resume.
+					return appwire.TurnStartResponse{}, appwire.SessionUnavailable("session has exited")
+				},
+			}
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+				resolveCalls++
+				if resolveCalls == 1 {
+					return source, nil
+				}
+				// The retry's source resolution refuses before anything reached a
+				// source, but the refusal already names this caller's mutation.
+				return nil, retryRefusal
+			}
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				// The resume SUCCEEDS: the session is live again when this returns.
+				return appwire.ThreadResumeResponse{Thread: source.thread}, nil
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				Ref:              ref,
+				ClientMutationID: mutationID,
+				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+			})
+			if err == nil {
+				t.Fatal("turn/start reported success although the retry was refused")
+			}
+			if resolveCalls != 2 {
+				t.Fatalf("source resolution calls=%d, want 2 (the original and the post-resume retry)", resolveCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+			}
+			if data.ClientMutationID != mutationID {
+				t.Fatalf("refusal names clientMutationId %q, want %q (wire=%+v)", data.ClientMutationID, mutationID, wire)
+			}
+			if data.MutationOutcome != tc.outcome || data.RetryDisposition != tc.retry || data.EvenerErrorInfo != tc.infoCode {
+				t.Fatalf("pre-dispatch refusal of the retry must keep its own outcome: outcome=%q retryDisposition=%q info=%q, want outcome=%q retryDisposition=%q info=%q (wire=%+v)",
+					data.MutationOutcome, data.RetryDisposition, data.EvenerErrorInfo, tc.outcome, tc.retry, tc.infoCode, wire)
+			}
+			if data.MutationOutcome == appwire.MutationOutcomeNotAccepted {
+				t.Fatalf("an already-correlated pre-dispatch refusal must not be rewritten as not-accepted: data=%#v", data)
+			}
+		})
+	}
+}

@@ -2,11 +2,52 @@ package hub
 
 import (
 	"context"
+	"errors"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
+
+// preDispatchRefusal marks a session-mutation failure that happened before
+// anything reached a source: the caller's shape could not even resolve the
+// owning source for the ref, so nothing was dispatched.
+//
+// It exists so withSessionResume can tell the two kinds of retry failure apart.
+// A retry that reached a source and failed gives the caller no way to know
+// whether a mutation it cannot correlate was accepted, so it stays
+// blocked-unknown (see correlateRetryFailure). A retry that failed to resolve a
+// source proves nothing was dispatched, exactly like turn/start's pre-dispatch
+// retry failure, so its outcome is known -- not accepted -- and it must report
+// the same MutationNotAccepted rather than blocked-unknown.
+//
+// Wrapped at the resolution source (the caller shapes'
+// sourceForThread calls) so the signal is exact: an arbitrary pre-dispatch
+// probe failure is not the same proof as a resolution failure, and this type is
+// deliberately not set on those. Unwrap keeps every downstream errors.As/Is
+// probe (session-unavailable detection, wire serialization) seeing the original
+// error.
+type preDispatchRefusal struct{ err error }
+
+func (e preDispatchRefusal) Error() string { return e.err.Error() }
+func (e preDispatchRefusal) Unwrap() error { return e.err }
+
+// isPreDispatchRefusal reports whether err is (or wraps) the pre-dispatch
+// source-resolution signal.
+func isPreDispatchRefusal(err error) bool {
+	_, ok := errors.AsType[preDispatchRefusal](err)
+	return ok
+}
+
+// unwrapPreDispatchRefusal returns the refusal's original failure so callers
+// outside withSessionResume's retry rule see exactly the error they saw before
+// the signal existed. A non-signal error is returned unchanged.
+func unwrapPreDispatchRefusal(err error) error {
+	if refusal, ok := errors.AsType[preDispatchRefusal](err); ok {
+		return refusal.err
+	}
+	return err
+}
 
 // withSessionResume runs a session-level mutation and, if it fails because the
 // backing daemon has exited, resumes the session once and retries. This is the
@@ -36,6 +77,9 @@ func withSessionResume[R any](
 	if err == nil {
 		return resp, nil
 	}
+	// Outside the retry rule the pre-dispatch signal carries no meaning: the
+	// first attempt's failure is returned exactly as it was raised.
+	err = unwrapPreDispatchRefusal(err)
 	if !shouldResumeAfterSessionUnavailable(err) {
 		return resp, err
 	}
@@ -57,13 +101,21 @@ func withSessionResume[R any](
 	// id to correlate against.
 	resp, retryErr := attempt()
 	if retryErr == nil || clientMutationID == "" {
-		return resp, retryErr
+		return resp, unwrapPreDispatchRefusal(retryErr)
 	}
 	if wrapped := correlateRetryFailure(clientMutationID, retryErr); wrapped != nil {
 		var zero R
+		// A pre-dispatch resolution failure proves nothing was dispatched, so
+		// the mutation's outcome is known -- not accepted -- rather than
+		// unknown, matching turn/start's identical "nothing was dispatched"
+		// rule. A target deletion keeps its own meaning even here, as it does
+		// in that rule.
+		if isPreDispatchRefusal(retryErr) && !isTargetDeletedError(retryErr) {
+			return zero, appwire.MutationNotAccepted(clientMutationID, retryErr.Error())
+		}
 		return zero, wrapped
 	}
-	return resp, retryErr
+	return resp, unwrapPreDispatchRefusal(retryErr)
 }
 
 // shutdownThreadTolerateExited runs thread/shutdown and treats an
@@ -193,7 +245,9 @@ func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 	return withSessionResume(ctx, cfg, sources, params.Ref, "", func() (appwire.GoalSetResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
-			return appwire.GoalSetResponse{}, err
+			// Resolution failed before anything reached a source, so a resume
+			// retry that fails the same way proves nothing was dispatched.
+			return appwire.GoalSetResponse{}, preDispatchRefusal{err}
 		}
 		// Gate like every sibling thread action so goal/set is rejected uniformly
 		// on sources without the engine rather than only self-guarding inside the
@@ -233,7 +287,9 @@ func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources 
 		source, err := sourceForThread(sources, ref, "")
 		if err != nil {
 			var zero R
-			return zero, err
+			// Resolution failed before anything reached a source, so a resume
+			// retry that fails the same way proves nothing was dispatched.
+			return zero, preDispatchRefusal{err}
 		}
 		if err := ensureThreadActionAvailable(ctx, source, ref, "", action); err != nil {
 			var zero R

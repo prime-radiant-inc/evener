@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"sort"
@@ -432,11 +433,18 @@ func isShapeRefusal(err error) bool {
 // caller's own cancellation (context.Canceled / context.DeadlineExceeded, which
 // is not a mutation outcome at all), a refusal that already names this caller's
 // mutation, a deletion of the target, and a true shape refusal (see
-// isShapeRefusal). Everything else is a failure no client's mutation dispatcher
-// can classify -- one that names no clientMutationId (the web outbox correlates
-// by that id alone) -- and is wrapped in the blocked-unknown envelope so the
-// mutation is retained for a retry rather than left submitting forever (see
-// blockedUnknownMutationError).
+// isShapeRefusal). The one exemption whose meaning is kept but whose id is
+// added is a target deletion that names no mutation (below). Everything else is
+// a failure no client's mutation dispatcher can classify -- one that names no
+// clientMutationId (the web outbox correlates by that id alone) -- and is
+// wrapped in the blocked-unknown envelope so the mutation is retained for a
+// retry rather than left submitting forever (see blockedUnknownMutationError).
+//
+// The one exemption that is enriched rather than returned unchanged is a target
+// deletion that names no mutation: it is handed back with this caller's
+// clientMutationId stamped on it (keeping MutationOutcomeTargetDeleted) so the
+// dispatcher can settle it as orphaned rather than be left unable to classify
+// it. See nameTargetDeletedFailure.
 //
 // A nil return means err keeps its own meaning; callers return err unchanged.
 // Shared by turn/start's retryAfterResume and withSessionResume's post-resume
@@ -449,10 +457,52 @@ func correlateRetryFailure(clientMutationID string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil
 	}
-	if errorNamesClientMutation(err, clientMutationID) || isTargetDeletedError(err) || isShapeRefusal(err) {
+	if isTargetDeletedError(err) {
+		// A target deletion is the caller's to settle only when it names the
+		// caller's mutation. A deletion that names none -- e.g. a preflight
+		// thread/read deletion relayed from a remote hub -- leaves the
+		// dispatcher unable to correlate the record at all, so it is stamped
+		// with this caller's id rather than hidden behind a generic outage.
+		return nameTargetDeletedFailure(clientMutationID, err)
+	}
+	if errorNamesClientMutation(err, clientMutationID) || isShapeRefusal(err) {
 		return nil
 	}
 	return blockedUnknownMutationError(clientMutationID, err)
+}
+
+// nameTargetDeletedFailure enriches a target-deletion refusal with the caller's
+// mutation id when it does not already name it, keeping the deletion's own
+// outcome (MutationOutcomeTargetDeleted / RetryDispositionNone).
+//
+// A nil return means the refusal already names this caller's mutation (or
+// carries no WireError to enrich), so the caller returns it unchanged. A
+// non-nil return is the refusal with clientMutationId set, which the caller
+// returns in its place.
+func nameTargetDeletedFailure(clientMutationID string, err error) error {
+	if strings.TrimSpace(clientMutationID) == "" || errorNamesClientMutation(err, clientMutationID) {
+		return nil
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		return nil
+	}
+	// The wire client decodes Data as the typed appwire.ErrorData on some paths
+	// and as map[string]any on others; both are stamped the same way
+	// blockedAdmissionMutationError stamps its own, without disturbing the
+	// deletion outcome the refusal already carries.
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = clientMutationID
+		wire.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		wire.Data = updated
+	default:
+		return nil
+	}
+	return wire
 }
 
 // allowsPastFallbackAfterLiveReadFailure preserves atomic rejoin once a live
@@ -1105,13 +1155,15 @@ func registerThreadHandlers(
 		// (see blockedUnknownMutationError), so the prompt is retained for a
 		// retry rather than left submitting forever.
 		//
-		// Two failures prove nothing was dispatched, so their outcome is known
-		// rather than unknown: the caller's cancellation is not a mutation outcome
-		// at all, and a retry whose source resolution failed never reached a
-		// source. Both keep their own meaning; every other failure is left to
-		// correlateRetryFailure, which holds the "already correlates" exemptions
-		// (a refusal naming this caller's mutation, a target deletion, a true
-		// shape refusal) and otherwise wraps.
+		// correlateRetryFailure's exemptions are consulted first, so a refusal
+		// that already carries its own meaning is never rewritten: a refusal
+		// naming this caller's mutation (recovery admission, daemon-restart-
+		// required, a shape refusal) and a target deletion keep their own
+		// outcome. Only a genuinely uncorrelated failure is left, and a
+		// pre-dispatch one proves nothing was dispatched, so its outcome is
+		// known -- not accepted -- rather than unknown. The caller's
+		// cancellation is handled before either, since it is not a mutation
+		// outcome at all.
 		retryAfterResume := func() (appwire.TurnStartResponse, error) {
 			resolved = false
 			resp, err := attemptStart()
@@ -1121,13 +1173,17 @@ func registerThreadHandlers(
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return resp, err
 			}
-			if !resolved {
-				// Source resolution failed before the retry reached a source, so
-				// nothing was dispatched and the mutation's outcome is known --
-				// not accepted -- rather than unknown.
-				return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, err.Error())
-			}
 			if wrapped := correlateRetryFailure(params.ClientMutationID, err); wrapped != nil {
+				// A target deletion keeps its own outcome even pre-dispatch: a
+				// deleted target never accepts the mutation, but the caller must
+				// still be told the target is gone rather than re-offered it as
+				// not-accepted. correlateRetryFailure hands it back enriched.
+				if !resolved && !isTargetDeletedError(err) {
+					// Source resolution failed before the retry reached a source,
+					// so nothing was dispatched and the mutation's outcome is
+					// known -- not accepted -- rather than unknown.
+					return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, err.Error())
+				}
 				return appwire.TurnStartResponse{}, wrapped
 			}
 			return resp, err

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -565,5 +566,103 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 	}
 	if got := resumeCalls.Load(); got != 1 {
 		t.Fatalf("resume calls=%d, want 1 (concurrent resumes must serialize behind the per-session lock)", got)
+	}
+}
+
+// TestSessionResumeRetryCorrelation pins what withSessionResume reports when
+// the retry its own resume made possible fails. Every session mutation that
+// shares withSessionResume (notes/human/set, urls/remove, clear, goal/set)
+// must correlate that failure the same way turn/start's retry does.
+//
+// An uncorrelated failure names no clientMutationId, so the caller's mutation
+// dispatcher cannot classify it; it is wrapped as a blocked unknown outcome so
+// the input is retained. A pre-dispatch resolution failure proves nothing was
+// dispatched at all -- the retry could not even resolve the owning source -- so
+// its outcome is known, not-accepted, exactly matching turn/start's identical
+// pre-dispatch rule. Both carry the caller's clientMutationId so the browser's
+// outbox, the TUI's draft restore and every other surface can settle the record
+// instead of leaving it submitting forever.
+//
+// The once closure is withSessionResume's own seam: it stands in for the
+// relayWithResume / setGoalWithResume / clearThreadWithResume shapes that wrap
+// their sourceForThread failure in preDispatchRefusal.
+func TestSessionResumeRetryCorrelation(t *testing.T) {
+	const mutationID = "mutation-session-resume-retry"
+
+	cases := []struct {
+		name            string
+		retryErr        error
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+	}{
+		{
+			name:            "uncorrelated retry failure is blocked-unknown",
+			retryErr:        appwire.InternalError("resumed session refused the retry without naming the mutation"),
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+		},
+		{
+			name:            "pre-dispatch resolution failure is not-accepted",
+			retryErr:        preDispatchRefusal{errors.New("source registry unavailable")},
+			wantOutcome:     appwire.MutationOutcomeNotAccepted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sessionID string
+			cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+				appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+					return appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID:        sessionID,
+						SessionID: sessionID,
+						Source:    "local",
+						Evener:    appwire.EvenerThread{Ref: params.Ref},
+					}}, nil
+				})
+			})
+			sessionID = sid
+			// The hub's own source registry is what withSessionResume's resume
+			// reads the freshly-resumed thread back through.
+			server, web := newHubRPCTestServerWithWeb(t, cfg)
+			defer server.Close()
+			ref := "local:" + sessionID
+
+			attempts := 0
+			_, err := withSessionResume(context.Background(), cfg, web.sources, ref, mutationID, func() (appwire.EmptyResponse, error) {
+				attempts++
+				if attempts == 1 {
+					return appwire.EmptyResponse{}, appwire.SessionUnavailable("session has exited")
+				}
+				return appwire.EmptyResponse{}, tc.retryErr
+			})
+			if err == nil {
+				t.Fatal("withSessionResume reported success although the retry failed")
+			}
+			if attempts != 2 {
+				t.Fatalf("attempts=%d, want 2 (the original and the post-resume retry)", attempts)
+			}
+			if *resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("withSessionResume error %T=%v, want a WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+			}
+			if data.ClientMutationID != mutationID {
+				t.Fatalf("the retry failure names clientMutationId %q, want %q: the caller cannot correlate it (wire=%+v)",
+					data.ClientMutationID, mutationID, wire)
+			}
+			if data.MutationOutcome != tc.wantOutcome || data.RetryDisposition != tc.wantDisposition {
+				t.Fatalf("mutationOutcome=%q retryDisposition=%q, want %q/%q (wire=%+v)",
+					data.MutationOutcome, data.RetryDisposition, tc.wantOutcome, tc.wantDisposition, wire)
+			}
+		})
 	}
 }
