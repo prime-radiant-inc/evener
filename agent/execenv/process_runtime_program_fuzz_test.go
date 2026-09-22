@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzProcessRuntimeProgram exercises the public command, grep-ripgrep, stream,
@@ -273,6 +275,17 @@ func (c *processRuntimeCommand) appendTrace(root string, scratch map[string]stri
 func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace {
 	t.Helper()
 	root := t.TempDir()
+	// Container provisioning must not depend on the machine's /tmp (AGENTS.md's
+	// determinism rule), so this fixture points it at a base inside the fixture and
+	// made world-usable, exactly as the production bases are.
+	worldBase := filepath.Join(root, "world-temp")
+	if err := os.Mkdir(worldBase, 0o700); err != nil {
+		t.Fatalf("make fixture world temp base: %v", err)
+	}
+	if err := os.Chmod(worldBase, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("open fixture world temp base: %v", err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{worldBase}))
 	sub := filepath.Join(root, "sub")
 	venvBin := filepath.Join(sub, ".venv", "bin")
 	if err := os.MkdirAll(venvBin, 0o755); err != nil {
@@ -539,27 +552,62 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	processRuntimeCheckSystemAdapter(t)
 	factory.assertConsumed()
 	// Every spawn exports the lazily provisioned per-session scratch dir as
-	// EVENER_SCRATCH_DIR and TMPDIR under every env policy (commit bf79673f5,
+	// EVENER_SCRATCH_DIR under every env policy (commit bf79673f5,
 	// "feat(execenv): preserve developer PATH and always export session scratch
 	// vars"). SessionScratchDir reports it without provisioning; the spawns
 	// above already provisioned it. A WithWorkingDirectory clone does not
 	// inherit the parent's scratch: it provisions its own on first use.
+	//
+	// TMPDIR no longer names that scratch on THIS fixture. The env above carries
+	// no policy at all (Sandbox == nil), so its file tools are UNCONFINED and each
+	// env mints a world-usable session temp container in a host temp whose leaf is
+	// the exported TMPDIR (#495): a descendant that becomes another uid cannot
+	// write the private 0700 scratch, and that is the bug the split fixes. The
+	// write-blocked (file-tool-confined) shape, which keeps TMPDIR == scratch, is
+	// covered by agent/execenv/sandbox_lifecycle_test.go and the sandbox prompt
+	// tests.
 	scratch := env.SessionScratchDir()
 	childScratch := child.SessionScratchDir()
 	if scratch == "" || childScratch == "" || childScratch == scratch {
 		t.Fatalf("session scratch dirs = %q / child %q, want distinct nonempty", scratch, childScratch)
 	}
+	parentTmp := processRuntimeEnvMap(factory.command("argv-none").config.Env)["TMPDIR"]
+	childTmp := processRuntimeEnvMap(factory.command("child-argv").config.Env)["TMPDIR"]
+	for _, got := range []struct{ name, tmpDir, scratch string }{
+		{"env", parentTmp, scratch},
+		{"child", childTmp, childScratch},
+	} {
+		if got.tmpDir == "" || got.tmpDir == got.scratch {
+			t.Fatalf("%s TMPDIR = %q, want a world-usable temp container distinct from the private scratch %q",
+				got.name, got.tmpDir, got.scratch)
+		}
+		if filepath.Base(got.tmpDir) != "tmp" ||
+			!strings.HasPrefix(filepath.Base(filepath.Dir(got.tmpDir)), "evener-sandbox-") {
+			t.Fatalf("%s TMPDIR = %q, want <host-temp>/evener-sandbox-*/tmp", got.name, got.tmpDir)
+		}
+		info, err := os.Stat(got.tmpDir)
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o777 || info.Mode()&os.ModeSticky == 0 {
+			t.Fatalf("%s TMPDIR %q must be an existing 1777 sticky directory: %v (%v)", got.name, got.tmpDir, info, err)
+		}
+	}
 	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
 		processRuntimeAssertEnv(t, factory.command(name).config.Env, map[string]string{
 			"EVENER_SCRATCH_DIR": scratch,
-			"TMPDIR":             scratch,
+			"TMPDIR":             parentTmp,
 		}, nil)
 	}
 	processRuntimeAssertEnv(t, factory.command("child-argv").config.Env, map[string]string{
 		"EVENER_SCRATCH_DIR": childScratch,
-		"TMPDIR":             childScratch,
+		"TMPDIR":             childTmp,
 	}, nil)
-	scratchPlaceholders := map[string]string{scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH"}
+	// The container leaf is as random per environment as the scratch dir, so it
+	// has to be normalized too or the determinism oracle would see a fresh path on
+	// every replay. The container itself appears in no env value, so mapping the
+	// leaf is enough.
+	scratchPlaceholders := map[string]string{
+		scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH",
+		parentTmp: "$TMPDIR", childTmp: "$CHILD_TMPDIR",
+	}
 	for _, command := range factory.byName {
 		command.appendTrace(root, scratchPlaceholders)
 	}

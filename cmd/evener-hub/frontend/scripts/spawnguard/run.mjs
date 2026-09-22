@@ -30,6 +30,16 @@ const TILE_PX = 80;
 // blocks apply (2026-07-30-mobile-session-layout-design.md, decision 4).
 const TAP_MIN_PX = 44;
 
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server module burst mid-boot while the page still
+// fires its load event. spawnguard.html boots through one entry module,
+// src/dev/spawnguard-entry.tsx, which assigns window.settledSpawn at module
+// scope - a page whose load event fired without that global never booted.
+const BOOT = {
+  bootExpression: "typeof window.settledSpawn !== 'undefined'",
+  bootLabel: "the spawnguard entry global window.settledSpawn",
+};
+
 // Sub-pixel layout rounding, not a fudge factor - the same 1px slack every
 // other geometric comparison in this file already allows.
 function contains(parent, child) {
@@ -53,18 +63,19 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     await applyViewport(send, { width, height: 900 });
     // Focus handlers require a focused document even in a background headless tab.
     await send("Emulation.setFocusEmulationEnabled", { enabled: true });
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`, BOOT);
     await evaluate(send, "window.settledSpawn");
     const fieldFailures = await evaluate(send, "window.exerciseDirectoryField()");
     if (fieldFailures.length) throw new Error(`Shared directory field at ${width}px: ${fieldFailures.join("; ")}`);
     const directoryFailures = await evaluate(send, "window.exerciseDirectoryPicker()");
     if (directoryFailures.length) throw new Error(`Directory picker at ${width}px: ${directoryFailures.join("; ")}`);
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`, BOOT);
     await evaluate(send, "window.settledSpawn");
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html?onboarding=1`);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html?onboarding=1`, BOOT);
     const onboardingFailures = await evaluate(send, "window.exerciseProviderOnboarding()");
-    if (onboardingFailures.length) throw new Error(`Provider onboarding component guard at ${width}px: ${onboardingFailures.join("; ")}`);
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    if (onboardingFailures.length)
+      throw new Error(`Provider onboarding component guard at ${width}px: ${onboardingFailures.join("; ")}`);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`, BOOT);
     await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
     // width, and the staged-attachment row exists only once something is in
@@ -304,7 +315,8 @@ function assertResult(result, expectedWidth) {
     if (result.plugins.sheet.width > expectedWidth + 1 || result.plugins.sheet.left < -1) {
       failures.push(`plugin sheet escapes the viewport: ${JSON.stringify(result.plugins.sheet)}`);
     }
-    if (result.plugins.sheet.height < 120) failures.push(`plugin sheet is too short to be usable: ${JSON.stringify(result.plugins.sheet)}`);
+    if (result.plugins.sheet.height < 120)
+      failures.push(`plugin sheet is too short to be usable: ${JSON.stringify(result.plugins.sheet)}`);
   }
   // The panel owns no filter and no scroll container: rows render the source
   // subheading, counts and description under each name, and the list grows to
@@ -322,7 +334,9 @@ function assertResult(result, expectedWidth) {
   } else if (mobile) {
     for (const [index, control] of result.plugins.switches.entries()) {
       if (control.width < TAP_MIN_PX - 0.5 || control.height < TAP_MIN_PX - 0.5) {
-        failures.push(`plugin switch ${index} is ${control.width}x${control.height}, below the ${TAP_MIN_PX}px touch floor`);
+        failures.push(
+          `plugin switch ${index} is ${control.width}x${control.height}, below the ${TAP_MIN_PX}px touch floor`,
+        );
       }
     }
   } else {
@@ -333,7 +347,9 @@ function assertResult(result, expectedWidth) {
     }
   }
   if (pluginSurface !== null && result.plugins.start !== null && pluginSurface.top < result.plugins.start.bottom - 1) {
-    failures.push(`plugin surface overlaps the prompt Start action: ${JSON.stringify({ pluginSurface, start: result.plugins.start })}`);
+    failures.push(
+      `plugin surface overlaps the prompt Start action: ${JSON.stringify({ pluginSurface, start: result.plugins.start })}`,
+    );
   }
   return failures;
 }

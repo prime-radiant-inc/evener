@@ -19,6 +19,7 @@ import {
   threadsStore,
 } from "../../../../stores/threads";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
+import { ackAskUserCall, askArgs, askPendingStatusChanged, ONE_QUESTION } from "./askDockTestUtils";
 
 // --- fixtures (mirrors stores/threads.test.ts's own harness) -------------
 
@@ -66,12 +67,6 @@ function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
   return fake;
 }
 
-function askArgs(questions: Array<Record<string, unknown>>): string {
-  return JSON.stringify({ questions });
-}
-
-const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
-
 const TWO_QUESTIONS = [
   { header: "First", question: "q1", options: [{ label: "a", detail: "b" }] },
   { header: "Second", question: "q2", options: [{ label: "c", detail: "d" }] },
@@ -104,33 +99,6 @@ function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   });
 }
 
-function askItemNotification(
-  ref: string,
-  turnId: string,
-  itemId: string,
-  callId: string,
-  method: "item/started" | "item/completed",
-  status: string,
-): AnyNotification {
-  return {
-    method,
-    params: {
-      threadId: `thr_${ref}`,
-      ref,
-      turnId,
-      item: {
-        type: "commandExecution",
-        id: itemId,
-        turnId,
-        toolName: "ask_user",
-        callId,
-        status,
-        argumentsJson: askArgs(ONE_QUESTION),
-      },
-    },
-  };
-}
-
 function userMessageNotification(ref: string, turnId: string, itemId: string, text: string): AnyNotification {
   return {
     method: "item/completed",
@@ -143,28 +111,9 @@ function userMessageNotification(ref: string, turnId: string, itemId: string, te
   };
 }
 
-// The hub stamps askPending onto the thread/status/changed frame that goes
-// with the turn ending on an ask_user call (server/appwire_runtime.go's
-// stampAskPendingOnStatusChange) - the wire is the only source for the flag
-// (deriveAskQuestions.ts), so a fixture that never sends this frame can
-// never show a pending batch.
-function askPendingStatusChanged(ref: string): AnyNotification {
-  return {
-    method: "thread/status/changed",
-    params: { threadId: `thr_${ref}`, ref, status: { type: "awaiting" }, askPending: true },
-  };
-}
-
-// ackAskUserCall assumes `turnId` has already been started (startTurn).
-function ackAskUserCall(fake: FakeClient, ref: string, turnId: string, itemId: string, callId: string): void {
-  fake.emitNotification(askItemNotification(ref, turnId, itemId, callId, "item/started", "inProgress"));
-  fake.emitNotification(askItemNotification(ref, turnId, itemId, callId, "item/completed", "completed"));
-  fake.emitNotification(askPendingStatusChanged(ref));
-}
-
-// ackAskUserCallWith is ackAskUserCall with a parameterized question set
-// (the ONE_QUESTION-fixture helper above's own shape, generalized for the
-// multi-question batches the kata-99yf active-tab tests need).
+// ackAskUserCallWith is askDockTestUtils's ackAskUserCall with a
+// parameterized question set, generalized for the multi-question batches the
+// kata-99yf active-tab tests need.
 function ackAskUserCallWith(
   fake: FakeClient,
   ref: string,

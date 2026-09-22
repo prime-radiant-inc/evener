@@ -3,6 +3,9 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSystemNotification(t *testing.T) {
@@ -20,6 +23,23 @@ func TestSystemNotificationf(t *testing.T) {
 	want := `<system-notification>dir: "/tmp/skill"</system-notification>`
 	if got != want {
 		t.Fatalf("systemNotificationf = %q, want %q", got, want)
+	}
+}
+
+// TestSystemNotificationFilteredByApptranscriptRoundTrip pins the
+// producer-to-filter contract observably: the block systemNotification
+// builds is classified as machinery by apptranscript's reload projection
+// (filtered out) while the user's own prose in the same message survives.
+// The shared constants make tag drift a compile error; this round trip keeps
+// the behavior from drifting with the spellings.
+func TestSystemNotificationFilteredByApptranscriptRoundTrip(t *testing.T) {
+	t.Parallel()
+	msg := llm.Message{Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: systemNotificationf("stored at %q", "/state/attachments/shot.png")},
+		{Kind: llm.ContentText, Text: "check this screenshot"},
+	}}
+	if got := apptranscript.UserFacingText(msg); got != "check this screenshot" {
+		t.Fatalf("UserFacingText round trip = %q, want the prose to survive with the machinery block filtered out", got)
 	}
 }
 

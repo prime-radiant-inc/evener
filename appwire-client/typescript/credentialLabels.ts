@@ -9,7 +9,7 @@
 // every credential flow presents the same way - no rendering, no store
 // access, easily unit-tested in isolation.
 
-import { WireError } from "./errors";
+import { ErrorEndpointConflict, WireError } from "./errors";
 import type { AuthTestResponse, InstanceEntry } from "./types.gen";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
@@ -98,6 +98,55 @@ export function keylessByDesign(instance: InstanceEntry): boolean {
   return instance.activeSource === "none" && !instance.credentialRequired;
 }
 
+// fromEnvironment answers whether an instance owes its existence to the
+// host's environment rather than to a credential the user filed through the
+// UI. `implicit` alone does not: a curated provider is implicit whenever no
+// providers.toml entry shadows it (registry spec §5.1), and that includes the
+// Codex account a user signs in to and a key they store for a curated
+// provider. Those credentials are files under the instance name
+// (auth/<name>.json, credentials.toml), so the instance is the user's own -
+// they can rename it and remove it like any authored one, and calling it
+// "from environment" would name a source it never read. What stays
+// environment-owned is a credential the host supplies (an API key variable,
+// the gcloud ADC file) and a keyless local default such as Ollama: there the
+// instance comes back with the host, and nothing the user does to the row
+// takes it away. The source test is an ALLOW-list, not a deny-list: only
+// `env:<VAR>` and `adc` name a credential the host supplies, so `none`, empty
+// and any future source this vocabulary does not know are the user's own - an
+// implicit credential-required instance resolving none (a bearer row with no
+// key) must not be badged "from environment" and refused Remove. The Codex
+// transport needs no case of its own here either: the registry resolves it from
+// its OAuth record alone, to `oauth` when that record is readable and none
+// otherwise (llm/registry's credential; the hub's own status reports the same
+// two values), and neither is on the allow-list - so a Codex row is already the
+// user's, including a broken sign-in they remove to clear it. Mirrors
+// environmentBacked in cmd/evener-hub/app_instances.go.
+export function fromEnvironment(instance: InstanceEntry): boolean {
+  if (!instance.implicit) return false;
+  // An instance that exists without a credential at all - a keyless local
+  // endpoint, a gateway on the optional-bearer scheme - is not the user's to
+  // remove, however its store layer looks: the registry re-derives it either
+  // way, so a removal would delete the key and leave the row. Clear is the
+  // action for that key (registry spec §5.1, §10).
+  if (!instance.credentialRequired) return true;
+  return instance.activeSource.startsWith("env:") || instance.activeSource === "adc";
+}
+
+// renameLeavesEnvironmentRow answers whether a rename of this instance leaves
+// a row behind under the old name, because the environment - not the user's
+// credential layers the rename moves - re-supplies it. The hub computes the
+// answer (renameLeavesRow, cmd/evener-hub/app_instances.go) and sends it as
+// InstanceEntry.renameLeavesRow: it is true when the row is environment-backed
+// as the removal refusal computes it, or the old name is a curated provider id
+// that re-derives without the user's moved credential (a set variable, the
+// host's ADC file, or a keyless scheme). A client cannot derive it from the
+// other fields - a stored gcp-adc credential looks identical whether or not ADC
+// exists, and the curated set is the hub's - so it reads the bit rather than
+// inferring, and a hub too old to send it reads as false.
+export function renameLeavesEnvironmentRow(instance: InstanceEntry): boolean {
+  return instance.renameLeavesRow === true;
+}
+
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
 // display when credentialLayers(instance) is empty - just activeSourceLabel
 // for the "none" case, which already covers required vs. optional vs.
@@ -163,12 +212,14 @@ export function safeCredentialTestMessage(status: string): string {
 }
 
 // isEndpointConflict recognizes the hub's refusal of an asserted destination
-// (appwire.Conflict: code -32013 with data.evenerErrorInfo "conflict"): the
-// name no longer resolves where the client asserting it was told it does. Every
-// credential flow presents this as a changed connection rather than a failure
-// of the endpoint itself.
+// (appwire.Conflict: code -32013 with data.evenerErrorInfo "endpointConflict"):
+// the name no longer resolves where the client asserting it was told it does.
+// The discriminant, never the code: a genuine conflict (a create/rename name
+// collision, an expired flow) shares CodeConflict and must keep its own message
+// and the form the user typed. Every credential flow presents this as a changed
+// connection rather than a failure of the endpoint itself.
 export function isEndpointConflict(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+  return err instanceof WireError && err.evenerErrorInfo === ErrorEndpointConflict;
 }
 
 // ENDPOINT_CHANGED_TEST_MESSAGE is what a credential test says when the hub

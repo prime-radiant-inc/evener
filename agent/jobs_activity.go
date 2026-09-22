@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 const (
@@ -750,7 +751,11 @@ func liveActivitySessionLabel(s *Session) string {
 	prompt := s.cfg.spawn.subagentTask
 	for _, turn := range s.history {
 		if turn.Kind == schema.TurnUserInput {
-			prompt = turn.Message.Text()
+			// The projection the label must match: an image paste appends a
+			// machinery note to the user turn, and the label carries the
+			// user's prose — never the note — like every other user-facing
+			// surface (bubbles, fork prefill, metadata).
+			prompt = apptranscript.UserFacingText(turn.Message)
 			break
 		}
 	}

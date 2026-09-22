@@ -488,11 +488,25 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.SendKeys("Escape")
 	app.WaitForWithout([]string{"Session:  01LIVE"}, "enter send")
 
+	// /interrupt applies the session status itself now that Interrupt advertises
+	// harness support rather than "a turn is running" (#1375), so a turn has to
+	// be running for the command to be offered. Drive the session active and
+	// re-read it for the dispatch, then put it back for the rest of the walk.
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
+	app.SendKeys("C-o")
+	app.WaitFor("EVENER LIVE")
+	openLiveSession(t, app)
+	app.WaitFor("queue: ready")
 	app.TypeLine("/interrupt")
 	app.WaitFor("Interrupt sent.")
 	if got := hub.WaitForActionCount(t, "interrupt", 1); got != 1 {
 		t.Fatalf("interrupt count=%d, want 1", got)
 	}
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
+	app.SendKeys("C-o")
+	app.WaitFor("EVENER LIVE")
+	openLiveSession(t, app)
+	app.WaitFor("send: ready")
 
 	app.TypeLine("/compact")
 	app.WaitFor("Context compacted.")

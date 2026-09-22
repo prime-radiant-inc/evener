@@ -13,6 +13,6 @@
     "declaration": "subagentmodule.module.css .lifecycle display:flex changed to display:none",
     "verified": "2026-09-09",
     "expect": "fail",
-    "note": "Real component attention visibility assertion failed in both themes and m/xl; restored before green."
+    "note": "Real component collapsed status-line visibility assertion failed in both themes and m/xl; restored before green."
   }
 }

@@ -69,8 +69,10 @@ HUB=http://127.0.0.1:$PORT
 ## Expected
 
 - **Step 2 (server gate)**: `state=active`, `capabilities.send:false`,
-  `capabilities.queue:true` — the hub gates Send on "no turn in flight" and
-  Queue on "a turn in flight" (`server/appwire_runtime.go:1046,1055`).
+  `capabilities.queue:true` — Send is status-computed ("no turn in flight"),
+  while Queue advertises harness support and is true whenever the daemon wires a
+  queue seam and the thread is not closed (`server/appwire_runtime.go`'s
+  `appCapabilitiesLocked`).
   Falsify: `queue:false` while active — either the harness wired no queue or
   `Capabilities.Queue` stopped being threaded through
   `hubCapabilitiesFromAppwire` (`cmd/evener-hub/web_api_tree.go#hubCapabilitiesFromAppwire`), and

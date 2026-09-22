@@ -299,6 +299,32 @@ type testConfig struct {
 	// written, before the store write -- where a test arms a write fault that
 	// refuses exactly that claim. Nil in production.
 	steeringCarrierClaiming func()
+	// beforeSteeringInjectedPublish observes a delivered steer's live event
+	// about to be published, immediately after clearAskPendingForResolvingSteer
+	// ran -- the ordering RoboRev #1806 member-3 Medium's fix depends on
+	// (the server refreshes its ask facet on this event, so the clear must be
+	// visible before it fires). Tests use it to sample askPendingCount() at
+	// exactly that point. Nil in production.
+	beforeSteeringInjectedPublish func()
+	// clientMutationStartClaiming observes a durable start claim about to be
+	// written, after ProcessClientMutationStart's cheap poison pre-check and
+	// before the claim's own refusal -- the window a poisoning lands in. Nil in
+	// production.
+	clientMutationStartClaiming func()
+	// clientMutationStartAnnounced observes a start that has claimed and
+	// announced, immediately before the turn runs -- the window a close lands in,
+	// where the post-run give-back decides whether the claim goes back. Nil in
+	// production.
+	clientMutationStartAnnounced func()
+	// queueHeadClaimInSerializer observes a queue-head claim entering the
+	// mutation-store serializer, after the transcript writer was sampled under
+	// s.mu. A lock-order test holds Session.mu and fails if this fires. Nil in
+	// production.
+	queueHeadClaimInSerializer func()
+	// queueHeadClaimSampled observes a queue-head claim that has finished its
+	// Session.mu work (the transcript writer sample) and is about to enter the
+	// serializer. Nil in production.
+	queueHeadClaimSampled func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)
@@ -403,6 +429,12 @@ type testConfig struct {
 	// recordings in that window. Nil in production.
 	beforeFoldTranscriptCommit func()
 
+	// beforeRestoredFailureBoundaryDoorRelease observes the restored failure
+	// boundary after state publication and before attentionMu is released.
+	// Tests use it to prove that a concurrent transcript writer cannot pass the
+	// publication door between those operations. Nil in production.
+	beforeRestoredFailureBoundaryDoorRelease func()
+
 	// beforeEnvironmentEventPublish observes an environment append at the
 	// moment it is about to publish its live event, so a test can state where
 	// that publication sits relative to the transcript ordering boundary.
@@ -457,6 +489,31 @@ type testConfig struct {
 	// hazard the offline-harness design flags). It is inherited by the child's own
 	// config (subCfg := s.cfg), so a grandchild would likewise get a fresh client.
 	childClientFactory func() *llm.Client
+
+	// disableDelegateIdleRelease suppresses the non-terminal idle release of a
+	// finalized stable delegate's runtime subtree (see
+	// releaseIdleRuntimeAfterFinalize). Production always releases, so an idle
+	// delegate's process-local resources — stdio MCP server processes above
+	// all — do not outlive its generation for the life of the daemon. The
+	// warm-supervision and retirement-admission fixtures set this because their
+	// subject is the warm-resume machinery itself — a deliberately retained
+	// runtime under an explicit in-process mode — not the retention policy the
+	// default exercises. It is inherited by child configs, so setting it on a
+	// fixture's root session covers its whole delegate tree.
+	disableDelegateIdleRelease bool
+
+	// delegateIdleReleaseDelay overrides the production idle-release grace
+	// (delegateIdleReleaseDelayDefault) for tests: the idle-release contract
+	// test shrinks it to 100ms so the scheduled release fires within its poll
+	// window. Nil keeps the production default. Inherited by child configs
+	// like every testOnly field.
+	delegateIdleReleaseDelay *time.Duration
+
+	// afterDelegateAttentionRestore observes the wake pass's one vulnerable
+	// window: after a cold attention restoration has installed the runtime and
+	// before the attention reservation commits, on the root session's own
+	// goroutine. Nil in production.
+	afterDelegateAttentionRestore func(delegateID string, restored *subagent)
 
 	// namerClient, when non-nil, is the llm.Client the background session namer
 	// uses instead of the session's own. The namer runs on a detached goroutine,

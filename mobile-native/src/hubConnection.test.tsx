@@ -104,7 +104,7 @@ afterEach(() => {
 
 it("stays idle with no client until a profile, origin and foreground are all present", () => {
 	const { hook, setError } = mount({ activeId: undefined, activeOrigin: undefined });
-	expect(hook.result.current).toEqual({ client: null, state: "idle" });
+	expect(hook.result.current).toEqual({ client: null, state: "idle", fatal: false });
 	expect(setError).toHaveBeenCalledWith(null);
 });
 
@@ -115,18 +115,18 @@ it("connects and follows the client's transitions the same way native has always
 	// Before the token fetch resolves there is still no client, but the hub
 	// is known, so the same "connecting" default PluginsScreen etc. have
 	// always read applies.
-	expect(hook.result.current).toEqual({ client: null, state: "connecting" });
+	expect(hook.result.current).toEqual({ client: null, state: "connecting", fatal: false });
 	await act(async () => {});
-	expect(hook.result.current).toEqual({ client: fake, state: "connecting" });
+	expect(hook.result.current).toEqual({ client: fake, state: "connecting", fatal: false });
 	act(() => fake.succeed());
-	expect(hook.result.current).toEqual({ client: fake, state: "ready" });
+	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
 	expect(setError).toHaveBeenLastCalledWith(null);
 	await act(async () => {
 		fake.fail("protocol");
 	});
 	// The client stays put on close - only the reconnect wall's `state` check
 	// leaves "ready"; the failed connection is still what a retry recycles.
-	expect(hook.result.current).toEqual({ client: fake, state: "closed" });
+	expect(hook.result.current).toEqual({ client: fake, state: "closed", fatal: true });
 	// Structural: the branch connectionFailure("protocol") selects, not its
 	// prose (docs/developing-evener/testing.md, "Prompt Prose Is Not a Test
 	// Oracle" - this message is UI copy, not a wire contract).
@@ -145,7 +145,7 @@ it.each([
 	const { hook, input, renders } = mount();
 	await act(async () => {});
 	act(() => first.succeed());
-	expect(hook.result.current).toEqual({ client: first, state: "ready" });
+	expect(hook.result.current).toEqual({ client: first, state: "ready", fatal: false });
 
 	const second = new FakeHubClient();
 	harness.client = second;
@@ -159,7 +159,7 @@ it.each([
 	for (const result of renders) expect(result.client).not.toBe(first);
 	await act(async () => {});
 	act(() => second.succeed());
-	expect(hook.result.current).toEqual({ client: second, state: "ready" });
+	expect(hook.result.current).toEqual({ client: second, state: "ready", fatal: false });
 });
 
 it("a bumped attempt reopens the hub through a fresh client, tearing down the old one first", async () => {
@@ -168,7 +168,7 @@ it("a bumped attempt reopens the hub through a fresh client, tearing down the ol
 	const { hook, input } = mount();
 	await act(async () => {});
 	act(() => first.succeed());
-	expect(hook.result.current).toEqual({ client: first, state: "ready" });
+	expect(hook.result.current).toEqual({ client: first, state: "ready", fatal: false });
 	const second = new FakeHubClient();
 	harness.client = second;
 	input.attempt = 1;
@@ -178,9 +178,48 @@ it("a bumped attempt reopens the hub through a fresh client, tearing down the ol
 	expect(first.listenerCount).toBe(0);
 	expect(first.state).toBe("closed");
 	await act(async () => {});
-	expect(hook.result.current).toEqual({ client: second, state: "connecting" });
+	expect(hook.result.current).toEqual({ client: second, state: "connecting", fatal: false });
 	act(() => second.succeed());
-	expect(hook.result.current).toEqual({ client: second, state: "ready" });
+	expect(hook.result.current).toEqual({ client: second, state: "ready", fatal: false });
+});
+
+it("reports fatal only for a protocol close, clearing again once a fresh attempt connects", async () => {
+	const first = new FakeHubClient();
+	harness.client = first;
+	const { hook, input } = mount();
+	await act(async () => {});
+	act(() => first.succeed());
+	expect(hook.result.current.fatal).toBe(false);
+	await act(async () => {
+		first.fail("protocol");
+	});
+	expect(hook.result.current.fatal).toBe(true);
+	const second = new FakeHubClient();
+	harness.client = second;
+	input.attempt = 1;
+	hook.rerender();
+	await act(async () => {});
+	// A fresh attempt's own generation starts with no verdict yet - fatal is
+	// the PREVIOUS generation's own failure, not carried into a new one.
+	expect(hook.result.current.fatal).toBe(false);
+	act(() => second.succeed());
+	expect(hook.result.current.fatal).toBe(false);
+});
+
+it("does not report fatal for an ordinary transport close", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook } = mount();
+	await act(async () => {});
+	act(() => fake.succeed());
+	await act(async () => {
+		fake.fail(null);
+	});
+	expect(hook.result.current).toEqual({
+		client: fake,
+		state: "closed",
+		fatal: false,
+	});
 });
 
 it("releases the client's listener on unmount", async () => {

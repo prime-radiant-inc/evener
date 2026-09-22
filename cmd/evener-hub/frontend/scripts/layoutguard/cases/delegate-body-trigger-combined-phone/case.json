@@ -1,0 +1,25 @@
+{
+  "name": "delegate-body-trigger-combined-phone",
+  "description": "At a PHONE viewport the combined shape - the intent line carrying BOTH a trailing Open control and the two-level body trigger - must reserve each trailing item's real phone width, and reserve ONLY what the shape renders. Under @media (max-width: 899px) the Open control (.inline) and the body trigger both grow to --tap-min (44px), so the .intentTriggerContent reservation must subtract var(--tap-min, 14px) for the body trigger, not a hard-coded 14px (a hard-coded 14px under-reserves by 30px, the line sums past 100%, and the body trigger wraps). A summary-less delegate row (data-intent-suppressed) renders no decorative chevron, so it must not reserve one either (it would narrow the intent by 14px + a gap). The case also asserts the harness's documentation comment is a single comment: a nested one closes it early and renders the example markup as stray content above .fixtures, making elementFromPoint hit testing depend on prose edits. Two shapes share the rule: the summary-less delegate (no decorative chevron) and the collapsed non-delegate (decorative chevron present). The harness also reproduces production's control count: the summary-less delegate shape renders NO overlay intent trigger (the body trigger is its one control), while the collapsed non-delegate shape renders one.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: (a) in .row[data-intent-trailing][data-body-trigger-intent] .intentTriggerContent change the body-trigger term var(--tap-min, 14px) back to a hard-coded 14px; (b) remove the data-intent-suppressed reservation override so the delegate shape reserves the decorative chevron it does not render; (c) harness.html: restore the nested <!-- comment --> so the documentation comment closes early; (d) harness.html: render the overlay intent trigger on the suppressed delegate fixture too",
+    "verified": "2026-09-18",
+    "expect": "fail",
+    "note": "All three mutations were run by hand: (a) the phone-grown 44px body trigger is under-reserved by 30px and wraps to line 2; (b) the delegate content reservation is 22px wider than the rendered trailing items (contentWidthSlack -22.0) - narrows the intent and can wrap it early; (c) fixturesIsFirstBodyChild goes false with 1 stray element outside .fixtures. Restoring each passes. (d) the delegate fixture then carries 1 overlay intent trigger where production renders 0."
+  }
+}

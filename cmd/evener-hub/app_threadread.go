@@ -263,7 +263,13 @@ func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	return true
 }
 
-func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
+// mergePastThreadForRead merges a saved session's metadata (and, when
+// includePastTurns asks for it, its full turns projection) into a live read's
+// thread. The thread/read handler owns the includePastTurns decision because
+// only it knows whether the windowed past item page will supply the turns
+// instead — passing false there is what keeps a past session's click off the
+// O(transcript) full-turn projection (see registerThreadHandlers).
+func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread, includePastTurns bool) (appwire.Thread, error) {
 	if !liveThreadCanMergeLocalPast(live) {
 		return live, nil
 	}
@@ -284,7 +290,6 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	// A live window is authoritative. Read saved turns only as the compatibility
 	// fallback for a live source that returned none; the metadata merged below
 	// does not use pastThreadForRead's full-transcript usage or failure scans.
-	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
 	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
 	if err != nil {
 		return appwire.Thread{}, err
@@ -334,7 +339,7 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	if live.Evener.Diagnostics == nil {
 		live.Evener.Diagnostics = past.Evener.Diagnostics
 	}
-	if params.IncludeTurns && len(live.Turns) == 0 {
+	if includePastTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
 	}
 	return live, nil
@@ -653,8 +658,9 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
 // change model, shutdown) plus the always-available ones (send, fork, goal,
 // rename), all of them landing once qp94's auto-resume runs. Steer, Interrupt
-// and Queue stay false — they gate on an active turn a cold thread has none of,
-// so the hub deliberately does not resume for them (kata xr4x trues this up to
+// and Queue stay false because the hub cannot carry them out for a thread with
+// no daemon: it resumes on send alone, so a cold set that advertised them would
+// promise a turn action nothing is there to take (kata xr4x trues this up to
 // qp94's wiring).
 //
 // It is the hub's answer to "what can still be done with this thread", which is
@@ -673,6 +679,16 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		Goal:         true,
 		SharedNotes:  true,
 		Rename:       true,
+		// SkillInput is the same resume story Send tells: a resumed daemon runs
+		// current code, wires all four input-bearing turn mutations, and consumes
+		// skill selections. Withholding it while the same read attaches the
+		// session's skill catalog (attachPastThreadSkillCatalog) made the web
+		// composer offer those skills and then refuse them. The advertisement is
+		// harness-support truth only: every input-bearing mutation re-verifies
+		// against the live daemon (ensureSkillInputSupported, the relay's
+		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
+		// that genuinely lacks the support still refuses each selection.
+		SkillInput: true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
@@ -1068,7 +1084,9 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 }
 
-func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
+// computePastEntryTurns projects a saved session's whole transcript into full
+// wire turns.
+func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
@@ -1084,6 +1102,11 @@ func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.T
 	stampPastTurnCosts(pastEntryCost(cfg, entry), turns)
 	return turns, nil
 }
+
+// This function is intentionally behind a package variable, like
+// discoverPastThreadSkillCatalog above, so tests can observe (and pin the
+// absence of) the O(transcript) projection on read paths that must not pay it.
+var pastEntryTurns = computePastEntryTurns
 
 // projectBoundedPastTranscriptTurn projects an already-decoded transcript turn
 // (decoded once by apptranscript's own reader, not here — kata j13r) into

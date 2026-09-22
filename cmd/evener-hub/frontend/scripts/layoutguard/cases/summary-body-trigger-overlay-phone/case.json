@@ -1,0 +1,22 @@
+{
+  "name": "summary-body-trigger-overlay-phone",
+  "description": "At a phone viewport the two-level body trigger that overlays the summary line is absolutely positioned (inset: 0, position: absolute) with the summary line as its containing block. The phone tap-floor block gives .bodyTrigger min-height: var(--tap-min) (44px), but an absolutely positioned box with top: 0 and bottom: 0 that is forced taller than its container by min-height overflows DOWNWARD - so the invisible button escapes the summary line into the rows and gaps below it and can capture taps and focus there. This case asserts the overlay stays contained within its summary line at 390px (the summary-line container must carry the matching minimum height, so the floor grows the line instead of escaping it).",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: widen the @media (max-width: 899px) tap-floor selector from .row[data-intent-trailing=\"true\"] > .bodyTrigger back to the unscoped .bodyTrigger, so the absolute summary-line overlay also gets min-height: var(--tap-min)",
+    "verified": "2026-09-18",
+    "expect": "fail",
+    "note": "With the floor applied to the absolute overlay, the 44px box overflows its short summary line downward and the containment assertion fails (23.2px on the 20.8px line)."
+  }
+}

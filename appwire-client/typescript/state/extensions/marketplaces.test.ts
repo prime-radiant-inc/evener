@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
+import { ErrorMarketplaceRemoveApplied, WireError } from "../../errors";
+import { deferRequest, FakeClient, failing, gateSettlements } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
-import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
+import {
+  createMarketplacesStore,
+  MARKETPLACE_REFETCH_DEBOUNCE_MS,
+  type MarketplacesStore,
+  marketplaceRemovalOutcome,
+} from "./marketplaces";
 
 const ACME: MarketplaceEntry = { name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 };
 const LOCAL: MarketplaceEntry = { name: "local", source: { kind: "directory", path: "/opt/plugins" }, lastUpdated: 2 };
@@ -15,6 +21,119 @@ function storeWithFake() {
   const fake = new FakeClient("ready");
   return { fake, store: createMarketplacesStore(fake) };
 }
+
+function cloneLitterError(marketplaces: unknown, extra: Record<string, unknown> = {}): WireError {
+  return new WireError("clone could not be removed", -32603, {
+    evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+    applied: { marketplaces },
+    ...extra,
+  });
+}
+
+function removeAppliedUnavailableError(): WireError {
+  return new WireError("marketplace removed, but the updated list was unavailable", -32603, {
+    evenerErrorInfo: ErrorMarketplaceRemoveApplied,
+    appliedUnavailable: true,
+  });
+}
+
+describe("marketplaceRemovalOutcome", () => {
+  test("classifies an applied removal with an unavailable list separately from clone litter", () => {
+    expect(marketplaceRemovalOutcome(removeAppliedUnavailableError())).toEqual({ kind: "removed" });
+  });
+
+  test("treats a bare remove-applied marker as removed even without data", () => {
+    expect(
+      marketplaceRemovalOutcome(
+        new WireError("marketplace removed", -32603, { evenerErrorInfo: ErrorMarketplaceRemoveApplied }),
+      ),
+    ).toEqual({ kind: "removed" });
+  });
+
+  test("returns the authoritative applied list for clone cleanup failure", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError([LOCAL]))).toEqual({
+      kind: "applied",
+      marketplaces: [LOCAL],
+    });
+  });
+
+  test("returns unavailable when the applied list could not be read", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError(null, { appliedUnavailable: true }))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  test("keeps malformed marked outcomes applied-but-unconfirmed", () => {
+    expect(marketplaceRemovalOutcome(cloneLitterError(null))).toEqual({ kind: "unavailable" });
+    expect(marketplaceRemovalOutcome(cloneLitterError({ name: "not-a-list" }))).toEqual({ kind: "unavailable" });
+    expect(
+      marketplaceRemovalOutcome(
+        new WireError("clone could not be removed", -32603, { evenerErrorInfo: "marketplaceUnregisteredCloneRemains" }),
+      ),
+    ).toEqual({ kind: "unavailable" });
+  });
+
+  test("keeps a malformed applied member applied-but-unconfirmed, never miscast", () => {
+    // Each member must match appwire.MarketplaceEntry's wire shape
+    // (types.gen.ts) before its list can be published as authoritative: a
+    // malformed member is the malformed-applied-data case the doc comment on
+    // MarketplaceRemovalOutcome names, not a row to cast blindly.
+    for (const row of [
+      { name: 42, source: { kind: "github" }, lastUpdated: 1 }, // non-string name
+      { name: "acme", source: { kind: "github" } }, // missing lastUpdated
+      { name: "acme", lastUpdated: 1 }, // missing source
+      { name: "acme", source: "github", lastUpdated: 1 }, // source not an object
+      { name: "acme", source: null, lastUpdated: 1 },
+      { name: "acme", source: { repo: "acme/plugins" }, lastUpdated: 1 }, // source missing kind
+      { name: "acme", source: { kind: 7 }, lastUpdated: 1 }, // non-string kind
+      { name: "acme", source: { kind: "github" }, lastUpdated: "recent" }, // non-number lastUpdated
+      { name: "acme", source: { kind: "github", repo: 42 }, lastUpdated: 1 }, // non-string optional
+      { name: "acme", source: { kind: "github" }, installLocation: 7, lastUpdated: 1 },
+    ]) {
+      expect(marketplaceRemovalOutcome(cloneLitterError([row]))).toEqual({ kind: "unavailable" });
+    }
+    expect(marketplaceRemovalOutcome(cloneLitterError(["acme"]))).toEqual({ kind: "unavailable" });
+    // One malformed member rejects the whole list, not only its own slot.
+    expect(marketplaceRemovalOutcome(cloneLitterError([LOCAL, { name: "acme", lastUpdated: 1 }]))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  test("still accepts a minimal well-formed member and an empty applied list", () => {
+    // Every source field but kind is optional on the wire (appwire/types.go
+    // omitempty) and an empty list is a legitimate empty registry, so member
+    // validation must not reject payloads the hub really sends.
+    const minimal = { name: "acme", source: { kind: "url" }, lastUpdated: 0 };
+    expect(marketplaceRemovalOutcome(cloneLitterError([minimal]))).toEqual({
+      kind: "applied",
+      marketplaces: [minimal],
+    });
+    expect(marketplaceRemovalOutcome(cloneLitterError([]))).toEqual({ kind: "applied", marketplaces: [] });
+  });
+
+  test("keeps truly ordinary failures retryable", () => {
+    expect(marketplaceRemovalOutcome(new Error("remove failed"))).toBeUndefined();
+  });
+});
+
+describe("removeMarketplace applied-but-unconfirmed", () => {
+  test("preserves the last snapshot and rejects with the classifiable error", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    const error = removeAppliedUnavailableError();
+    fake.on("evener/marketplace/remove", () => {
+      throw error;
+    });
+
+    const removal = store.getState().removeMarketplace("acme");
+    await expect(removal).rejects.toBe(error);
+    expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "evener/marketplace/remove")).toHaveLength(1);
+  });
+});
 
 describe("store shape", () => {
   test("two stores share nothing: lists, catalogs and errors stay with their own instance", async () => {
@@ -102,6 +221,111 @@ describe("fetches never throw, mutations reject", () => {
     });
     await store.getState().addMarketplace({ name: "local", source: LOCAL.source });
     expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+  });
+});
+
+describe("removeMarketplace clone litter", () => {
+  // The hub's marketplaceUnregisteredCloneRemains rejection carries the
+  // updated list in data.applied: the unregister already landed, and only the
+  // clone's own removal on disk failed. The wire shape emits marketplaces as
+  // an array on a successful follow-up read, never as an omitted field.
+  test("reconciles the list and browse cache from data.applied, then still rejects", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+
+    fake.on("evener/marketplace/remove", () => {
+      throw new WireError(
+        'marketplace "acme": marketplace unregistered, but its clone could not be removed; see the hub\'s log for detail',
+        -32603,
+        { evenerErrorInfo: "marketplaceUnregisteredCloneRemains", applied: { marketplaces: [LOCAL] } },
+      );
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toThrow(/clone could not be removed/);
+
+    expect(store.getState().marketplaces).toEqual([LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+  });
+
+  test("appliedUnavailable leaves the list and browse cache untouched, and still rejects", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+
+    fake.on("evener/marketplace/remove", () => {
+      throw new WireError('marketplace "acme": marketplace unregistered, but its clone could not be removed', -32603, {
+        evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+        applied: { marketplaces: null },
+        appliedUnavailable: true,
+      });
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toThrow(/clone could not be removed/);
+
+    // Nothing to reconcile from: the hub's own follow-up read failed too, so
+    // this must not read an absent/null list as "every marketplace gone".
+    expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+  });
+
+  test("an ordinary remove failure (no evenerErrorInfo) leaves the list alone", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    await store.getState().fetchMarketplaces();
+    fake.on("evener/marketplace/remove", failing("mutation failed"));
+    await expect(store.getState().removeMarketplace("acme")).rejects.toThrow("mutation failed");
+    expect(store.getState().marketplaces).toEqual([ACME]);
+  });
+
+  test("settles list loading and error with an accepted applied list", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    store.setState({ marketplacesLoading: true, marketplacesError: "stale" });
+
+    fake.on("evener/marketplace/remove", () => {
+      throw cloneLitterError([LOCAL]);
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toBeInstanceOf(WireError);
+
+    expect(store.getState()).toMatchObject({
+      marketplaces: [LOCAL],
+      marketplacesLoading: false,
+      marketplacesError: null,
+    });
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+  });
+
+  test.each([
+    ["null list", cloneLitterError(null)],
+    ["object list", cloneLitterError({ name: "not-a-list" })],
+    ["unavailable list", cloneLitterError(null, { appliedUnavailable: true })],
+    ["row missing a field", cloneLitterError([{ name: "local" }])],
+    [
+      "row with an incorrectly-typed field",
+      cloneLitterError([{ name: 42, source: { kind: "github" }, lastUpdated: 1 }]),
+    ],
+    ["non-object row", cloneLitterError(["local"])],
+  ])("does not publish a %s payload", async (_label, error) => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    store.setState({ marketplacesLoading: true, marketplacesError: "stale" });
+    fake.on("evener/marketplace/remove", () => {
+      throw error;
+    });
+
+    await expect(store.getState().removeMarketplace("acme")).rejects.toBe(error);
+    expect(store.getState()).toMatchObject({
+      marketplaces: [ACME, LOCAL],
+      marketplacesLoading: true,
+      marketplacesError: "stale",
+    });
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
   });
 });
 
@@ -216,6 +440,22 @@ describe("reset fences a mutation's side effects", () => {
     await removing;
     expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
   });
+
+  test("a clone-litter failure after reset() publishes nothing", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "linter" }] }));
+    await store.getState().browseMarketplace("acme");
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const removing = store.getState().removeMarketplace("acme");
+    await Promise.resolve();
+
+    store.reset();
+    settlements[0]?.reject(cloneLitterError([]));
+    await expect(removing).rejects.toBeInstanceOf(WireError);
+
+    expect(store.getState()).toMatchObject({ marketplaces: null, marketplacesLoading: false, marketplacesError: null });
+    expect(store.getState().browseCatalogs.size).toBe(0);
+  });
 });
 
 describe("reconnect", () => {
@@ -281,6 +521,25 @@ describe("reconnect", () => {
 });
 
 describe("list ordering", () => {
+  test("an accepted newer list retires a catalog omitted by an older applied failure", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const older = store.getState().removeMarketplace("acme");
+    const newer = store.getState().removeMarketplace("local");
+    await Promise.resolve();
+
+    settlements[0]?.reject(cloneLitterError([LOCAL]));
+    await expect(older).rejects.toBeInstanceOf(WireError);
+    settlements[1]?.resolve({ marketplaces: [] });
+    await newer;
+
+    expect(store.getState().marketplaces).toEqual([]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+  });
+
   test("a list that resolves after a newer mutation committed does not roll the list back", async () => {
     const { fake, store } = storeWithFake();
     const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
@@ -296,6 +555,152 @@ describe("list ordering", () => {
     // The outrun fetch writes none of its three fields, the flag it raised
     // included; the mutation that outran it answers all three.
     expect(store.getState().marketplacesLoading).toBe(false);
+  });
+
+  test("a newer successful write wins over an older applied clone-litter failure", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const older = store.getState().removeMarketplace("acme");
+    const newer = store.getState().removeMarketplace("local");
+    await Promise.resolve();
+
+    settlements[1]?.resolve({ marketplaces: [ACME] });
+    await newer;
+    settlements[0]?.reject(cloneLitterError([LOCAL]));
+    await expect(older).rejects.toBeInstanceOf(WireError);
+
+    expect(store.getState().marketplaces).toEqual([ACME]);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+  });
+
+  test("a newer failed write releases an older applied clone-litter outcome", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    store.setState({ marketplacesLoading: true, marketplacesError: "stale" });
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const older = store.getState().removeMarketplace("acme");
+    const newer = store.getState().removeMarketplace("local");
+    await Promise.resolve();
+
+    settlements[0]?.reject(cloneLitterError([LOCAL]));
+    await expect(older).rejects.toBeInstanceOf(WireError);
+    expect(store.getState()).toMatchObject({
+      marketplaces: [ACME, LOCAL],
+      marketplacesLoading: true,
+      marketplacesError: "stale",
+    });
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
+
+    const newerFailure = new Error("newer failed");
+    settlements[1]?.reject(newerFailure);
+    await expect(newer).rejects.toBe(newerFailure);
+    expect(store.getState()).toMatchObject({
+      marketplaces: [LOCAL],
+      marketplacesLoading: false,
+      marketplacesError: null,
+    });
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+  });
+});
+
+describe("marketplace publication version", () => {
+  test("advances once for each accepted list writer", async () => {
+    const { fake, store } = storeWithFake();
+    expect(store.getState().marketplacesPublicationVersion).toBe(0);
+
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().addMarketplace({ source: LOCAL.source });
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+
+    fake.on("evener/marketplace/remove", () => {
+      throw cloneLitterError([LOCAL]);
+    });
+    await expect(store.getState().removeMarketplace("acme")).rejects.toBeInstanceOf(WireError);
+    expect(store.getState().marketplacesPublicationVersion).toBe(3);
+  });
+
+  test("does not advance for failed reads, ordinary failures, or unconfirmed applied data", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, failing("list failed"));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(0);
+
+    fake.on("evener/marketplace/add", failing("add failed"));
+    await expect(store.getState().addMarketplace({ source: LOCAL.source })).rejects.toThrow("add failed");
+    expect(store.getState().marketplacesPublicationVersion).toBe(0);
+
+    for (const error of [
+      cloneLitterError(null),
+      cloneLitterError({ malformed: true }),
+      cloneLitterError(null, { appliedUnavailable: true }),
+    ]) {
+      fake.on("evener/marketplace/remove", () => {
+        throw error;
+      });
+      await expect(store.getState().removeMarketplace("acme")).rejects.toBe(error);
+      expect(store.getState().marketplacesPublicationVersion).toBe(0);
+    }
+  });
+
+  test("a held applied failure advances only when a newer failed write releases it", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME, LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    const settlements = gateSettlements(fake, "evener/marketplace/remove");
+    const older = store.getState().removeMarketplace("acme");
+    const newer = store.getState().removeMarketplace("local");
+    await Promise.resolve();
+
+    settlements[0]?.reject(cloneLitterError([LOCAL]));
+    await expect(older).rejects.toBeInstanceOf(WireError);
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    settlements[1]?.reject(new Error("newer failed"));
+    await expect(newer).rejects.toThrow("newer failed");
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+  });
+
+  test("fences, reset, and dispose preserve the last publication version", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    const releaseFenced = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const fenced = store.getState().fetchMarketplaces();
+    await Promise.resolve();
+    store.connectionChanged(new FakeClient("connecting"), "connecting");
+    releaseFenced({ marketplaces: [LOCAL] });
+    await fenced;
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+
+    const resetVersions: number[] = [];
+    const unsubscribe = store.subscribe((state) => resetVersions.push(state.marketplacesPublicationVersion));
+    store.reset();
+    unsubscribe();
+    expect(resetVersions.length).toBeGreaterThan(0);
+    expect(resetVersions.every((version) => version === 1)).toBe(true);
+    expect(store.getState().marketplacesPublicationVersion).toBe(1);
+    fake.on(LIST, () => ({ marketplaces: [LOCAL] }));
+    await store.getState().fetchMarketplaces();
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
+
+    const releaseDisposed = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const disposed = store.getState().fetchMarketplaces();
+    await Promise.resolve();
+    store.dispose();
+    releaseDisposed({ marketplaces: [ACME] });
+    await disposed;
+    expect(store.getState().marketplacesPublicationVersion).toBe(2);
   });
 });
 

@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/llm"
 )
 
 // TestForkSessionAtUserTurn_CopiesPrefixWithoutAppendingInput verifies the
@@ -108,6 +111,67 @@ func TestForkSessionAtUserTurn_FirstTurnProducesEmptyChild(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("child transcript entry count: got %d, want 0", len(entries))
+	}
+}
+
+// TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput: a persisted
+// image-bearing user turn carries the attachment machinery note as an extra
+// text part, and originalInput feeds the hub's fork/edit surface — it must be
+// the user's own prose, never the raw <system-notification> block.
+func TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	parentID := "01PARENT00000000000000001"
+	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID:  parentID,
+		CreatedAt:  time.Now().UTC(),
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		WorkingDir: "/tmp/test",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	msg := buildUserInputMessage("look at this picture", []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      []byte{0x89, 0x50, 0x4e, 0x47},
+		Name:      "shot.png",
+		Path:      "/state/sessions/x/attachments/abcdef0123456789-shot.png",
+	}})
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, msg),
+	}
+	for _, turn := range turns {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	meta := schema.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/test"},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 1,
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	_, originalInput, err := ForkSessionAtUserTurn(stateDir, parentID, 3, "")
+	if err != nil {
+		t.Fatalf("ForkSessionAtUserTurn: %v", err)
+	}
+	if got, want := originalInput, "look at this picture"; got != want {
+		t.Fatalf("originalInput=%q, want %q (the machinery note must not reach the fork/edit prefill)", got, want)
 	}
 }
 

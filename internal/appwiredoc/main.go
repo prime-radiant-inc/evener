@@ -114,6 +114,7 @@ func build() docData {
 		register(v)
 	}
 	register(appwire.EvenerDelegateInfo{})
+	register(appwire.HostEntry{})
 	// InstanceEntry never appears as a method's own Params/Result - only
 	// nested inside InstanceListResponse.Instances - so without this it
 	// would never get a field table of its own, and a field documented on

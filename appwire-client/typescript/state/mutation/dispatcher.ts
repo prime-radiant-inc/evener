@@ -33,7 +33,11 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
   getClient: MutationDispatchClientLookup;
   onStorageChange?: (targetRefs: string[]) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
-  onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
+  // May be async: the clear's model publication owns the response's side
+  // effects (including any best-effort cleanup the host awaits before
+  // publishing), and the attempt does not settle the clear's own record
+  // until that has happened.
+  onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void | Promise<void>;
   // Capture response authority immediately before each transport attempt,
   // after any reconnect hydration, rather than once at durable enqueue.
   prepareHumanNoteResponse?: (record: MutationOutboxRecord<A>) => (response: NotesHumanSetResponse) => void;
@@ -154,7 +158,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
       if (method === "thread/clear") {
         const response = clearResponse(result, record.targetRef);
         if (!response) return "stop";
-        this.#onClearResponse(record.targetRef, response);
+        await this.#onClearResponse(record.targetRef, response);
       }
       if (method === "notes/human/set") {
         if (!result || typeof result !== "object" || !("note" in result) || typeof result.note !== "string")

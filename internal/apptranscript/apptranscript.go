@@ -285,6 +285,56 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 	}
 }
 
+// Machinery notification blocks ride user-input and steering messages as
+// extra text parts the model needs (e.g. the stored-attachment path note for
+// a pasted image) but the user never typed and must not see in a bubble.
+// The producer is the agent package's systemNotification helper; agent
+// imports this package, so the helper builds its blocks from these exported
+// constants — one spelling, shared by producer and filter, so the tags
+// cannot drift apart. Skip is exact-block: a part merely mentioning the tags
+// inline is the user's own words and stays.
+const (
+	SystemNotificationOpenTag  = "<system-notification>"
+	SystemNotificationCloseTag = "</system-notification>"
+)
+
+// isMachineryNotificationPart reports whether text is exactly one machinery
+// notification block: the opening tag, the inner message, the closing tag,
+// and nothing else on either end.
+func isMachineryNotificationPart(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, SystemNotificationOpenTag) &&
+		strings.HasSuffix(trimmed, SystemNotificationCloseTag)
+}
+
+// UserFacingText concatenates a message's text parts the way Message.Text
+// does, except parts that are machinery notifications for the model are
+// omitted: the live stream keeps those out of the user bubble, and reload
+// must match. A message whose only content is machinery (a cancelled-watches
+// notice routed as steering) keeps its full text — the live stream projects
+// that text as-is, and stripping it would delete the reloaded item outright.
+// An image-bearing turn keeps its stripped text even when empty: the image is
+// the bubble. Exported because agent's fork/edit surface (ForkSessionAtUserTurn)
+// hands a stored turn's text back as editable input and must apply the same
+// rule.
+func UserFacingText(msg llm.Message) string {
+	var b strings.Builder
+	hasImage := false
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentImage {
+			hasImage = true
+			continue
+		}
+		if p.Kind == llm.ContentText && p.Text != "" && !isMachineryNotificationPart(p.Text) {
+			b.WriteString(p.Text)
+		}
+	}
+	if b.Len() == 0 && !hasImage {
+		return msg.Text()
+	}
+	return b.String()
+}
+
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
 func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
 	// A persisted message has the entry's recorded instant, not a duration.
@@ -429,7 +479,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
 			TurnID:               turnID,
 			TranscriptEntryIndex: turnIndex,
-			Text:                 turn.Message.Text(),
+			Text:                 UserFacingText(turn.Message),
 			Images:               images,
 			Status:               appwire.TurnStatusCompleted,
 			ClientMutationID:     turn.ClientMutationID,
@@ -447,7 +497,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			}}
 		}
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
-		text := turn.Message.Text()
+		text := UserFacingText(turn.Message)
 		if text == "" && len(images) > 0 {
 			text = ImagePlaceholder(len(images))
 		}

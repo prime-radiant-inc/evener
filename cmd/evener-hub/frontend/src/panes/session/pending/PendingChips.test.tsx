@@ -115,6 +115,31 @@ test("blocked unknown is owned by QueueStrip rather than PendingChips", async ()
   expect(screen.queryByText("uncertain")).toBeNull();
 });
 
+// The canceled counterpart of the test above: a row Stop canceled is a durable
+// QueueStrip row ("Canceled by Stop", with its Retry affordance), not an
+// in-flight chip - without the exclusion it would read as still Sending here
+// while QueueStrip simultaneously reports it canceled.
+test("canceled is owned by QueueStrip rather than PendingChips", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "stopped" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stopped" }] },
+  });
+  await storage.cancelUnattempted("ref_a");
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+  // Same flush seedPending performs: the first refresh after the runtime's
+  // creation can be superseded by the runtime's own discovery scan, so the
+  // settled projection - not a racing one - is what the render must observe.
+  await flushPendingTurnsProjectionForTests();
+
+  render(<PendingChips sessionRef="ref_a" />);
+  expect(screen.queryByText("stopped")).toBeNull();
+});
+
 test("shows only the entries for the given sessionRef", async () => {
   await seedPending("send", "mine", "ref_a");
   await seedPending("send", "theirs", "ref_b");

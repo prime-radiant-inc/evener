@@ -246,6 +246,18 @@ func sshBaseArgv(o Options) []string {
 	}
 }
 
+// sshIdentityArgv is the host's SSH identity option: ["-i", key] when the entry
+// carries a key path, else nothing (ssh resolves the identity the way the
+// operator's ssh_config does). It is inserted before the "--" destination
+// terminator like every other option, so a key path that begins with "-" is
+// read as an argument to -i rather than as an ssh option.
+func sshIdentityArgv(h hostreg.Host) []string {
+	if p := strings.TrimSpace(h.KeyPath); p != "" {
+		return []string{"-i", p}
+	}
+	return nil
+}
+
 // sshDest is ssh's destination argument, always placed after the "--" option
 // terminator. A registry value that begins with "-" has to be read as a
 // hostname and never as an ssh option: "-oProxyCommand=..." would otherwise run
@@ -281,6 +293,7 @@ func evenerCommand(path string) string {
 // caller using it hands the remote shell an expression to evaluate on purpose.
 func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 	argv := sshBaseArgv(o)
+	argv = append(argv, sshIdentityArgv(h)...)
 	argv = append(argv, sshDest(h)...)
 	return append(argv, remote)
 }
@@ -292,6 +305,7 @@ func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 // be executed there instead of passed to evener.
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
+	argv = append(argv, sshIdentityArgv(h)...)
 	argv = append(argv, sshDest(h)...)
 	argv = append(argv, shellquote.RemoteWord(evenerCommand(h.EvenerPath)))
 	for _, a := range args {
@@ -303,8 +317,8 @@ func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 // channelArgv is the exact non-interactive bridge form:
 //
 //	ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
-//	    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio
-//	    [--config <path>] [--addr <addr>]
+//	    -o ServerAliveCountMax=<n> [-i <key_path>] -- <dest> <evener_path> \
+//	    hub attach --stdio [--config <path>] [--addr <addr>]
 //
 // The optional flags carry the host's own hub.toml and the address the operator
 // configured for it (per-host Addr, else Options.HubAddr). Passing --addr from

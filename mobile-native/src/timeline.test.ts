@@ -58,8 +58,16 @@ it("collapses only typed non-warning interruption notices", () => {
 		origin: "steering" as const,
 		steeringKind: "interrupted",
 	};
+	const interruptedSalvage = {
+		...interrupted,
+		steeringKind: "interrupted-salvage" as const,
+	};
 	expect(isInterruptedNotice(interrupted)).toBe(true);
+	expect(isInterruptedNotice(interruptedSalvage)).toBe(true);
 	expect(isInterruptedNotice({ ...interrupted, tone: "warning" })).toBe(false);
+	expect(isInterruptedNotice({ ...interruptedSalvage, tone: "warning" })).toBe(
+		false,
+	);
 	expect(isInterruptedNotice({ ...interrupted, origin: "system" })).toBe(false);
 	expect(
 		isInterruptedNotice({
@@ -113,6 +121,7 @@ it("retains a disclosure identity as adjacent details arrive", () => {
 
 it.each([
 	"interrupted",
+	"interrupted-salvage",
 	"tasks-done",
 	"task-nudge",
 	"task-inactive",
@@ -137,6 +146,19 @@ it.each([
 		expect(steeringNoticeLabel({ ...notice, tone: "warning" })).toBeUndefined();
 	},
 );
+
+it("labels interrupted salvage as a draft", () => {
+	const interruptedSalvage = {
+		...setup,
+		family: "informational" as const,
+		origin: "steering" as const,
+		steeringKind: "interrupted-salvage" as const,
+	};
+	expect(steeringNoticeLabel(interruptedSalvage)).toBe("Interrupted draft");
+	expect(timelineGap(message, interruptedSalvage)).toBeLessThan(
+		timelineGap(message, message),
+	);
+});
 
 it("keeps unknown steering, untyped notices, and critical diagnostics visible", () => {
 	const task = {

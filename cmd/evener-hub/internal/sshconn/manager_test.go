@@ -224,7 +224,7 @@ func TestEnsureReplacesLinkLostChannel(t *testing.T) {
 
 	dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 	dead.markLost()
-	m.publishChannel("alpha", dead)
+	m.publishChannel("alpha", dead, host)
 	if m.Attached("alpha") {
 		t.Fatal("link-lost channel reported attached")
 	}
@@ -259,7 +259,7 @@ func TestEnsureClosesEveryChannelItReplaces(t *testing.T) {
 	for round := range 3 {
 		dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 		dead.markLost()
-		m.publishChannel(host.Name, dead)
+		m.publishChannel(host.Name, dead, host)
 
 		live, err := m.Ensure(context.Background(), host.Name)
 		if err != nil {
@@ -303,7 +303,7 @@ func TestManagerAttached(t *testing.T) {
 		t.Fatal("never-ensured host reported attached")
 	}
 	ch := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
-	m.publishChannel("alpha", ch)
+	m.publishChannel("alpha", ch, host)
 	if !m.Attached("alpha") {
 		t.Fatal("live channel not reported attached")
 	}
@@ -321,6 +321,55 @@ func TestManagerAttached(t *testing.T) {
 	}
 	if m.Attached("missing") {
 		t.Fatal("unknown host reported attached")
+	}
+}
+
+// publishChannel must stamp a channel with the registration the caller
+// validated, not with whatever entry the registry holds when it runs: a re-read
+// there is a TOCTOU. An update landing between the caller's
+// hostreg.Registry.SameRegistration recheck and the publish would otherwise
+// stamp a channel built from the pre-update entry with the post-update one,
+// which MatchesRegistration then accepts for a row rendering the new
+// configuration — the same "a row adopts another generation's channel and
+// facts" defect the registration field exists to prevent, now on the publisher
+// side. The registry here already holds the re-added entry (identical content,
+// fresh generation) when the channel is published for the entry it was dialed
+// for, so the channel must still pair with the dialed entry and refuse the
+// visible one. Deterministic, no sleeps.
+func TestPublishChannelStampsTheValidatedRegistrationNotTheVisibleOne(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+	dialed, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("reg.Get: not registered")
+	}
+	// The remove/re-add the in-flight attach raced: same content, advanced
+	// generation. This is what the registry holds when the publish runs, and
+	// what a re-read there would have stamped onto the channel.
+	if err := reg.Remove("alpha"); err != nil {
+		t.Fatalf("reg.Remove: %v", err)
+	}
+	if err := reg.Add(host); err != nil {
+		t.Fatalf("reg.Add after the remove: %v", err)
+	}
+	visible, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("reg.Get after the re-add: not registered")
+	}
+	if hostreg.SameRegistration(dialed, visible) {
+		t.Fatal("the re-add did not advance the registration; the test would exercise nothing")
+	}
+
+	m := newTestManager(t, reg, &fakeRunner{}, Options{})
+	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if !m.publishChannel("alpha", ch, dialed) {
+		t.Fatal("publishChannel refused a live manager")
+	}
+	if !ch.MatchesRegistration(dialed) {
+		t.Fatal("the channel does not pair with the registration it was dialed for")
+	}
+	if ch.MatchesRegistration(visible) {
+		t.Fatal("the channel adopted the entry the registry holds now, not the one it was dialed for")
 	}
 }
 
@@ -652,8 +701,10 @@ func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
 		beforeHostGate: func(string) { arrival.hook() },
 	})
 
-	// Hold the host gate, the way a long preflight or attach does.
+	// Hold the host gate, the way a long preflight or attach does. The
+	// acquisition is paired so the gate entry comes back down with the test.
 	lock := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -1242,6 +1293,7 @@ func TestAttachEventIsEmittedUnderTheHostLock(t *testing.T) {
 				return
 			}
 			lock := m.hostLock(ev.Host)
+			defer m.releaseHostLock(ev.Host)
 			acquired := lock.TryLock()
 			if acquired {
 				lock.Unlock()
@@ -2490,10 +2542,12 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 
 	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
 	ch.markLost()
-	if !m.publishChannel("alpha", ch) {
+	if !m.publishChannel("alpha", ch, host) {
 		t.Fatal("publishChannel refused a live manager")
 	}
-	if got := m.reconnectOnce(context.Background(), host, m.hostLock("alpha")); got {
+	hostGate := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
+	if got := m.reconnectOnce(context.Background(), host, hostGate); got {
 		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
 	}
 	if starts := len(fr.recordedStarts()); starts != 0 {
@@ -3887,7 +3941,7 @@ func TestLostAfterPublishDetachesThePredecessorOnClose(t *testing.T) {
 	// slot, while announced still records the predecessor as the channel whose
 	// Attached has no match.
 	replacement := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
-	if !m.publishChannel("alpha", replacement) {
+	if !m.publishChannel("alpha", replacement, host) {
 		t.Fatal("publishChannel refused while the manager was open")
 	}
 	if err := m.Close(); err != nil {

@@ -6,6 +6,7 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
@@ -18,11 +19,20 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+	type ConnectionState,
 	createHubOverviewStore,
 	friendlyErrorMessage,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import {
+	isReady,
+	useConnectionDisplay,
+	useLiveReadiness,
+	useRenderClient,
+	whenReady,
+} from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -30,13 +40,31 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
-export function HubSettingsScreen({ route, navigation }: Props) {
-	const { activeProfile, client, state, retry } = useConnection();
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the last
+// client a retry's gap renders through, the recovered-overview read - belongs
+// to the hub it was built for, and none of it may survive a hub the route now
+// names. React Navigation can update a mounted instance's params (setParams on
+// a focused screen is this app's own idiom - see
+// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
+// re-key remounts it whole.
+export function HubSettingsScreen(props: Props) {
+	return <HubSettingsScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function HubSettingsScreenBody({ route, navigation }: Props) {
+	const { activeProfile, client, state, fatal, retry } = useConnection();
+	const display = useConnectionDisplay(state, fatal);
+	const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
+	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set
+	// already; only a manual retry's own token refetch clears it briefly, and
+	// the last client this screen had covers that gap too.
+	const renderClient = useRenderClient(client);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
 		);
-	if (!client || state !== "ready")
+	if (display === "wall" || !renderClient)
 		return (
 			<View style={{ padding: 20 }}>
 				<Copy>Connect to {activeProfile.name} to view hub settings.</Copy>
@@ -44,30 +72,35 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			</View>
 		);
 	return (
-		<HubSettings
-			client={client}
-			hubId={activeProfile.id}
-			hubName={activeProfile.name}
-			openTranscript={() =>
-				navigation.navigate("TranscriptPreferences", {
-					hubId: activeProfile.id,
-				})
-			}
-			openKeybindings={() =>
-				navigation.navigate("KeybindingPreferences", {
-					hubId: activeProfile.id,
-				})
-			}
-			openProviders={() =>
-				navigation.navigate("Providers", { hubId: activeProfile.id })
-			}
-			openLaunchSettings={() =>
-				navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
-			}
-			openPlugins={() =>
-				navigation.navigate("Plugins", { hubId: activeProfile.id })
-			}
-		/>
+		<>
+			{display === "banner" ? <ConnectionStatus /> : null}
+			<HubSettings
+				client={renderClient}
+				connectionState={state}
+				canUseConnection={canUseConnection}
+				hubId={activeProfile.id}
+				hubName={activeProfile.name}
+				openTranscript={() =>
+					navigation.navigate("TranscriptPreferences", {
+						hubId: activeProfile.id,
+					})
+				}
+				openKeybindings={() =>
+					navigation.navigate("KeybindingPreferences", {
+						hubId: activeProfile.id,
+					})
+				}
+				openProviders={() =>
+					navigation.navigate("Providers", { hubId: activeProfile.id })
+				}
+				openLaunchSettings={() =>
+					navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
+				}
+				openPlugins={() =>
+					navigation.navigate("Plugins", { hubId: activeProfile.id })
+				}
+			/>
+		</>
 	);
 }
 
@@ -107,6 +140,8 @@ const HUB_OVERVIEW_REFRESH_FAILED =
 
 function HubSettings({
 	client,
+	connectionState,
+	canUseConnection,
 	hubId,
 	hubName,
 	openTranscript,
@@ -116,6 +151,8 @@ function HubSettings({
 	openLaunchSettings,
 }: {
 	client: ConversationClientLike;
+	connectionState: ConnectionState;
+	canUseConnection: () => boolean;
 	hubId: string;
 	hubName: string;
 	openTranscript(): void;
@@ -125,6 +162,7 @@ function HubSettings({
 	openLaunchSettings(): void;
 }) {
 	const colors = useColors();
+	const ready = isReady(connectionState);
 	const model = useMemo(() => createHubOverviewStore(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
@@ -145,10 +183,33 @@ function HubSettings({
 	useEffect(() => () => model.dispose(), [model]);
 	useFocusEffect(
 		useCallback(() => {
+			if (!canUseConnection()) return;
 			void model.getState().refresh();
 			void upgrade.reconcileAfterReconnect();
-		}, [model, upgrade]),
+		}, [canUseConnection, model, upgrade]),
 	);
+	// useFocusEffect covers a screen the user comes back to; a passive
+	// reconnect never refocuses it, and the client a manual retry replaces
+	// this one with is still connecting when the focus effect re-runs, so
+	// that read fails with nothing left to re-run it once the connection is
+	// ready. The overview store keeps the last successful load through a
+	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
+	// data stays usable meanwhile; this is the recovery read: one refresh and
+	// one upgrade reconcile per transition back to ready. The seed counts a
+	// mount that is already ready as refreshed: the focus read above is the
+	// read it owes, and a ready "transition" that never happened must not
+	// fire a second refresh and reconcile on top of it.
+	const refreshedAtReady = useRef(connectionState === "ready");
+	useEffect(() => {
+		if (connectionState !== "ready") {
+			refreshedAtReady.current = false;
+			return;
+		}
+		if (refreshedAtReady.current) return;
+		refreshedAtReady.current = true;
+		void model.getState().refresh();
+		void upgrade.reconcileAfterReconnect();
+	}, [connectionState, model, upgrade]);
 	const data = state.data;
 	const hub = data?.hub;
 	return (
@@ -162,7 +223,7 @@ function HubSettings({
 					<RefreshControl
 						refreshing={state.loading && !!data}
 						onRefresh={() => {
-							void state.refresh();
+							if (canUseConnection()) void state.refresh();
 						}}
 					/>
 				}
@@ -180,13 +241,18 @@ function HubSettings({
 						state={upgradeState}
 						hubName={hubName}
 						runningIdentity={hub}
-						onStart={() => {
+						// The start persists its checkpoint before the RPC leaves
+						// (hubUpgrade.ts), so while the connection is away it must
+						// not be pressable; the reads it leaves enabled are the
+						// recovery path.
+						disabled={!ready}
+						onStart={whenReady(canUseConnection, () => {
 							void upgrade.start();
-						}}
+						})}
 						onRefresh={() => {
-							void upgrade.reconcileAfterReconnect();
+							if (canUseConnection()) void upgrade.reconcileAfterReconnect();
 						}}
-						onReviewAnother={() => {
+						onReviewAnother={whenReady(canUseConnection, () => {
 							void upgrade.reviewAnotherUpdate().then((reviewed) => {
 								if (!reviewed) return;
 								Alert.alert(
@@ -196,12 +262,14 @@ function HubSettings({
 										{ text: "Cancel", style: "cancel" },
 										{
 											text: "Continue",
-											onPress: () => upgrade.rearm(reviewed),
+											onPress: () => {
+												if (canUseConnection()) upgrade.rearm(reviewed);
+											},
 										},
 									],
 								);
 							});
-						}}
+						})}
 					/>
 				</Section>
 				{state.loading && !data && (
@@ -212,10 +280,10 @@ function HubSettings({
 				/>
 				{state.error && (
 					<Action
-						disabled={state.loading}
-						onPress={() => {
+						disabled={state.loading || !ready}
+						onPress={whenReady(canUseConnection, () => {
 							void state.refresh();
-						}}
+						})}
 					>
 						Retry hub information
 					</Action>

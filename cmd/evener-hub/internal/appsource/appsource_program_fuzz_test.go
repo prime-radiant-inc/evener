@@ -29,7 +29,7 @@ func FuzzAppSourceProgram(f *testing.F) {
 		fuzzScenarioLocalDaemonSourceJobsOverAppWire,
 		fuzzScenarioLocalDaemonSourceDrainUsesInputShapeDirectly,
 		fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue,
-		fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads,
+		fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport,
 		fuzzScenarioLocalDaemonSourceListCarriesAskPending,
 		fuzzScenarioLocalDaemonSourceSubscribeThreadRequestsSubscription,
 		fuzzScenarioLocalDaemonSourceSubscribeThreadMapsConnectionRefused,
