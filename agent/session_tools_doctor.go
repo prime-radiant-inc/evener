@@ -301,7 +301,7 @@ func doctorCapSessionsRows(res doctor.SessionsResult) doctorSessionsEnvelope {
 // error instead.
 func doctorRequireSelector(command, selector string) error {
 	if strings.TrimSpace(selector) == "" {
-		return fmt.Errorf("doctor command %q requires a selector (local:<id>, proj:<project-id>:<id>, or bare <id>)", command)
+		return fmt.Errorf("doctor command %q requires a selector (%s)", command, tool.DoctorEvenerSelectorDialect)
 	}
 	return nil
 }

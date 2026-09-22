@@ -482,12 +482,11 @@ func TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct(t *testing.T) {
 }
 
 // TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets proves the
-// daemon's own invocation shape: the session's state dir is its project
-// bucket directory (what RuntimeDir computes and EVENER_STATE_DIR carries),
-// and a bare-id locate with no state_dir argument must still resolve a
-// session living in a sibling project bucket — the forensic scenario the
-// doctoring diagnosis hit, where a sibling-bucket session was invisible to
-// every bare-id lookup.
+// daemon's own invocation shape (the session's state dir is its project
+// bucket directory — see userdirs.StateHomeForBucketDir): a bare-id locate
+// with no state_dir argument must still resolve a session living in a
+// sibling project bucket — the forensic scenario the doctoring diagnosis
+// hit, where a sibling-bucket session was invisible to every bare-id lookup.
 func TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets(t *testing.T) {
 	stateHome := newStateHome(t)
 	bucketA := newBucketUnder(t, stateHome)

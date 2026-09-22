@@ -87,9 +87,12 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	if err != nil {
 		return SessionsResult{}, err
 	}
-	if opts.Bucket != "" && !slices.ContainsFunc(buckets, func(b bucket) bool { return b.projectID == opts.Bucket }) {
-		return SessionsResult{}, fmt.Errorf("bucket %s not found under %s (%d %s scanned)",
-			opts.Bucket, stateRoot, len(buckets), plural(len(buckets), "bucket"))
+	if opts.Bucket != "" {
+		b, ok := bucketByProjectID(buckets, opts.Bucket)
+		if !ok {
+			return SessionsResult{}, fmt.Errorf("bucket %s not found %s", opts.Bucket, scannedUnder(stateRoot, len(buckets)))
+		}
+		buckets = []bucket{b}
 	}
 
 	var cutoff time.Time
@@ -100,9 +103,6 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	res := SessionsResult{Sessions: []SessionRow{}, Unreadable: []UnreadableSession{}}
 	delegates := delegateCache{}
 	for _, b := range buckets {
-		if opts.Bucket != "" && b.projectID != opts.Bucket {
-			continue
-		}
 		metas, err := schema.ListSessionMetas(b.dir)
 		if err != nil {
 			return SessionsResult{}, fmt.Errorf("list session metas in bucket %s: %w", b.dir, err)

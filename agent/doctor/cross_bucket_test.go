@@ -17,23 +17,37 @@ import (
 // "one".
 const hash3 = "Project-three-0123456789"
 
-// The daemon runs every session with its own state dir set to the session's
-// PROJECT BUCKET directory (<stateHome>/evener/projects/<project-id> — what
-// RuntimeDir computes and what EVENER_STATE_DIR carries), not the state home.
-// A forensic sweep from that base must still see every sibling bucket under
-// the state root: parent, delegate, and observer sessions routinely live in
-// other projects' buckets, and a miss must say where it looked, not come back
-// empty. These tests pin that sweep for both surfaces that share this
-// package — the `evener doctor` CLI and the in-process doctor_evener tool.
+// The daemon runs every session with its state dir set to the session's
+// project bucket directory (see userdirs.StateHomeForBucketDir), so a
+// forensic sweep handed that base must still see every sibling bucket under
+// the state root, and a miss must say where it looked, not come back empty.
+// These tests pin that sweep for both surfaces that share this package — the
+// `evener doctor` CLI and the in-process doctor_evener tool.
+
+// newTwoBucketState lays out a state home with two project buckets (hash1,
+// hash2) — the smallest fixture that can hide a session in a sibling bucket.
+func newTwoBucketState(t *testing.T) (stateHome, bucketA, bucketB string) {
+	t.Helper()
+	stateHome = t.TempDir()
+	return stateHome, stateHomeBucket(stateHome, hash1), stateHomeBucket(stateHome, hash2)
+}
+
+// writeListedSession writes one minimal session whose ListSessions row is
+// deterministic: a plain header and meta stamped now, no turns, no jobs
+// events.
+func writeListedSession(t *testing.T, dir, sid string) {
+	t.Helper()
+	now := time.Now()
+	writeSessionsFixtureSession(t, dir, sid,
+		transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
+}
 
 // TestLocate_BucketDirBase_BareIDSweepsSiblingBuckets proves a bare id
 // resolves from one project bucket into a sibling bucket of the same state
 // root — the exact shape the doctoring diagnosis hit when a bare-id locate
 // silently missed a session living in a sibling project bucket.
 func TestLocate_BucketDirBase_BareIDSweepsSiblingBuckets(t *testing.T) {
-	stateHome := t.TempDir()
-	bucketA := stateHomeBucket(stateHome, hash1)
-	bucketB := stateHomeBucket(stateHome, hash2)
+	_, bucketA, bucketB := newTwoBucketState(t)
 	writeSession(t, bucketA, sidA)
 	writeSession(t, bucketB, sidB)
 
@@ -56,9 +70,7 @@ func TestLocate_BucketDirBase_BareIDSweepsSiblingBuckets(t *testing.T) {
 // proj:<project-id>:<sid> selector names a sibling bucket when the base is
 // itself a project bucket directory.
 func TestLocate_BucketDirBase_ProjSelectorAddressesSibling(t *testing.T) {
-	stateHome := t.TempDir()
-	bucketA := stateHomeBucket(stateHome, hash1)
-	bucketB := stateHomeBucket(stateHome, hash2)
+	_, bucketA, bucketB := newTwoBucketState(t)
 	writeSession(t, bucketA, sidA)
 	writeSession(t, bucketB, sidB)
 
@@ -158,14 +170,9 @@ func TestLocate_SweepsBucketsByDirectoryNotName(t *testing.T) {
 // and stamps every row with its real bucket, so a batch study sees the whole
 // state root and can group by project.
 func TestListSessions_BucketDirBase_SweepsSiblingsAndPopulatesBucket(t *testing.T) {
-	stateHome := t.TempDir()
-	bucketA := stateHomeBucket(stateHome, hash1)
-	bucketB := stateHomeBucket(stateHome, hash2)
-	now := time.Now()
-	writeSessionsFixtureSession(t, bucketA, sidA,
-		transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
-	writeSessionsFixtureSession(t, bucketB, sidB,
-		transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
+	_, bucketA, bucketB := newTwoBucketState(t)
+	writeListedSession(t, bucketA, sidA)
+	writeListedSession(t, bucketB, sidB)
 
 	res, err := ListSessions(bucketA, SessionsOpts{})
 	if err != nil {
@@ -188,9 +195,7 @@ func TestListSessions_BucketDirBase_SweepsSiblingsAndPopulatesBucket(t *testing.
 // scan breadth — never a silently empty list, which is indistinguishable
 // from "no sessions exist".
 func TestListSessions_UnknownBucketIsExplicitError(t *testing.T) {
-	stateHome := t.TempDir()
-	bucketA := stateHomeBucket(stateHome, hash1)
-	bucketB := stateHomeBucket(stateHome, hash2)
+	stateHome, bucketA, bucketB := newTwoBucketState(t)
 	writeSession(t, bucketA, sidA)
 	writeSession(t, bucketB, sidB)
 
@@ -210,14 +215,9 @@ func TestListSessions_UnknownBucketIsExplicitError(t *testing.T) {
 // bucket argument accepts real bucket directory names and scopes to a
 // sibling bucket even when the base is itself a project bucket directory.
 func TestListSessions_BucketDirBase_BucketFilterAddressesSibling(t *testing.T) {
-	stateHome := t.TempDir()
-	bucketA := stateHomeBucket(stateHome, hash1)
-	bucketB := stateHomeBucket(stateHome, hash2)
-	now := time.Now()
-	writeSessionsFixtureSession(t, bucketA, sidA,
-		transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
-	writeSessionsFixtureSession(t, bucketB, sidB,
-		transcript.Header{CreatedAt: now, Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, now)
+	_, bucketA, bucketB := newTwoBucketState(t)
+	writeListedSession(t, bucketA, sidA)
+	writeListedSession(t, bucketB, sidB)
 
 	res, err := ListSessions(bucketA, SessionsOpts{Bucket: hash2})
 	if err != nil {
