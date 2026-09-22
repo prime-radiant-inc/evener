@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
   useEffect,
+	useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,10 +21,22 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { MarketplaceEntry, PluginRefParams } from "@evener/appwire-client";
+import type {
+  ConnectionState,
+  MarketplaceEntry,
+  PluginRefParams,
+} from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import {
+  isReady,
+  useConnectionDisplay,
+  useLiveReadiness,
+  useRenderClient,
+  whenReady,
+} from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
@@ -66,7 +79,19 @@ type AppliedRemovalGuard = {
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 
-export function PluginsScreen({
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the last
+// client a retry's gap renders through - belongs to the hub it was built
+// for, and none of it may survive a hub the route now names. React
+// Navigation can update a mounted instance's params (setParams on a
+// focused screen is this app's own idiom - see
+// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
+// re-key remounts it whole.
+export function PluginsScreen(props: NativeStackScreenProps<Routes, "Plugins">) {
+  return <PluginsScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function PluginsScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Plugins">) {
   // One plugin mutation at a time, across this list AND the browser: switching
@@ -81,7 +106,15 @@ export function PluginsScreen({
   // credential store is (credentialStore.ts), as committed state a discarded
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
-  const { activeProfile, client, state, retry } = useConnection();
+  const { activeProfile, client, state, fatal, retry } = useConnection();
+  const display = useConnectionDisplay(state, fatal);
+  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
+  // A flap keeps `client` set (the connection layer's own generation guard -
+  // hubConnection.ts), but a manual retry briefly clears it while it opens a
+  // fresh one; the last client this screen had keeps the list mounted
+  // through that gap too, rather than dropping to the wall for a moment the
+  // banner should cover just as well as a passive reconnect does.
+  const renderClient = useRenderClient(client);
   // An applied marketplace removal's residue lives beside the gate, above the
   // early returns below, for the same reason it does: they unmount and remount
   // the ready-only child on every connection transition, and the browser that
@@ -201,7 +234,7 @@ export function PluginsScreen({
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
     );
-  if (!client || state !== "ready")
+  if (display === "wall" || !renderClient)
     return (
       <View style={{ padding: 20 }}>
         <Copy>Connect to {activeProfile.name} to manage plugins.</Copy>
@@ -209,22 +242,28 @@ export function PluginsScreen({
       </View>
     );
   return (
-    <Plugins
-      key={activeProfile.id}
-      client={client}
-      hubName={activeProfile.name}
-      gate={gate}
-      appliedRemovalNames={appliedRemovalNames}
-      marketplaceWarning={visibleMarketplaceWarning}
-      onAppliedRemoval={markAppliedRemoval}
-      onAuthoritativeMarketplaces={reconcileAppliedRemovals}
-      onMarketplaceAdded={clearAddedMarketplace}
-    />
+    <>
+      {display === "banner" ? <ConnectionStatus /> : null}
+      <Plugins
+        key={activeProfile.id}
+        client={renderClient}
+        connectionState={state}
+        canUseConnection={canUseConnection}
+        hubName={activeProfile.name}
+        gate={gate}
+        appliedRemovalNames={appliedRemovalNames}
+        marketplaceWarning={visibleMarketplaceWarning}
+        onAppliedRemoval={markAppliedRemoval}
+        onAuthoritativeMarketplaces={reconcileAppliedRemovals}
+        onMarketplaceAdded={clearAddedMarketplace}
+      />
+    </>
   );
 }
 
 function Plugins({
   client,
+  connectionState,
   hubName,
   gate,
   appliedRemovalNames,
@@ -232,8 +271,10 @@ function Plugins({
   onAppliedRemoval,
   onAuthoritativeMarketplaces,
   onMarketplaceAdded,
+  canUseConnection,
 }: {
   client: ConversationClientLike;
+  connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
   appliedRemovalNames: ReadonlySet<string>;
@@ -249,10 +290,12 @@ function Plugins({
     owner: ConversationClientLike,
   ): void;
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
+  canUseConnection: () => boolean;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
+  const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
   const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
@@ -272,6 +315,20 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  // The store's own reconnect recovery is what a banner over a live screen
+  // needs: the hub broadcasts a change only to clients connected when it
+  // happens, so everything that moved while this one was away arrives as
+  // nothing at all, and the store re-reads a list something wants once
+  // connectionChanged says the connection is ready again (storeLifecycle.ts).
+  // The wall this screen used to show remounted the store on every recovery,
+  // so that read happened for free with the remount; keeping the screen
+  // mounted behind a banner removes it, and this drives the store through
+  // every transition itself, the way useCredentialStore drives the credential
+  // store (credentialStore.ts). A layout effect, so the store knows its
+  // connection before the mount effect's first read issues.
+  useLayoutEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchPlugins();
@@ -295,7 +352,7 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    const outcome = await runGatedMutation(gate, action);
+    const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
@@ -305,7 +362,7 @@ function Plugins({
     else if (success) setNotice(success);
   }
   function remove() {
-    if (!selected || busy) return;
+    if (!selected || busy || !canUseConnection()) return;
     const target = selected;
     const version = editorVersion.current;
     Alert.alert(
@@ -349,9 +406,12 @@ function Plugins({
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
+          connectionState={connectionState}
           hubName={hubName}
           installed={model}
           gate={gate}
+          ready={ready}
+          canUseConnection={canUseConnection}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
@@ -371,7 +431,7 @@ function Plugins({
           keyboardShouldPersistTaps="handled"
           refreshing={state.pluginsLoading}
           onRefresh={() => {
-            void state.fetchPlugins();
+            if (canUseConnection()) void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -392,9 +452,10 @@ function Plugins({
               <ErrorMessage message={listError} />
               {listError && (
                 <Action
-                  onPress={() => {
+                  disabled={!ready}
+                  onPress={whenReady(canUseConnection, () => {
                     void state.fetchPlugins();
-                  }}
+                  })}
                 >
                   Retry
                 </Action>
@@ -457,6 +518,10 @@ function Plugins({
               </View>
               <Action onPress={close}>Done</Action>
             </View>
+            {/* The native modal covers the banner the screen shows behind
+             * it, so the status and the manual reconnect live here while
+             * this detail is open. */}
+            {connectionState !== "ready" ? <ConnectionStatus /> : null}
             <ScrollView
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
               contentContainerStyle={{ padding: 20, gap: 12 }}
@@ -480,7 +545,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(enabled) => {
                     const target = selected;
                     void act(() =>
@@ -498,7 +563,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Automatic plugin upgrades"
                   value={entry.autoUpgrade}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(value) => {
                     const target = selected;
                     void act(() =>
@@ -512,7 +577,7 @@ function Plugins({
                 />
               </View>
               <Action
-                disabled={busy}
+                disabled={busy || !ready}
                 onPress={() => {
                   const target = selected;
                   void act(
@@ -538,7 +603,7 @@ function Plugins({
                   )}
                 </>
               )}
-              <Action disabled={busy} onPress={remove}>
+              <Action disabled={busy || !ready} onPress={remove}>
                 Remove plugin
               </Action>
             </ScrollView>

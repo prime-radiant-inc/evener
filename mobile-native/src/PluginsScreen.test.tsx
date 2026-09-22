@@ -468,9 +468,10 @@ it("keeps the guard and warning across a same-client connection flap", async () 
   await confirmMarketplaceRemoval(tree);
   expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
 
-  // A passive flap moves only `state`: the ready-only child unmounts for the
-  // reconnecting render and remounts for the ready one, with the SAME client
-  // throughout - the guard and warning have to outlive that remount.
+  // A passive flap moves only `state`: the screen stays mounted behind the
+  // banner (connectionDisplay.ts) with the SAME client throughout, and the
+  // browser it carries stays on the detail it was showing - the guard and
+  // warning have to outlive the store's own reconnect re-read.
   harness.connection = { ...readyConnection(hub.client), state: "reconnecting" };
   await act(async () => {
     tree.update(<PluginsScreen {...props} />);
@@ -482,7 +483,9 @@ it("keeps the guard and warning across a same-client connection flap", async () 
   await act(async () => {});
 
   expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-  await browseMarketplace(tree);
+  // The reconnect re-read republishes the stale registration - the very row
+  // the fence guards - so Remove stays disabled in the detail the flap
+  // never unmounted.
   const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
   expect(remove.props.disabled).toBe(true);
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);

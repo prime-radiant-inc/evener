@@ -163,11 +163,53 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	credentialsPanel     *launchconfig.CredentialsPanel
-	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
-	pluginsPanel         *launchconfig.PluginsPanel
-	followupModal        *tuipick.TextInputModal
-	launchOverridesModal *launchconfig.LaunchOverridesModal
+	credentialsPanel    *launchconfig.CredentialsPanel
+	launchSettingsPanel *launchconfig.LaunchSettingsPanel
+	pluginsPanel        *launchconfig.PluginsPanel
+	// marketplaceRemovePending fences a remove until its result is settled.
+	// An applied-with-litter result keeps this identity until a fresh list
+	// confirms the post-removal state.
+	marketplaceRemovePending       string
+	marketplaceReconcilePending    bool
+	marketplaceReconcileGeneration uint64
+	// marketplaceListReadsOrdered turns on the first time a marketplace
+	// removal lands on the hub, whatever the outcome carried. From then on
+	// the model issues only generation-tagged reads, and rejects every read
+	// whose generation predates the latest landed removal: such a read was
+	// issued before that removal stood and can never describe the
+	// post-removal state, so accepting it - however late it arrives - would
+	// resurrect the removed marketplace's row.
+	marketplaceListReadsOrdered bool
+	// marketplaceListReadIssued is the generation of the newest list read
+	// this model has issued. The reconciliation gate holds back failed
+	// reads older than it, so only the newest list read's own failure
+	// reaches the panel: an add or refresh issuance shares the ordering
+	// counter but never moves this marker, and can never outrank a read's
+	// failure - which is the panel's only way out of its loading state.
+	//
+	// marketplaceListFloor is the read generation at the moment the latest
+	// marketplace removal landed. Reads at or below it were issued before
+	// that landing and are stale by construction; reads above it were issued
+	// after and carry post-removal truth.
+	//
+	// marketplaceListApplied is the generation of the newest read whose
+	// successful response has been accepted. A smaller generation arriving
+	// later was issued before that one and carries a snapshot the applied
+	// read already superseded, so it is rejected however late it arrives -
+	// failures never advance it, so an outstanding reconciliation's success
+	// still settles while a newer request has merely been issued or failed.
+	marketplaceListReadIssued uint64
+	marketplaceListFloor      uint64
+	marketplaceListApplied    uint64
+	// marketplaceListAppliedRows is the marketplace list of the newest
+	// applied state. It is updated wherever marketplaceListApplied
+	// advances and wherever a landed removal's certainty strips its
+	// name, so a removal response older than the newest applied read can
+	// merge down to the applied rows instead of resurrecting what that
+	// read dropped.
+	marketplaceListAppliedRows []appwire.MarketplaceEntry
+	followupModal              *tuipick.TextInputModal
+	launchOverridesModal       *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress

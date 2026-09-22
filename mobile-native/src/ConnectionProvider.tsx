@@ -33,6 +33,7 @@ interface Connection {
 	activeProfile: HubProfile | null;
 	client: AppwireClient | null;
 	state: ConnectionState;
+	fatal: boolean;
 	error: string | null;
 	loading: boolean;
 	saveHub(input: HubInput): Promise<boolean>;
@@ -73,7 +74,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		profiles.find((profile) => profile.id === selected) ?? null;
 	const activeId = activeProfile?.id;
 	const activeOrigin = activeProfile?.origin;
-	const { client, state: visibleState } = useHubConnection(
+	const { client, state: visibleState, fatal } = useHubConnection(
 		repository,
 		activeId,
 		activeOrigin,
@@ -146,6 +147,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			activeProfile,
 			client,
 			state: visibleState,
+			fatal,
 			error,
 			loading,
 			saveHub,
@@ -162,6 +164,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			activeProfile,
 			client,
 			visibleState,
+			fatal,
 			error,
 			loading,
 			saveHub,

@@ -11,6 +11,11 @@ import { connectionFailure } from "./connectionRecovery";
 export interface HubConnection {
 	client: AppwireClient | null;
 	state: ConnectionState;
+	/** True only for a close a retry can never fix (a protocol mismatch -
+	 * connectionRecovery.ts's ConnectionFailureKind). Belongs to the CURRENT
+	 * generation only: a fresh attempt starts with no verdict of its own,
+	 * never carrying the previous generation's failure forward. */
+	fatal: boolean;
 }
 
 /** The one HubProfiles method this hook needs; HubProfiles itself satisfies
@@ -61,12 +66,14 @@ export function useHubConnection(
 		undefined,
 	);
 	const targetKey = JSON.stringify([activeId, activeOrigin, foreground, attempt]);
+	const [fatal, setFatal] = useState(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
 	useEffect(() => {
 		let cancelled = false;
 		let connection: AppwireClient | null = null;
 		let unsubscribe: (() => void) | undefined;
 		setError(null);
+		setFatal(false);
 		if (!activeId || !activeOrigin || !foreground) return;
 		store.setState({ state: "connecting" });
 		void repository
@@ -93,19 +100,23 @@ export function useHubConnection(
 				const currentConnection = connection;
 				unsubscribe = currentConnection.onStateChange((next) => {
 					if (cancelled) return;
-					if (next === "ready") setError(null);
-					if (next === "closed")
-						setError(
-							connectionFailure(currentConnection.terminalReason).message,
-						);
+					if (next === "ready") {
+						setError(null);
+						setFatal(false);
+					}
+					if (next === "closed") {
+						const failure = connectionFailure(currentConnection.terminalReason);
+						setError(failure.message);
+						setFatal(failure.kind === "protocol");
+					}
 				});
 				return connection.connect();
 			})
 			.catch(() => {
 				if (!cancelled) {
-					setError(
-						connectionFailure(connection?.terminalReason ?? null).message,
-					);
+					const failure = connectionFailure(connection?.terminalReason ?? null);
+					setError(failure.message);
+					setFatal(failure.kind === "protocol");
 					store.setState({ state: "closed" });
 					connection?.close();
 				}
@@ -133,5 +144,6 @@ export function useHubConnection(
 			: activeId && foreground
 				? "connecting"
 				: "idle",
+		fatal,
 	};
 }

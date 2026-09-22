@@ -190,8 +190,96 @@ func TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath(t *testing.T) {
 	}
 	// The same branch without any symlink must keep the anchored absolute form.
 	plain := filepath.Join(work, "plain-missing", "state")
-	if got := canonicalStateDir(plain); got != plain {
-		t.Fatalf("canonicalStateDir(%q) = %q, want the anchored absolute form unchanged", plain, got)
+	// On hosts whose temp root is itself a symlink (macOS /var →
+	// /private/var), the anchored form resolves through it, so the want
+	// must be built from the resolved work dir, not the lexical one.
+	wantPlain := filepath.Join(resolvedPath(t, work), "plain-missing", "state")
+	if got := canonicalStateDir(plain); got != wantPlain {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (the anchored absolute form)", plain, got, wantPlain)
+	}
+}
+
+// TestCanonicalStateDirResolvesDotDotThroughSymlink pins the
+// kernel-equivalent half of the same contract: filepath.Abs cleans `..`
+// lexically, which is wrong across a symlink. `link/../state` addresses the
+// physical parent of link's target, exactly as the kernel resolves it, not
+// link's lexical parent. A state dir built that way must canonicalize to the
+// physical path, so attachment paths announced from the session point where
+// the kernel will actually look.
+func TestCanonicalStateDirResolvesDotDotThroughSymlink(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	target := filepath.Join(work, "target", "sub")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(work, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// Raw string, not filepath.Join: Join would Clean the ".." away before
+	// canonicalStateDir ever sees it, and the CLI delivers a raw
+	// --state-dir value with its dots intact.
+	sep := string(filepath.Separator)
+	through := link + sep + ".." + sep + "state"
+	want := filepath.Join(resolvedPath(t, filepath.Dir(target)), "state")
+	if got := canonicalStateDir(through); got != want {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (.. must pop the symlink target's physical parent, not the lexical one)", through, got, want)
+	}
+	// Without a symlink in play the lexical and physical answers agree; the
+	// plain form must keep resolving to the anchored path.
+	plainDots := work + sep + "a" + sep + ".." + sep + "b"
+	wantPlainDots := filepath.Join(resolvedPath(t, work), "b")
+	if got := canonicalStateDir(plainDots); got != wantPlainDots {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (no-symlink .. keeps the anchored form)", plainDots, got, wantPlainDots)
+	}
+}
+
+// TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd pins the
+// relative-input half of the same contract under a symlinked working
+// directory: a shell that cd'd through a symlink hands the process a lexical
+// PWD, which os.Getwd prefers whenever it matches ".". Anchoring a relative
+// state dir onto that lexical form — or resolving it before anchoring — must
+// not preserve the symlink: the session records the physical path its
+// attachment reads will actually address. No t.Parallel: chdir and PWD are
+// process-global.
+func TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd(t *testing.T) {
+	work := t.TempDir()
+	realWork := filepath.Join(work, "real-work")
+	if err := os.MkdirAll(realWork, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(work, "link-work")
+	if err := os.Symlink(realWork, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	state := filepath.Join(realWork, "state")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(link); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Setenv("PWD", link)
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore Chdir: %v", err)
+		}
+	})
+
+	if got := canonicalStateDir("state"); got != resolvedPath(t, state) {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (an existing relative state dir under a symlinked cwd must resolve to the physical path)", "state", got, state)
+	}
+	fresh := filepath.Join("fresh", "inner")
+	wantFresh := filepath.Join(resolvedPath(t, realWork), "fresh", "inner")
+	if got := canonicalStateDir(fresh); got != wantFresh {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (a missing relative state dir under a symlinked cwd must resolve to the physical path)", fresh, got, wantFresh)
 	}
 }
 

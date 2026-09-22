@@ -25,12 +25,15 @@ import {
   isStaleCursorError,
   itemIdentityMatches,
   joinWarningParts,
+  mergeOlderItemPage,
+  mergeTurnHistory,
   notificationTargetsThread,
   sessionControls,
   WireError,
 } from "@evener/appwire-client";
 import type {
   AnyNotification,
+  AskQuestionRef,
   InputItem,
   ItemModel,
   MutationReceipt,
@@ -43,14 +46,20 @@ import type {
   ActivityMember,
 } from "../conversation/project";
 import {
+  activityIdentity,
   activityState,
+  attachmentSourceId,
+  attachmentSourceIdentity,
   capItems as sharedCapItems,
   clusterActivities,
   itemAttachments,
   MAX_ITEM_BYTES,
+  ownTimelineIdentities,
   projectItemAttachments,
   projectTimeline,
   RETAINED_ITEM_CAP,
+  timelineIdentity,
+  timelineIdentities,
   TRUNCATION_MARKER,
   truncateItem as sharedTruncateItem,
   truncateText,
@@ -62,48 +71,6 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-
-function attachmentSourceId(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments" && item.id.endsWith(":attachments")
-    ? item.id.slice(0, -":attachments".length)
-    : null;
-}
-
-function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments"
-    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
-    : null;
-}
-
-function timelineIdentity(item: MobileTimelineItem): string {
-  return item.transcriptKey ?? item.id;
-}
-
-// The canonical identity of a clustered activity member — the same
-// transcriptKey-first rule timelineIdentity applies to a top-level row.
-function activityIdentity(activity: ActivityMember): string {
-  return activity.transcriptKey ?? activity.id;
-}
-
-// The identities a row IS: its own, plus every clustered member's. Distinct
-// from timelineIdentities, which also carries the identity of the row an
-// attachment belongs to — an attachment is not a duplicate of its source.
-function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = new Set([timelineIdentity(item)]);
-  if (item.kind === "activity" && item.members) {
-    for (const member of item.members) {
-      identities.add(activityIdentity(member));
-    }
-  }
-  return identities;
-}
-
-function timelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = ownTimelineIdentities(item);
-  const source = attachmentSourceIdentity(item);
-  if (source !== null) identities.add(source);
-  return identities;
-}
 
 function liveRevisionForItem(
   item: MobileTimelineItem,
@@ -506,17 +473,81 @@ export function exceedsByteLimit(text: string, maxBytes: number): boolean {
 
 export { MAX_ITEM_BYTES, RETAINED_ITEM_CAP, TRUNCATION_MARKER, truncateText };
 
-// Check if an activity detail's arguments/output/error exceed the byte limit
-// — the same rule applies to a top-level activity detail and to each of a
-// cluster's member details.
+// Check if an activity detail's text-bearing fields exceed the byte limit —
+// description joins arguments/output/error, the four fields
+// truncateActivityDetail bounds. The same rule applies to a top-level
+// activity detail and to each of a cluster's member details.
 function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
   return (
+    (detail.description !== undefined &&
+      exceedsByteLimit(detail.description, MAX_ITEM_BYTES)) ||
     (detail.arguments !== undefined &&
       exceedsByteLimit(detail.arguments, MAX_ITEM_BYTES)) ||
     (detail.output !== undefined &&
       exceedsByteLimit(detail.output, MAX_ITEM_BYTES)) ||
     (detail.error !== undefined &&
       exceedsByteLimit(detail.error, MAX_ITEM_BYTES))
+  );
+}
+
+// A question's own prose, in the fields boundQuestion cuts: header, question,
+// why, ifUnanswered, and every option's label and detail.
+function exceedsQuestionLimit(question: AskQuestionRef): boolean {
+  return (
+    exceedsByteLimit(question.header, MAX_ITEM_BYTES) ||
+    exceedsByteLimit(question.question, MAX_ITEM_BYTES) ||
+    (question.why !== undefined &&
+      exceedsByteLimit(question.why, MAX_ITEM_BYTES)) ||
+    (question.ifUnanswered !== undefined &&
+      exceedsByteLimit(question.ifUnanswered, MAX_ITEM_BYTES)) ||
+    question.options.some(
+      (option) =>
+        exceedsByteLimit(option.label, MAX_ITEM_BYTES) ||
+        exceedsByteLimit(option.detail, MAX_ITEM_BYTES),
+    )
+  );
+}
+
+// Whether ANY field truncateItem bounds on this row exceeds the limit in its
+// original content — the exact rule for which rows the store records as
+// truncated. #1737 moved the bounds over every row kind (a pasted user
+// message, a daemon notice, a failure's title and detail, question prose,
+// and an activity's description and label joined assistant markdown and the
+// activity arguments/output/error), but the ownership checks below kept
+// reading only those last two, so the other kinds arrived cut with no id in
+// the set and no affordance. An attachments row's display name is bounded
+// too, but that bound predates #1737 and its ownership stays as it was.
+function rowExceedsDisplayBound(item: MobileTimelineItem): boolean {
+  switch (item.kind) {
+    case "assistant":
+      return exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
+    case "activity":
+      return (
+        exceedsByteLimit(item.label, MAX_ITEM_BYTES) ||
+        exceedsActivityDetailLimit(item.detail)
+      );
+    case "user":
+    case "notice":
+      return exceedsByteLimit(item.text, MAX_ITEM_BYTES);
+    case "failure":
+      return (
+        exceedsByteLimit(item.title, MAX_ITEM_BYTES) ||
+        exceedsByteLimit(item.detail, MAX_ITEM_BYTES)
+      );
+    case "question":
+      return item.questions.some(exceedsQuestionLimit);
+    default:
+      return false;
+  }
+}
+
+// A clustered member is bounded on its label and its detail's fields exactly
+// like the top-level row (truncateItem's member map), so ownership reads the
+// same pair.
+function exceedsActivityMemberBound(member: ActivityMember): boolean {
+  return (
+    exceedsByteLimit(member.label, MAX_ITEM_BYTES) ||
+    exceedsActivityDetailLimit(member.detail)
   );
 }
 
@@ -829,6 +860,15 @@ export function createConversationStore() {
   // to the oldest position where they'd be discarded by the 500-cap. Cleared
   // on every conversation transition (open/close/reset/openProjected).
   const pageOwnedIds = new Set<string>();
+  // Track page-owned turn IDs separately from pageOwnedIds above. Turns are
+  // never capped or evicted the way display items are (a
+  // page's items can be entirely deduped away or trimmed by the item cap
+  // while its turns — the only source of a usage total when there is no
+  // thread-level cumulative usage — still belong in conversation.turns), so
+  // whether to preserve older turns on a rehydrate must not depend on
+  // whether any of that page's ROWS survived. Never pruned (turns are never
+  // evicted); cleared on every conversation transition, same as pageOwnedIds.
+  const pageOwnedTurnIds = new Set<string>();
   // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
   // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
   // last accepted live notification for that item. liveOwnerRev is a global
@@ -1135,23 +1175,17 @@ export function createConversationStore() {
       retainedIds.has(identity);
     truncatedItemIds.clear();
     for (const item of items) {
-      let needsTruncation = false;
-      if (item.kind === "assistant") {
-        needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
-      } else if (item.kind === "activity") {
-        needsTruncation = exceedsActivityDetailLimit(item.detail);
-      }
-      if (needsTruncation || staysFrozen(timelineIdentity(item))) {
+      if (rowExceedsDisplayBound(item) || staysFrozen(timelineIdentity(item))) {
         truncatedItemIds.add(timelineIdentity(item));
       }
-      // A clustered member's own oversized detail freezes under the
+      // A clustered member's own oversized label or detail freezes under the
       // member's own identity, independent of the top-level freeze above —
       // native expands members directly, so each is bounded and guarded on
       // its own.
       if (item.kind === "activity" && item.members) {
         for (const member of item.members) {
           const identity = activityIdentity(member);
-          if (exceedsActivityDetailLimit(member.detail) || staysFrozen(identity)) {
+          if (exceedsActivityMemberBound(member) || staysFrozen(identity)) {
             truncatedItemIds.add(identity);
           }
         }
@@ -1169,13 +1203,7 @@ export function createConversationStore() {
   function truncateAndRecordSingle(
     item: MobileTimelineItem,
   ): MobileTimelineItem {
-    let needsTruncation = false;
-    if (item.kind === "assistant") {
-      needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
-    } else if (item.kind === "activity") {
-      needsTruncation = exceedsActivityDetailLimit(item.detail);
-    }
-    if (needsTruncation) {
+    if (rowExceedsDisplayBound(item)) {
       truncatedItemIds.add(timelineIdentity(item));
     }
     return truncateItem(item);
@@ -1252,6 +1280,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         set({
@@ -1320,6 +1349,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -1585,6 +1615,12 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
+          // D18 B3 round 8: the store's own paging cursor at entry. A racing
+          // loadOlder that succeeds with no retained rows still advances this
+          // value; a failed one moves it not at all — the difference the
+          // cursor merge below reads to keep a successful page's advancement
+          // without letting a failed page pin a stale pre-race cursor.
+          const entryOlderCursor = get().olderCursor;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1651,9 +1687,18 @@ export function createConversationStore() {
             conversation.items.flatMap((item) => [...timelineIdentities(item)]),
           );
           const currentConvForMerge = currentSnapshot.conversation;
+          const sameInstance =
+            currentConvForMerge !== null && currentConvForMerge.instanceId === conversation.instanceId;
+          const replacesInstance = currentConvForMerge !== null && !sameInstance;
           const preservePageHistory =
-            currentConvForMerge?.instanceId === conversation.instanceId &&
-            (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
+            sameInstance && pageOwnedIds.size > 0;
+          // Turn-history and wire-cursor merging gate on turn ownership, not
+          // item ownership — a page whose items
+          // were entirely deduped or evicted still owns turns that must not
+          // be dropped, since they may be the only usage data a session
+          // without a thread-level cumulative total has.
+          const preserveTurnHistory =
+            sameInstance && pageOwnedTurnIds.size > 0;
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
@@ -1752,6 +1797,20 @@ export function createConversationStore() {
               mergedItems = [...mergedItems, ...liveTailItems];
             }
           }
+          // D18 B3 round 8: a racing loadOlder that retained no display rows
+          // (every row deduped, or cap-evicted) still advanced the store's
+          // own paging cursor, and the fresh reread's window cursor knows
+          // nothing about pages this client already consumed — keep the
+          // advancement, or the next loadOlder re-requests that page (or
+          // resurrects paging at a cursor the cap or exhausted history had
+          // honestly stopped). A FAILED racing page also bumps the page
+          // token but moves the cursor not at all, so the entry comparison
+          // — not the token, and not row ownership — is what separates the
+          // two: the fresh read's own signal still wins unless the store's
+          // own cursor actually moved during the await.
+          const pageCursorAdvanced =
+            sameInstance && currentSnapshot.olderCursor !== entryOlderCursor;
+          if (pageCursorAdvanced) mergedCursor = currentSnapshot.olderCursor;
           // Accept a snapshot's removal of a companion when it also contains
           // the source, unless a live event changed that group during the read.
           mergedItems = mergedItems.filter((item) => {
@@ -1813,12 +1872,47 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
+          // The reread's own turns cover only its itemLimit-bounded window,
+          // so a turn loaded via an earlier
+          // loadOlder (outside that window) is absent from it. Preserve those
+          // turns — deduped by id, older first — under preserveTurnHistory
+          // (turn ownership, not item ownership: a page whose rows were all
+          // deduped/evicted still owns its turns), or a session with no
+          // cumulative usage loses everything loadOlder added the moment the
+          // next rehydrate runs.
+          //
+          // conversation.olderCursor is the same wire-truth value, carried
+          // the same way: currentConvForMerge.olderCursor is itself the wire
+          // cursor loadOlder/a prior rehydrate already established, never the
+          // store's own capped pagination cursor (currentSnapshot.olderCursor
+          // — a UI-only concern, set below via mergedCursor). Reading that
+          // capped value here would flip a partial sum's scope to "session".
+          let mergedTurns = conversation.turns;
+          let wireOlderCursor = conversation.olderCursor;
+          if (preserveTurnHistory && currentConvForMerge !== null) {
+            // The public merge folds accumulated page turns into the fresh
+            // read with fresh-defined fields winning and older fragments
+            // supplying omitted fields/items. Coverage is separate from the
+            // value merge: local observations and bare warnings stay visible
+            // without making a fresh cursor look partial.
+            const history = mergeTurnHistory(currentConvForMerge.turns, conversation.turns);
+            mergedTurns = history.turns;
+            if (history.olderCoverage && history.transcriptOverlap) {
+              wireOlderCursor = currentConvForMerge.olderCursor;
+            }
+          }
+          if (replacesInstance) {
+            pageOwnedIds.clear();
+            pageOwnedTurnIds.clear();
+          }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
           // live/page merge above.
           const committedConversation: MobileConversation = {
             ...conversation,
             items: committedItems,
+            turns: mergedTurns,
+            olderCursor: wireOlderCursor,
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision
@@ -1988,8 +2082,30 @@ export function createConversationStore() {
             // still true offers a load that early-returns "ignored".
             const atCap = mergedInput.length > RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
+            // D18 B3 round 3/6: conversation.turns/olderCursor (the
+            // ThreadModel fields sessionTokens reads) must stay in sync with
+            // items/the store's own olderCursor, or a session with no
+            // cumulative usage keeps summing only the first page after older
+            // turns load. thread/turns/list is itself item-paginated, so an
+            // older page can carry a fragment of a turn already in the
+            // window; folding through the package's own mergeOlderItemPage
+            // (turnsMatch/mergePageTurn) reconciles that by identity instead
+            // of an id-only filter, which would drop the fragment or
+            // double-count it under a different id.
+            const mergedTurns = result.turnsPage
+              ? mergeOlderItemPage(currentConv, result.turnsPage).turns
+              : currentConv.turns;
+            // Record page ownership by turn ID separately from pageOwnedIds
+            // (item IDs) below — a turn survives here even
+            // when every one of its display rows is deduped away or evicted.
+            for (const turn of result.turnsPage?.data ?? []) pageOwnedTurnIds.add(turn.id);
             set({
-              conversation: { ...currentConv, items: merged },
+              // conversation.olderCursor is the wire truth (result.nextCursor),
+              // never the capped nextCursor above.
+              // atCap only stops the STORE's own paging honestly (F8); it says
+              // nothing about whether the daemon actually has more history, so
+              // sessionTokens must not read it as "this is the whole session".
+              conversation: { ...currentConv, items: merged, turns: mergedTurns, olderCursor: result.nextCursor },
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false
@@ -2393,6 +2509,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
@@ -3244,16 +3361,6 @@ export function createConversationStore() {
             // with no row. askPending rides every thread/status/changed
             // frame but only moves when an ask raises or resolves, so
             // resyncing on the change cannot storm.
-            // An askPending change needs it for the same reason and one
-            // more: question rows come only from the canonical projection
-            // (F6 — ask_user is never single-item projected), while the
-            // sheet reads the model directly (questionAnswers.ts's
-            // pendingQuestions, through liveAsksFor), so a model-only flip
-            // would otherwise leave the sheet and the timeline disagreeing —
-            // a stale question row beside an empty sheet, or a pending ask
-            // with no row. askPending rides every thread/status/changed
-            // frame but only moves when an ask raises or resolves, so
-            // resyncing on the change cannot storm.
             if (
               state.ref !== null &&
               (n.method.startsWith("item/") || askPendingMoved)
@@ -3278,6 +3385,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        pageOwnedTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
