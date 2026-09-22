@@ -48,8 +48,8 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("evener/daemon/list: %v", err)
 	}
-	identity, ok := residentIdentityForRef(list, ref)
-	if !ok {
+	identity, found := daemonIdentityForRef(list, ref)
+	if !found {
 		t.Fatalf("no resident daemon for %s in %+v", ref, list.Daemons)
 	}
 	if _, err := clientRequest[appwire.DaemonRetireResponse](ctx, client, appwire.MethodEvenerDaemonRetire, appwire.DaemonRetireParams{Identity: identity}); err != nil {
@@ -109,7 +109,7 @@ func awaitDaemonGone(ctx context.Context, client *appwire.Client, ref string) er
 	for time.Now().Before(deadline) {
 		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
 		if err == nil {
-			if _, ok := residentIdentityForRef(list, ref); !ok {
+			if _, found := daemonIdentityForRef(list, ref); !found {
 				return nil
 			}
 		}
@@ -120,4 +120,17 @@ func awaitDaemonGone(ctx context.Context, client *appwire.Client, ref string) er
 		}
 	}
 	return context.DeadlineExceeded
+}
+
+// daemonIdentityForRef resolves the resident daemon serving ref, which is the
+// exact ownership identity evener/daemon/retire demands. It lives here rather
+// than beside the other e2e helpers so this test carries its own scaffolding:
+// the branch that adds this file has to compile against main on its own.
+func daemonIdentityForRef(list appwire.DaemonListResponse, ref string) (appwire.DaemonIdentity, bool) {
+	for _, resident := range list.Daemons {
+		if resident.Identity.Ref == ref {
+			return resident.Identity, true
+		}
+	}
+	return appwire.DaemonIdentity{}, false
 }
