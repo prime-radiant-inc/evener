@@ -1614,7 +1614,7 @@ func (e *asynchronousCleanupStreamingExecutor) release() {
 
 func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) {
 	worktreeRepo := newWorktreeRepo(t)
-	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7FATALPACKET000001")
+	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7FATALPACKET000001", "dlg_01TASK7FATALPACKET000001")
 	if err != nil {
 		t.Fatalf("create fatal-evidence worktree: %v", err)
 	}
@@ -1974,7 +1974,7 @@ func TestDelegateResourceSupervision_OrdinaryCleanupFailureIsObservable(t *testi
 
 func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacketEvidence(t *testing.T) {
 	worktreeRepo := newWorktreeRepo(t)
-	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7ORDINARYPACKET001")
+	lane, _, _, _, _, err := worktreeRepo.s.createDelegateWorktree(context.Background(), "dlg_01TASK7ORDINARYPACKET001", "dlg_01TASK7ORDINARYPACKET001")
 	if err != nil {
 		t.Fatalf("create ordinary-evidence worktree: %v", err)
 	}

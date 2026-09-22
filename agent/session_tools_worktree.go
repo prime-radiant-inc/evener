@@ -1338,17 +1338,20 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 // native worktree tools spec §9 lifecycle step 1: create the delegate's
 // isolation lane as a managed worktree named for the delegate id, branched
 // from the parent's active HEAD, locked with the delegate's evener:dlg: marker.
+// branch is the git branch cut for the lane: the parent-supplied mnemonic name
+// when one was sent, the delegate id otherwise (the delegate-lane branch-names
+// design — the directory, sidecar, and all addressing stay id-keyed).
 // It does not touch the parent's own env at all — the caller (createDelegate)
 // roots the CHILD env at the returned path via prepareSubagentRun's
 // workingDir override. Only valid for a local execution environment; errors
 // clearly otherwise (spec §9 "Tool surface").
-func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string) (path, branch, baseSHA, mainRoot string, project identifier.Project, err error) {
+func (s *Session) createDelegateWorktree(ctx context.Context, delegateID, branch string) (path, laneBranch, baseSHA, mainRoot string, project identifier.Project, err error) {
 	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return "", "", "", "", identifier.Project{}, errors.New(`delegate isolation:"worktree" requires a local execution environment`)
 	}
 	lockReason := worktree.FormatDelegateMarker(delegateID, s.id)
-	res, err := s.worktreeCreateCore(ctx, active, delegateID, delegateID, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
+	res, err := s.worktreeCreateCore(ctx, active, delegateID, branch, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
 		sc.DelegateID = delegateID
 	})
 	if err != nil {
@@ -1367,7 +1370,10 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID string)
 // is a `manage_worktree list`-visible annoyance an operator can clean up by
 // hand, never data loss, and failing the caller's already-failed spawn on a
 // cleanup error would only obscure the original error.
-func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, project identifier.Project) {
+// branch is the git branch the lane was cut on — the mnemonic name when the
+// parent sent one, the delegate id otherwise — so the rollback deletes the
+// branch git actually holds while the sidecar stays keyed to the id.
+func (s *Session) rollbackFreshDelegateWorktree(delegateID, branch, lanePath string, project identifier.Project) {
 	if project.ID == "" || project.CanonicalPath == "" {
 		return
 	}
@@ -1384,7 +1390,7 @@ func (s *Session) rollbackFreshDelegateWorktree(delegateID, lanePath string, pro
 	defer done()
 	// Swallowed here, not at the core: this rollback runs on a delegate-create
 	// path whose own failure is the one worth reporting.
-	_ = s.rollbackFreshWorktree(run, lanePath, delegateID, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
+	_ = s.rollbackFreshWorktree(run, lanePath, branch, metaDirForProject(filepath.Join(worktreeRoot, project.ID)), delegateID)
 }
 
 // rollbackFreshWorktree takes back a just-created, still-empty managed

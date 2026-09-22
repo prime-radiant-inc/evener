@@ -158,7 +158,7 @@ func worktreeFaultDelegateRollbackProgram(t *testing.T, program []byte) {
 		t.Fatalf("delegate sidecar = %+v", sc)
 	}
 
-	h.s.rollbackFreshDelegateWorktree(delegateID, path, project)
+	h.s.rollbackFreshDelegateWorktree(delegateID, delegateID, path, project)
 	if h.git.entry(path) != nil {
 		t.Fatalf("rollback left delegate entry %q", path)
 	}
@@ -1260,7 +1260,7 @@ func worktreeFaultBoundaryHelperProgram(t *testing.T, program []byte) {
 		if _, err := h.s.worktreePrune(context.Background()); err == nil {
 			t.Fatal("prune accepted a non-local environment")
 		}
-		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
+		h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 		h.requireAtRoot(t)
 
 		run := h.s.newWorktreeGitRunner(context.Background(), env)

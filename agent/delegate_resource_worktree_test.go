@@ -427,7 +427,7 @@ func TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *test
 func (r *wtRepo) seedStableIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	lanePath, _, baseSHA, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	lanePath, _, baseSHA, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, delegateID)
 	if err != nil {
 		t.Fatalf("create stable delegate worktree: %v", err)
 	}

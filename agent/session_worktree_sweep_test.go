@@ -52,7 +52,7 @@ func (r *wtRepo) unlockLane(t *testing.T, path string) {
 func (r *wtRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}

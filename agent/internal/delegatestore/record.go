@@ -94,6 +94,10 @@ type Descriptor struct {
 	ExplicitToolGrants            []string                    `json:"explicit_tool_grants,omitempty"`
 	DelegationAllowance           int                         `json:"delegation_allowance,omitempty"`
 	Isolation                     string                      `json:"isolation,omitempty"`
+	// WorktreeBranch is the mnemonic git branch of a worktree-isolated
+	// delegate's lane; empty means the branch is the delegate id. The lane
+	// directory, sidecar, and all addressing stay id-keyed either way.
+	WorktreeBranch                string                      `json:"worktree_branch,omitempty"`
 	Sandbox                       *SandboxSnapshot            `json:"sandbox,omitempty"`
 	Config                        schema.ConfigSnapshot       `json:"config"`
 	SharedTaskStoreOwnerSessionID string                      `json:"shared_task_store_owner_session_id,omitempty"`

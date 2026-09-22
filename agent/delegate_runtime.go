@@ -68,6 +68,10 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
+	// laneBranch is the git branch the lane was cut on: the descriptor's
+	// mnemonic name when the parent sent one, the delegate id otherwise.
+	// Rollback deletes this branch, never the id by assumption.
+	laneBranch string
 	// laneAdmission is the spawn's close-fence admission, carried here so a
 	// rollback can rename it as it begins.
 	laneAdmission envWorkID
@@ -1904,6 +1908,13 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	} else {
 		sharedTaskStoreOwnerSessionID = ""
 	}
+	// The mnemonic lane branch exists only for worktree isolation; decode
+	// refuses the pairing otherwise, and describe re-asserts it for direct
+	// callers that bypass decode.
+	worktreeBranch := ""
+	if isolationName == "worktree" {
+		worktreeBranch = args.Name
+	}
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
 		Task:                          brief,
@@ -1922,6 +1933,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
+		WorktreeBranch:                worktreeBranch,
 		Sandbox:                       sandboxSnapshot,
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
@@ -1993,7 +2005,14 @@ func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore
 
 func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation *delegateStartReservation, project identifier.Project, requestedSandbox *sandbox.SandboxPolicy) (delegateIsolation, error) {
 	s := runtime.owner
-	isolation := delegateIsolation{worktreeProject: project}
+	// The lane's git branch: the descriptor's mnemonic name when the parent
+	// sent one, the delegate id otherwise. The directory stays keyed to the id
+	// either way; only the branch carries the name.
+	laneBranch := reservation.descriptor.WorktreeBranch
+	if laneBranch == "" {
+		laneBranch = reservation.delegateID
+	}
+	isolation := delegateIsolation{worktreeProject: project, laneBranch: laneBranch}
 	workingDir := reservation.worktreePath
 	var (
 		laneAdmission envWorkID
@@ -2032,7 +2051,7 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
 		}
 		defer s.endEnvWork(laneAdmission)
-		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID)
+		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID, isolation.laneBranch)
 		if err != nil {
 			return isolation, err
 		}
@@ -2108,7 +2127,7 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		}
 	}
 	if isolation.worktreePath != "" {
-		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
+		s.rollbackFreshDelegateWorktree(delegateID, isolation.laneBranch, isolation.worktreePath, isolation.worktreeProject)
 	}
 }
 
