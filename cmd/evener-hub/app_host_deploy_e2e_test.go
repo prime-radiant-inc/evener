@@ -127,6 +127,12 @@ func TestHostDeployNoEvenerE2E(t *testing.T) {
 		addr     string
 		args     []string
 	}{
+		// The private loopback port is fixed per case because the controller must
+		// be told the exact address the private hub listens on. A listener there
+		// could therefore be an unrelated process, so cleanup never kills by port
+		// alone: stopHostListener signals only a pid whose command line names the
+		// private config path this case wrote, and a cleanup that cannot stop it
+		// fails the test instead of passing silently.
 		{
 			name:     "build-source",
 			hostName: "e2e-deploy-source",
@@ -184,7 +190,7 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 	installHash := host.sha256IfFile(installPath)
 
 	t.Cleanup(func() {
-		stopHostListener(t, host, addr)
+		stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml)
 		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
@@ -550,16 +556,19 @@ func (h *hostSSH) sha256IfFile(path string) string {
 	return fields[0]
 }
 
-// stopHostListener stops whatever holds the case's private loopback port — the
-// hub this case started — and waits briefly for the port to clear, so the
-// directory it runs from can be removed. The port is the case's own, so a
-// listener there is never the host's real hub.
-func stopHostListener(t *testing.T, host *hostSSH, addr string) {
+// stopHostListener stops the hub this case started and waits briefly for the
+// port to clear, so the directory it runs from can be removed. The port is
+// fixed, so a listener there could be an unrelated process: the kill is gated on
+// the pid's command line naming the private config path this case wrote, so it
+// can only ever target this test's own hub. A kill that fails, or a listener
+// that outlives the wait, is reported rather than logged away — a silent cleanup
+// failure would leave a hub running from a directory the test then removes.
+func stopHostListener(t *testing.T, host *hostSSH, addr, configPath string) {
 	t.Helper()
 	port := addr[strings.LastIndex(addr, ":")+1:]
-	kill := fmt.Sprintf("pid=$(lsof -tiTCP:%s -sTCP:LISTEN 2>/dev/null); if [ -n \"$pid\" ]; then kill $pid; fi", port)
+	kill := hostHubKillCommand(addr, configPath)
 	if err := host.tryRun(kill); err != nil {
-		t.Logf("stopping the deploy check's host hub on %s: %v", addr, err)
+		t.Errorf("stopping the deploy check's host hub on %s (config %s): %v", addr, configPath, err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -568,5 +577,46 @@ func stopHostListener(t *testing.T, host *hostSSH, addr string) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Logf("the deploy check's host hub still answers on %s after 10s; removing its directory anyway", addr)
+	t.Errorf("the deploy check's host hub still holds %s after 10s; it may be serving from the directory this test is about to remove", addr)
+}
+
+// hostHubKillCommand is the remote command that stops the hub this case started
+// and nothing else. It lists the pids listening on the case's private port and
+// signals each only when `ps` shows the case's own config path in its command
+// line — the marker the launched host hub was given (hubBootstrapArgv passes
+// --config). The port alone is deliberately not enough: it is a fixed literal, so
+// killing every listener on it could terminate an unrelated process.
+func hostHubKillCommand(addr, configPath string) string {
+	port := addr[strings.LastIndex(addr, ":")+1:]
+	return fmt.Sprintf(
+		"for pid in $(lsof -tiTCP:%s -sTCP:LISTEN 2>/dev/null); do "+
+			"if ps -ww -o command= -p \"$pid\" 2>/dev/null | grep -F -e %s >/dev/null; then kill \"$pid\"; fi; done",
+		port, shellquote.RemoteWord(configPath))
+}
+
+// TestHostHubKillCommandTargetsOnlyThisTestsHub pins the cleanup's precision
+// without a host: the command that stops the case's hub must gate the kill on the
+// pid's command line carrying the case's own config path, so an unrelated
+// process holding the fixed port is never signalled.
+func TestHostHubKillCommandTargetsOnlyThisTestsHub(t *testing.T) {
+	const addr = "127.0.0.1:19180"
+	const config = "/home/dev/evener-deploy-e2e-source/hub.toml"
+	got := hostHubKillCommand(addr, config)
+	if !strings.Contains(got, "lsof -tiTCP:19180 -sTCP:LISTEN") {
+		t.Fatalf("kill command does not find the listener by the case's port: %q", got)
+	}
+	if !strings.Contains(got, "ps -ww -o command=") {
+		t.Fatalf("kill command does not read the pid's command line: %q", got)
+	}
+	if guard := "grep -F -e " + shellquote.RemoteWord(config); !strings.Contains(got, guard) {
+		t.Fatalf("kill command does not gate on this case's config path (%s): %q", guard, got)
+	}
+	if !strings.Contains(got, "; then kill \"$pid\"; fi") {
+		t.Fatalf("kill is not conditioned on the config-path match: %q", got)
+	}
+	// The config path is the discriminator, so a different path must produce a
+	// different command; otherwise the kill would match any listener on the port.
+	if other := hostHubKillCommand(addr, "/home/dev/other/hub.toml"); other == got {
+		t.Fatal("kill command ignores the config path, so it would signal any listener on the port")
+	}
 }
