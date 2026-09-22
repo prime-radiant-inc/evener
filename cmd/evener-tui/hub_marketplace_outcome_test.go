@@ -1083,6 +1083,21 @@ func TestMarketplaceMutateResultFlooredRemoveSnapshotIsDiscarded(t *testing.T) {
 	}
 }
 
+func TestMarketplaceRemoveSurfacesDifferentNameWhilePending(t *testing.T) {
+	m := hubModel{marketplaceRemovePending: "first"}
+	got, cmd := m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "second"})
+	after := got.(hubModel)
+	if cmd != nil {
+		t.Fatal("a remove issued while another is unconfirmed must not go out concurrently")
+	}
+	if after.marketplaceRemovePending != "first" {
+		t.Fatalf("different-name remove clobbered the pending identity to %q", after.marketplaceRemovePending)
+	}
+	if after.err == nil {
+		t.Fatal("a different-name remove during a pending removal was dropped without any feedback")
+	}
+}
+
 func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}

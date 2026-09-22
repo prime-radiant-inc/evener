@@ -883,6 +883,12 @@ func (m hubModel) handleMarketplaceAddSubmit(msg launchconfig.MarketplaceAddSubm
 
 func (m hubModel) handleMarketplaceRemove(msg launchconfig.MarketplaceRemoveMsg) (tea.Model, tea.Cmd) {
 	if m.marketplaceRemovePending != "" {
+		if msg.Name != m.marketplaceRemovePending {
+			// A different marketplace's remove while one is still
+			// unconfirmed: surface feedback instead of silently dropping
+			// the request - the fence tracks one removal at a time.
+			m.err = fmt.Errorf("marketplace %q is still being removed; try again once that removal is confirmed", m.marketplaceRemovePending)
+		}
 		return m, nil
 	}
 	if m.client != nil {
