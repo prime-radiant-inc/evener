@@ -1039,29 +1039,80 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 	if err := owner.validate(); err != nil {
 		return ScratchManifest{}, err
 	}
-	lock, err := acquireScratchRetentionLock(owner)
+	// The manifest lock is fail-fast like every scratch writer's, and a
+	// refused reset must not fail the restore it is part of — the same
+	// bounded growing backoff applies.
+	var out ScratchManifest
+	err := RetryScratchLockContention(func() error {
+		lock, err := acquireScratchRetentionLock(owner)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Release() }()
+		manifest, err := loadScratchRetention(owner)
+		if err != nil {
+			return err
+		}
+		if !manifest.Released {
+			out = manifest
+			return nil
+		}
+		// Keep the revision advancing: a writer holding the pre-reset revision
+		// must still read as stale against the reinitialized manifest.
+		fresh := ScratchManifest{
+			Version:  manifest.Version,
+			Revision: manifest.Revision + 1,
+			Owner:    manifest.Owner,
+		}
+		// The terminal release that tombstoned this manifest removed every
+		// pin whose lease it could take; the ones left behind were contended
+		// by live owners, and Released:true was what made them collectible. A
+		// reinitialized manifest no longer claims to be released, so each
+		// surviving pin must be reconciled or the collector would retain its
+		// directory forever with a diagnostic on every sweep: finish the
+		// release for the pins whose lease is now free (remove the pin; the
+		// directory becomes ordinary), and carry a reference for the pins
+		// still held (the pin/reference pair stays coherent, the holder
+		// keeps its protection, and the next terminal release collects them).
+		for _, ref := range manifest.References {
+			dir, err := canonicalScratchPath(ref.Dir)
+			if err != nil {
+				return err
+			}
+			lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
+			if contended {
+				fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: ref.Kind})
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, err)
+			}
+			switch pin, pinErr := readScratchDirectoryPin(dir); {
+			case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+				if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
+					return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
+				}
+			case os.IsNotExist(pinErr):
+				// Already absent; the reference dies with the manifest.
+			default:
+				// An unreadable or foreign pin: leave it and carry the
+				// reference so the pair never reads as incoherent.
+				fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: ref.Kind})
+			}
+			if releaseErr := lease.Release(); releaseErr != nil {
+				return fmt.Errorf("sandbox: release retention lease for %q: %w", dir, releaseErr)
+			}
+		}
+		if err := writeScratchRetention(owner, fresh); err != nil {
+			return err
+		}
+		out = fresh
+		return nil
+	})
 	if err != nil {
 		return ScratchManifest{}, err
 	}
-	defer func() { _ = lock.Release() }()
-	manifest, err := loadScratchRetention(owner)
-	if err != nil {
-		return ScratchManifest{}, err
-	}
-	if !manifest.Released {
-		return manifest, nil
-	}
-	// Keep the revision advancing: a writer holding the pre-reset revision
-	// must still read as stale against the reinitialized manifest.
-	fresh := ScratchManifest{
-		Version:  manifest.Version,
-		Revision: manifest.Revision + 1,
-		Owner:    manifest.Owner,
-	}
-	if err := writeScratchRetention(owner, fresh); err != nil {
-		return ScratchManifest{}, err
-	}
-	return fresh, nil
+	return out, nil
 }
 
 // BorrowRetainedSessionScratch returns a lease-less handle to an already

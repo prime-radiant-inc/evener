@@ -23,9 +23,16 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 	e.retentionOwner = owner
 	e.retentionBinding = cloneScratchBinding(binding)
 	e.retentionSet = true
-	// A fresh binding install re-derives contention for every kind this
-	// cycle; a pending marker from a previous cycle must not outlive it.
-	e.retentionPending = nil
+	// A genuinely new binding identity re-derives contention for every kind
+	// this cycle, so a pending marker must not outlive it. The SAME identity
+	// re-installed is a transfer or a re-adoption of one logical environment
+	// (a re-rooted clone inheriting its binding, an adoption cycle) and its
+	// pending kinds travel with it: clearing them here would let the first
+	// publication on the receiving environment claim a contended retained
+	// slot and end the continuity retry (round 12).
+	if e.retentionBinding.BindingID != binding.BindingID {
+		e.retentionPending = nil
+	}
 	return nil
 }
 
@@ -43,6 +50,19 @@ func (e *LocalExecutionEnvironment) MarkRetainedSlotPending(kind string) {
 		e.retentionPending = make(map[string]struct{})
 	}
 	e.retentionPending[kind] = struct{}{}
+}
+
+// RetentionPendingKinds returns the kinds whose retained owning slot this
+// environment recorded as contended-pending, for carrying the marker across a
+// binding transfer to another environment object.
+func (e *LocalExecutionEnvironment) RetentionPendingKinds() []string {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	kinds := make([]string, 0, len(e.retentionPending))
+	for kind := range e.retentionPending {
+		kinds = append(kinds, kind)
+	}
+	return kinds
 }
 
 // PinOwnedScratch publishes this environment's installed binding and pins every

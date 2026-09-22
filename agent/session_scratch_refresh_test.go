@@ -1414,3 +1414,158 @@ func TestScratchUpsertRetryKeepsConcurrentRoleUpdate(t *testing.T) {
 		t.Fatalf("the retry's upsert overwrote a concurrent role update: worktree-restore role = %q, want the concurrently committed %q", row.WorktreeRestoreBindingID, roleRow.BindingID)
 	}
 }
+
+// TestContendedSlotPendingSurvivesBindingTransfer pins the round-12 High: a
+// contended retained slot's pending marker is part of the logical environment a
+// re-rooted clone inherits with its binding. Losing it would let the clone's
+// first fresh mint claim the manifest's retained slot and end the continuity
+// retry the source was still owed — the same displacement the marker exists to
+// prevent, one environment object later.
+func TestContendedSlotPendingSurvivesBindingTransfer(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01PENDINGXFER1"
+	const bindingID = "b-pending-xfer"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{},
+	})
+
+	// The source environment: the production resume shape, whose live fresh
+	// sandbox mint shadows the contended retained slot, so the adoption marks
+	// the kind pending on it.
+	source := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { source.Cleanup(); source.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), source.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := source.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the source environment's fresh sandbox scratch: %v", err)
+	}
+	if _, err := s.adoptRestoredConsumerScratch(source, consumerID, true); err != nil {
+		t.Fatalf("source adoption over the contended slot: %v", err)
+	}
+
+	// The re-rooted clone inherits the binding — and must inherit the pending
+	// marker with it.
+	target := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { target.Cleanup(); target.DisposeSandboxScratch() })
+	if err := s.inheritScratchRetentionBinding(target, source); err != nil {
+		t.Fatalf("inherit the binding onto the re-rooted clone: %v", err)
+	}
+
+	// The clone's first real mint publishes through its own post-mint pin.
+	clonePolicy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), target.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := target.EnableSandbox(clonePolicy); err != nil {
+		t.Fatalf("mint the clone's first real allocation: %v", err)
+	}
+	minted := target.SessionScratchDir()
+	if minted == "" || filepath.Clean(minted) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture clone mint %q must exist apart from the retained %q", minted, retainedDir)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the clone's first mint displaced the retained slot: got %+v, want the retained %q", slot, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(minted) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the clone's mint %q was left unpinned: a protected allocation must publish a reference", minted)
+	}
+}
+
+// TestScratchNewBindingRetryKeepsConcurrentRoleUpdate is the new-binding twin of
+// TestScratchUpsertRetryKeepsConcurrentRoleUpdate: the first-ever publication's
+// retry closure must recompute its rows too, or a role update committed while a
+// refused attempt waited on the lock is overwritten by the stale replay.
+func TestScratchNewBindingRetryKeepsConcurrentRoleUpdate(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	_, roleRow := mintRefreshScratchBinding(t, s, "b-role-competitor", sandbox.ScratchKindSandbox)
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	attempts := 0
+	s.cfg.testOnly.scratchUpsertAttempt = func() {
+		attempts++
+		switch attempts {
+		case 1:
+			close(takeLock)
+			<-lockTaken
+		case 2:
+			close(releaseLock)
+			<-lockReleased
+			fresh, err := sandbox.LoadScratchRetention(owner)
+			if err != nil {
+				t.Fatalf("concurrent writer's load: %v", err)
+			}
+			installed, err := s.env.(*execenv.LocalExecutionEnvironment).ScratchRetentionBinding()
+			if err != nil {
+				t.Fatalf("read the installed binding: %v", err)
+			}
+			published, ok := findScratchBinding(fresh, installed.BindingID)
+			if !ok {
+				t.Fatalf("binding %q vanished mid-retry", installed.BindingID)
+			}
+			concurrent := sandbox.ScratchConsumerBinding{
+				SessionID:                s.id,
+				CurrentBindingID:         published.BindingID,
+				WorktreeRestoreBindingID: roleRow.BindingID,
+			}
+			if err := sandbox.UpsertScratchBinding(owner, published, concurrent); err != nil {
+				t.Fatalf("concurrent role update: %v", err)
+			}
+		}
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("first-ever installation lost to the retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("the upsert took %d attempts, want exactly 2", attempts)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := scratchConsumerFor(t, manifest, s.id)
+	if row.WorktreeRestoreBindingID != roleRow.BindingID {
+		t.Fatalf("the retry's upsert overwrote a concurrent role update: worktree-restore role = %q, want the concurrently committed %q", row.WorktreeRestoreBindingID, roleRow.BindingID)
+	}
+}

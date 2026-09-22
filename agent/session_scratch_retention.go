@@ -87,18 +87,27 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	if err := env.PinOwnedScratch(); err != nil {
 		return err
 	}
-	published, err := env.ScratchRetentionBinding()
-	if err != nil {
-		// SetScratchRetentionBinding just recorded the binding, so an unreadable
-		// read-back is an unreachable defensive branch, not an install failure.
-		return nil //nolint:nilerr // binding already installed; nothing to register
-	}
-	consumer := scratchConsumerPreservingRoles(manifest, sessionID, published.BindingID)
 	return sandbox.RetryScratchLockContention(func() error {
 		if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
 			hook()
 		}
-		return sandbox.UpsertScratchBinding(owner, published, consumer)
+		// Recompute both rows from the manifest as it stands NOW: a role
+		// update that committed while a refused attempt waited on the lock
+		// must not be overwritten by this pass's stale snapshot when its
+		// retry replays the upsert — the same recompute the existing-binding
+		// and role-registration closures run (round 12).
+		published, err := env.ScratchRetentionBinding()
+		if err != nil {
+			// SetScratchRetentionBinding just recorded the binding, so an
+			// unreadable read-back is an unreachable defensive branch, not
+			// an install failure.
+			return nil //nolint:nilerr // binding already installed; nothing to register
+		}
+		fresh, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			return err
+		}
+		return sandbox.UpsertScratchBinding(owner, published, scratchConsumerPreservingRoles(fresh, sessionID, published.BindingID))
 	})
 }
 
@@ -282,7 +291,17 @@ func (s *Session) inheritScratchRetentionBinding(target, source *execenv.LocalEx
 		return nil
 	}
 	binding.Slots = nil
-	return target.SetScratchRetentionBinding(owner, binding)
+	if err := target.SetScratchRetentionBinding(owner, binding); err != nil {
+		return err
+	}
+	// A contended retained slot's pending marker is part of the logical
+	// environment the target inherits: without it the target's first fresh
+	// mint would claim the manifest's retained slot and end the continuity
+	// retry the source was still owed (round 12).
+	for _, kind := range source.RetentionPendingKinds() {
+		target.MarkRetainedSlotPending(kind)
+	}
+	return nil
 }
 
 // assignRetainedScratchBinding installs the persisted binding record for
