@@ -3,15 +3,12 @@ package registry
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"golang.org/x/net/http/httpguts"
 
 	"primeradiant.com/evener/internal/valueexpr"
 )
-
-var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // checkEnvRefs validates the $-expression syntax of a config value at load
 // time — references, defaults, and command expressions — naming the field in
@@ -28,43 +25,37 @@ func checkEnvRefs(value, what string) error {
 
 // expandEnv substitutes a value's $ expressions — references, defaults, and
 // command expressions, whose minted results come from the shared evaluator
-// cache — through lookup. Missing entries are bare variable names; a failed
-// command expression is an already-worded phrase (command failures always
-// contain a space; a validated name never can), so a consumer can tell the
-// two apart without a second type.
+// cache — through lookup. It returns the unresolved pieces as valueexpr
+// reports them: a missing variable's name, or a failed command with its
+// error.
 //
 // A syntax error returns an empty value with nothing missing: every field
 // that reaches here was validated at load time, so this is unreachable in
 // practice and half an expansion is worse than none.
-func expandEnv(value string, lookup func(string) (string, bool)) (string, []string) {
+func expandEnv(value string, lookup func(string) (string, bool)) (string, []valueexpr.Unresolved) {
 	expanded, unresolved, err := valueexpr.Expand(value, lookup)
 	if err != nil {
 		return "", nil
 	}
-	if len(unresolved) == 0 {
-		return expanded, nil
-	}
-	missing := make([]string, 0, len(unresolved))
-	for _, u := range unresolved {
-		if u.Command != "" {
-			missing = append(missing, "command expression failed: "+u.Err.Error())
-		} else {
-			missing = append(missing, u.Name)
-		}
-	}
-	return expanded, missing
+	return expanded, unresolved
 }
 
-// missingReason words one "no credential" or "unresolved variable" report from
-// expandEnv's missing entries: a bare name was unset, a phrase (a failed
-// command expression) is already worded.
-func missingReason(missing []string) string {
-	parts := make([]string, 0, len(missing))
-	for _, m := range missing {
-		if strings.ContainsAny(m, " \t") {
-			parts = append(parts, m)
+// commandFailurePhrase words one failed command expression for a report; the
+// evaluator's error text already carries the exit status or timeout reason.
+func commandFailurePhrase(u valueexpr.Unresolved) string {
+	return "command expression failed: " + u.Err.Error()
+}
+
+// missingReason words one "no credential" or "unresolved variable" report
+// from expandEnv's unresolved pieces: a variable was unset, or a command
+// expression failed.
+func missingReason(unresolved []valueexpr.Unresolved) string {
+	parts := make([]string, 0, len(unresolved))
+	for _, u := range unresolved {
+		if u.Command != "" {
+			parts = append(parts, commandFailurePhrase(u))
 		} else {
-			parts = append(parts, m+" unset")
+			parts = append(parts, u.Name+" unset")
 		}
 	}
 	return strings.Join(parts, ", ")
@@ -117,12 +108,10 @@ func CheckCredentialHeaderValue(value string) error {
 		switch p.Kind {
 		case valueexpr.PieceLit:
 			for token := range strings.FieldsSeq(p.Lit) {
-				switch {
-				case seenMaterial, schemeWord, !isAuthSchemeWord(token):
+				if seenMaterial || schemeWord || !isAuthSchemeWord(token) {
 					return errors.New("only an auth scheme word may be literal, ahead of the reference; the value itself must be a $VARIABLE reference, never a literal secret")
-				default:
-					schemeWord = true
 				}
+				schemeWord = true
 			}
 		case valueexpr.PieceRef:
 			if p.Ref.HasDefault && p.Ref.Default != "" && !isAuthSchemeWord(p.Ref.Default) {
@@ -160,7 +149,7 @@ func CheckCredentialHeaderName(name string) error {
 // neither authoring surface may write it nor any client receive it. The
 // refusal does not echo the name: it may be that key.
 func CheckAPIKeyEnvName(name string) error {
-	if !envNameRe.MatchString(name) {
+	if !valueexpr.ValidEnvName(name) {
 		return errors.New("api_key_env names an environment variable: a letter or underscore, then only letters, digits, or underscores")
 	}
 	return nil

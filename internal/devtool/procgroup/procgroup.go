@@ -4,7 +4,9 @@
 // groups, so a stop reaches every forked descendant rather than just the
 // direct child, and stops them TERM-first with a bounded KILL escalation.
 // It is the Go home of the stop_children/process-group discipline the shell
-// runners each hand-rolled.
+// runners each hand-rolled. The group-signaling primitives live in
+// internal/procgroup, the one implementation every spawned-command surface
+// shares.
 package procgroup
 
 import (
@@ -12,6 +14,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	baseprocgroup "primeradiant.com/evener/internal/procgroup"
 )
 
 // Start starts cmd in its own process group. The caller keeps ownership of
@@ -26,10 +30,10 @@ func Start(cmd *exec.Cmd) error {
 
 // Terminate TERMs the whole group. Best-effort: a group already gone is not
 // an error anyone can act on.
-func Terminate(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGTERM) }
+func Terminate(pgid int) { baseprocgroup.Terminate(pgid) }
 
 // Kill KILLs the whole group.
-func Kill(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
+func Kill(pgid int) { baseprocgroup.Kill(pgid) }
 
 // Stop TERMs the group, waits for the caller to reap the direct child
 // (signalled by closing reaped), and KILLs the group if that takes longer

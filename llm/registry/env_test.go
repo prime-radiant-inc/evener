@@ -2,7 +2,6 @@ package registry
 
 import (
 	"errors"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -15,26 +14,28 @@ func TestExpandEnv(t *testing.T) {
 	lookup := func(n string) (string, bool) { v, ok := env[n]; return v, ok }
 	cases := []struct {
 		in, want string
-		missing  []string
+		// missing is the missingReason wording of the unresolved pieces,
+		// "" when the value resolves whole.
+		missing string
 	}{
-		{"plain", "plain", nil},
-		{"$KEY", "sk-1", nil},
-		{"${KEY}", "sk-1", nil},
-		{"Bearer $KEY", "Bearer sk-1", nil},
-		{"a$$b", "a$b", nil},
-		{"$", "$", nil},
-		{"$1", "$1", nil},
-		{"$MISSING", "", []string{"MISSING"}},
-		{"x-$MISSING-$KEY", "x--sk-1", []string{"MISSING"}},
-		{"${KEY:-fallback}", "sk-1", nil},
-		{"${MISSING:-fallback}", "fallback", nil},
-		{"${MISSING:-}", "", nil},
-		{"${MISSING:-$NOT_A_REF}", "$NOT_A_REF", nil},
+		{"plain", "plain", ""},
+		{"$KEY", "sk-1", ""},
+		{"${KEY}", "sk-1", ""},
+		{"Bearer $KEY", "Bearer sk-1", ""},
+		{"a$$b", "a$b", ""},
+		{"$", "$", ""},
+		{"$1", "$1", ""},
+		{"$MISSING", "", "MISSING unset"},
+		{"x-$MISSING-$KEY", "x--sk-1", "MISSING unset"},
+		{"${KEY:-fallback}", "sk-1", ""},
+		{"${MISSING:-fallback}", "fallback", ""},
+		{"${MISSING:-}", "", ""},
+		{"${MISSING:-$NOT_A_REF}", "$NOT_A_REF", ""},
 	}
 	for _, c := range cases {
-		got, missing := expandEnv(c.in, lookup)
-		if got != c.want || !reflect.DeepEqual(missing, c.missing) {
-			t.Errorf("expandEnv(%q) = %q, %v; want %q, %v", c.in, got, missing, c.want, c.missing)
+		got, unresolved := expandEnv(c.in, lookup)
+		if got != c.want || missingReason(unresolved) != c.missing {
+			t.Errorf("expandEnv(%q) = %q, %q; want %q, %q", c.in, got, missingReason(unresolved), c.want, c.missing)
 		}
 	}
 }
@@ -49,11 +50,11 @@ func TestExpandEnvCommandExpression(t *testing.T) {
 	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted", nil }
 	lookup := func(string) (string, bool) { return "", false }
 
-	got, missing := expandEnv("Bearer $(get-gateway-token)", lookup)
-	if got != "Bearer minted" || len(missing) != 0 {
-		t.Fatalf("expandEnv command = %q, %v", got, missing)
+	got, unresolved := expandEnv("Bearer $(get-gateway-token)", lookup)
+	if got != "Bearer minted" || len(unresolved) != 0 {
+		t.Fatalf("expandEnv command = %q, %v", got, unresolved)
 	}
-	if _, missing := expandEnv("Bearer $(get-gateway-token)", lookup); len(missing) != 0 {
+	if _, unresolved := expandEnv("Bearer $(get-gateway-token)", lookup); len(unresolved) != 0 {
 		t.Fatal("second expansion re-ran the command")
 	}
 	if runs != 1 {
@@ -64,12 +65,12 @@ func TestExpandEnvCommandExpression(t *testing.T) {
 	valueexpr.RunCommand = func(string) (string, error) {
 		return "", errors.New("command exited with status 1: session expired")
 	}
-	got, missing = expandEnv("Bearer $(get-gateway-token)", lookup)
+	got, unresolved = expandEnv("Bearer $(get-gateway-token)", lookup)
 	if got != "Bearer " {
 		t.Fatalf("failed command did not substitute empty: %q", got)
 	}
-	if len(missing) != 1 || !strings.HasPrefix(missing[0], "command expression failed: command exited with status 1: session expired") {
-		t.Fatalf("missing = %v; want the failure phrase", missing)
+	if len(unresolved) != 1 || missingReason(unresolved) != "command expression failed: command exited with status 1: session expired" {
+		t.Fatalf("unresolved = %v; want the failure phrase", unresolved)
 	}
 }
 

@@ -926,18 +926,16 @@ func expandTemplate(tpl string, lookup func(string) (string, bool)) (string, []s
 func (r *Registry) varLookupWith(rec *record, t Transport, warn func(string)) func(string) (string, bool) {
 	return func(name string) (string, bool) {
 		if v, ok := rec.userVars[name]; ok {
-			expanded, missing := expandEnv(v, r.env)
-			for _, m := range missing {
-				if strings.ContainsAny(m, " \t") {
-					// A failed command expression, already worded by the
-					// adapter; a variable name never contains a space.
-					warn(m)
+			expanded, unresolved := expandEnv(v, r.env)
+			for _, u := range unresolved {
+				if u.Command != "" {
+					warn(commandFailurePhrase(u))
 				} else {
-					warn("unresolved variable " + m)
+					warn("unresolved variable " + u.Name)
 				}
 			}
 			switch {
-			case len(missing) > 0:
+			case len(unresolved) > 0:
 				return "", false
 			case expanded != "":
 				return expanded, true

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"primeradiant.com/evener/internal/procgroup"
 )
 
@@ -78,26 +80,19 @@ func (e *CommandError) Error() string {
 }
 
 // The cache is keyed by the command text: instances and surfaces that share
-// a command share one mint. The inflight map single-flights concurrent
+// a command share one mint. The singleflight group collapses concurrent
 // callers onto one run per command.
 var (
 	evaluateMu sync.Mutex
 	cache      = map[string]Result{}
-	inflight   = map[string]*flight{}
+	mintGroup  singleflight.Group
 )
-
-type flight struct {
-	done chan struct{}
-	res  Result
-	err  error
-}
 
 // ResetForTest clears the cache and restores the seams; nothing else may
 // touch the package's mutable state.
 func ResetForTest() {
 	evaluateMu.Lock()
 	cache = map[string]Result{}
-	inflight = map[string]*flight{}
 	evaluateMu.Unlock()
 	RunCommand = realRunCommand
 	Now = time.Now
@@ -113,25 +108,29 @@ func evaluate(command string) (Result, error) {
 		evaluateMu.Unlock()
 		return res, nil
 	}
-	if fl, ok := inflight[command]; ok {
+	evaluateMu.Unlock()
+
+	res, err, _ := mintGroup.Do(command, func() (any, error) {
+		// Re-check under the flight: a caller that queued behind a finished
+		// leader may find the leader's result already cached and fresh.
+		evaluateMu.Lock()
+		if cached, ok := cache[command]; ok && now.Before(cached.ExpiresAt) {
+			evaluateMu.Unlock()
+			return cached, nil
+		}
 		evaluateMu.Unlock()
-		<-fl.done
-		return fl.res, fl.err
+		minted, err := mint(command, now)
+		if err == nil {
+			evaluateMu.Lock()
+			cache[command] = minted
+			evaluateMu.Unlock()
+		}
+		return minted, err
+	})
+	if err != nil {
+		return Result{}, err
 	}
-	fl := &flight{done: make(chan struct{})}
-	inflight[command] = fl
-	evaluateMu.Unlock()
-
-	fl.res, fl.err = mint(command, now)
-
-	evaluateMu.Lock()
-	delete(inflight, command)
-	if fl.err == nil {
-		cache[command] = fl.res
-	}
-	evaluateMu.Unlock()
-	close(fl.done)
-	return fl.res, fl.err
+	return res.(Result), nil
 }
 
 func mint(command string, now time.Time) (Result, error) {
@@ -200,12 +199,16 @@ func realRunCommand(command string) (string, error) {
 		shell, flag = "cmd", "/c"
 	}
 	cmd := exec.CommandContext(ctx, shell, flag, command)
-	// The command runs in its own process group: the deadline kill below must
+	// The command runs in its own process group: the deadline kill must
 	// reach the whole tree, because a killed shell leaves orphaned children
-	// holding the captured pipes, and Wait blocks until they close.
+	// holding the captured pipes, and Wait blocks until they close. os/exec
+	// calls Cancel at the deadline, before the process is reaped, so the pid
+	// still names our child then.
 	cmd.SysProcAttr = procgroup.SysProcAttr()
+	cmd.Cancel = func() error { procgroup.Kill(cmd.Process.Pid); return nil }
 	var stdout cappedBuffer
 	var stderr cappedBuffer
+	stdout.max = maxOutput
 	stderr.max = 4 * 1024
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -213,17 +216,6 @@ func realRunCommand(command string) (string, error) {
 		// A spawn failure names its own cause; it cannot carry output.
 		return "", &CommandError{Detail: firstLine(err.Error())}
 	}
-	watchDone := make(chan struct{})
-	defer close(watchDone)
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Pre-reap is the only safe moment to kill by pid: after Wait
-			// returns, the pid may already name an unrelated process.
-			procgroup.Kill(cmd.Process.Pid)
-		case <-watchDone:
-		}
-	}()
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}
@@ -239,9 +231,10 @@ func realRunCommand(command string) (string, error) {
 	return stdout.String(), nil
 }
 
-// cappedBuffer keeps the first bytes of a command's stream and notes when the
-// stream ran past the cap, so a runaway command cannot balloon memory and a
-// capped stdout is refused rather than silently truncated into a credential.
+// cappedBuffer keeps the first bytes of a command's stream — max, fixed at
+// construction — and notes when the stream ran past the cap, so a runaway
+// command cannot balloon memory and a capped stdout is refused rather than
+// silently truncated into a credential.
 type cappedBuffer struct {
 	buf  bytes.Buffer
 	max  int
@@ -249,9 +242,6 @@ type cappedBuffer struct {
 }
 
 func (c *cappedBuffer) Write(p []byte) (int, error) {
-	if c.max == 0 {
-		c.max = maxOutput
-	}
 	if room := c.max - c.buf.Len(); room > 0 {
 		if len(p) <= room {
 			c.buf.Write(p)

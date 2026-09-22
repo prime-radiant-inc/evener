@@ -2,6 +2,7 @@ package valueexpr
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -55,10 +56,10 @@ func TestScan(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Scan(%q): %v", tt.value, err)
 			}
-			if !equalStrings(refNames(got.Refs), tt.refs) {
+			if !slices.Equal(refNames(got.Refs), tt.refs) {
 				t.Errorf("Scan(%q).Refs = %v; want %v", tt.value, refNames(got.Refs), tt.refs)
 			}
-			if !equalStrings(got.Commands, tt.commands) {
+			if !slices.Equal(got.Commands, tt.commands) {
 				t.Errorf("Scan(%q).Commands = %v; want %v", tt.value, got.Commands, tt.commands)
 			}
 			if got.Literal != tt.literal {
@@ -229,21 +230,6 @@ func refNames(refs []Ref) []string {
 	return names
 }
 
-func equalStrings(got, want []string) bool {
-	if len(got) == 0 && len(want) == 0 {
-		return true
-	}
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func unresolvedNames(unresolved []Unresolved) []string {
 	var names []string
 	for _, u := range unresolved {
@@ -255,5 +241,5 @@ func unresolvedNames(unresolved []Unresolved) []string {
 }
 
 func equalUnresolvedNames(unresolved []Unresolved, want []string) bool {
-	return equalStrings(unresolvedNames(unresolved), want)
+	return slices.Equal(unresolvedNames(unresolved), want)
 }

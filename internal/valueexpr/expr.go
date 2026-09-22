@@ -53,6 +53,7 @@ type sink struct {
 // evaluates anything and never echoes the value in an error, which may hold a
 // secret.
 func scan(value string, s sink) error {
+scanLoop:
 	for i := 0; i < len(value); {
 		c := value[i]
 		if c != '$' {
@@ -112,17 +113,14 @@ func scan(value string, s sink) error {
 						}
 						s.cmd(command)
 						i = j + 1
-						j = -1 // done
+						continue scanLoop
 					}
-				}
-				if j < 0 {
-					break
 				}
 				j++
 			}
-			if j >= len(value) && depth > 0 {
-				return errors.New("unterminated $( in value")
-			}
+			// Falling out of the loop means the value ran out with the depth
+			// still open.
+			return errors.New("unterminated $( in value")
 		case isEnvNameByte(next) && (next < '0' || next > '9'):
 			j := i + 1
 			for j < len(value) && isEnvNameByte(value[j]) {
@@ -159,22 +157,20 @@ type Inventory struct {
 
 // Scan walks value and reports its pieces, or a syntax error.
 func Scan(value string) (Inventory, error) {
-	pieces, err := Pieces(value)
-	if err != nil {
-		return Inventory{}, err
+	// A value with no $ is one literal run and nothing else, and most
+	// config values are exactly that.
+	if strings.IndexByte(value, '$') < 0 {
+		return Inventory{Literal: value}, nil
 	}
 	var out Inventory
 	var lit strings.Builder
-	for _, p := range pieces {
-		switch p.Kind {
-		case PieceLit:
-			lit.WriteString(p.Lit)
-		case PieceRef:
-			out.Refs = append(out.Refs, p.Ref)
-		case PieceCommand:
-			out.Commands = append(out.Commands, p.Command)
-		}
-	}
+	err := scan(value, sink{
+		lit: func(s string) { lit.WriteString(s) },
+		ref: func(name, def string, hasDef bool) {
+			out.Refs = append(out.Refs, Ref{Name: name, Default: def, HasDefault: hasDef})
+		},
+		cmd: func(command string) { out.Commands = append(out.Commands, command) },
+	})
 	out.Literal = lit.String()
 	return out, err
 }
@@ -216,6 +212,13 @@ func Pieces(value string) ([]Piece, error) {
 	return out, nil
 }
 
+// ValidEnvName reports whether name is one a ${NAME} reference could spell.
+// The env-ref grammar's single authority; hosts that validate a name-shaped
+// field (the registry's api_key_env) call this instead of restating the rule.
+func ValidEnvName(name string) bool {
+	return envNameRe.MatchString(name)
+}
+
 // Unresolved names why a piece of the value produced nothing: a missing or
 // empty environment variable (Name set) or a failed command (Command set with
 // Err). It carries the failed command so tests and hosts can be precise; no
@@ -233,6 +236,10 @@ type Unresolved struct {
 // an empty value; callers that validated the value at load time can treat it
 // as unreachable.
 func Expand(value string, lookup func(string) (string, bool)) (string, []Unresolved, error) {
+	// Same fast path as Scan: a value with no $ expands to itself.
+	if strings.IndexByte(value, '$') < 0 {
+		return value, nil, nil
+	}
 	var b strings.Builder
 	var unresolved []Unresolved
 	err := scan(value, sink{

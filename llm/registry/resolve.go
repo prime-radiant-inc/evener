@@ -324,16 +324,8 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	cred, cw := r.credential(rec)
 	warnings = append(warnings, cw...)
-	credHeaders := map[string]string{}
-	for k, v := range rec.head.CredentialHeaders {
-		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
-			credHeaders[k] = e
-		} else if len(missing) > 0 {
-			// An unset reference or failed command silently dropping the
-			// header would leave an auth failure with no local hint.
-			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
-		}
-	}
+	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders)
+	warnings = append(warnings, hw...)
 	if rec.head.Hidden {
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
 	}
@@ -609,16 +601,8 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
 	cred, cw := r.credential(rec)
 	warnings = append(warnings, cw...)
-	credHeaders := map[string]string{}
-	for k, v := range rec.head.CredentialHeaders {
-		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
-			credHeaders[k] = e
-		} else if len(missing) > 0 {
-			// An unset reference or failed command silently dropping the
-			// header would leave an auth failure with no local hint.
-			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
-		}
-	}
+	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders)
+	warnings = append(warnings, hw...)
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
 
@@ -921,6 +905,24 @@ func templatePlaceholders(tpl string) []string {
 	return out
 }
 
+// expandCredentialHeaders expands a record's credential headers, the
+// headers whose values carry credential material. A header whose value
+// resolves to nothing is dropped with a warning: an unset reference or a
+// failed command silently dropping it would leave an auth failure with no
+// local hint.
+func (r *Registry) expandCredentialHeaders(headers map[string]string) (map[string]string, []string) {
+	credHeaders := map[string]string{}
+	var warnings []string
+	for k, v := range headers {
+		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
+			credHeaders[k] = e
+		} else if len(missing) > 0 {
+			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
+		}
+	}
+	return credHeaders, warnings
+}
+
 // buildHeaders merges header layers and applies spec §10: an unset $VAR
 // drops the header; an empty value removes an inherited header.
 func (r *Registry) buildHeaders(layers ...map[string]string) map[string]string {
@@ -935,8 +937,8 @@ func (r *Registry) buildHeaders(layers ...map[string]string) map[string]string {
 		}
 		// A header whose reference or command resolves to nothing drops out
 		// silently by design: display headers carry no credential, so there is
-		// no auth failure to explain — unlike the credential-header loops,
-		// which warn for exactly that reason.
+		// no auth failure to explain — unlike expandCredentialHeaders, which
+		// warns for exactly that reason.
 		expanded, missing := expandEnv(v, r.env)
 		if len(missing) > 0 || expanded == "" {
 			continue
