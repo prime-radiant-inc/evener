@@ -52,6 +52,30 @@ func TestFormatJobNotification(t *testing.T) {
 	}
 }
 
+// The block's intent attribute carries the caller's one-line rationale for
+// the run (the shell tool call's `intent` argument, captured at launch onto
+// the job record). The web card renders it on the head line beside the
+// title, so a failed job announces WHY it ran, not just that it died. It is
+// a machine contract value for steeringClassify.ts's parser, so attr-shape
+// assertions here are contract assertions, not prose pins.
+func TestFormatJobNotificationEmitsIntent(t *testing.T) {
+	t.Parallel()
+	withIntent := formatJobNotificationBlock(jobNotification{
+		JobID: "job_X", JobType: "shell", Intent: "Running the mid-turn kill reproduction.",
+		Status: "failed", Reason: "exit_nonzero",
+	}, notificationExcerpt{}, true)
+	if !strings.Contains(withIntent, `intent="Running the mid-turn kill reproduction."`) {
+		t.Errorf("notification missing intent attribute:\n%s", withIntent)
+	}
+
+	bare := formatJobNotificationBlock(jobNotification{
+		JobID: "job_Y", JobType: "shell", Status: "completed", Reason: "exit_zero",
+	}, notificationExcerpt{}, true)
+	if strings.Contains(bare, "intent=") {
+		t.Errorf("empty intent must not emit an attribute:\n%s", bare)
+	}
+}
+
 // --- kata 77sf: job output must not terminate or forge the wrapper --------
 //
 // agent/job_notify.go interpolates job output (a shell tail, a delegate
@@ -1068,32 +1092,54 @@ func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
 	}
 }
 
-func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
+// The notification's label fields project the record honestly: Description
+// is the job's own gloss (the shell tool's separate description argument),
+// falling back to the delegate task — NEVER the command. The command
+// fallback that used to live here put the raw command on the web card's
+// head line, where a failed job announced its invocation instead of its
+// purpose; identification-by-command stays with the jobs listing
+// (projectJobRecordAt's jobRecordDisplayLabel). Intent — the caller's
+// stated rationale — rides its own field.
+func TestJobNotificationFromRecordLabelFields(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
 		description string
 		command     string
 		task        string
+		intent      string
 		want        string
+		wantIntent  string
 	}{
 		{
 			name:        "description",
 			description: "explicit description",
 			command:     "shell command",
 			task:        "delegate task",
+			intent:      "caller's rationale",
 			want:        "explicit description",
+			wantIntent:  "caller's rationale",
 		},
 		{
-			name:    "command",
-			command: "shell command",
-			task:    "delegate task",
-			want:    "shell command",
+			name:       "command is not a label",
+			command:    "shell command",
+			intent:     "caller's rationale",
+			want:       "",
+			wantIntent: "caller's rationale",
 		},
 		{
-			name: "delegate task",
-			task: "Inspect the workspace",
-			want: "Inspect the workspace",
+			name:       "delegate task",
+			task:       "Inspect the workspace",
+			intent:     "caller's rationale",
+			want:       "Inspect the workspace",
+			wantIntent: "caller's rationale",
+		},
+		{
+			name:       "intent alone",
+			command:    "shell command",
+			intent:     "caller's rationale",
+			want:       "",
+			wantIntent: "caller's rationale",
 		},
 	}
 	for _, tt := range tests {
@@ -1106,9 +1152,13 @@ func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
 				Description: tt.description,
 				Command:     tt.command,
 				Task:        tt.task,
+				Intent:      tt.intent,
 			})
 			if n.Description != tt.want {
 				t.Fatalf("notification description = %q, want %q", n.Description, tt.want)
+			}
+			if n.Intent != tt.wantIntent {
+				t.Fatalf("notification intent = %q, want %q", n.Intent, tt.wantIntent)
 			}
 		})
 	}

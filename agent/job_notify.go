@@ -50,12 +50,24 @@ func jobRecordDisplayLabel(rec *jobstore.JobRecord) string {
 	return description
 }
 
+// jobRecordNotificationLabel is the label a job notification carries for its
+// job: the record's own gloss (the shell tool's separate `description`
+// argument), falling back to the delegate task. NEVER the command: this label
+// renders on the web card's head line beside the title, where the command
+// would headline a failed job with its invocation instead of its purpose.
+// Identification-by-command stays with the jobs listing
+// (projectJobRecordAt's jobRecordDisplayLabel).
+func jobRecordNotificationLabel(rec *jobstore.JobRecord) string {
+	return envvars.FirstNonEmpty(rec.Description, rec.Task)
+}
+
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:            rec.JobID,
 		TerminalGen:      rec.TerminalGen,
 		JobType:          string(rec.Type),
-		Description:      jobRecordDisplayLabel(rec),
+		Description:      jobRecordNotificationLabel(rec),
+		Intent:           rec.Intent,
 		Status:           string(rec.Status),
 		Reason:           rec.Reason,
 		ExhaustionBudget: rec.ExhaustionBudget,
@@ -235,6 +247,9 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 		notificationAttr("description", n.Description),
 		notificationAttr("status", n.Status),
 		notificationAttr("reason", n.Reason),
+	}
+	if n.Intent != "" {
+		attrs = append(attrs, notificationAttr("intent", n.Intent))
 	}
 	attrs = append(attrs, notificationAttr("output_bytes", strconv.FormatInt(n.OutputBytes, 10)))
 	if n.Status == string(jobstore.StatusExhausted) {

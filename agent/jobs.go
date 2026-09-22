@@ -523,6 +523,10 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
+	// Intent is the caller's stated rationale for the run (the shell tool
+	// call's `intent` argument), projected from the job record. The web card
+	// renders it on the head line beside the title.
+	Intent string
 	// TerminalGen is the exact durable terminal generation this terminal
 	// notification represents.
 	TerminalGen      string
@@ -1494,6 +1498,8 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 				JobID:            finished.JobID,
 				TerminalGen:      finished.TerminalGen,
 				JobType:          string(rec.Type),
+				Description:      jobRecordNotificationLabel(rec),
+				Intent:           rec.Intent,
 				Status:           string(finished.Status),
 				Reason:           finished.Reason,
 				ExhaustionBudget: finished.ExhaustionBudget,
@@ -2122,6 +2128,8 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			JobID:            run.rec.JobID,
 			TerminalGen:      terminal.generation,
 			JobType:          string(run.rec.Type),
+				Description:      jobRecordNotificationLabel(run.rec),
+				Intent:           run.rec.Intent,
 			Status:           string(terminal.status),
 			Reason:           terminal.reason,
 			ExhaustionBudget: terminal.exhaustionBudget,
@@ -2276,6 +2284,8 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 				JobID:            rec.JobID,
 				TerminalGen:      rec.TerminalGen,
 				JobType:          string(rec.Type),
+				Description:      jobRecordNotificationLabel(rec),
+				Intent:           rec.Intent,
 				Status:           string(rec.Status),
 				Reason:           rec.Reason,
 				ExhaustionBudget: rec.ExhaustionBudget,
