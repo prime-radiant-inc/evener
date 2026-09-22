@@ -20,6 +20,10 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 	}
 	e.scratchMu.Lock()
 	defer e.scratchMu.Unlock()
+	// The PREVIOUS identity decides the reset: reading the field only
+	// before it is overwritten below, or the comparison would match the new
+	// binding against itself and never fire.
+	prevID := e.retentionBinding.BindingID
 	e.retentionOwner = owner
 	e.retentionBinding = cloneScratchBinding(binding)
 	e.retentionSet = true
@@ -30,7 +34,7 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 	// pending kinds travel with it: clearing them here would let the first
 	// publication on the receiving environment claim a contended retained
 	// slot and end the continuity retry (round 12).
-	if e.retentionBinding.BindingID != binding.BindingID {
+	if prevID != binding.BindingID {
 		e.retentionPending = nil
 	}
 	return nil

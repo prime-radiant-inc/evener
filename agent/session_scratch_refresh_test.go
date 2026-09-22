@@ -1496,6 +1496,87 @@ func TestContendedSlotPendingSurvivesBindingTransfer(t *testing.T) {
 	}
 }
 
+// TestContendedSlotPendingSurvivesEnvironmentSwap is the swap-path twin of
+// TestContendedSlotPendingSurvivesBindingTransfer: a moving environment swap
+// (stageScratchSwapBinding + AdoptSessionScratch) hands the source's fallback
+// allocation and its binding slots to the target, and the pending marker must
+// travel with them. The target's post-move pin runs with the marker in hand,
+// or the moved fallback mint would claim the binding's slot and no later
+// refresh would ever re-probe the retained directory (round 13).
+func TestContendedSlotPendingSurvivesEnvironmentSwap(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01PENDINGXFER2"
+	const bindingID = "b-pending-swap"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{},
+	})
+
+	// The source environment: the production resume shape, whose live fresh
+	// sandbox mint shadows the contended retained slot, so the adoption marks
+	// the kind pending on it.
+	source := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { source.Cleanup(); source.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), source.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := source.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the source environment's fresh sandbox scratch: %v", err)
+	}
+	if _, err := s.adoptRestoredConsumerScratch(source, consumerID, true); err != nil {
+		t.Fatalf("source adoption over the contended slot: %v", err)
+	}
+
+	// The moving swap: the manifest transition is staged first, then the
+	// handles move and the target re-pins what it adopted.
+	target := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { target.Cleanup(); target.DisposeSandboxScratch() })
+	if err := s.stageScratchSwapBinding(target, source, consumerID); err != nil {
+		t.Fatalf("stage the swap binding: %v", err)
+	}
+	target.AdoptSessionScratch(source)
+	minted := target.SessionScratchDir()
+	if minted == "" || filepath.Clean(minted) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture moved mint %q must exist apart from the retained %q", minted, retainedDir)
+	}
+
+	targetBinding, err := target.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, targetBinding.BindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", targetBinding.BindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the target's re-pin displaced the retained slot: got %+v, want the retained %q", slot, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(minted) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the moved mint %q was left unpinned: a protected allocation must publish a reference", minted)
+	}
+}
+
 // TestScratchNewBindingRetryKeepsConcurrentRoleUpdate is the new-binding twin of
 // TestScratchUpsertRetryKeepsConcurrentRoleUpdate: the first-ever publication's
 // retry closure must recompute its rows too, or a role update committed while a

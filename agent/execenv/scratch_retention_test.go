@@ -509,3 +509,44 @@ func TestScratchRetentionFailedBindingPublicationLeavesNoUnownedReference(t *tes
 		t.Fatalf("references owned by no binding after a failed publication = %v, want none: a pin that cannot be published must not become durable", unowned)
 	}
 }
+
+// TestSetScratchRetentionBindingResetsPendingOnlyForNewIdentity pins the
+// round-13 dead-guard fix: the pending-marker reset must compare against the
+// binding identity being REPLACED, so a genuinely different identity
+// re-derives contention for every kind while the same identity re-installed
+// (a transfer or a re-adoption) keeps the markers it is owed.
+func TestSetScratchRetentionBindingResetsPendingOnlyForNewIdentity(t *testing.T) {
+	workspace := t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-test-session"}
+	e := NewLocalExecutionEnvironment(workspace)
+	t.Cleanup(func() { e.Cleanup(); e.DisposeSandboxScratch() })
+
+	first := sandbox.ScratchBinding{BindingID: "E0", OwnerSessionID: owner.RootSessionID, WorkingDir: workspace}
+	if err := e.SetScratchRetentionBinding(owner, first); err != nil {
+		t.Fatal(err)
+	}
+	e.MarkRetainedSlotPending(sandbox.ScratchKindSandbox)
+	if kinds := e.RetentionPendingKinds(); len(kinds) != 1 {
+		t.Fatalf("fixture expected the pending marker recorded, got %v", kinds)
+	}
+
+	// A different logical identity re-derives contention for every kind this
+	// cycle: its pending markers must not outlive the binding they describe.
+	second := sandbox.ScratchBinding{BindingID: "E1", OwnerSessionID: owner.RootSessionID, WorkingDir: workspace}
+	if err := e.SetScratchRetentionBinding(owner, second); err != nil {
+		t.Fatal(err)
+	}
+	if kinds := e.RetentionPendingKinds(); len(kinds) != 0 {
+		t.Fatalf("a different binding identity must reset the pending markers, got %v", kinds)
+	}
+
+	// The same identity re-installed is a transfer or a re-adoption of one
+	// logical environment: its markers travel with it (round 12).
+	e.MarkRetainedSlotPending(sandbox.ScratchKindSandbox)
+	if err := e.SetScratchRetentionBinding(owner, second); err != nil {
+		t.Fatal(err)
+	}
+	if kinds := e.RetentionPendingKinds(); len(kinds) != 1 {
+		t.Fatalf("the same identity re-installed must keep the pending markers, got %v", kinds)
+	}
+}

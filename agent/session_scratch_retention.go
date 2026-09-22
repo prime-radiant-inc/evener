@@ -183,6 +183,20 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 	// kinds to move intact across a stale-revision retry instead of letting the
 	// delete shrink the set the eventual write copies.
 	moved := maps.Clone(sourceBinding.Slots)
+	// A contended retained slot's pending marker travels with the allocation
+	// it protects: the target's post-move pin (AdoptSessionScratch's
+	// PinOwnedScratch) publishes with the target's own marker set, or the
+	// moved fallback mint would claim the binding's slot and displace the
+	// retained directory the later refresh must re-probe (round 13).
+	for _, kind := range source.RetentionPendingKinds() {
+		if _, moving := moved[kind]; !moving {
+			continue
+		}
+		if _, kept := keptKinds[kind]; kept {
+			continue
+		}
+		target.MarkRetainedSlotPending(kind)
+	}
 	swapLockRefusals := 0
 	for range 5 {
 		manifest, err := sandbox.LoadScratchRetention(owner)

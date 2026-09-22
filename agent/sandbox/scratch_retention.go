@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -322,6 +323,12 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 	if err != nil {
 		return err
 	}
+	// A terminally released manifest is closed for writers: a pin published
+	// onto the tombstone would resurrect protection the collector is already
+	// authorized to ignore (round 13).
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
 	canonicalRef := ScratchReference{Dir: dir, Kind: ref.Kind}
 	for _, existing := range manifest.References {
 		existingDir, err := canonicalScratchPath(existing.Dir)
@@ -578,6 +585,20 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer})
 }
 
+// ScratchLockContentionDelay returns the growing spacing the bounded retry
+// applies between attempts at a fail-fast manifest-lock refusal: the first
+// retry waits 1ms and the spacing doubles to an 8ms cap, so a fsync-scale
+// hold is waited out rather than failed against. It is the single source for
+// every lock-contention spacing in the process; pass attempt counting from 0.
+func ScratchLockContentionDelay(attempt int) time.Duration {
+	// The doubling is for waiting out a microsecond-to-millisecond hold, not
+	// for growing a sustained refusal's cost: cap it at the documented 8ms.
+	if attempt >= 3 {
+		return 8 * time.Millisecond
+	}
+	return time.Duration(1<<attempt) * time.Millisecond
+}
+
 // RetryScratchLockContention runs fn and retries while fn fails with the
 // manifest's transient lock refusal, spacing attempts with a growing backoff
 // so a concurrent writer's fsync-scale hold can clear between them: a
@@ -586,15 +607,6 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 // writers re-read and rebase onto the fresh manifest under the lock. The
 // bound keeps a sustained refusal a real, reported failure: exhaustion
 // returns the refusal to the caller, never a silent success.
-// ScratchLockContentionDelay returns the growing spacing the bounded retry
-// applies between attempts at a fail-fast manifest-lock refusal: the first
-// retry waits 1ms and the spacing doubles to an 8ms cap, so a fsync-scale
-// hold is waited out rather than failed against. It is the single source for
-// every lock-contention spacing in the process; pass attempt counting from 0.
-func ScratchLockContentionDelay(attempt int) time.Duration {
-	return time.Duration(1<<attempt) * time.Millisecond
-}
-
 func RetryScratchLockContention(fn func() error) error {
 	var err error
 	for attempt := 0; ; attempt++ {
@@ -1085,11 +1097,25 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 				continue
 			}
 			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					// The directory was already collected out from under the
+					// tombstone (Released pins read collectible), so the
+					// reference is stale: it dies with the manifest. Failing
+					// here would block every later reset on a directory that
+					// is never coming back.
+					continue
+				}
 				return fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, err)
 			}
 			switch pin, pinErr := readScratchDirectoryPin(dir); {
 			case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
 				if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
+					// The lease must not outlive the failed reset: release it
+					// on the way out or the leaked flock holds the directory
+					// against every later writer.
+					if releaseErr := lease.Release(); releaseErr != nil {
+						return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, errors.Join(rmErr, releaseErr))
+					}
 					return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
 				}
 			case os.IsNotExist(pinErr):

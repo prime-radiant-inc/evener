@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -868,5 +869,142 @@ func TestResetReleasedReconcilesLeftoverPins(t *testing.T) {
 	}
 	if !retained {
 		t.Fatal("a pin still held by a live owner must read as retained")
+	}
+}
+
+// TestScratchPinRejectsReleasedManifest pins the round-13 writer gap: Pin
+// still published references and pins onto a terminally released manifest —
+// the one writer left outside the ErrScratchRetentionReleased discipline.
+func TestScratchPinRejectsReleasedManifest(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	// The scratch's own lease stays held, so the terminal release leaves the
+	// pin behind on the tombstone.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	err = scratch.Pin(owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox})
+	if !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("pin onto a terminally released manifest: %v, want %v", err, ErrScratchRetentionReleased)
+	}
+}
+
+// TestResetReleasedTreatsCollectedReferenceAsStale pins the round-13 reset
+// gap: a reference whose directory the collector already removed from under
+// the tombstone must die with the manifest, not fail the reset on a lease
+// that can never be opened again.
+func TestResetReleasedTreatsCollectedReferenceAsStale(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatalf("fixture expected the contended pin to survive the release: %v", err)
+	}
+	// Settle the lease, then let the collector take the directory: the pin
+	// dies with it and only the tombstoned reference remains.
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(scratch.Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	fresh, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("the reset failed on an already-collected reference: %v", err)
+	}
+	if fresh.Released {
+		t.Fatal("the reset left the manifest tombstoned")
+	}
+	if len(fresh.References) != 0 {
+		t.Fatalf("the reset carried a stale reference for a collected directory: %+v", fresh.References)
+	}
+}
+
+// TestResetReleasedReleasesLeaseWhenPinRemoveFails pins the round-13 lease
+// leak: when the reset cannot remove a settled pin, it must still release the
+// per-directory retention lease it took, or the leaked flock holds the
+// directory against every later writer.
+func TestResetReleasedReleasesLeaseWhenPinRemoveFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the read-only directory fixture cannot make os.Remove fail on windows")
+	}
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	t.Cleanup(func() { _ = os.Chmod(scratch.Dir, 0o700) })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	// Settled: the lease is free for the reset to take and the pin is left
+	// for it to remove. A read-only directory makes that removal fail while
+	// the pin itself still reads back valid.
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(scratch.Dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+		t.Fatal("expected the pin-remove failure to surface from the reset")
+	}
+	probe, _, err := acquireScratchLease(filepath.Join(scratch.Dir, sessionScratchLeaseName))
+	if err != nil {
+		t.Fatalf("the reset leaked the retention lease: %v", err)
+	}
+	if err := probe.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestScratchLockContentionDelayDoublesToACap pins the documented spacing
+// contract: double from 1ms up to the 8ms ceiling and never past it, so a deep
+// retry's waits stay bounded.
+func TestScratchLockContentionDelayDoublesToACap(t *testing.T) {
+	for _, tc := range []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, time.Millisecond},
+		{1, 2 * time.Millisecond},
+		{2, 4 * time.Millisecond},
+		{3, 8 * time.Millisecond},
+		{4, 8 * time.Millisecond},
+		{10, 8 * time.Millisecond},
+	} {
+		if got := ScratchLockContentionDelay(tc.attempt); got != tc.want {
+			t.Fatalf("ScratchLockContentionDelay(%d) = %v, want %v", tc.attempt, got, tc.want)
+		}
 	}
 }
