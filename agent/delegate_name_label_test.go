@@ -129,6 +129,24 @@ func TestDelegateName_DeliveryPlanAndNotificationFrameCarryLabel(t *testing.T) {
 		t.Fatalf("notification frame omits the label or the id:\n%s", content)
 	}
 
+	// The retry constructor (retryDeliveryPlanLocked) rebuilds the plan from
+	// the same durable aggregate, so a retried frame carries the label too.
+	receipt := &delegateDeliveryAdmission{
+		token:      delegateDeliveryToken{deliveryID: plan.deliveryID},
+		delegateID: "dlg_target",
+		claim:      plan.claim,
+		retryable:  true,
+	}
+	c.mu.Lock()
+	retryPlan := c.retryDeliveryPlanLocked(receipt)
+	c.mu.Unlock()
+	if retryPlan == nil {
+		t.Fatal("retryDeliveryPlanLocked returned no plan for a retryable named delegate")
+	}
+	if retryPlan.name != "notify-label" {
+		t.Fatalf("retry plan name = %q, want notify-label", retryPlan.name)
+	}
+
 	plain, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, plain, "dlg_plain", "")
 	plainLease, _ := startDelegateDeliveryGeneration(t, plain, "dlg_plain", false)

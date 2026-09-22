@@ -15,8 +15,10 @@ const obsSID = "02wMz5Txv47YP64RR3B9YJ"
 const grandchildSID = "02wMz5Txv1C3Hut0M8GCeB"
 
 // treeFixture builds: root (hash1) --delegate--> child (hash2, cross-bucket),
-// with root observed by an observer session (hash1).
-func treeFixture(t *testing.T) (base, rootSID string) {
+// with root observed by an observer session (hash1). Each descriptorMutate
+// hook, when given, adjusts the delegate's created descriptor before it is
+// journaled (the name-label test uses one to give the delegate a Name).
+func treeFixture(t *testing.T, descriptorMutate ...func(*delegatestore.Descriptor)) (base, rootSID string) {
 	t.Helper()
 	base = t.TempDir()
 	rootBucket := stateHomeBucket(base, hash1)
@@ -29,12 +31,16 @@ func treeFixture(t *testing.T) (base, rootSID string) {
 
 	// Root's stable delegate journal contains a running delegate to the child.
 	rootDelegates := filepath.Join(rootBucket, "sessions", rootSID, "delegates.jsonl")
+	descriptor := delegatestore.Descriptor{
+		ChildSessionID: childSID, TranscriptRef: "proj:" + hash2 + ":" + childSID,
+		OwnerSessionID: rootSID, VisibleSessionID: rootSID, Task: "inspect child",
+		AgentType: "explorer", ToolNameCeiling: []string{"communicate"}, Resumable: true,
+	}
+	for _, mutate := range descriptorMutate {
+		mutate(&descriptor)
+	}
 	writeDelegateEvents(t, rootDelegates, []delegatestore.Event{
-		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del1", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
-			ChildSessionID: childSID, TranscriptRef: "proj:" + hash2 + ":" + childSID,
-			OwnerSessionID: rootSID, VisibleSessionID: rootSID, Task: "inspect child",
-			AgentType: "explorer", ToolNameCeiling: []string{"communicate"}, Resumable: true,
-		}}},
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del1", Created: &delegatestore.DelegateCreated{Descriptor: descriptor}},
 		{Kind: delegatestore.EventDelegateRunStarted, DelegateID: "del1", RunStarted: &delegatestore.RunStarted{
 			Generation: 1, Trigger: delegatestore.TriggerInitial, StartedAt: time.Unix(1, 0).UTC(),
 		}},
@@ -173,25 +179,7 @@ func TestTree_Render(t *testing.T) {
 // A named delegate's tree node carries the label (display-only; the node stays
 // addressed by session id), and an unnamed delegate's node has no label slot.
 func TestTree_DelegateNameLabel(t *testing.T) {
-	base := t.TempDir()
-	rootBucket := stateHomeBucket(base, hash1)
-	childBucket := stateHomeBucket(base, hash2)
-	rootSID := sidA
-	writeSession(t, rootBucket, rootSID)
-	writeSession(t, childBucket, childSID)
-	rootDelegates := filepath.Join(rootBucket, "sessions", rootSID, "delegates.jsonl")
-	writeDelegateEvents(t, rootDelegates, []delegatestore.Event{
-		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del_named", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
-			ChildSessionID: childSID, TranscriptRef: "proj:" + hash2 + ":" + childSID,
-			OwnerSessionID: rootSID, VisibleSessionID: rootSID, Task: "named child",
-			AgentType: "explorer", ToolNameCeiling: []string{"communicate"}, Resumable: true,
-			Name: "tree-label",
-		}}},
-		{Kind: delegatestore.EventDelegateRunStarted, DelegateID: "del_named", RunStarted: &delegatestore.RunStarted{
-			Generation: 1, Trigger: delegatestore.TriggerInitial, StartedAt: time.Unix(1, 0).UTC(),
-		}},
-	})
-
+	base, rootSID := treeFixture(t, func(d *delegatestore.Descriptor) { d.Name = "tree-label" })
 	root, err := Tree(base, rootSID, TreeOpts{})
 	if err != nil {
 		t.Fatal(err)
@@ -206,8 +194,8 @@ func TestTree_DelegateNameLabel(t *testing.T) {
 		t.Errorf("render missing the delegate label:\n%s", rendered)
 	}
 
-	// The shared fixture's delegate has no name: its node projects the zero
-	// label, which renders as absent.
+	// The unmutated fixture's delegate has no name: its node projects the
+	// zero label, which renders as absent.
 	fixtureBase, fixtureRoot := treeFixture(t)
 	fixtureRootTree, _ := Tree(fixtureBase, fixtureRoot, TreeOpts{})
 	if len(fixtureRootTree.Children) != 1 || fixtureRootTree.Children[0].Name != "" {

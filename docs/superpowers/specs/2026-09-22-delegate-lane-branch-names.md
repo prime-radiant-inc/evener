@@ -20,11 +20,12 @@ This document is the simplest design that gets there.
 
 ## Design
 
-`delegate` gains an optional `name` argument that names the lane's **git branch**
-only. Every machine identity stays keyed to the delegate id: the worktree
-directory, the sidecar filename, the lock marker, and dispose addressing. The
-branch is the one surface a human reads, and it is the one place a mnemonic buys
-anything.
+`delegate` gains an optional `name` argument that names the lane's **git
+branch** only (amended 2026-09-22, delegate name labels: `name` is now accepted
+for every delegate as a display label — see the tool-schema note below). Every
+machine identity stays keyed to the delegate id: the worktree directory, the
+sidecar filename, the lock marker, and dispose addressing. The branch is the
+one surface a human reads, and it is the one place a mnemonic buys anything.
 
 Three facts make this the simplest possible cut:
 

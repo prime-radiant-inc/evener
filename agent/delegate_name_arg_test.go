@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -65,9 +66,9 @@ func TestDecodeDelegateArgs_Name(t *testing.T) {
 		t.Fatalf("invalid label: err = %v, want invalid_request", err)
 	}
 
-	// The isolation value is normalized at decode, so a padded value pairs
-	// with a name exactly like a clean one (create and describe trim it; the
-	// decode guard must not be the one place that doesn't).
+	// The isolation value is normalized at decode, so a padded value flows
+	// to every downstream consumer in the same shape as a clean one (create
+	// and describe trim it; decode must not be the one place that doesn't).
 	padded, err := decodeDelegateArgs(map[string]any{"prompt": "p", "isolation": "worktree ", "name": "parser-rename"})
 	if err != nil {
 		t.Fatalf("padded isolation with a name: %v", err)
@@ -77,6 +78,21 @@ func TestDecodeDelegateArgs_Name(t *testing.T) {
 	}
 }
 
+// describeForTest runs the select→describe sequence the spawn path uses and
+// returns the descriptor describe built for args.
+func describeForTest(t *testing.T, r *wtRepo, args delegateArgs) delegatestore.Descriptor {
+	t.Helper()
+	selection, err := r.s.selectSubagentModel(context.Background(), args.Model, args.AgentType)
+	if err != nil {
+		t.Fatalf("selectSubagentModel: %v", err)
+	}
+	descriptor, _, err := (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, selection, nil)
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	return descriptor
+}
+
 // describe carries a non-worktree name as a display-only label: the
 // descriptor records it as Name, and nothing is cut, so WorktreeBranch stays
 // empty.
@@ -84,14 +100,7 @@ func TestDescribeDelegate_NameLabelsNonWorktreeDelegate(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	args := delegateArgs{Task: "labeled unit", Name: "research-label", DelegationAllowance: new(0)}
-	selection, err := r.s.selectSubagentModel(context.Background(), args.Model, args.AgentType)
-	if err != nil {
-		t.Fatalf("selectSubagentModel: %v", err)
-	}
-	descriptor, _, err := (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, selection, nil)
-	if err != nil {
-		t.Fatalf("describe with a non-worktree name: %v", err)
-	}
+	descriptor := describeForTest(t, r, args)
 	if descriptor.Name != "research-label" {
 		t.Fatalf("descriptor name = %q, want research-label", descriptor.Name)
 	}
@@ -106,14 +115,7 @@ func TestDescribeDelegate_WorktreeNameStillNamesBranch(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	args := delegateArgs{Task: "named lane unit", Name: "parser-rename", Isolation: "worktree", DelegationAllowance: new(0)}
-	selection, err := r.s.selectSubagentModel(context.Background(), args.Model, args.AgentType)
-	if err != nil {
-		t.Fatalf("selectSubagentModel: %v", err)
-	}
-	descriptor, _, err := (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, selection, nil)
-	if err != nil {
-		t.Fatalf("describe with a worktree name: %v", err)
-	}
+	descriptor := describeForTest(t, r, args)
 	if descriptor.Name != "parser-rename" || descriptor.WorktreeBranch != "parser-rename" {
 		t.Fatalf("descriptor name/branch = %q/%q, want parser-rename on both", descriptor.Name, descriptor.WorktreeBranch)
 	}

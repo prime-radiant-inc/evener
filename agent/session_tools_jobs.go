@@ -556,9 +556,9 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
-		// Isolation is normalized here so every downstream consumer — the
-		// name pairing guard below, create, describe — sees one shape; a
-		// padded value must not refuse at exactly one of them.
+		// Isolation is normalized here so every downstream consumer —
+		// create, describe — sees one shape; a padded value must not
+		// behave differently at exactly one of them.
 		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
 		Sandbox:   stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
@@ -1048,15 +1048,15 @@ func formatJobList(out jobListResult) string {
 		if label == "" && j.Command != nil {
 			label = *j.Command
 		}
+		parts := make([]string, 0, 2)
 		if j.Name != "" {
-			if label != "" {
-				label = j.Name + " — " + label
-			} else {
-				label = j.Name
-			}
+			parts = append(parts, j.Name)
 		}
 		if label != "" {
-			fmt.Fprintf(&b, "  %s", label)
+			parts = append(parts, label)
+		}
+		if len(parts) != 0 {
+			fmt.Fprintf(&b, "  %s", strings.Join(parts, " — "))
 		}
 		var detail []string
 		if started := shortTimestamp(j.StartedAt); started != "" {

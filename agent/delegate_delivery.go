@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -960,15 +960,9 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	}
 	// The name attribute is display-only: the frame stays addressable by
 	// delegate_id alone, and an unnamed delegate renders no name attribute.
+	attrs := []string{notificationAttr("delegate_id", plan.delegateID)}
 	if plan.name != "" {
-		return fmt.Sprintf(
-			"<delegate-notification delegate_id=%q name=%q>%s</delegate-notification>",
-			html.EscapeString(plan.delegateID), html.EscapeString(plan.name), packet,
-		), nil
+		attrs = append(attrs, notificationAttr("name", plan.name))
 	}
-	return fmt.Sprintf(
-		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
-		html.EscapeString(plan.delegateID),
-		packet,
-	), nil
+	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), packet), nil
 }
