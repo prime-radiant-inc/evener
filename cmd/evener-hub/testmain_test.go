@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -246,9 +245,8 @@ func chdirTemp(t *testing.T, dir string) {
 		}
 	})
 	// Keep PWD consistent with the new working directory, as testing.T.Chdir
-	// does. PWD is a POSIX convention, and a relative value is one os.Getwd
-	// ignores rather than agrees with, hence the absolute target.
-	if runtime.GOOS != "windows" {
-		t.Setenv("PWD", abs)
-	}
+	// does, and set it on every platform: PWD is a POSIX convention, but
+	// t.Setenv is also what carries T.Chdir's parallel-test guard, because it
+	// panics for a test with a parallel ancestor and denies a later t.Parallel.
+	t.Setenv("PWD", abs)
 }
