@@ -7,10 +7,10 @@ import type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/exten
 import {
   addedMarketplaceNames,
   appliedRemovalNotice,
+  carriedByMarketplaces,
   catalogToBrowse,
   refetchAfterRemoval,
   sameMarketplaceSource,
-  sameRemovedRegistration,
 } from "./marketplaceBrowserModel";
 
 const entry = (name: string): MarketplaceEntry => ({
@@ -113,18 +113,18 @@ test("sources match by kind and the fields that pin them", () => {
   ).toBe(false);
 });
 
-test("a row is the removed registration only when source and stamp both match", () => {
-  const removed = { source: entry("a").source, lastUpdated: 1 };
-  expect(sameRemovedRegistration(entry("a"), removed)).toBe(true);
+test("a row the pre-add list already carried, in the wire's own form, is not the add's", () => {
+  expect(carriedByMarketplaces([entry("a")], entry("a"))).toBe(true);
   expect(
-    sameRemovedRegistration({ ...entry("a"), lastUpdated: 2 }, removed),
+    carriedByMarketplaces([entry("a")], { ...entry("a"), lastUpdated: 2 }),
   ).toBe(false);
   expect(
-    sameRemovedRegistration(
+    carriedByMarketplaces(
+      [entry("a")],
       { ...entry("a"), source: { kind: "github", repo: "a/plugins" } },
-      removed,
     ),
   ).toBe(false);
+  expect(carriedByMarketplaces([], entry("a"))).toBe(false);
 });
 
 test("a stale list that still carries the removed name refreshes; a reconciled one does not", () => {

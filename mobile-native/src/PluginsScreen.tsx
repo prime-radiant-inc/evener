@@ -50,28 +50,19 @@ import {
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-/** The registration an applied removal took out, as the wire names it: the
- * source the hub recorded for it and the whole-second `lastUpdated` stamp
- * it carries. The fallback ruling no longer consults it when reads retire
- * the fence - the wire's whole-second stamp cannot tell a stale row from a
- * same-second re-registration anyway - but it documents what the write took
- * out, and the durable fix (a hub-assigned registration id the wire can
- * compare, recorded on PR #2137's protocol backlog) will compare it. */
-type RemovedRegistration = {
-  source: MarketplaceEntry["source"];
-  lastUpdated: MarketplaceEntry["lastUpdated"];
-};
-
 /** The applied marketplace removals one client's writes reported, keyed by
- * name to the registration the write removed: names a write said the hub
- * already removed, held with the client whose write said so because a fresh
- * browser must not offer Remove again for any of them. The fence covers the
- * name only for the window between the applied outcome and the first
- * authoritative read that lands after it, whatever that read carries - see
- * reconcileAppliedRemovals. */
+ * name: names a write said the hub already removed, held with the client
+ * whose write said so because a fresh browser must not offer Remove again
+ * for any of them. The fence covers a name only for the window between the
+ * applied outcome and the first authoritative read that lands after it -
+ * see reconcileAppliedRemovals. The removed registrations' wire identities
+ * are deliberately not stored: the fallback retires on the read's arrival,
+ * not its contents, and the durable fix (a hub-assigned registration id the
+ * wire can compare, PR #2137's protocol backlog) is what will put identity
+ * back into the comparison. */
 type AppliedRemovalGuard = {
   client: ConversationClientLike | null;
-  entries: ReadonlyMap<string, RemovedRegistration>;
+  names: ReadonlySet<string>;
 };
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
@@ -122,27 +113,31 @@ function PluginsScreenBody({
   // write reported them, so a replaced client's late result changes nothing
   // (currentClient's checks below).
   const currentClient = useRef<ConversationClientLike | null>(null);
-  currentClient.current = client ?? null;
   const [marketplaceWarning, setMarketplaceWarning] = useState<{
     client: ConversationClientLike;
+    name: string;
     text: string;
   } | null>(null);
   const [appliedRemovalGuard, setAppliedRemovalGuard] =
     useState<AppliedRemovalGuard>(() => ({
       client: null,
-      entries: new Map(),
+      names: new Set(),
     }));
   const appliedRemovalNames =
     appliedRemovalGuard.client === client
-      ? new Set(appliedRemovalGuard.entries.keys())
+      ? appliedRemovalGuard.names
       : EMPTY_APPLIED_REMOVALS;
   const visibleMarketplaceWarning =
     marketplaceWarning?.client === client ? marketplaceWarning.text : null;
   useEffect(() => {
+    // Assigned in an effect, never during render: mutating a ref mid-render
+    // is unsafe under concurrent rendering, and effects run before any
+    // outcome a replaced client could send arrives.
+    currentClient.current = client ?? null;
     setAppliedRemovalGuard((current) =>
       current.client === (client ?? null)
         ? current
-        : { client: client ?? null, entries: new Map() },
+        : { client: client ?? null, names: new Set() },
     );
     setMarketplaceWarning((current) =>
       current?.client === client ? current : null,
@@ -172,8 +167,8 @@ function PluginsScreenBody({
       if (currentClient.current !== owner) return;
       setAppliedRemovalGuard((current) => {
         // The read's contents no longer decide anything - its arrival does.
-        if (current.client !== owner || !current.entries.size) return current;
-        return { client: owner, entries: new Map() };
+        if (current.client !== owner || !current.names.size) return current;
+        return { client: owner, names: new Set() };
       });
     },
     [],
@@ -181,17 +176,14 @@ function PluginsScreenBody({
   // The browser's recording path for an applied removal: fences the name
   // whatever the hub's truth currently carries, for the window between the
   // outcome and the first authoritative read after it (reconcile's doc),
-  // sets the warning to the outcome's own notice - a clean one clearing
-  // whatever earlier outcome raised (the warning reports the latest applied
-  // removal, never a residue an obsolete one left) - and answers whether
-  // the entry was actually stored: false means the outcome came from a
-  // client this screen has replaced, and the browser drops it whole.
+  // sets the warning to the outcome's own notice, and answers whether the
+  // entry was actually stored: false means the outcome came from a client
+  // this screen has replaced, and the browser drops it whole.
   const markAppliedRemoval = useCallback(
     (
       name: string,
       notice: string | null,
       owner: ConversationClientLike,
-      removed: MarketplaceEntry,
     ): boolean => {
       // The outer check reads the same reconciled source the update below
       // applies - the guard's own client - so `true` can only mean the
@@ -205,15 +197,20 @@ function PluginsScreenBody({
         return false;
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
-        const entries = new Map(current.entries);
-        entries.set(name, {
-          source: removed.source,
-          lastUpdated: removed.lastUpdated,
-        });
-        return { client: owner, entries };
+        const names = new Set(current.names);
+        names.add(name);
+        return { client: owner, names };
       });
-      setMarketplaceWarning(
-        notice !== null ? { client: owner, text: notice } : null,
+      // The warning slot reports the latest outcome for the marketplace it
+      // holds: a noticed outcome replaces whatever the slot showed, and a
+      // clean one (null notice) retires the warning for its own name,
+      // leaving any other marketplace's warning alone.
+      setMarketplaceWarning((current) =>
+        notice !== null
+          ? { client: owner, name, text: notice }
+          : current?.name === name
+            ? null
+            : current,
       );
       return true;
     },
@@ -226,23 +223,25 @@ function PluginsScreenBody({
     (name: string, owner: ConversationClientLike): void => {
       if (currentClient.current !== owner) return;
       setAppliedRemovalGuard((current) => {
-        if (current.client !== owner || !current.entries.has(name)) return current;
-        const entries = new Map(current.entries);
-        entries.delete(name);
-        return { client: owner, entries };
+        if (current.client !== owner || !current.names.has(name)) return current;
+        const names = new Set(current.names);
+        names.delete(name);
+        return { client: owner, names };
       });
     },
     [],
   );
   // A removal the hub confirmed outright: the outcome is neither a residue
-  // nor a failure, and the screen-level warning reports the latest removal
-  // outcome - a clean success retires whatever earlier outcome raised, the
-  // same way an applied outcome with a null notice does (markAppliedRemoval
-  // above).
+  // nor a failure, and the screen-level warning reports the latest outcome
+  // for the name it holds: a clean success retires the warning only for
+  // ITS OWN marketplace, so an unrelated marketplace's success says nothing
+  // about the clone files this one warned about.
   const clearMarketplaceWarning = useCallback(
-    (_name: string, owner: ConversationClientLike): void => {
+    (name: string, owner: ConversationClientLike): void => {
       if (currentClient.current !== owner) return;
-      setMarketplaceWarning(null);
+      setMarketplaceWarning((current) =>
+        current?.name === name ? null : current,
+      );
     },
     [],
   );
@@ -301,7 +300,6 @@ function Plugins({
     name: string,
     notice: string | null,
     owner: ConversationClientLike,
-    removed: MarketplaceEntry,
   ): boolean;
   onAuthoritativeMarketplaces(
     marketplaces: readonly MarketplaceEntry[],

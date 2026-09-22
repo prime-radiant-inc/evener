@@ -35,6 +35,7 @@ import {
 } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
+  carriedByMarketplaces,
   appliedRemovalNotice,
   addedMarketplaceNames,
   catalogToBrowse,
@@ -95,7 +96,6 @@ export function MarketplaceBrowser({
     name: string,
     notice: string | null,
     owner: ConversationClientLike,
-    removed: MarketplaceEntry,
   ): boolean;
   /** Reports every authoritative list read, so the screen can prune guard
    * names the read speaks for - the first read after an outcome retires
@@ -177,10 +177,29 @@ export function MarketplaceBrowser({
     },
     [],
   );
+  // The publication watermark of the latest applied outcome this browser
+  // recorded. Everything the store published at or below it predates the
+  // fence that outcome raised - including a stale read's answer the
+  // outcome's own rejection passed ownership to, one beat before the
+  // recording - so only a publication NEWER than this counts as an
+  // authoritative read for retiring the fence. Reads issued after the
+  // outcome (its own reconciliation refetch, a reconnect re-read, a
+  // remount's mount read) always publish newer: the wire answers one
+  // connection's requests in order, and the store's revision fence drops
+  // anything a newer read outruns.
+  const authoritativeFrom = useRef(0);
   useEffect(() => {
-    if (state.marketplaces !== null)
+    if (
+      state.marketplaces !== null &&
+      state.marketplacesPublicationVersion > authoritativeFrom.current
+    )
       onAuthoritativeMarketplaces(state.marketplaces, client);
-  }, [client, onAuthoritativeMarketplaces, state.marketplaces]);
+  }, [
+    client,
+    onAuthoritativeMarketplaces,
+    state.marketplaces,
+    state.marketplacesPublicationVersion,
+  ]);
   // Wired the way PluginsScreen wires its plugins store: the marketplaces
   // store hears every connection transition through connectionChanged, so a
   // reconnection re-reads a list this view has already asked for and retires
@@ -260,11 +279,6 @@ export function MarketplaceBrowser({
     )
       return;
     const name = marketplace.name;
-    // The registration this write targets: the outcome fences the name for
-    // the window until the first authoritative read after it, whatever that
-    // read then carries - the screen owns the fence (PluginsScreen's
-    // reconcile).
-    const target = marketplace;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
@@ -304,7 +318,13 @@ export function MarketplaceBrowser({
             // reconcile a stale list, never a retry hint.
             const notice = appliedRemovalNotice(caught);
             if (notice !== undefined) {
-            if (!onAppliedRemoval(name, notice, client, target)) return;
+              if (!onAppliedRemoval(name, notice, client)) return;
+              // The watermark everything this fence predates: publications at
+              // or below it - including a stale read's answer the rejection
+              // just passed ownership to - never retire it (the effect's
+              // doc above).
+              authoritativeFrom.current =
+                model.getState().marketplacesPublicationVersion;
               if (alive.current && refetchAfterRemoval(model, name))
                 void state.fetchMarketplaces();
               return;
@@ -516,8 +536,11 @@ export function MarketplaceBrowser({
           onClose={() => setAdding(false)}
           onAdd={async (params) => {
             // The list the screen last carried, to tell the add's own
-            // registration from the rows that were already there.
-            const before = model.getState().marketplaces ?? [];
+            // registration from the rows that were already there - null when
+            // no read has ever landed, in which case nothing here can tell
+            // new from old and the fence waits for the next authoritative
+            // read instead.
+            const before = model.getState().marketplaces;
             await state.addMarketplace(params);
             if (params.name) {
               onMarketplaceAdded(params.name, client);
@@ -530,20 +553,24 @@ export function MarketplaceBrowser({
             // off the add's own answer, captured above as it passed through
             // the client - independent of every store.
             const after = lastAddMarketplaces.current;
-            if (after === null) return;
+            if (after === null || before === null) return;
             for (const name of addedMarketplaceNames(before, after))
               onMarketplaceAdded(name, client);
             // The hub's list is indistinguishable from the stale one: the
             // add re-registered a name within the same whole second its
             // removed registration was stamped, so the add's own source is
-            // the only thing that names it - a fenced row still carrying
-            // that exact source is the registration this add put back.
-            for (const { name, source } of after)
+            // the only thing that names it. Only a row the answer NEWLY
+            // carries - absent from the list before the add, in the wire's
+            // own form - can be the registration this add made, so a fenced
+            // row the answer still carries unchanged never unfences through
+            // an add that did not create it.
+            for (const entry of after)
               if (
-                appliedRemovalNames.has(name) &&
-                sameMarketplaceSource(source, params.source)
+                appliedRemovalNames.has(entry.name) &&
+                !carriedByMarketplaces(before, entry) &&
+                sameMarketplaceSource(entry.source, params.source)
               )
-                onMarketplaceAdded(name, client);
+                onMarketplaceAdded(entry.name, client);
           }}
         />
       )}

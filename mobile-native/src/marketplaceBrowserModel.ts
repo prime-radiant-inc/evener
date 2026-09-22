@@ -104,17 +104,17 @@ export function sameMarketplaceSource(
   );
 }
 
-/** Whether a listed registration is the one an applied removal took out:
- * the source the hub recorded for it and the wire's whole-second stamp both
- * match. The stamp alone cannot tell a same-second re-add apart - the wire
- * rounds to seconds - so the source, which a re-registration replaces with
- * its own, is what keeps the comparison honest. */
-export function sameRemovedRegistration(
+/** Whether a row an answer carries is one a list the screen already had,
+ * compared in the wire's own whole form - the same identity the
+ * addedMarketplaceNames diff uses. The blank-name source fallback needs
+ * exactly this: only a row the add's answer newly carried can be the
+ * registration that add made, so a fenced row the answer still carries
+ * unchanged - a stale row sharing the submitted source - never unfences
+ * through an add that did not create it. */
+export function carriedByMarketplaces(
+  marketplaces: readonly MarketplaceEntry[],
   entry: MarketplaceEntry,
-  removed: Pick<MarketplaceEntry, "source" | "lastUpdated">,
 ): boolean {
-  return (
-    entry.lastUpdated === removed.lastUpdated &&
-    sameMarketplaceSource(entry.source, removed.source)
-  );
+  const key = marketplaceEntryKey(entry);
+  return marketplaces.some((row) => marketplaceEntryKey(row) === key);
 }
