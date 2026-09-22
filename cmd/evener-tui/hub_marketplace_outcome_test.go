@@ -1907,8 +1907,8 @@ func TestMarketplaceFreshMutationAfterAppliedSettlementKeepsWarning(t *testing.T
 	if settled.marketplaceOutcomeWarning == nil || !strings.Contains(settled.marketplaceOutcomeWarning.Error(), "clone files remain") {
 		t.Fatalf("fresh add erased the standing clone-remains warning = %v", settled.marketplaceOutcomeWarning)
 	}
-	updated, panelCmd := settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyDown})
-	updated, panelCmd = updated.(launchconfig.PluginsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	updated, _ := settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, panelCmd := updated.(launchconfig.PluginsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
 		t.Fatal("fresh add should leave the marketplace list selectable")
 	}
@@ -2320,15 +2320,15 @@ func TestProminentErrorsStacksTransientBeforeOutcomeWarning(t *testing.T) {
 		t.Fatalf("empty model prominentErrors = %v, want none", errs)
 	}
 	// Single-account degeneracy: each slot alone is the only account.
-	if errs := (hubModel{err: transient}).prominentErrors(); len(errs) != 1 || errs[0] != transient {
+	if errs := (hubModel{err: transient}).prominentErrors(); len(errs) != 1 || !errors.Is(errs[0], transient) {
 		t.Fatalf("transient-only prominentErrors = %v, want exactly the transient", errs)
 	}
-	if errs := (hubModel{marketplaceOutcomeWarning: durable}).prominentErrors(); len(errs) != 1 || errs[0] != durable {
+	if errs := (hubModel{marketplaceOutcomeWarning: durable}).prominentErrors(); len(errs) != 1 || !errors.Is(errs[0], durable) {
 		t.Fatalf("durable-only prominentErrors = %v, want exactly the outcome warning", errs)
 	}
 	// Stacked order: transient first, then the durable warning.
 	errs := (hubModel{err: transient, marketplaceOutcomeWarning: durable}).prominentErrors()
-	if len(errs) != 2 || errs[0] != transient || errs[1] != durable {
+	if len(errs) != 2 || !errors.Is(errs[0], transient) || !errors.Is(errs[1], durable) {
 		t.Fatalf("stacked prominentErrors = %v, want transient then outcome warning", errs)
 	}
 

@@ -666,12 +666,12 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 		// stale suffix. Stale reads never reach here - the guards above
 		// rejected them without touching the warning, exactly like the
 		// discarded add or refresh responses below.
-		switch state, _ := classifyMarketplaceRemovalOutcome(m.err); state {
+		switch state, _ := classifyMarketplaceRemovalOutcome(m.marketplaceOutcomeWarning); state {
 		case marketplaceRemovalRemoved:
-			m.err = nil
+			m.marketplaceOutcomeWarning = nil
 		case marketplaceRemovalUnavailable:
-			if wire, ok := errors.AsType[appwire.WireError](m.err); ok {
-				m.err = marketplaceCloneRemainsWarning(wire, false)
+			if wire, ok := errors.AsType[appwire.WireError](m.marketplaceOutcomeWarning); ok {
+				m.marketplaceOutcomeWarning = marketplaceCloneRemainsWarning(wire, false)
 			}
 		}
 		m.marketplaceRemovePending = ""
@@ -773,7 +773,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
 			switch state, applied := classifyMarketplaceRemovalOutcome(msg.Err); state {
 			case marketplaceRemovalApplied:
-				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
+				m.marketplaceOutcomeWarning = marketplaceCloneRemainsWarning(msg.Err, false)
 				m.marketplaceRemovePending = ""
 				m.marketplaceReconcilePending = false
 				// Order the removal's own snapshot against the read boundary
@@ -799,7 +799,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				}
 				return m, batchMarketplaceCmds(panelCmd, replacement)
 			case marketplaceRemovalUnavailable:
-				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
+				m.marketplaceOutcomeWarning = marketplaceCloneRemainsWarning(msg.Err, true)
 				m.marketplaceListReadsOrdered = true
 				m.marketplaceListFloor = m.marketplaceReconcileGeneration
 				m.marketplaceReconcilePending = true
@@ -815,7 +815,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				// snapshot (appwire.MarketplaceRemoveAppliedData), so
 				// reconcile from a fresh read rather than retrying, and
 				// never claim litter - nothing was left on disk.
-				m.err = marketplaceRemovedWarning(msg.Err)
+				m.marketplaceOutcomeWarning = marketplaceRemovedWarning(msg.Err)
 				m.marketplaceListReadsOrdered = true
 				m.marketplaceListFloor = m.marketplaceReconcileGeneration
 				m.marketplaceReconcilePending = true
@@ -887,26 +887,14 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 	// A fresh add or refresh snapshot is a post-removal list read like any
 	// other: route it through the list-result logic so it settles a
 	// pending reconciliation and advances the applied generation under the
-	// same guards that order every other list response. The clear is
-	// classification-driven - a fresh response replaces only the account it
-	// actually supersedes: a clone-remains warning, applied or unavailable,
-	// reports clone files that are still on disk whether the fence has
-	// settled or not, and nothing re-derives that fact, so no fresh
-	// response may erase it; an ordinary failure the mutation supersedes
-	// clears as the fresh news it is; and the removed outcome's "being
-	// refreshed" account clears too - while a reconciliation is pending
-	// the routed settle clears it exactly like a confirming read, which
-	// the guards above already guaranteed this response reaches.
-	switch state, _ := classifyMarketplaceRemovalOutcome(m.err); state {
-	case marketplaceRemovalApplied, marketplaceRemovalUnavailable:
-		// The clone-files-remains fact keeps standing, fence or no fence.
-	case marketplaceRemovalRemoved:
-		if !m.marketplaceReconcilePending {
-			m.err = nil
-		}
-	default:
-		m.err = nil
-	}
+	// same guards that order every other list response. The transient
+	// clear is the only account a fresh response supersedes on its own:
+	// the ordinary failure the mutation renders stale. The standing
+	// outcome account is never this response's to erase - the settle the
+	// response is about to route through is the one place that rewrites
+	// or retires it, exactly like a confirming read, and the guards above
+	// already guaranteed this response reaches that settle.
+	m.err = nil
 	return m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
 		List:                msg.List,
 		ReconcileGeneration: msg.Generation,
