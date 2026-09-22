@@ -334,6 +334,7 @@ export {
   itemIdentityMatches,
   joinedReasoningParagraphs,
   joinWarningParts,
+  markItemTextOmitted,
   mergeOlderItemPage,
   mergeTurnHistory,
   notificationRoutingKey,

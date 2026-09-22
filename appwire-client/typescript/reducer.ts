@@ -214,6 +214,22 @@ function itemTextPresence(item: ItemModel): ItemTextPresence {
   return (item as InternalItemModel)[ITEM_TEXT_PRESENCE] ?? "provided";
 }
 
+// The public handle on the omission marker: mark a hand-built ItemModel as
+// carrying no text of its own — the same semantics wireItemToModel gives a
+// wire item whose text field was omitted (an omitted text hydrates to ""
+// with this marker, never to undefined). Merges then treat the item exactly
+// like a sparse wire fragment: it never wins a textSource selection against
+// a side that actually provided text, and it never blocks one — a later
+// merge with a text-bearing side adopts that side's text instead of holding
+// the marked item's empty settle as authoritative. The mobile store's
+// compact-turn skeletons (identity-only stand-ins for shed payloads) are
+// the caller: their empty settle must stay adoptable by a later page that
+// brings the item's real text, while still satisfying ItemModel's
+// required-string invariant.
+export function markItemTextOmitted(item: ItemModel): ItemModel {
+  return setItemTextPresence(item, "omitted");
+}
+
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
 // callers that can name the serving session — hydrateThread's wire
 // thread.sessionId (falling back to the thread id, mirroring

@@ -7094,6 +7094,306 @@ describe("ConversationStore", () => {
         scope: "loaded",
       });
     });
+
+    // Review round 5, sparse settle is not authoritative: after a sparse
+    // reissue folds to the empty settle, a later overlapping page that brings
+    // the item's REAL text must still win it. The folded item carries the
+    // skeleton's omitted-text semantics, so mergePageItem treats the empty
+    // settle as "nothing to say" — never as an authoritative empty that
+    // blocks the item's actual text from loading.
+    it("a sparse restoration stays adoptable by a later page with the item's real text", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn: compacts at its own load and remembers px.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "x-0",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // Sparse reissue: a row keeps pt in the window; the page's fragment
+      // re-issues px with NO text field, so the fold settles to "".
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "px", text: "px row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "rx",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const settled =
+        store.getState().conversation?.turns.find((t) => t.id === "pt")?.items ?? [];
+      expect(settled).toHaveLength(1);
+      expect(settled[0]?.text).toBe("");
+
+      // The later overlapping page brings the item's real text. The folded
+      // item's empty settle is omitted-text, so the page's provided text
+      // wins it back.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "r3",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "actual text",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c3",
+        ),
+        nextCursor: "c3",
+      };
+      await store.getState().loadOlder(service);
+      const adopted =
+        store.getState().conversation?.turns.find((t) => t.id === "pt")?.items ?? [];
+      expect(adopted).toHaveLength(1);
+      expect(adopted[0]?.transcriptKey).toBe("px");
+      expect(adopted[0]?.text).toBe("actual text");
+    });
+
+    // Review round 5, ownership transfer: a remembered KEYED item must not
+    // transfer to a surviving turn whose item merely shares its BARE id under
+    // a conflicting transcript key. The wrong transfer would let a later page
+    // fragment coalesce that unrelated turn (dropping its separate usage
+    // stamp and polluting its items) instead of folding into the turn that
+    // actually carries the remembered content.
+    it("a remembered keyed item does not transfer through a conflicting bare-id match", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering TWO keyed items (k1 and k2).
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ta",
+              [
+                {
+                  id: "x-0",
+                  transcriptKey: "k1",
+                  turnId: "ta",
+                  type: "agentMessage",
+                  text: "one",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "y-0",
+                  transcriptKey: "k2",
+                  turnId: "ta",
+                  type: "agentMessage",
+                  text: "two",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ta")?.items).toEqual([]);
+
+      // The fresh read re-issues k2 under a NEW turn id (ta folds away into
+      // it) and carries an unrelated turn whose item shares x-0's bare id
+      // under a CONFLICTING key k3. Rows keep both turns in the window.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "user" as const, id: "k2", text: "k2 row" },
+            { kind: "user" as const, id: "k3", text: "k3 row" },
+          ],
+          turns: [
+            {
+              id: "tf",
+              status: "completed",
+              items: [
+                {
+                  id: "y2",
+                  transcriptKey: "k2",
+                  turnId: "tf",
+                  type: "agentMessage",
+                  text: "k2 fresh",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "tb",
+              status: "completed",
+              items: [
+                {
+                  id: "x-0",
+                  transcriptKey: "k3",
+                  turnId: "tb",
+                  type: "agentMessage",
+                  text: "tb item",
+                  position: { entry: 101, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 50, outputTokens: 5 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.some((turn) => turn.id === "ta")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "tf")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "k2", text: "k2 fresh" }),
+      ]);
+      expect(conv.turns.find((turn) => turn.id === "tb")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "k3", text: "tb item" }),
+      ]);
+
+      // A later page re-issues k2. The fragment must fold into tf (the turn
+      // carrying the remembered content), leaving tb — whose item merely
+      // shares a bare id with the remembered k1 skeleton under a conflicting
+      // key — untouched, its usage stamp intact.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "tp",
+              [
+                {
+                  id: "z9",
+                  transcriptKey: "k2",
+                  turnId: "tp",
+                  type: "agentMessage",
+                  text: "k2 page",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "tf")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "k2", text: "k2 fresh" }),
+      ]);
+      expect(after.turns.find((turn) => turn.id === "tb")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "k3", text: "tb item" }),
+      ]);
+      expect(after.turns.find((turn) => turn.id === "tb")?.usage).toEqual({
+        inputTokens: 50,
+        outputTokens: 5,
+      });
+      expect(sessionTokens(after)).toEqual({
+        inputTokens: 551,
+        outputTokens: 26,
+        scope: "loaded",
+      });
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

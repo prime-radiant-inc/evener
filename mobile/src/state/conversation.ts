@@ -25,6 +25,7 @@ import {
   isStaleCursorError,
   itemIdentityMatches,
   joinWarningParts,
+  markItemTextOmitted,
   mergeOlderItemPage,
   mergeTurnHistory,
   notificationTargetsThread,
@@ -1333,22 +1334,27 @@ export function createConversationStore() {
   // fold-classification fields only. Every output/image field stays shed —
   // this is the payload bound, not a payload cache. text carries the wire's
   // own settled-empty representation ("", exactly what wireItemToModel gives
-  // a wire item whose text field was omitted): a skeleton never has text of
-  // its own to offer, and "" is what keeps mergePageItem's textSource
-  // selection string-valid in BOTH merge directions — a skeleton selected
-  // as the source contributes the same empty settle the sparse wire reissue
-  // itself would have hydrated to, never an undefined that leaks into
-  // streaming prefixes or reasoningText's item.text.length (review round 4).
+  // a wire item whose text field was omitted) AND the reducer's omitted-text
+  // marker, so a skeleton is exactly as text-less as a sparse wire fragment:
+  // a skeleton selected as mergePageItem's textSource contributes the same
+  // empty settle the sparse wire reissue itself would have hydrated to —
+  // never an undefined that leaks into streaming prefixes or reasoningText's
+  // item.text.length — and a later page that brings the item's real text
+  // still wins it, instead of the empty settle reading as authoritative
+  // (review rounds 4-5).
   function compactItemSkeletons(items: ItemModel[]): ItemModel[] {
-    return items.map((item) => ({
-      id: item.id,
-      turnId: item.turnId,
-      type: item.type,
-      text: "",
-      ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
-      ...(item.position !== undefined ? { position: item.position } : {}),
-      ...(item.callId !== undefined ? { callId: item.callId } : {}),
-    }));
+    return items.map(
+      (item) =>
+        markItemTextOmitted({
+          id: item.id,
+          turnId: item.turnId,
+          type: item.type,
+          text: "",
+          ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
+          ...(item.position !== undefined ? { position: item.position } : {}),
+          ...(item.callId !== undefined ? { callId: item.callId } : {}),
+        }),
+    );
   }
 
   // The dedupe key of a remembered skeleton: composite identity, so two
@@ -1504,29 +1510,27 @@ export function createConversationStore() {
   function transferFoldedCompactedEntries(after: TurnModel[]): void {
     if (compactedTurnItems.size === 0) return;
     const afterIds = new Set(after.map((turn) => turn.id));
-    const ownerByIdentity = new Map<string, string>();
-    for (const turn of after) {
-      for (const item of turn.items) {
-        const identity = item.transcriptKey ?? item.id;
-        if (!ownerByIdentity.has(identity)) ownerByIdentity.set(identity, turn.id);
-        // Record the bare id too: a remembered id-only item whose re-issue
-        // gained a transcript key folds by ID, and the merged item then
-        // carries the new key — the old bare id is the only key the
-        // remembered skeleton can look up.
-        if (item.transcriptKey !== undefined && !ownerByIdentity.has(item.id)) {
-          ownerByIdentity.set(item.id, turn.id);
-        }
-      }
-    }
     for (const [turnId, skeletons] of [...compactedTurnItems]) {
       if (afterIds.has(turnId)) continue;
+      // Review round 5: the owner is the first surviving turn that carries
+      // an item matching a remembered skeleton by the package's own rule
+      // (itemIdentityMatches: transcriptKey when both sides carry one, else
+      // id) — never a bare-id key match alone. A remembered keyed item whose
+      // id collides with an unrelated keyed item's id must not hand its
+      // memory (and the vanished turn's page ownership) to that unrelated
+      // turn, where a later injection would coalesce it with a fragment it
+      // never shared an identity with and drop a separate usage stamp. The
+      // id-only fallback still works through the rule itself: an id-only
+      // skeleton matches a keyed item sharing its id, and a keyed skeleton
+      // matches its own key.
       let survivor: string | undefined;
-      for (const skeleton of skeletons) {
-        const owner =
-          ownerByIdentity.get(skeleton.transcriptKey ?? skeleton.id) ??
-          ownerByIdentity.get(skeleton.id);
-        if (owner !== undefined && owner !== turnId) {
-          survivor = owner;
+      for (const turn of after) {
+        if (
+          turn.items.some((item) =>
+            skeletons.some((skeleton) => itemIdentityMatches(item, skeleton)),
+          )
+        ) {
+          survivor = turn.id;
           break;
         }
       }
