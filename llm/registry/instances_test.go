@@ -983,6 +983,52 @@ func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 	}
 }
 
+// The same rule holds for api_key: a default that fills in a bare scheme
+// word is authored placeholder text, not key material, so it resolves as
+// no credential with a warning. A literal api_key stays a credential —
+// hand-typed text is the author's own material, exactly like any secret.
+func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''${MISSING:-Bearer}'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v; want none: the default is only a scheme word", res.Credential)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "api_key expands to nothing but an auth scheme word") {
+		t.Fatalf("warnings = %v; want the api_key scheme-word warning", res.Warnings)
+	}
+
+	// A literal scheme word is the author's own material and stays a
+	// credential: the guard judges authored defaults, never hand-typed text.
+	const literal = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"Bearer\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r = fixtureLoad(t, nil, literal)
+	res, err = r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "api_key" || res.Credential.Value != "Bearer" {
+		t.Fatalf("credential = %+v; want the literal api_key kept", res.Credential)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %v; the literal is trusted without warnings", res.Warnings)
+	}
+}
+
 // The listing resolves every instance's credential, so it must not expand
 // an Authorization header the credential will never use: a provider whose
 // api_key outranks the header must not mint (or stall on) its command

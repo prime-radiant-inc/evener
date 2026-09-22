@@ -25,11 +25,22 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	// The setsid'd descendant escapes the group on purpose (that is the
 	// regression), so the test must reap it itself: it holds no live pipe
 	// once the drain closed them, and nothing else would ever reach it.
-	t.Cleanup(func() { exec.Command("pkill", "-f", "hardbound-escape").Run() })
+	// The descendant reports its own pid, so the test reaps exactly that
+	// process — a pattern kill can name an unrelated one — and can assert
+	// the escape actually happened: an earlier revision marked the process
+	// with `exec -a`, which dash does not support, so the descendant died
+	// at spawn and the test passed without exercising the drain at all.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "escapee.pid")
+	t.Cleanup(func() {
+		if pid, err := os.ReadFile(marker); err == nil {
+			exec.Command("kill", "-9", strings.TrimSpace(string(pid))).Run()
+		}
+	})
 	commandTimeout = 500 * time.Millisecond
 
 	start := time.Now()
-	_, err := evaluate(`setsid sh -c "exec -a hardbound-escape sleep 10" & exec sleep 30`)
+	_, err := evaluate(`setsid sh -c 'sleep 10 & echo $! > ` + marker + `' & exec sleep 30`)
 	if err == nil {
 		t.Fatal("evaluate returned nil; want the timeout error")
 	}
@@ -38,6 +49,17 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("evaluate blocked %v; the timeout is not a hard bound", elapsed)
+	}
+	// The escapee held the captured stdout until the drain closed it, and
+	// its ten seconds still run: it must exist and have outlived the run's
+	// group kill, or the scenario above never materialized.
+	pid, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("the escaped descendant never reported its pid (%v); the scenario did not run", err)
+	}
+	escapee := strings.TrimSpace(string(pid))
+	if exec.Command("kill", "-0", escapee).Run() != nil {
+		t.Fatalf("the escaped descendant (pid %s) did not outlive the run's group kill", escapee)
 	}
 }
 
@@ -133,13 +155,22 @@ func TestSuccessfulRunKillsLingeringGroup(t *testing.T) {
 	commandTimeout = 800 * time.Millisecond
 	drainGrace = 200 * time.Millisecond
 
-	script := filepath.Join(t.TempDir(), "linger-detached.sh")
+	dir := t.TempDir()
+	script := filepath.Join(dir, "linger-detached.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 30.5 >/dev/null 2>&1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { exec.Command("pkill", "-f", "sleep 30.5").Run() })
+	// The shell reports the background job's pid, so the test tracks and
+	// reaps exactly the process it spawned — a pattern kill can name an
+	// unrelated sleeper.
+	marker := filepath.Join(dir, "sleeper.pid")
+	t.Cleanup(func() {
+		if pid, err := os.ReadFile(marker); err == nil {
+			exec.Command("kill", "-9", strings.TrimSpace(string(pid))).Run()
+		}
+	})
 
-	res, err := evaluate(`"` + script + `" & echo token`)
+	res, err := evaluate(`"` + script + `" & echo $! > ` + marker + `; echo token`)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -147,17 +178,17 @@ func TestSuccessfulRunKillsLingeringGroup(t *testing.T) {
 		t.Fatalf("value = %q; want the echoed token", res.Value)
 	}
 
-	var lingering string
+	pid, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("the background job never reported its pid (%v); the scenario did not run", err)
+	}
+	// The kill lands with the return; give the SIGKILL a moment to show.
+	sleeper := strings.TrimSpace(string(pid))
 	for range 20 {
-		out, _ := exec.Command("pgrep", "-af", "sleep 30.5").Output()
-		if len(out) == 0 {
-			lingering = ""
-			break
+		if exec.Command("kill", "-0", sleeper).Run() != nil {
+			return // the group kill reaped it
 		}
-		lingering = string(out)
 		time.Sleep(100 * time.Millisecond)
 	}
-	if lingering != "" {
-		t.Fatalf("the successful run's background job outlived it: %s", lingering)
-	}
+	t.Fatalf("the successful run's background job (pid %s) outlived it", sleeper)
 }

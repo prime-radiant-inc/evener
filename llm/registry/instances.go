@@ -543,13 +543,14 @@ func (r *Registry) authorization(rec *record) authExpansion {
 	return authExpansion{key: key, expanded: expanded, present: true, unresolved: unresolved, noMaterial: r.schemeWordDefault(raw)}
 }
 
-// schemeWordDefault reports whether the raw credential-header value's only
-// possible material is an auth scheme word, and only when a reference's
-// default supplied it. Minted and environment-supplied bytes are data — a
-// command's all-letters output is a token, not a scheme word — and a pure
-// literal is the author's own key material, trusted exactly like an api_key
-// literal; the one judged case is "${KEY:-Bearer}" with KEY missing, where
-// authored default text stands in for a credential and carries none.
+// schemeWordDefault reports whether a raw credential field's — the
+// Authorization credential header's, or api_key's — only possible material
+// is an auth scheme word, and only when a reference's default supplied it.
+// Minted and environment-supplied bytes are data — a command's all-letters
+// output is a token, not a scheme word — and a pure literal is the author's
+// own key material, trusted exactly like any hand-typed secret; the one
+// judged case is "${KEY:-Bearer}" with KEY missing, where authored default
+// text stands in for a credential and carries none.
 func (r *Registry) schemeWordDefault(raw string) bool {
 	pieces, err := valueexpr.Pieces(raw)
 	if err != nil {
@@ -638,6 +639,14 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, suppressA
 			// An empty ${VAR:-} default resolved to nothing: an empty
 			// credential never resolves as a present one.
 			return none("no credential (api_key expands to an empty value)")
+		}
+		if r.schemeWordDefault(h.APIKey) {
+			// A default that fills in a bare scheme word is authored
+			// placeholder text, not key material — the same rule the
+			// Authorization header applies — so it resolves as no
+			// credential with a warning, never as a present one whose
+			// value would reach the wire as the word alone.
+			return none("no credential (api_key expands to nothing but an auth scheme word)")
 		}
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
