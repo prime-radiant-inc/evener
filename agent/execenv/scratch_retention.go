@@ -72,7 +72,24 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 	// earlier pins' durable references owned by no binding whenever a later pin or
 	// the publication failed, which restore cannot attribute and nothing can
 	// collect (round 19). One transaction publishes them together.
-	if err := sandbox.PinScratchBinding(owner, binding, owned); err != nil {
+	// The manifest's update lock is fail-fast, so a concurrent in-process
+	// writer — a delegate restore's refresh install, another environment's
+	// mint — can refuse this pin with lock-held for the microseconds its hold
+	// lasts. That refusal is transient by construction, never a durability
+	// verdict, so the pin retries it a bounded number of times before
+	// recording anything sticky: a lock race must not permanently poison a
+	// live environment's retention state (round 8).
+	var err error
+	for attempt := 1; ; attempt++ {
+		if e.scratchPinProbe != nil {
+			e.scratchPinProbe(attempt)
+		}
+		err = sandbox.PinScratchBinding(owner, binding, owned)
+		if !errors.Is(err, sandbox.ErrScratchRetentionLockHeld) || attempt >= 5 {
+			break
+		}
+	}
+	if err != nil {
 		e.recordRetentionPinError(err)
 		return err
 	}

@@ -180,6 +180,82 @@ func TestScratchRetentionBindingMoveConcurrentMint(t *testing.T) {
 	runtime.KeepAlive(e1)
 }
 
+// TestPinOwnedScratchRetriesLockContention pins the round-8 contention
+// contract at the mint pin: the manifest's fail-fast update lock can refuse
+// the pin while a concurrent in-process writer holds it, and that refusal is
+// transient by construction — never a durability verdict — so the pin must
+// retry it a bounded number of times instead of recording a sticky retention
+// failure that poisons every later preparation of a live environment. The
+// holder is released deterministically between the first failed attempt and
+// the retry.
+func TestPinOwnedScratchRetriesLockContention(t *testing.T) {
+	base, workspace := t.TempDir(), t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-pin-retry"}
+	e := NewLocalExecutionEnvironment(workspace)
+	scratch, err := sandbox.NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Retain() })
+	if err := e.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{
+		BindingID:      "b-pin-retry",
+		OwnerSessionID: owner.RootSessionID,
+		WorkingDir:     workspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.ownedSessionTmp = scratch
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	e.scratchPinProbe = func(attempt int) {
+		switch attempt {
+		case 1:
+			close(takeLock)
+			<-lockTaken
+		case 2:
+			close(releaseLock)
+			<-lockReleased
+		}
+	}
+	if err := e.PinOwnedScratch(); err != nil {
+		t.Fatalf("pin lost to transient lock contention: %v", err)
+	}
+	if sticky := e.ScratchRetentionError(); sticky != nil {
+		t.Fatalf("a transient lock refusal was recorded sticky: %v", sticky)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored sandbox.ScratchBinding
+	found := false
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == "b-pin-retry" {
+			stored, found = binding, true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the retried pin never published the binding: %+v", manifest.Bindings)
+	}
+	slot, ok := stored.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(scratch.Dir) {
+		t.Fatalf("the retried pin lost the owned slot: %+v", stored.Slots)
+	}
+}
+
 func manifestBinding(t *testing.T, owner sandbox.ScratchOwner, bindingID string) sandbox.ScratchBinding {
 	t.Helper()
 	manifest, err := sandbox.LoadScratchRetention(owner)

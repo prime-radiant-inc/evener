@@ -1411,6 +1411,97 @@ func TestRetirementStaleSwapRetryKeepsMovedSlots(t *testing.T) {
 	}
 }
 
+// TestScratchSwapRetriesLockContention pins the round-8 contention contract
+// at the swap writer: the manifest's fail-fast update lock can refuse the
+// swap's publication while a concurrent in-process writer holds it — a
+// delegate restore's refresh install, another environment's mint — and that
+// refusal is transient by construction, so the swap must rebase onto the
+// fresh manifest and retry, never fail a live worktree move on a microsecond
+// race. The holder is released deterministically between the first failed
+// attempt and the retry.
+func TestScratchSwapRetriesLockContention(t *testing.T) {
+	dir := t.TempDir()
+	root := newQueuePersistTestSession(t, dir)
+	defer root.Close()
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no scratch retention owner")
+	}
+	base := t.TempDir()
+	workDir := t.TempDir()
+	sandboxScratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		sandboxScratch.Retain()
+		_ = os.RemoveAll(sandboxScratch.Dir)
+	})
+	if err := sandboxScratch.Pin(owner, sandbox.ScratchReference{Dir: sandboxScratch.Dir, Kind: sandbox.ScratchKindSandbox}); err != nil {
+		t.Fatal(err)
+	}
+	source := execenv.NewLocalExecutionEnvironment(workDir)
+	if err := source.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{
+		BindingID:      "b-swap-contention",
+		OwnerSessionID: root.id,
+		WorkingDir:     workDir,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: sandboxScratch.Dir, OwnsLease: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	target := execenv.NewLocalExecutionEnvironment(workDir)
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	attempts := 0
+	root.cfg.testOnly.scratchSwapBeforeUpdate = func() {
+		attempts++
+		switch attempts {
+		case 1:
+			close(takeLock)
+			<-lockTaken
+		case 2:
+			close(releaseLock)
+			<-lockReleased
+		}
+	}
+	if err := root.stageScratchSwapBinding(target, source, root.id); err != nil {
+		t.Fatalf("swap lost to transient lock contention: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("the swap took %d attempts, want exactly 2: one refused by the holder, one retried after its release", attempts)
+	}
+	targetBinding, err := target.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, ok := findScratchBinding(manifest, targetBinding.BindingID)
+	if !ok {
+		t.Fatalf("target binding %q missing after the retried swap: %+v", targetBinding.BindingID, manifest.Bindings)
+	}
+	slot, ok := stored.Slots[sandbox.ScratchKindSandbox]
+	if !ok || !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(sandboxScratch.Dir) {
+		t.Fatalf("target binding %q lost the moved slot across the lock-contention retry: %+v", stored.BindingID, stored.Slots)
+	}
+}
+
 // TestRetirementRejectsForeignRetainedScratchPin is L1: validateRetainedScratchPresent
 // must verify each reference's ownership/kind identity pin, not just that the
 // directory and manifest path exist. A foreign pin means the next restore would

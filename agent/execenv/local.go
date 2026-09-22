@@ -229,6 +229,10 @@ type LocalExecutionEnvironment struct {
 	// seen on this environment. Preparation surfaces it as a persistence error
 	// rather than trusting a partially pinned allocation.
 	retentionPinErr error
+
+	// scratchPinProbe observes each PinOwnedScratch attempt for deterministic
+	// lock-contention fixtures in same-package tests. Nil in production.
+	scratchPinProbe func(attempt int)
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's

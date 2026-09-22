@@ -195,7 +195,14 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 		err = sandbox.UpdateScratchBindings(owner, manifest.Revision,
 			[]sandbox.ScratchBinding{targetRecord, sourceRecord},
 			[]sandbox.ScratchConsumerBinding{consumer})
-		if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) {
+		// A stale revision rebases onto the fresh manifest and retries; a
+		// fail-fast lock refusal is the same transient class — a concurrent
+		// in-process writer (a delegate restore's refresh install, another
+		// mint) holding the manifest lock for microseconds — so the swap
+		// retries it too rather than failing a live worktree move on a lock
+		// race (round 8).
+		if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) ||
+			errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
 			continue
 		}
 		return err
