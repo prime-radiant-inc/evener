@@ -5,9 +5,11 @@ import { createMarketplacesStore } from "@evener/appwire-client/state/extensions
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 import {
+  addedMarketplaceNames,
   appliedRemovalNotice,
   catalogToBrowse,
   refetchAfterRemoval,
+  sameMarketplaceSource,
 } from "./marketplaceBrowserModel";
 
 const entry = (name: string): MarketplaceEntry => ({
@@ -57,6 +59,57 @@ test("a clone-litter removal keeps its leftover-files warning", () => {
 
 test("an ordinary removal failure is not an applied removal", () => {
   expect(appliedRemovalNotice(new Error("remove failed"))).toBeUndefined();
+});
+
+test("an add's answer names every registration it left against the stale list", () => {
+  // A fresh name, a fresh stamp, and a re-sourcing all show up, in order.
+  expect(
+    addedMarketplaceNames([entry("a"), entry("b")], [
+      entry("a"),
+      entry("b"),
+      entry("c"),
+      { ...entry("b"), lastUpdated: 2 },
+      { ...entry("a"), source: { kind: "github", repo: "a/plugins" } },
+    ]),
+  ).toEqual(["c", "b", "a"]);
+});
+
+test("a re-add the wire cannot tell from the stale row hides from the list", () => {
+  expect(addedMarketplaceNames([entry("a")], [entry("a")])).toEqual([]);
+  expect(addedMarketplaceNames([entry("a")], [])).toEqual([]);
+});
+
+test("sources match by kind and the fields that pin them", () => {
+  expect(
+    sameMarketplaceSource(
+      { kind: "github", repo: "a/plugins" },
+      { kind: "github", repo: "a/plugins" },
+    ),
+  ).toBe(true);
+  expect(
+    sameMarketplaceSource(
+      { kind: "url", url: "https://a.test/plugins.git" },
+      { kind: "url", url: "https://a.test/plugins.git" },
+    ),
+  ).toBe(true);
+  expect(
+    sameMarketplaceSource(
+      { kind: "github", repo: "a/plugins" },
+      { kind: "github", repo: "b/plugins" },
+    ),
+  ).toBe(false);
+  expect(
+    sameMarketplaceSource(
+      { kind: "url", url: "https://a.test" },
+      { kind: "directory", path: "https://a.test" },
+    ),
+  ).toBe(false);
+  expect(
+    sameMarketplaceSource(
+      { kind: "github", repo: "a/plugins", ref: "v1" },
+      { kind: "github", repo: "a/plugins" },
+    ),
+  ).toBe(false);
 });
 
 test("a stale list that still carries the removed name refreshes; a reconciled one does not", () => {

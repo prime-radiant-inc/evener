@@ -31,8 +31,10 @@ import {
 import { HubPathField } from "./HubPathField";
 import {
   appliedRemovalNotice,
+  addedMarketplaceNames,
   catalogToBrowse,
   refetchAfterRemoval,
+  sameMarketplaceSource,
 } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -95,9 +97,11 @@ export function MarketplaceBrowser({
    * the write replaced whatever registration the screen had fenced, so the
    * fence clears for it. A submitted name is reported as-is; a blank one is
    * one the hub assigned, so the browser reads it off the list the add's
-   * own answer published and reports it the same way - a fresh registration
-   * the wire cannot tell from the removed one would otherwise stay fenced
-   * forever. */
+   * own answer published - and when even that list cannot tell a fresh
+   * same-second registration from the stale row it replaced, off the
+   * fenced row still carrying the source the add submitted - and reports
+   * it the same way, or a re-registration the wire cannot distinguish
+   * would stay fenced forever. */
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
@@ -424,19 +428,32 @@ export function MarketplaceBrowser({
           gate={gate}
           onClose={() => setAdding(false)}
           onAdd={async (params) => {
-            // The names the hub's list carried before this screen's add, so
-            // a blank submitted name - one the hub assigns - can still be
-            // read off the list the add's own answer published.
-            const before = new Set(
-              (model.getState().marketplaces ?? []).map(({ name }) => name),
-            );
+            // The list the screen last carried, so a blank submitted name -
+            // one the hub assigns - can still be read off the list the
+            // add's own answer published.
+            const before = model.getState().marketplaces ?? [];
             await state.addMarketplace(params);
             if (params.name) {
               onMarketplaceAdded(params.name, client);
               return;
             }
-            for (const { name } of model.getState().marketplaces ?? [])
-              if (!before.has(name)) onMarketplaceAdded(name, client);
+            const after = model.getState().marketplaces ?? [];
+            const added = addedMarketplaceNames(before, after);
+            if (added.length > 0) {
+              for (const name of added) onMarketplaceAdded(name, client);
+              return;
+            }
+            // The answer is indistinguishable from the stale list: the add
+            // re-registered a name within the same whole second its removed
+            // registration was stamped, so the add's own source is the only
+            // thing that names it - a fenced row still carrying that exact
+            // source is the registration this add put back.
+            for (const { name, source } of after)
+              if (
+                appliedRemovalNames.has(name) &&
+                sameMarketplaceSource(source, params.source)
+              )
+                onMarketplaceAdded(name, client);
           }}
         />
       )}
