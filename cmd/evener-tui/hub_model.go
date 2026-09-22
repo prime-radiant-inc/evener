@@ -201,8 +201,15 @@ type hubModel struct {
 	marketplaceListReadIssued uint64
 	marketplaceListFloor      uint64
 	marketplaceListApplied    uint64
-	followupModal             *tuipick.TextInputModal
-	launchOverridesModal      *launchconfig.LaunchOverridesModal
+	// marketplaceListAppliedRows is the marketplace list of the newest
+	// applied state. It is updated wherever marketplaceListApplied
+	// advances and wherever a landed removal's certainty strips its
+	// name, so a removal response older than the newest applied read can
+	// merge down to the applied rows instead of resurrecting what that
+	// read dropped.
+	marketplaceListAppliedRows []appwire.MarketplaceEntry
+	followupModal              *tuipick.TextInputModal
+	launchOverridesModal       *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress

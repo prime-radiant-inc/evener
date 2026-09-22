@@ -582,18 +582,20 @@ func TestMarketplaceMutateResultSuccessAdvancesTheRemovalBoundary(t *testing.T) 
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
 	// A removal is in flight on a model whose reads are already ordered:
-	// the read tagged 2 was issued before the removal landed.
+	// the removal was issued as generation 3, after a read tagged 2 that
+	// was issued before the removal landed.
 	m := hubModel{
 		pluginsPanel:                   marketplacePanelWithEntries(t, removing),
 		marketplaceRemovePending:       removing.Name,
-		marketplaceReconcileGeneration: 2,
+		marketplaceReconcileGeneration: 3,
 		marketplaceListReadsOrdered:    true,
 	}
 
 	got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
-		List:   appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
-		Action: "remove",
-		Name:   removing.Name,
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		Action:     "remove",
+		Name:       removing.Name,
+		Generation: 3,
 	})
 	after := got.(hubModel)
 	if after.marketplaceRemovePending != "" {
@@ -928,6 +930,159 @@ func TestMarketplaceListResultNewestReadFailureReachesThePanel(t *testing.T) {
 	}
 }
 
+func TestMarketplaceMutateResultStaleRemoveSnapshotCannotResurrect(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	dropped := appwire.MarketplaceEntry{Name: "dropped", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	removing := appwire.MarketplaceEntry{Name: "removing", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{}, errors.New("list read failed")
+		})
+	})
+	defer cleanup()
+
+	// The removal of "removing" is in flight (issued as generation 2); a
+	// newer list read (generation 3) has applied, already reflecting
+	// another client's removal of "dropped".
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       removing.Name,
+		marketplaceReconcileGeneration: 3,
+		marketplaceListReadIssued:      3,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+		marketplaceListApplied:         3,
+		marketplaceListAppliedRows:     []appwire.MarketplaceEntry{kept},
+	}
+
+	// The delayed remove response: the hub read its snapshot at the
+	// removal's landing, before the other client's change, so it still
+	// carries the dropped row.
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{dropped, kept}},
+		Action:     "remove",
+		Name:       removing.Name,
+		Generation: 2,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" {
+		t.Fatalf("successful remove left the fence at %q, want cleared", after.marketplaceRemovePending)
+	}
+	if cmd == nil {
+		t.Fatal("successful remove should schedule its replacement read")
+	}
+
+	// The scheduled replacement read fails: the stale snapshot's verdict
+	// must not survive as the panel's state.
+	got, _ = after.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		Err:                 errors.New("list read failed"),
+		ReconcileGeneration: 4,
+	})
+	failed := got.(hubModel)
+	updated, panelCmd := failed.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("a failed replacement should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("stale remove snapshot resurrected marketplace %q; the newer applied list must survive", remove.Name)
+	}
+}
+
+func TestMarketplaceMutateResultRemoveStillArmsTheBoundaryAfterSettlement(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	dropped := appwire.MarketplaceEntry{Name: "dropped", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{}, errors.New("list read failed")
+		})
+	})
+	defer cleanup()
+
+	// A removal's outcome settled and a newer list read applied; the
+	// fence is clear, and the boundary stands at the last landing.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       "",
+		marketplaceReconcileGeneration: 3,
+		marketplaceListReadIssued:      3,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+		marketplaceListApplied:         3,
+		marketplaceListAppliedRows:     []appwire.MarketplaceEntry{kept},
+	}
+
+	// A remove response arrives for a removal whose fence a list read
+	// already settled. It must arm the boundary at the latest landing -
+	// the fence being clear never disarms the read ordering - and its
+	// stale snapshot must not resurrect what the applied read dropped.
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{dropped, kept}},
+		Action:     "remove",
+		Name:       "settled",
+		Generation: 2,
+	})
+	after := got.(hubModel)
+	if after.marketplaceListFloor != m.marketplaceReconcileGeneration {
+		t.Fatalf("remove response left the floor at %d, want it armed at the latest landing %d", after.marketplaceListFloor, m.marketplaceReconcileGeneration)
+	}
+	if cmd == nil {
+		t.Fatal("a remove response past settlement should schedule its replacement read")
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("the settled panel should keep the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("remove response past settlement resurrected marketplace %q", remove.Name)
+	}
+}
+
+func TestMarketplaceMutateResultFlooredRemoveSnapshotIsDiscarded(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	dropped := appwire.MarketplaceEntry{Name: "dropped", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{}, errors.New("list read failed")
+		})
+	})
+	defer cleanup()
+
+	// A remove response whose issuance predates the latest landed removal
+	// (generation 2 against a floor of 3): it is stale exactly like an
+	// add or refresh of that vintage.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, kept),
+		marketplaceRemovePending:       "",
+		marketplaceReconcileGeneration: 4,
+		marketplaceListReadIssued:      4,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           3,
+		marketplaceListApplied:         4,
+		marketplaceListAppliedRows:     []appwire.MarketplaceEntry{kept},
+	}
+
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{dropped, kept}},
+		Action:     "remove",
+		Name:       "ancient",
+		Generation: 2,
+	})
+	after := got.(hubModel)
+	if cmd == nil {
+		t.Fatal("a floored remove response should schedule a replacement read")
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("a discarded snapshot should leave the marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("floored remove snapshot resurrected marketplace %q", remove.Name)
+	}
+}
+
 func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
@@ -941,20 +1096,23 @@ func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing
 
 	// A remove is in flight on an ordered model; a notification read the
 	// hub answered after the removal landed - carrying a NEWER change than
-	// the removal's own snapshot - was issued as generation 2.
+	// the removal's own snapshot - was issued as generation 2, before the
+	// removal was issued as generation 3.
 	m := hubModel{
 		client:                         client,
 		pluginsPanel:                   marketplacePanelWithEntries(t, removing, kept),
 		marketplaceRemovePending:       removing.Name,
-		marketplaceReconcileGeneration: 2,
+		marketplaceReconcileGeneration: 3,
+		marketplaceListReadIssued:      2,
 		marketplaceListReadsOrdered:    true,
 		marketplaceListFloor:           1,
 	}
 
 	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
-		List:   appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
-		Action: "remove",
-		Name:   removing.Name,
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		Action:     "remove",
+		Name:       removing.Name,
+		Generation: 3,
 	})
 	after := got.(hubModel)
 	if after.marketplaceRemovePending != "" {
@@ -1008,11 +1166,14 @@ func TestMarketplaceMutateResultAppliedSnapshotRefetchesPastTheAdvancingFloor(t 
 	})
 	defer cleanup()
 
+	// A remove is in flight on an ordered model, issued as generation 3
+	// after a notification read tagged 2.
 	m := hubModel{
 		client:                         client,
 		pluginsPanel:                   marketplacePanelWithEntries(t, removing, kept),
 		marketplaceRemovePending:       removing.Name,
-		marketplaceReconcileGeneration: 2,
+		marketplaceReconcileGeneration: 3,
+		marketplaceListReadIssued:      2,
 		marketplaceListReadsOrdered:    true,
 		marketplaceListFloor:           1,
 	}
@@ -1023,7 +1184,7 @@ func TestMarketplaceMutateResultAppliedSnapshotRefetchesPastTheAdvancingFloor(t 
 		},
 	})
 
-	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: removing.Name})
+	got, cmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: removing.Name, Generation: 3})
 	after := got.(hubModel)
 	if after.marketplaceRemovePending != "" {
 		t.Fatalf("applied-with-litter outcome left the fence at %q, want cleared", after.marketplaceRemovePending)
