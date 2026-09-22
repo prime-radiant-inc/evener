@@ -752,7 +752,35 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
       }
     }
   }
-  return orderedItems(merged);
+  return orderedItems(reconcileItemDuplicates(orderedItems(merged), context));
+}
+
+// One identity, one item. The newer-iteration folds each newer item into the
+// first older item it matches, but an alias chain can leave two items of the
+// SAME identity in the result: a turn holding a real item under one alias
+// and a remembered alias skeleton under another folds the newer side into
+// the skeleton while the real item stays beside the fold (the mobile
+// store's retained-turn bound injects exactly such alias skeletons). The
+// reconciliation is the iteration's own rule applied to its own result: an
+// item that identity-matches an earlier item folds into it — later-wins
+// precedence included, so whichever side the merge's direction says is
+// newer keeps its fields — and the merge's fragment membership is recorded
+// so a caller tracking participation still sees every input.
+function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
+  const reconciled: ItemModel[] = [];
+  for (const item of items) {
+    const index = reconciled.findIndex((candidate) => itemIdentityMatches(candidate, item));
+    if (index === -1) {
+      reconciled.push(item);
+      continue;
+    }
+    const existing = reconciled[index];
+    if (existing === undefined) continue;
+    const mergedItem = mergePageItem(existing, item);
+    if (context) recordMergedToolItem(context, mergedItem, existing, item);
+    reconciled[index] = mergedItem;
+  }
+  return reconciled;
 }
 
 function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {

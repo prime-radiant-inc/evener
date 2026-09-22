@@ -8703,6 +8703,12 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       const after = store.getState().conversation!;
       expect(after.turns.some((turn) => turn.id === "pq")).toBe(false);
+      // Exactly one item under kr survives the alias fold, carrying the
+      // retained text — the page's stale reissue text must not linger on a
+      // second item claiming the same identity.
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ id: "rb", transcriptKey: "kr", text: "restored alias" }),
+      ]);
       expect(sessionTokens(after)).toEqual({
         inputTokens: 501,
         outputTokens: 21,
@@ -8886,6 +8892,141 @@ describe("ConversationStore", () => {
           exitCode: 0,
           status: "completed",
         }),
+      ]);
+    });
+
+    // Review round 11, alias reconciliation at rehydrate: the same
+    // duplicate-identity hole the superseded-alias fold opens at loadOlder
+    // opens at rehydrate too — the turn carries its restored item under one
+    // alias, the injected remembered alias hosts the fresh read's keyless
+    // reissue, and the merge leaves BOTH items keyed kr: the fresh text on
+    // one, the superseded retained text on the other. One identity must
+    // reconcile to one item, with the fresh side winning at rehydrate.
+    it("a fresh keyless reissue under a remembered alias reconciles to one item", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering {id ra, transcriptKey kr}.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "ra",
+                  transcriptKey: "kr",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // The fresh read restores kr under a DIFFERENT id, in window: the
+      // carrier holds the restored item while still remembering the alias.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kr", text: "kr row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rb",
+                  transcriptKey: "kr",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "restored alias",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "pt")).toBe(false);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kr", text: "restored alias" }),
+      ]);
+
+      // A fresh read now re-issues the item KEYLESS under the remembered
+      // bare id ra. The remembered alias hosts the reissue (the restored
+      // item's keyed identity does not match it), and one item under kr
+      // must come out of the merge — carrying the fresh side's text, which
+      // wins at rehydrate — not two items claiming the same identity.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kr", text: "kr row" }],
+          turns: [
+            {
+              id: "fr",
+              status: "completed",
+              items: [
+                {
+                  id: "ra",
+                  turnId: "fr",
+                  type: "agentMessage",
+                  text: "fresh reissue",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c2",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c2",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.some((turn) => turn.id === "rt")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "fr")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kr", text: "fresh reissue" }),
       ]);
     });
   });
