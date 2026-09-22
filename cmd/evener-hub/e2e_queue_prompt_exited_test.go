@@ -67,6 +67,12 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 		Input:              []appwire.InputItem{{Type: "text", Text: prompt}},
 	})
 	t.Logf("turn/queue against the exited session: err=%v disposition=%q", queueErr, resp.Receipt.Disposition)
+	if queueErr != nil {
+		t.Fatalf("turn/queue against the exited session: %v", queueErr)
+	}
+	if disp := resp.Receipt.Disposition; disp != appwire.MutationDispositionApplied && disp != appwire.MutationDispositionReplayed {
+		t.Fatalf("turn/queue disposition = %q, want %q or %q", disp, appwire.MutationDispositionApplied, appwire.MutationDispositionReplayed)
+	}
 
 	waitCtx, cancelWait := context.WithTimeout(ctx, 45*time.Second)
 	defer cancelWait()
