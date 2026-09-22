@@ -73,6 +73,8 @@ async function removalUnderTest(fake: FakeClient, reject: () => Error) {
       hubName="Work hub"
       installed={createPluginsStore(client)}
       gate={createPluginMutationGate()}
+      ready={true}
+      canUseConnection={() => true}
       onOpenPlugin={() => {}}
     />,
   );
