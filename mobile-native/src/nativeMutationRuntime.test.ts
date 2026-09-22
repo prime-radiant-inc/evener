@@ -965,6 +965,7 @@ test("steer with a queue revision uses the drain route and preserves its fence",
 
 	const queued = await runtime.storage.getOutbox("mutation-1");
 	expect(queued).toMatchObject({
+		instanceId: "instance-1",
 		method: "turn/drainAsSteer",
 		payload: {
 			ref: "ref-1",

@@ -80,6 +80,7 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 	return {
 		targetRef: nativeMutationTargetKey(request.hubId, request.targetRef),
 		threadId: request.threadId,
+		instanceId: request.instanceId,
 		method,
 		payload,
 		attachments: [],
