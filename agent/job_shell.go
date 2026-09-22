@@ -757,11 +757,14 @@ func shellTerminalDecisionWithSignal(stopStatus jobstore.Status, stopReason stri
 	if exitCode == 0 {
 		return jobstore.StatusCompleted, "exit_zero"
 	}
+	// A signalled or nonzero exit is the COMMAND's outcome, not the job
+	// system's failure: the machinery launched, supervised, and reaped the
+	// process fine. Only the wait/supervision arms above stay StatusFailed.
 	if exitCode < 0 {
 		if signalName == "" {
-			return jobstore.StatusFailed, "killed_by_signal"
+			return jobstore.StatusCommandKilled, "killed_by_signal"
 		}
-		return jobstore.StatusFailed, "killed_by_signal: " + signalName
+		return jobstore.StatusCommandKilled, "killed_by_signal: " + signalName
 	}
-	return jobstore.StatusFailed, "exit_nonzero"
+	return jobstore.StatusCommandExitedNonzero, "exit_nonzero"
 }

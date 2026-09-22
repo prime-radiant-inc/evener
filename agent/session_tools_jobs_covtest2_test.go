@@ -239,7 +239,8 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	// All valid status values.
 	validStatuses := []any{
 		"running", "idle", "settling", "stopping", "closed",
-		"completed", "failed", "exhausted", "cancelled", "stopped",
+		"completed", "command_exited_nonzero", "command_killed",
+		"failed", "exhausted", "cancelled", "stopped",
 	}
 	statuses, err = jobStatusArrayArg(map[string]any{"status": validStatuses}, "status")
 	if err != nil {

@@ -1496,7 +1496,8 @@ func activityOutcome(status jobstore.Status) (bool, string) {
 	switch status {
 	case jobstore.StatusRunning:
 		return false, ""
-	case jobstore.StatusFailed, jobstore.StatusExhausted:
+	// A command that exited nonzero or was signalled is still a FAILURE for
+	case jobstore.StatusFailed, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled, jobstore.StatusExhausted:
 		return true, "failure"
 	case jobstore.StatusCompleted:
 		return true, "success"
