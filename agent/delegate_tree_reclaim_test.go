@@ -734,6 +734,14 @@ func TestDelegateIdleRelease_RetriesAfterPregateRefusal(t *testing.T) {
 // additionally pins that a released runtime's stale adoption record cannot
 // strand the delegate: the reacquire proves the record stale and clears it.
 func TestDelegateIdleRelease_ColdRestoreResumesRetainedScratch(t *testing.T) {
+	// Isolate TMPDIR (this test is not parallel): the sandboxed children mint
+	// their scratch under the ambient base, and this test's root stateDir is a
+	// TempDir that vanishes at cleanup — a child dir left in the SHARED base
+	// would keep a pin pointing at the deleted manifest and trip every later
+	// sweep that validates that base's pins. Under an isolated base the
+	// cleanup removes directory and pin together.
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
 	_, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	client := llm.NewClient()
