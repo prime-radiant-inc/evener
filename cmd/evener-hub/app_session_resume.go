@@ -49,7 +49,21 @@ func withSessionResume[R any](
 		}
 		return zero, resumeErr
 	}
-	return attempt()
+	// The retry runs because this request's resume made it possible, so its
+	// failure is judged the same way turn/start's retry is: a failure that
+	// names no clientMutationId is uncorrelated and must be wrapped so the
+	// caller's mutation dispatcher can decide what to do with it (see
+	// correlateRetryFailure). Only wrap when this request actually carries an
+	// id to correlate against.
+	resp, retryErr := attempt()
+	if retryErr == nil || clientMutationID == "" {
+		return resp, retryErr
+	}
+	if wrapped := correlateRetryFailure(clientMutationID, retryErr); wrapped != nil {
+		var zero R
+		return zero, wrapped
+	}
+	return resp, retryErr
 }
 
 // shutdownThreadTolerateExited runs thread/shutdown and treats an

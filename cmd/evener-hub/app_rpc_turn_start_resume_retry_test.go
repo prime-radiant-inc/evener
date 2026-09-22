@@ -109,3 +109,137 @@ func TestHubRPCTurnStartAfterSuccessfulResumeStaysCorrelated(t *testing.T) {
 			data.EvenerErrorInfo, data.RetryDisposition)
 	}
 }
+
+// TestHubRPCTurnStartRetryCorrelation covers what a turn/start that resumed an
+// exited session reports when the post-resume retry fails in ways other than a
+// plain uncorrelated failure. Each failure must keep the meaning its caller can
+// act on; only a failure that names a different (or no) mutation is wrapped as
+// this caller's blocked-unknown outcome.
+func TestHubRPCTurnStartRetryCorrelation(t *testing.T) {
+	const mutationID = "mutation-retry-correlation"
+
+	cases := []struct {
+		name     string
+		retryErr error
+		check    func(t *testing.T, wire appwire.WireError, data appwire.ErrorData)
+	}{
+		{
+			name:     "shape refusal keeps its own meaning",
+			retryErr: appwire.InvalidParams("input item type is not supported"),
+			check: func(t *testing.T, wire appwire.WireError, data appwire.ErrorData) {
+				t.Helper()
+				if wire.Code != appwire.CodeInvalidParams {
+					t.Fatalf("an invalid-params refusal must survive the retry: code=%d want %d (wire=%+v)",
+						wire.Code, appwire.CodeInvalidParams, wire)
+				}
+				if data.EvenerErrorInfo == appwire.ErrorMutationOutcomeUnknown ||
+					data.MutationOutcome == appwire.MutationOutcomeUnknown ||
+					data.RetryDisposition == appwire.RetryDispositionBlocked {
+					t.Fatalf("a shape refusal must not be reported as a blocked unknown outcome: data=%#v", data)
+				}
+			},
+		},
+		{
+			name:     "already-correlated refusal passes through",
+			retryErr: appwire.MutationNotAccepted(mutationID, "the resumed session refused the retry"),
+			check: func(t *testing.T, wire appwire.WireError, data appwire.ErrorData) {
+				t.Helper()
+				if data.ClientMutationID != mutationID || data.MutationOutcome != appwire.MutationOutcomeNotAccepted {
+					t.Fatalf("a refusal already naming this caller's mutation must pass through intact: data=%#v (wire=%+v)", data, wire)
+				}
+			},
+		},
+		{
+			name:     "refusal naming a different mutation is wrapped for this caller",
+			retryErr: appwire.MutationNotAccepted("some-other-mutation", "another caller's mutation"),
+			check: func(t *testing.T, wire appwire.WireError, data appwire.ErrorData) {
+				t.Helper()
+				if data.ClientMutationID != mutationID ||
+					data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+					data.MutationOutcome != appwire.MutationOutcomeUnknown ||
+					data.RetryDisposition != appwire.RetryDispositionBlocked {
+					t.Fatalf("a refusal naming a different mutation is not this caller's to judge and must be wrapped as blocked-unknown for %q: data=%#v (wire=%+v)",
+						mutationID, data, wire)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+			t.Cleanup(func() {
+				resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+			})
+
+			// The ref must be one the hub knows, or the handler returns the first
+			// failure unchanged and never resumes at all.
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + sessionID
+
+			startCalls := 0
+			source := &scriptedAppSource{
+				id: "local",
+				thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+					},
+				},
+				startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					startCalls++
+					if startCalls == 1 {
+						// The first send finds the exited session and triggers the resume.
+						return appwire.TurnStartResponse{}, appwire.SessionUnavailable("session has exited")
+					}
+					return appwire.TurnStartResponse{}, tc.retryErr
+				},
+			}
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+				return source, nil
+			}
+			resumeCalls := 0
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				resumeCalls++
+				// The resume SUCCEEDS: the session is live again when this returns.
+				return appwire.ThreadResumeResponse{Thread: source.thread}, nil
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				Ref:              ref,
+				ClientMutationID: mutationID,
+				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+			})
+			if err == nil {
+				t.Fatal("turn/start reported success although neither attempt was accepted")
+			}
+			if resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", resumeCalls)
+			}
+			if startCalls != 2 {
+				t.Fatalf("start calls=%d, want 2 (the original and the post-resume retry)", startCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+			}
+			tc.check(t, wire, data)
+		})
+	}
+}

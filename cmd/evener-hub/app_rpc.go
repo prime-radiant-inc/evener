@@ -370,37 +370,89 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	}
 }
 
-// errorNamesClientMutation reports whether err already carries the
-// clientMutationId of the mutation it refused.
+// errorNamesClientMutation reports whether err already carries clientMutationID,
+// the id of the mutation the caller submitted.
 //
 // Every client judges a failed mutation by that id alone: the web outbox's
 // dispatcher refuses to correlate a failure that names none and a different id
 // (appwire-client/typescript/state/mutation/dispatcher.ts), so the record stays
 // "submitting" -- the prompt is neither delivered nor surfaced as failed, and
 // the user has to retype it. A refusal the daemon minted for the caller's own
-// mutation (rejectClientMutation sets the id) needs no help; one that carries
-// none has to be wrapped before it leaves the hub.
+// mutation (rejectClientMutation sets the id) needs no help; a refusal that
+// names a different mutation is no more correlatable for this caller than one
+// that names none, and one that names none has to be wrapped before it leaves
+// the hub.
+//
+// Both sides are trimmed before comparison so incidental whitespace cannot make
+// an id look like a different mutation; an error that names no mutation never
+// names the caller's.
 //
 // The wire client decodes ErrorData as a map on some paths and as the typed
 // struct on others, so both shapes are read -- the same convention
 // app_retirement_resume.go's isLifecycleRetiringError follows.
-func errorNamesClientMutation(err error) bool {
+func errorNamesClientMutation(err error, clientMutationID string) bool {
+	want := strings.TrimSpace(clientMutationID)
+	if want == "" {
+		return false
+	}
 	wire, ok := wireErrorFromError(err)
 	if !ok {
 		return false
 	}
-	return strings.TrimSpace(clientMutationIDFromData(wire.Data)) != ""
+	return strings.TrimSpace(clientMutationIDFromData(wire.Data)) == want
 }
 
 // isShapeRefusal reports whether err refuses the request's shape: appwire's
-// invalid-params and invalid-request codes, decided before anything executes.
-// Such a refusal is deterministic -- resending the identical payload can never
-// answer differently -- and the web outbox already recovers from an
-// uncorrelated one, so wrapping it as an unknown mutation outcome would tell
-// the caller less than the refusal itself does.
+// invalid-params and invalid-request codes carrying the invalidParams
+// discriminant, decided before anything executes.
+//
+// The code alone is not enough. CodeInvalidParams is shared with
+// resourceNotFound, transcriptItemCursorStale, and invalidHostField, which mean
+// something entirely different to the caller; matching the code alone would let
+// any of them masquerade as a deterministic shape refusal. Requiring the
+// discriminant is what separates a true shape refusal -- resending the identical
+// payload can never answer differently, and the web outbox already recovers from
+// an uncorrelated one, so wrapping it as an unknown mutation outcome would tell
+// the caller less than the refusal itself does -- from those other refusals.
 func isShapeRefusal(err error) bool {
 	wire, ok := wireErrorFromError(err)
-	return ok && (wire.Code == appwire.CodeInvalidParams || wire.Code == appwire.CodeInvalidRequest)
+	if !ok || wire.Data == nil {
+		return false
+	}
+	if wire.Code != appwire.CodeInvalidParams && wire.Code != appwire.CodeInvalidRequest {
+		return false
+	}
+	return evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorInvalidParams)
+}
+
+// correlateRetryFailure decides what a retry that an earlier failure's resume
+// made possible must report when it fails in turn.
+//
+// Several failures keep their own meaning and are returned unchanged: the
+// caller's own cancellation (context.Canceled / context.DeadlineExceeded, which
+// is not a mutation outcome at all), a refusal that already names this caller's
+// mutation, a deletion of the target, and a true shape refusal (see
+// isShapeRefusal). Everything else is a failure no client's mutation dispatcher
+// can classify -- one that names no clientMutationId (the web outbox correlates
+// by that id alone) -- and is wrapped in the blocked-unknown envelope so the
+// mutation is retained for a retry rather than left submitting forever (see
+// blockedUnknownMutationError).
+//
+// A nil return means err keeps its own meaning; callers return err unchanged.
+// Shared by turn/start's retryAfterResume and withSessionResume's post-resume
+// retry so every resume-once-then-retry mutation correlates its retry failure
+// the same way.
+func correlateRetryFailure(clientMutationID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	if errorNamesClientMutation(err, clientMutationID) || isTargetDeletedError(err) || isShapeRefusal(err) {
+		return nil
+	}
+	return blockedUnknownMutationError(clientMutationID, err)
 }
 
 // allowsPastFallbackAfterLiveReadFailure preserves atomic rejoin once a live
@@ -1053,20 +1105,32 @@ func registerThreadHandlers(
 		// (see blockedUnknownMutationError), so the prompt is retained for a
 		// retry rather than left submitting forever.
 		//
-		// "No way to judge it" is exactly the failures every client's mutation
-		// dispatcher cannot classify: one that names no clientMutationId (the web
-		// outbox correlates by that id alone) and is not a shape refusal, which it
-		// already recovers from deterministically
-		// (appwire-client/typescript/state/mutation/dispatcher.ts). A refusal the
-		// daemon minted for the caller's own mutation, a deletion of the target,
-		// and an invalid-params/request refusal all keep their own meaning.
+		// Two failures prove nothing was dispatched, so their outcome is known
+		// rather than unknown: the caller's cancellation is not a mutation outcome
+		// at all, and a retry whose source resolution failed never reached a
+		// source. Both keep their own meaning; every other failure is left to
+		// correlateRetryFailure, which holds the "already correlates" exemptions
+		// (a refusal naming this caller's mutation, a target deletion, a true
+		// shape refusal) and otherwise wraps.
 		retryAfterResume := func() (appwire.TurnStartResponse, error) {
 			resolved = false
 			resp, err := attemptStart()
-			if err == nil || errorNamesClientMutation(err) || isTargetDeletedError(err) || isShapeRefusal(err) {
+			if err == nil {
+				return resp, nil
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return resp, err
 			}
-			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, err)
+			if !resolved {
+				// Source resolution failed before the retry reached a source, so
+				// nothing was dispatched and the mutation's outcome is known --
+				// not accepted -- rather than unknown.
+				return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, err.Error())
+			}
+			if wrapped := correlateRetryFailure(params.ClientMutationID, err); wrapped != nil {
+				return appwire.TurnStartResponse{}, wrapped
+			}
+			return resp, err
 		}
 		resp, err := attemptStart()
 		if err == nil {
