@@ -42,7 +42,7 @@ func TestClassifyMarketplaceRemovalOutcomeJSONData(t *testing.T) {
 	valid := map[string]any{
 		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
 		"applied": map[string]any{
-			"marketplaces": []any{map[string]any{"name": "kept", "source": map[string]any{"kind": "url"}}},
+			"marketplaces": []any{map[string]any{"name": "kept", "lastUpdated": 1, "source": map[string]any{"kind": "url"}}},
 		},
 	}
 	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(valid))
@@ -129,6 +129,27 @@ func TestClassifyMarketplaceRemovalOutcomeDiscardsPartialJSONSnapshot(t *testing
 		}},
 		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
 			"marketplaces": []any{map[string]any{}},
+		}},
+		// A member missing a REQUIRED field: decoding into the struct
+		// erases presence, so lastUpdated unmarshals into a zero and the
+		// row looks whole. The SDK's wire-shape re-check rejects it.
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept", "source": map[string]any{"kind": "url"}}},
+		}},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{"lastUpdated": 1, "source": map[string]any{"kind": "url"}}},
+		}},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept", "lastUpdated": 1}},
+		}},
+		// Optional fields that are PRESENT but null: each decodes into a
+		// zero string, so the typed row passes the non-empty checks while
+		// the wire shape the hub guarantees says they were never strings.
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept", "lastUpdated": 1, "installLocation": nil, "source": map[string]any{"kind": "url"}}},
+		}},
+		{"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains), "applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept", "lastUpdated": 1, "source": map[string]any{"kind": "url", "repo": nil, "ref": nil}}},
 		}},
 	} {
 		state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(malformed))

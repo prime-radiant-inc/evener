@@ -44,7 +44,9 @@ const (
 // slice is deliberately uncertain: JSON null or a missing field is not an
 // empty list, and neither is a member that does not decode as a real
 // marketplace row - a null or empty-object member unmarshals into a zero
-// entry, so the snapshot it sits in never looks authoritative.
+// entry, and a member missing a required field, or carrying a null optional,
+// unmarshals into a zero that hides the truncation - so the snapshot it sits
+// in never looks authoritative.
 func classifyMarketplaceRemovalOutcome(err error) (marketplaceRemovalState, appwire.MarketplaceListResponse) {
 	wire, ok := errors.AsType[appwire.WireError](err)
 	if !ok {
@@ -131,6 +133,20 @@ func decodeMarketplaceCloneRemainsData(raw any) (appwire.MarketplaceUnregistered
 		}
 	}
 	if rawApplied, ok := fields["applied"]; ok && string(rawApplied) != "null" {
+		var members struct {
+			Marketplaces []json.RawMessage `json:"marketplaces"`
+		}
+		if err := json.Unmarshal(rawApplied, &members); err != nil {
+			data.Applied = appwire.MarketplaceListResponse{}
+			return data, true
+		}
+		for _, member := range members.Marketplaces {
+			if !validMarketplaceEntryJSON(member) {
+				// Never let that partial snapshot look authoritative to the caller.
+				data.Applied = appwire.MarketplaceListResponse{}
+				return data, true
+			}
+		}
 		var applied appwire.MarketplaceListResponse
 		if err := json.Unmarshal(rawApplied, &applied); err != nil {
 			// json.Unmarshal may leave partially decoded entries behind. Never
@@ -141,6 +157,79 @@ func decodeMarketplaceCloneRemainsData(raw any) (appwire.MarketplaceUnregistered
 		data.Applied = applied
 	}
 	return data, true
+}
+
+// validMarketplaceEntryJSON reports whether raw, one raw member of a decoded
+// applied snapshot, carries the wire shape appwire.MarketplaceEntry
+// guarantees - the exact trust-boundary re-check the SDK's classifier performs
+// (appwire-client/typescript/state/extensions/marketplaces.ts,
+// isMarketplaceEntry): an object - never null, never an array - whose
+// required name, lastUpdated, and source are PRESENT with their JSON types
+// (name a string, lastUpdated a number, source an object whose kind is a
+// string), whose optional installLocation is a string when present, and whose
+// source carries each present optional member as a string. Presence matters
+// because decoding into the struct erases it: a missing lastUpdated
+// unmarshals into a zero and a null optional into an empty string, so the
+// typed decode alone cannot tell a truncated member from a whole one.
+func validMarketplaceEntryJSON(raw json.RawMessage) bool {
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return false
+	}
+	if !isJSONString(entry["name"]) {
+		return false
+	}
+	if !isJSONNumber(entry["lastUpdated"]) {
+		return false
+	}
+	if location, ok := entry["installLocation"]; ok && !isJSONString(location) {
+		return false
+	}
+	var source map[string]json.RawMessage
+	if rawSource, ok := entry["source"]; !ok || json.Unmarshal(rawSource, &source) != nil {
+		return false
+	}
+	if !isJSONString(source["kind"]) {
+		return false
+	}
+	for _, field := range []string{"repo", "url", "path", "ref", "sha"} {
+		if rawField, ok := source[field]; ok && !isJSONString(rawField) {
+			return false
+		}
+	}
+	return true
+}
+
+// isJSONString reports whether raw is a present JSON string - not absent, not
+// null, not any other type: the wire type the SDK's re-check demands of every
+// field it names.
+func isJSONString(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return false
+	}
+	_, ok := value.(string)
+	return ok
+}
+
+// isJSONNumber reports whether raw is a present JSON number - not absent, not
+// null, not any other type.
+func isJSONNumber(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return false
+	}
+	switch value.(type) {
+	case float64, json.Number:
+		return true
+	}
+	return false
 }
 
 // marketplaceCloneRemainsWarning reports a removal the hub marked
