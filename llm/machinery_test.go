@@ -45,8 +45,11 @@ func TestIsMachineryNotificationText(t *testing.T) {
 
 // A flagged part must survive encode/decode (it is persisted transcript
 // state), and an unflagged part must marshal byte-identically to today —
-// user prose never carries the key, so old readers of new transcripts see
-// unchanged shapes for ordinary turns.
+// user prose never carries the key. That is a part-level fact only:
+// entry-level readability for older builds is a separate, deliberate
+// matter — every new entry carries machinery_flagged, which older builds
+// reject wholesale per the wf7e one-way door; see the comment on
+// transcript.Entry.
 func TestContentPartMachineryFlagJSONRoundTrip(t *testing.T) {
 	flagged := ContentPart{
 		Kind:      ContentText,
