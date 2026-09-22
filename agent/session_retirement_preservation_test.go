@@ -459,6 +459,13 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	// container may live in. This test asserts exact collection outcomes, so it must
 	// not reach the machine's real /tmp.
 	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+	// Isolate TMPDIR (this test is not parallel) for the same reason: the
+	// root's environment mints its scratch and the unreleased sibling under
+	// the ambient base, and the sweep validates every pin it finds there. A
+	// shared base accumulates dangling pins from other tests' TempDir
+	// manifests — the exact trip f22221394f isolated the continuity fixture
+	// against — and the sweep correctly refuses to ignore them.
+	t.Setenv("TMPDIR", t.TempDir())
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
@@ -1374,6 +1381,12 @@ func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
 	// startup sweep visits the world-usable container bases too, and this test
 	// asserts exact collection and restore outcomes.
 	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+	// Same TMPDIR isolation too (this test is not parallel): the sweep
+	// validates every pin it finds in the bases it visits, and a shared
+	// ambient base accumulates dangling pins from other tests' TempDir
+	// manifests — the trip f22221394f recorded — which the sweep correctly
+	// refuses to ignore.
+	t.Setenv("TMPDIR", t.TempDir())
 	for _, tc := range []struct {
 		name      string
 		sandboxed bool

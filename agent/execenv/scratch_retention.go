@@ -23,7 +23,26 @@ func (e *LocalExecutionEnvironment) SetScratchRetentionBinding(owner sandbox.Scr
 	e.retentionOwner = owner
 	e.retentionBinding = cloneScratchBinding(binding)
 	e.retentionSet = true
+	// A fresh binding install re-derives contention for every kind this
+	// cycle; a pending marker from a previous cycle must not outlive it.
+	e.retentionPending = nil
 	return nil
+}
+
+// MarkRetainedSlotPending records that kind's retained owning slot was skipped
+// by adoption because its lease is held elsewhere in this process — typically
+// the idle-release teardown racing the restore. While the kind is pending,
+// PinOwnedScratch pins any fresh fallback mint as a bare protected reference
+// instead of claiming the binding's slot for it, so the manifest row keeps
+// naming the retained directory and a later refresh re-probes it once the
+// contention settles.
+func (e *LocalExecutionEnvironment) MarkRetainedSlotPending(kind string) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	if e.retentionPending == nil {
+		e.retentionPending = make(map[string]struct{})
+	}
+	e.retentionPending[kind] = struct{}{}
 }
 
 // PinOwnedScratch publishes this environment's installed binding and pins every
@@ -44,6 +63,7 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 	}
 	owner := e.retentionOwner
 	binding := cloneScratchBinding(e.retentionBinding)
+	pending := maps.Clone(e.retentionPending)
 	handles := make(map[string]*sandbox.SessionScratch)
 	if e.ownedSessionTmp != nil {
 		handles[sandbox.ScratchKindSandbox] = e.ownedSessionTmp
@@ -85,7 +105,7 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 		if e.scratchPinProbe != nil {
 			e.scratchPinProbe(pin)
 		}
-		return sandbox.PinScratchBinding(owner, binding, owned)
+		return sandbox.PinScratchBinding(owner, binding, owned, pending)
 	})
 	if err != nil {
 		e.recordRetentionPinError(err)
@@ -134,10 +154,14 @@ func (e *LocalExecutionEnvironment) ScratchRetentionBinding() (sandbox.ScratchBi
 	if binding.Slots == nil {
 		binding.Slots = make(map[string]sandbox.ScratchSlot)
 	}
-	if e.ownedSessionTmp != nil && e.ownedSessionTmp.HasLease() {
+	// A pending kind's durable truth is the installed slot — the retained
+	// directory the manifest row still names — not the live fallback mint.
+	_, pendingSandbox := e.retentionPending[sandbox.ScratchKindSandbox]
+	_, pendingUnsandboxed := e.retentionPending[sandbox.ScratchKindUnsandboxed]
+	if e.ownedSessionTmp != nil && e.ownedSessionTmp.HasLease() && !pendingSandbox {
 		binding.Slots[sandbox.ScratchKindSandbox] = sandbox.ScratchSlot{Dir: e.ownedSessionTmp.Dir, OwnsLease: true}
 	}
-	if e.unsandboxedScratch != nil && e.unsandboxedScratch.HasLease() {
+	if e.unsandboxedScratch != nil && e.unsandboxedScratch.HasLease() && !pendingUnsandboxed {
 		binding.Slots[sandbox.ScratchKindUnsandboxed] = sandbox.ScratchSlot{Dir: e.unsandboxedScratch.Dir, OwnsLease: true}
 	}
 	return binding, nil
@@ -192,6 +216,9 @@ func (e *LocalExecutionEnvironment) RestoreSessionScratch(bindingID string, ref 
 		e.scratchMu.Unlock()
 		return fmt.Errorf("execenv: unknown scratch kind %q", ref.Kind)
 	}
+	// The retained slot for this kind was adopted: the environment owns the
+	// retained directory again, so later mints publish normally.
+	delete(e.retentionPending, ref.Kind)
 	e.scratchMu.Unlock()
 	e.invalidateSandboxFS()
 	return nil

@@ -632,6 +632,13 @@ type testConfig struct {
 	// refresh's session id. Nil in production.
 	scratchRefreshAfterRecheck func(sessionID string)
 
+	// scratchTerminalReleaseAfterDetach runs inside the terminal scratch
+	// release after the retained pool is detached and before the Released
+	// tombstone is written — the exact window an in-flight refresh's seed
+	// publish can land in, because the detach takes no manifest lock the
+	// refresh's install hold would serialize on. Nil in production.
+	scratchTerminalReleaseAfterDetach func()
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose

@@ -300,7 +300,18 @@ func (s *Session) releaseTerminalScratchRetention() {
 	// session has already been torn down earlier in the terminal close, so no
 	// consumer can adopt a pooled handle after this point. Retain() releases each
 	// lease without deleting the directory, preserving the retention semantics.
+	// The seal comes first: a refresh pass can still be mid-install — the
+	// detach takes no manifest lock its install hold would serialize on — and
+	// a seed published after the detach would never be swept, holding its
+	// pins against the collector for the daemon's life. Sealed, a pass that
+	// wins the seed CAS after the detach undoes its own publish and hands the
+	// leases back; a pass that published before the seal is swept by the
+	// detach itself.
+	s.retainedScratchSealed.Store(true)
 	s.detachRetainedScratch()
+	if hook := s.cfg.testOnly.scratchTerminalReleaseAfterDetach; hook != nil {
+		hook()
+	}
 	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("scratch retention release failed: %v", err)})
 	}

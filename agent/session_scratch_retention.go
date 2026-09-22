@@ -576,6 +576,12 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 		return nil
 	}
 	for range 5 {
+		if s.retainedScratchSealed.Load() {
+			// The terminal close is sealing the pool: nothing this pass
+			// would converge outlives the session, so decline before
+			// reacquiring anything.
+			return nil
+		}
 		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
 			return fmt.Errorf("retained scratch refresh: %w", err)
@@ -734,13 +740,27 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 			}
 			for range 5 {
 				if s.retainedScratch.CompareAndSwap(nil, seeded) {
+					if s.retainedScratchSealed.Load() {
+						// The terminal close sealed the pool between this
+						// pass's reacquire and its publish. Undo the publish —
+						// compare against this pass's own seed so a concurrent
+						// pool is never displaced — and let the sentinel hand
+						// the leases back: a pool seeded after the terminal
+						// detach would be unreachable (every consumer is
+						// already torn down) and its handles would hold their
+						// pins against the collector for the daemon's life.
+						s.retainedScratch.CompareAndSwap(seeded, nil)
+						return errScratchRefreshSealed
+					}
 					return nil
 				}
 				published := s.retainedScratch.Load()
 				if published == nil {
-					// The pointer went back to nil — a terminal release or
-					// init cleanup swept the published pool — so retry the CAS
-					// with this pass's seed.
+					// The pointer went back to nil — an init cleanup or a
+					// retirement detach swept the published pool — so retry
+					// the CAS with this pass's seed. A terminal sweep never
+					// republishes: the seal check on the next successful CAS
+					// declines it instead.
 					continue
 				}
 				if s.installConsumerRefresh(published, consumer, binding, handles, contended) {
@@ -757,6 +777,12 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 		})
 		switch {
 		case installErr == nil:
+			return nil
+		case errors.Is(installErr, errScratchRefreshSealed):
+			// The terminal close owns the manifest now; the restore proceeds
+			// on fresh scratch and nothing durable this pass holds outlives
+			// the session. Hand the leases back and decline.
+			releaseRefreshHandles(handles)
 			return nil
 		case errors.Is(installErr, errScratchRefreshStaleRevision),
 			errors.Is(installErr, errScratchRefreshPoolDetached),
@@ -781,6 +807,10 @@ var (
 	// errScratchRefreshPoolDetached marks a pass whose target pool was swapped
 	// out from the session before the fold landed, so the pass retries.
 	errScratchRefreshPoolDetached = errors.New("agent: retained scratch refresh pool detached")
+	// errScratchRefreshSealed marks a pass whose session sealed its pool for
+	// terminal release before the pass's seed publish, so the pass undid the
+	// publish and declines instead of leaving an unreachable pool behind.
+	errScratchRefreshSealed = errors.New("agent: retained scratch pool sealed for terminal release")
 )
 
 // scratchConsumerRowsCurrent reports whether the pool's consumer row is the
@@ -1123,6 +1153,24 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 	}
 	for kind, slot := range binding.Slots {
 		if existingKinds[kind] {
+			// A live allocation this environment already provisions is left
+			// exposed — normally the resume-time fresh mint of a cold
+			// restore. When the slot it shadows is an owning slot whose lease
+			// is contended elsewhere in this process, that mint is a fallback
+			// for exactly one cycle: the binding row must keep naming the
+			// retained directory or the mint's next publication would
+			// displace the slot and no later refresh would ever re-probe the
+			// original (round 10). Mark the kind pending so the mint pins as
+			// a bare protected reference instead — but only when the live
+			// allocation is genuinely a fallback: an environment already
+			// running ON the retained directory reads as contended to the
+			// re-probe (it holds that lease itself), and marking there would
+			// defer every later publication off the allocation it already
+			// owns.
+			if slot.OwnsLease && pool.scratchSlotContended(filepath.Clean(slot.Dir)) &&
+				filepath.Clean(envScratchRefDir(env, kind)) != filepath.Clean(slot.Dir) {
+				env.MarkRetainedSlotPending(kind)
+			}
 			continue
 		}
 		key := filepath.Clean(slot.Dir)
@@ -1162,6 +1210,15 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			pool.finishRetainedScratchSlot(key)
 		case !contended:
 			return fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
+		case contended:
+			// The slot's lease is held elsewhere in this process — typically
+			// the idle-release teardown racing this restore — so adoption
+			// skips the transfer for this cycle. The binding row on the
+			// manifest must keep naming this directory or the next fresh
+			// mint's pin would replace the slot and no later refresh would
+			// ever re-probe the original (round 10): mark the kind pending so
+			// the mint pins as a bare protected reference instead.
+			env.MarkRetainedSlotPending(kind)
 		}
 	}
 	return nil
@@ -1185,6 +1242,16 @@ func (p *retainedScratchPool) scratchSlotTakenBy(key string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.adopted[key]
+}
+
+// scratchSlotContended reports whether slot key's lease was held elsewhere in
+// this process at refresh time, the record a fallback mint's publication must
+// respect to keep the binding row naming the retained directory.
+func (p *retainedScratchPool) scratchSlotContended(key string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, contended := p.contended[key]
+	return contended
 }
 
 // claimRetainedScratchSlot resolves one owning slot under the pool lock. A

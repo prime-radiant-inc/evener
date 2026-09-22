@@ -452,7 +452,7 @@ func TestScratchRetentionPinScratchBindingRollsBackAFailedCallsPins(t *testing.T
 	err = PinScratchBinding(owner, retentionBinding("E0", owner.RootSessionID, workspace, nil), map[string]*SessionScratch{
 		ScratchKindSandbox:     first,
 		ScratchKindUnsandboxed: second,
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), second.Dir) {
 		t.Fatalf("PinScratchBinding error = %v, want the failed pin of %q (the allocation pinned second)", err, second.Dir)
 	}

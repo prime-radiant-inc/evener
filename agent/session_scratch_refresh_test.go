@@ -45,7 +45,7 @@ func mintRefreshScratchBinding(t *testing.T, s *Session, bindingID string, kinds
 		owned[kind] = handle
 		binding.Slots[kind] = sandbox.ScratchSlot{Dir: handle.Dir, OwnsLease: true}
 	}
-	if err := sandbox.PinScratchBinding(owner, binding, owned); err != nil {
+	if err := sandbox.PinScratchBinding(owner, binding, owned, nil); err != nil {
 		t.Fatalf("pin binding %q: %v", bindingID, err)
 	}
 	return slots, binding
@@ -1079,5 +1079,203 @@ func TestScratchRefreshReprobesContendedSlotAfterRelease(t *testing.T) {
 	}
 	if !heldStillContended || heldPooled {
 		t.Fatalf("a still-held slot must keep its contention record and gain no handle; contended=%v pooled=%v", heldStillContended, heldPooled)
+	}
+}
+
+// TestContendedRetainedSlotKeepsBindingRowAcrossMint pins the round-10
+// continuity contract: an owning slot adoption skips because its lease is
+// contended in this process (the racing idle-release teardown holds it) must
+// not become permanently replaceable. The binding row on the manifest is the
+// only place a later refresh learns which directory to re-probe — its
+// stale-claim set is derived from the live rows — so a fresh fallback mint that
+// overwrote the row's slot would end the retry: every subsequent restore would
+// resume in the empty fallback, and the original directory's files would never
+// come back. The mint must stay pinned for protection, but as a bare reference:
+// a graph shape validateRetainedScratchGraph deliberately sanctions (a
+// TestContendedRetainedSlotKeepsBindingRowAcrossMint pins the round-10
+// continuity contract for the production cold-restore shape: resume provisions
+// the sandbox and EnableSandbox mints a fresh scratch BEFORE adoption, so a
+// contended retained slot is shadowed by a live allocation and the adoption
+// leaves both in place — the delegate runs this cycle in the fallback. The
+// binding row on the manifest is the only place a later refresh learns which
+// directory to re-probe — its stale-claim set is derived from the live rows —
+// so a fallback mint that overwrote the row's slot would end the retry: every
+// subsequent restore would resume in the empty fallback, and the original
+// directory's files would never come back. The mint must stay pinned for
+// protection, but as a bare reference: a graph shape
+// validateRetainedScratchGraph deliberately sanctions (a "historical" pinned
+// reference no slot owns).
+func TestContendedRetainedSlotKeepsBindingRowAcrossMint(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CONTENDEDMINT1"
+	const bindingID = "b-contended-mint"
+	// The fixture handle KEEPS its lease: that held lease is the in-process
+	// contention the adoption must skip (the way the idle-release teardown
+	// holds it across its own runtime-pointer window).
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{},
+	})
+
+	// The production resume shape: the sandbox is provisioned and its fresh
+	// scratch minted BEFORE adoption, exactly the flow whose live allocation
+	// shadows the contended slot.
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the resume-time fresh sandbox scratch: %v", err)
+	}
+	freshSandbox := env.SessionScratchDir()
+	if freshSandbox == "" || filepath.Clean(freshSandbox) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", freshSandbox, retainedDir)
+	}
+
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, true); err != nil {
+		t.Fatalf("restore adoption over a contended sandbox slot: %v", err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(freshSandbox) {
+		t.Fatalf("the contended slot's replacement disposed the fresh scratch %q; the restored session now runs on %q", freshSandbox, got)
+	}
+
+	// The delegate's first unsandboxed command mints a second allocation and
+	// publishes every owned kind in one pin transaction. The install routes
+	// through RestoreSessionScratch only because the test package cannot
+	// reach the env-internal mint; the sandbox kind's pending marker is what
+	// the assertion exercises, and an unsandboxed install does not touch it.
+	freshUnsandboxed, err := sandbox.NewSessionScratch(t.TempDir(), env.WorkingDirectory())
+	if err != nil {
+		t.Fatalf("mint the first-command unsandboxed scratch: %v", err)
+	}
+	t.Cleanup(func() { _ = freshUnsandboxed.Retain() })
+	if err := env.RestoreSessionScratch(bindingID, sandbox.ScratchReference{Dir: freshUnsandboxed.Dir, Kind: sandbox.ScratchKindUnsandboxed}, freshUnsandboxed); err != nil {
+		t.Fatalf("install the first-command unsandboxed scratch: %v", err)
+	}
+	if err := env.PinOwnedScratch(); err != nil {
+		t.Fatalf("publish the owned allocations: %v", err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the fallback mint displaced the binding row's slot: got %+v, want the retained %q — no later refresh will re-probe the original", slot, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(freshSandbox) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the fallback sandbox mint %q was left unpinned: a protected allocation must publish a reference", freshSandbox)
+	}
+
+	// Continuity tail: the contention settles (the teardown releases the
+	// lease) and the next restore must re-probe the original directory and
+	// resume in it, not in the fallback.
+	if err := slots[sandbox.ScratchKindSandbox].Retain(); err != nil {
+		t.Fatalf("settle the fixture contention: %v", err)
+	}
+	env2 := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env2.Cleanup(); env2.DisposeSandboxScratch(); env2.DisposeUnsandboxedScratch() })
+	policy2 := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env2.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env2.EnableSandbox(policy2); err != nil {
+		t.Fatalf("provision the follow-up restore's fresh sandbox scratch: %v", err)
+	}
+	if _, err := s.adoptRestoredConsumerScratch(env2, consumerID, true); err != nil {
+		t.Fatalf("follow-up restore after the contention settled: %v", err)
+	}
+	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(retainedDir) {
+		t.Fatalf("the follow-up restore did not resume in the retained directory %q; continuity was lost: %q", retainedDir, got)
+	}
+}
+
+// TestContendedSlotWithoutLiveAllocationKeepsBindingRow is the claim-path
+// variant of the same round-10 contract: an adoption whose environment owns no
+// allocation for the contended kind installs the binding row and skips the
+// transfer at the claim. The kind must still be marked pending, or the
+// environment's first real mint — here EnableSandbox's own allocation, pinned
+// by the env-internal post-mint hook — would claim the binding's slot and end
+// the retry the same way.
+func TestContendedSlotWithoutLiveAllocationKeepsBindingRow(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CONTENDEDCLAIM1"
+	const bindingID = "b-contended-claim"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	// No live allocation for the contended kind: the claim path skips the
+	// slot and the binding row is installed on the environment.
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, false); err != nil {
+		t.Fatalf("restore adoption over a contended slot with no live allocation: %v", err)
+	}
+	if got := env.SessionScratchDir(); got != "" {
+		t.Fatalf("fixture expected an environment with no scratch, got %q", got)
+	}
+	// The first real mint publishes through the env-internal post-mint pin.
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("mint the first real sandbox allocation: %v", err)
+	}
+	minted := env.SessionScratchDir()
+	if minted == "" || filepath.Clean(minted) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture mint %q must exist apart from the retained %q", minted, retainedDir)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the claim-skipped slot was displaced by the first mint: got %+v, want the retained %q", slot, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(minted) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the first mint %q was left unpinned: a protected allocation must publish a reference", minted)
 	}
 }

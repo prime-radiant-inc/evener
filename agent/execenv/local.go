@@ -225,6 +225,13 @@ type LocalExecutionEnvironment struct {
 	retentionOwner   sandbox.ScratchOwner
 	retentionBinding sandbox.ScratchBinding
 	retentionSet     bool
+	// retentionPending records the scratch kinds whose retained owning slot
+	// adoption skipped because the lease was contended elsewhere in this
+	// process. While a kind is pending, PinOwnedScratch pins a fresh fallback
+	// mint as a bare protected reference without claiming the binding's slot,
+	// so the manifest row keeps naming the retained directory and the next
+	// refresh re-probes it. Guarded by scratchMu like the fields above.
+	retentionPending map[string]struct{}
 	// retentionPinErr is the first sticky scratch-retention pin/publish failure
 	// seen on this environment. Preparation surfaces it as a persistence error
 	// rather than trusting a partially pinned allocation.

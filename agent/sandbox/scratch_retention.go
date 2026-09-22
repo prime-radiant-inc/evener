@@ -351,6 +351,10 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 // and upserting the binding afterwards cannot make that promise — each Pin is
 // its own committed transaction — and a failure between them left the earlier
 // pins' references durable, retained, and owned by nobody (round 19).
+// pendingKinds names owned kinds whose handle is pinned as a bare protected
+// reference WITHOUT claiming the binding's slot for that kind: the slot keeps
+// naming whatever it named, so a fallback mint cannot displace a retained
+// allocation whose reacquire is still pending.
 //
 // Every allocation is validated before any durable write, each newly added
 // reference's directory pin is made durable before the manifest commit (so a
@@ -361,7 +365,7 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 // published and leaves the manifest exactly as the call found it. A commit that
 // reports an error after its rename landed is kept whole: references and binding
 // are both durable, which is the same state a successful call leaves.
-func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[string]*SessionScratch) error {
+func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[string]*SessionScratch, pendingKinds map[string]struct{}) error {
 	if err := owner.validate(); err != nil {
 		return err
 	}
@@ -424,7 +428,9 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 		if !listed {
 			added = append(added, ref)
 		}
-		binding.Slots[ref.Kind] = ScratchSlot{Dir: ref.Dir, OwnsLease: true}
+		if _, pending := pendingKinds[ref.Kind]; !pending {
+			binding.Slots[ref.Kind] = ScratchSlot{Dir: ref.Dir, OwnsLease: true}
+		}
 	}
 	manifest.References = append(manifest.References, added...)
 	if err := applyScratchBindingUpdate(&manifest, binding, nil); err != nil {
