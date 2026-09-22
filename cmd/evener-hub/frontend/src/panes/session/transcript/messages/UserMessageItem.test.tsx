@@ -517,7 +517,14 @@ test("a provisional caption renders in the meta slot instead of the item time", 
     />,
   );
   expect(screen.getByText("Delivers when this step finishes · held 42s")).toBeTruthy();
-  expect(screen.queryByText(/16:00/)).toBeNull();
+  // The item time does not render: the meta slot is EXACTLY the caption, so
+  // the header's whole text is the name plus the caption and nothing else.
+  // (The old queryByText(/16:00/) pin was vacuous - MessageTimestamp renders
+  // a relative label, never a clock string - while a timestamp rendered
+  // alongside the caption would append its label here and fail.)
+  const root = screen.getByTestId("user-message-item");
+  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  expect(header.textContent).toBe("YouDelivers when this step finishes · held 42s");
 });
 
 test("the provisional register marks the row for styling and tests", () => {

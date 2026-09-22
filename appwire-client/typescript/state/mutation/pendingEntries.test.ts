@@ -165,7 +165,13 @@ test("a pending mutation this client never submitted is not its own", () => {
       new Map([["mutation_1", 1]]),
       UNATTRIBUTED_ONLY,
     ),
-  ).toEqual([expect.objectContaining({ id: "mutation_from_another_client", fromThisClient: false })]);
+    // createdAt: undefined pins spec §4's no-inheritance from the
+    // authoritative side: the foreign id lands in the unknown-createdAt
+    // bucket even beside a populated submittedHere map - nothing lets
+    // mutation_1's timestamp leak into another client's entry.
+  ).toEqual([
+    expect.objectContaining({ id: "mutation_from_another_client", fromThisClient: false, createdAt: undefined }),
+  ]);
 });
 
 test("a transcript item with the identity removes the optimistic projection regardless of text", () => {

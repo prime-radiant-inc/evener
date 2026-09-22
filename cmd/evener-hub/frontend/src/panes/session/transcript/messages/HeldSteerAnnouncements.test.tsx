@@ -94,12 +94,15 @@ async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread>
 // racing refresh. Enqueueing alone never reconciles the entry
 // (pendingTurnsStore's own contract), so the row stays in its seeded
 // submitting state. Returns the clientMutationId so tests can key wire
-// fixtures and departure writes to it.
+// fixtures and departure writes to it. The ref option seeds a ref other
+// than ref_a (the ref-change baseline below needs ref_b's hold to predate
+// its first observation); every other caller takes the default.
 async function seedHeld(
   method: PendingMethod,
   text: string,
-  opts: { skillNames?: string[]; attachments?: InputAttachment[] } = {},
+  opts: { ref?: string; skillNames?: string[]; attachments?: InputAttachment[] } = {},
 ): Promise<string> {
+  const ref = opts.ref ?? "ref_a";
   const wireMethod = {
     send: "turn/start",
     steer: "turn/steer",
@@ -121,9 +124,9 @@ async function seedHeld(
   ];
   const storage = new MutationOutboxIndexedDB();
   const outbox = await storage.enqueueIntent({
-    targetRef: "ref_a",
+    targetRef: ref,
     method: wireMethod,
-    payload: { ref: "ref_a", input },
+    payload: { ref, input },
     attachments: attachments.map((attachment, index) => ({
       presentationId: `presentation_${index}`,
       marker: attachment.marker,
@@ -134,7 +137,7 @@ async function seedHeld(
     optimisticDisplay: { method: wireMethod, input },
   });
   storage.close();
-  await refreshPendingTurnsProjection("ref_a");
+  await refreshPendingTurnsProjection(ref);
   await flushPendingTurnsProjectionForTests();
   return outbox.clientMutationId;
 }
@@ -186,6 +189,50 @@ test("a held steer appearing is announced once", async () => {
   const before = screen.getByTestId("held-steer-announcements").textContent;
   await act(async () => {});
   expect(screen.getByTestId("held-steer-announcements").textContent).toBe(before);
+});
+
+// The baseline the comment above implies from the other side: a pane opened
+// with a hold ALREADY in flight (seeded before the mount) announces nothing -
+// the reader who just opened the pane sees the ghost where it is, so its
+// presence is not news. Without the prev-null guard the mount observation
+// would announce "held.".
+test("a hold already in flight when the pane opens announces nothing", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  await seedHeld("steer", "hello");
+  render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  await act(async () => {});
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe("");
+});
+
+// The ref-change baseline: one region instance reused across refs baselines
+// silently on EACH ref's first observation - ref_a's hold vanishing from
+// view is not a failed delivery, and ref_b's already-in-flight hold is not
+// an arrival. Without the prev.ref guard this rerender would announce
+// (disappeared wins: "Steering message failed to deliver.").
+test("a ref change baselines silently - the new ref's existing hold announces nothing", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  await hydrate(fake, "ref_b");
+  await seedHeld("steer", "alpha");
+  await seedHeld("steer", "beta", { ref: "ref_b" });
+  const view = render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe("");
+  view.rerender(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_b" />
+    </SessionNowContext.Provider>,
+  );
+  await act(async () => {});
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe("");
 });
 
 test("delivery is announced once when the transcript reflects the id", async () => {

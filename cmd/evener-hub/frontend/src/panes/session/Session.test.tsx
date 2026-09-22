@@ -2427,6 +2427,11 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     });
     await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
     expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
+    // ...and never RESETS it either: the last observed value is still the
+    // arrival's 1. Math.max alone would let a reset-to-0 on removal slip
+    // through (0 is no new maximum), so the final observation is pinned
+    // directly.
+    expect(epochs.at(-1)).toBe(1);
   } finally {
     spy.mockRestore();
   }
