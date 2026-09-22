@@ -99,6 +99,14 @@ export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
+    // The page's own wire turns, wrapped for mergeOlderItemPage - the store
+    // folds these into conversation.turns via the package's own
+    // identity-aware merge (a turn can be split into fragments across the
+    // page boundary; an id-only filter drops or double-counts the split),
+    // so sessionTokens's turn-summed fallback covers what's actually loaded,
+    // not just the first page. Optional so existing test doubles need not
+    // supply it.
+    turnsPage?: ThreadTurnsListResponse;
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -790,10 +798,12 @@ export function createConversationService(
         throw error;
       }
       // Project the older turns into mobile items by hydrating a minimal
-      // Thread containing just these turns; only the display rows are kept.
+      // Thread containing just these turns; the display rows AND the turns
+      // themselves are kept (the store merges both into the conversation).
       const items = projectOlderTurns(response, threadId);
       return {
         items,
+        turnsPage: response,
         nextCursor: response.nextCursor,
         hasEarlierItems: response.data.some(
           (turn) => turn.hasEarlierItems === true,
