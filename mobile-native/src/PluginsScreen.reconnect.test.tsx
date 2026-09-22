@@ -214,6 +214,59 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 	expect(subtreeText(modal)).toContain("Git URL");
 });
 
+it("treats a route re-keyed to another hub as a fresh screen", async () => {
+	const fakeA = new FakeClient("ready");
+	fakeA.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(fakeA, "ready");
+	const forHub = (hubId: string) =>
+		({ route: { params: { hubId } } }) as unknown as ComponentProps<
+			typeof PluginsScreen
+		>;
+	const tree = render(<PluginsScreen {...forHub("hub-1")} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("kept");
+
+	// The mounted instance is re-keyed to another hub while that hub's
+	// connection is still opening. The retained client belongs to hub-1:
+	// hub-2's screen must not render hub-1's list through it, and hub-1's
+	// client must not hear another request.
+	const fakeB = new FakeClient("connecting");
+	fakeB.on("evener/plugin/list", () => ({ plugins: [plugin("from-b")] }));
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "Two hub" },
+		client: null,
+		state: "connecting",
+		fatal: false,
+		retry: () => {},
+	};
+	await act(async () => {
+		tree.update(<PluginsScreen {...forHub("hub-2")} />);
+	});
+	const rekeyed = renderedText(tree);
+	expect(rekeyed).not.toContain("kept");
+	expect(rekeyed).toContain("to manage plugins.");
+	expect(
+		fakeA.calls.filter((call) => call.method === "evener/plugin/list")
+			.length,
+	).toBe(1);
+
+	// The new hub is a fresh mount: its own list renders once its
+	// connection is ready.
+	fakeB.state = "ready";
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "Two hub" },
+		client: fakeB,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	await act(async () => {
+		tree.update(<PluginsScreen {...forHub("hub-2")} />);
+	});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("from-b");
+});
+
 it("recovers a replacement client's failed first read when it becomes ready", async () => {
 	const first = new FakeClient("ready");
 	first.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));

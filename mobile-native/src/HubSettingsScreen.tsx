@@ -35,7 +35,19 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
-export function HubSettingsScreen({ route, navigation }: Props) {
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the last
+// client a retry's gap renders through, the recovered-overview read - belongs
+// to the hub it was built for, and none of it may survive a hub the route now
+// names. React Navigation can update a mounted instance's params (setParams on
+// a focused screen is this app's own idiom - see
+// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
+// re-key remounts it whole.
+export function HubSettingsScreen(props: Props) {
+	return <HubSettingsScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function HubSettingsScreenBody({ route, navigation }: Props) {
 	const { activeProfile, client, state, fatal, retry } = useConnection();
 	const display = useConnectionDisplay(state, fatal);
 	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set

@@ -802,3 +802,60 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 	).toContain("evener/auth/device/start");
 	expect(renderedText(tree)).toContain("WORK-5678");
 });
+
+it("treats a route re-keyed to another hub as a fresh screen", async () => {
+	const fakeA = new FakeClient("ready");
+	fakeA.on("evener/instance/list", () => rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: fakeA as unknown as ConversationClientLike,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const forHub = (hubId: string) =>
+		({ route: { params: { hubId } } }) as unknown as ComponentProps<
+			typeof ProvidersScreen
+		>;
+	const tree = render(<ProvidersScreen {...forHub("hub-1")} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("work");
+
+	// The mounted instance is re-keyed to another hub while that hub's
+	// connection is still opening: hub-1's rows must not render under
+	// hub-2's params, and the screen must meet the new hub like a fresh
+	// mount - a wall for a hub it has never been ready for.
+	const fakeB = new FakeClient("connecting");
+	const rowsB: InstanceListResponse = {
+		instances: [{ ...rows.instances[0]!, name: "from-b" }],
+		availableProviders: [],
+	};
+	fakeB.on("evener/instance/list", () => rowsB);
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "Two hub" },
+		client: null,
+		state: "connecting",
+		fatal: false,
+		retry: () => {},
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...forHub("hub-2")} />);
+	});
+	const rekeyed = renderedText(tree);
+	expect(rekeyed).not.toContain("work");
+	expect(rekeyed).toContain("to manage providers.");
+
+	// The new hub is a fresh mount: its own rows render once its
+	// connection is ready.
+	fakeB.state = "ready";
+	harness.connection = {
+		...harness.connection,
+		client: fakeB as unknown as ConversationClientLike,
+		state: "ready",
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...forHub("hub-2")} />);
+	});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("from-b");
+});

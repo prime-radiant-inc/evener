@@ -149,6 +149,60 @@ it("reads through a replacement client once its connection is ready", async () =
 	expect(reconciles.count).toBeGreaterThan(0);
 });
 
+it("treats a route re-keyed to another hub as a fresh screen", async () => {
+	const fakeA = new FakeClient("ready");
+	fakeA.on("evener/settings/overview", () => ({
+		hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.connection = connection(fakeA, "ready");
+	const forHub = (hubId: string) =>
+		({
+			route: { params: { hubId } },
+			navigation: { navigate: () => {} },
+		}) as unknown as ComponentProps<typeof HubSettingsScreen>;
+	const tree = render(<HubSettingsScreen {...forHub("hub-1")} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+
+	// The mounted instance is re-keyed to another hub while that hub's
+	// connection is still opening. The retained client and the loaded
+	// overview belong to hub-1: hub-2's screen must not render them, and
+	// hub-1's client must not hear another request.
+	const fakeB = new FakeClient("connecting");
+	fakeB.on("evener/settings/overview", () => ({
+		hub: { version: "9.9.9", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "Two hub" },
+		client: null,
+		state: "connecting",
+		fatal: false,
+		retry: () => {},
+	};
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
+	});
+	const rekeyed = renderedText(tree);
+	expect(rekeyed).not.toContain("Evener 1.2.3");
+	expect(rekeyed).toContain("to view hub settings.");
+
+	// The new hub is a fresh mount: its own overview renders once its
+	// connection is ready.
+	fakeB.state = "ready";
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "Two hub" },
+		client: fakeB as unknown as ConversationClientLike,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...forHub("hub-2")} />);
+	});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 9.9.9");
+});
+
 it("gates the upgrade start while the connection is away, not the recovery reads", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/settings/overview", () => ({

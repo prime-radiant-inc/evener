@@ -44,7 +44,19 @@ import {
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-export function PluginsScreen({
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the last
+// client a retry's gap renders through - belongs to the hub it was built
+// for, and none of it may survive a hub the route now names. React
+// Navigation can update a mounted instance's params (setParams on a
+// focused screen is this app's own idiom - see
+// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
+// re-key remounts it whole.
+export function PluginsScreen(props: NativeStackScreenProps<Routes, "Plugins">) {
+  return <PluginsScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function PluginsScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Plugins">) {
   // One plugin mutation at a time, across this list AND the browser: switching

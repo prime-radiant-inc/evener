@@ -75,7 +75,20 @@ const FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE =
 const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
   "The hub cannot check this endpoint right now, so the credential was not saved. Review its destination and try again once it can be checked.";
 
-export function ProvidersScreen({
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the sign-in
+// flow, the credential store with its last listing - belongs to the hub it
+// was built for, and none of it may survive a hub the route now names.
+// React Navigation can update a mounted instance's params (setParams on a
+// focused screen is this app's own idiom - see KeybindingPreferencesScreen),
+// so the body is keyed to the hub id and a re-key remounts it whole.
+export function ProvidersScreen(
+  props: NativeStackScreenProps<Routes, "Providers">,
+) {
+  return <ProvidersScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function ProvidersScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Providers">) {
   const { activeProfile, client, state, fatal, retry } = useConnection();
