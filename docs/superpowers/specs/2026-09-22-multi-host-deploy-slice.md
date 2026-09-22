@@ -28,9 +28,9 @@ The second message is the whole story: the machinery exists and the production
 hub supplies it nothing to deploy from. `cmd/evener-hub/main.go:454` builds
 `sshconn.Options` with `Logger` and `OnEvent` only — `BuildSource`,
 `BuildBinary` and `HubAddr` are all unset — so `Manager.canBuild()`
-(`manager.go:2488`) and `Manager.canDeploy()` (`manager.go:2503`) are false for
+(`manager.go:2545`) and `Manager.canDeploy()` (`manager.go:2560`) are false for
 every real hub, and `ensureOnce` refuses a version difference terminally at
-`manager.go:1590`. On a host with no `evener` at all, the same absence is why
+`manager.go:1603`. On a host with no `evener` at all, the same absence is why
 the preflight's `launch-check` cannot even answer.
 
 The deploy half is therefore dead code in production, and the fleet flow stops
@@ -57,12 +57,12 @@ re-cross-compiling on every reconnect would be a needless build.
 (`:128`; its message is where *"an installed hub cannot locate its own source"*
 comes from, `:130`), `localBuild` (the cross-compile, chosen from
 `Options.BuildBinary`/`Options.BuildSource` at `:349`/`:351`), the atomic push
-into a `mktemp` file with a byte-count check, `installerDirs` (`:725`) for the
+into a `mktemp` file with a byte-count check, `installerDirs` (`:743`) for the
 fallback's `BINDIR`/`EVENER_SHARE_BINDIR`, and the post-install identity check.
 
 **The seams, unset in production.** `Options.BuildBinary` (`manager.go:100`),
-`Options.BuildSource` (`:110`), `canBuild()` (`:2488`), `canDeploy()`
-(`:2503`).
+`Options.BuildSource` (`:110`), `canBuild()` (`:2545`), `canDeploy()`
+(`:2560`).
 
 **The state ladder already has the deploy leg.** `StateDisconnected`,
 `StatePreflighting`, `StateDeploying`, `StateRestarting`, `StateAttaching`,
@@ -70,12 +70,12 @@ fallback's `BINDIR`/`EVENER_SHARE_BINDIR`, and the post-install identity check.
 is emitted immediately before the deploy (`manager.go:1518`). Nothing about
 observability needs to be invented.
 
-**The decision ladder** (`manager.go:1722-1730`): `deployPossible` is
+**The decision ladder** (`manager.go:1738-1746`): `deployPossible` is
 `canDeploy()`; `devUnverified` is `isUnverifiableVersion(expected) &&
 deployPossible && !isDevDeployed(name)`; the branch is `(deployNeeded &&
 deployPossible) || devUnverified`. Read carefully, this means a **dev**
 controller behaves in two different ways: with no deploy path it refuses (its
-`expected` is `"dev"`, so a mismatch reaches the terminal refusal at `:1590`),
+`expected` is `"dev"`, so a mismatch reaches the terminal refusal at `:1603`),
 and with a deploy path it *forces* a deploy so that both sides end up running
 the same unstamped build. This is a refinement of the parent spec's "dev builds
 must not auto-match" (`04:752-760`), which was written before that path existed;
@@ -92,8 +92,8 @@ the code's version is the one that holds today.
   intended (`04:794-803`, the snapshot arm; the pre-correction objection that
   running the installer first and discovering the mismatch afterwards is not
   acceptable is recorded at `04:805-819`). The code does the opposite:
-  `installerRefFor` (`deploy.go:687`)
-  returns the mutable `snapshot` tag for `channel == "snapshot"` (`:698`), with
+  `installerRefFor` (`deploy.go:705`)
+  returns the mutable `snapshot` tag for `channel == "snapshot"` (`:717`), with
   a terminal refusal once the tag moves past the controller's commit. Jesse
   ruled the code's behavior correct and the parent spec wrong, so **this slice
   corrects the parent spec** rather than the code; D4 states the amendment and
@@ -141,7 +141,7 @@ deploy path on the controller is the consent; the per-host `deploy = "auto" |
 "never"` field is deferred to its own slice.
 
 The reasoning, for the record: `canDeploy()` is today purely "is a path
-configured" (`manager.go:2503`), so a configured path would deploy to every host
+configured" (`manager.go:2560`), so a configured path would deploy to every host
 the operator connects. That is acceptable because the design doc already decided
 auto-match on attach, because a source or binary is a deliberate act by the
 operator who runs the controller, and because the blast radius is that
@@ -283,7 +283,7 @@ slice that owns them and both are small.
   binary — no `hub` subcommand and no `launch-check` — so a host configured with
   it *installed and then failed* preflight, health and restart, after the
   controller had written to it. It is now narrowed to `evener`, and anything
-  else is refused by `checkRunTarget` (`deploy.go:403`) **before any probe,
+  else is refused by `checkRunTarget` (`deploy.go:421`) **before any probe,
   push or install** (`84eb525e70`); the ordering is pinned by a test whose
   runner fails the test if any remote command runs at all.
 - **That refusal is terminal, not retryable** (`1371f0957a`). The first cut
@@ -296,10 +296,16 @@ slice that owns them and both are small.
   doc's entry was corrected to name it and say why terminal is right, since its
   letter had said `ErrDeploy`.
 
-One item stays out: `installerDirs` knowingly accepts an `evener-dev` basename
-because `install.sh` ships one, and that is about *where the installer writes*,
-not what a host may run. The run-target rule above is what keeps such a file
-from becoming the hub's run target.
+`installerDirs` does **not** stay out of that rule: it calls the same
+`checkRunTarget` (`deploy.go:754`) before it derives BINDIR, so a configured
+`evener_path` naming `evener-dev` — or any basename other than `evener` — is
+refused terminally before the installer runs, exactly as the push path refuses
+it. `install.sh` still ships an `evener-dev` file (`install.sh:5`), but that is
+about *what the installer installs*, not where a host hub may be run from. So
+`installerDirs` does not need to understand the `evener-dev` name itself:
+`checkRunTarget` owns that rule for both deploy paths, and `installerDirs`'
+default case (no `evener_path`) always resolves to the installer's own
+`~/.local/bin/evener`.
 
 ## Testing
 
@@ -345,7 +351,7 @@ from becoming the hub's run target.
    `-deploy-binary` and `-build-source`.
 5. A dev controller with no deploy path refuses terminally, and its message names
    `-deploy-binary`/`-build-source`; a dev controller **with** a deploy path
-   forces the deploy (the `devUnverified` rule at `manager.go:1722-1730`) and the
+   forces the deploy (the `devUnverified` rule at `manager.go:1738-1746`) and the
    host ends up on the same unstamped build. The refusal and the forced deploy
    are asserted. The refusal does **not** say the controller build carries no
    identity to deploy: it says only that no build source is configured. That
