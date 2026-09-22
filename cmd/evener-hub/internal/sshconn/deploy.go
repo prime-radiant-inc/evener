@@ -360,12 +360,38 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	return target, nil
 }
 
+// checkRunTarget refuses a configured evener_path that cannot be the host hub's
+// run target. Only the shipped `evener` binary can serve a hub: install.sh also
+// ships `evener-dev` (install.sh:5), but that is the development/test tooling
+// binary — no `hub` subcommand and no `launch-check` — so a host configured to
+// run it installs "successfully" and then fails preflight, health, and restart
+// on a binary that can never serve the hub. Any other basename is no better: the
+// manager records this one path as the host's run target and probes, restarts,
+// and attaches the binary at it.
+//
+// It is checked before the target is probed, pushed, or installed, and it is
+// ErrDeploy with no write like the missing-directory refusal beside it. The
+// ordering is the point: the refusal names a configuration defect the host
+// cannot recover from, and discovering it after the write would only leave the
+// host holding a binary the controller can never run.
+func checkRunTarget(hostName, p string) error {
+	if installableEvenerBasename(p) {
+		return nil
+	}
+	base := path.Base(strings.TrimSpace(p))
+	if base == "evener-dev" {
+		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", ErrDeploy, hostName, p, base)
+	}
+	return fmt.Errorf("%w: host %q evener_path %q has basename %q, which is not the evener binary that serves a hub; configure an evener-named run target", ErrDeploy, hostName, p, base)
+}
+
 // deployTarget resolves the absolute remote path the binary is installed to:
 // the registry's evener_path when set (whose directory must already exist),
-// otherwise the executable the running hub was launched from (when the installer
-// ships that basename), else whatever `evener` resolves to on the remote PATH,
-// else the installer's default ~/.local/bin/evener. A not-yet-installed file is
-// a creatable target, so a push deploy can provision a fresh host.
+// otherwise the executable the running hub was launched from (when its basename
+// is a run target a hub can serve, checkRunTarget), else whatever `evener`
+// resolves to on the remote PATH, else the installer's default
+// ~/.local/bin/evener. A not-yet-installed file is a creatable target, so a push
+// deploy can provision a fresh host.
 //
 // The running hub's own executable comes first because a push to any other file
 // leaves the upgrade inert: the restart path proves the recovered hub executable
@@ -375,6 +401,11 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 // the same location (existingInstallableEvener); this is the push path's half.
 func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+		// Before even the directory probe: a run target that cannot serve a hub
+		// is refused with no remote command at all (checkRunTarget).
+		if err := checkRunTarget(host.Name, p); err != nil {
+			return "", err
+		}
 		dir := path.Dir(p)
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+shellquote.RemoteWord(dir)), nil)
 		if err != nil {
@@ -656,7 +687,10 @@ func installerRefFor(channel, releaseTag, dirty string) (string, error) {
 // somewhere the manager never probes, records, or relaunches, while the deploy
 // reported success. BINDIR and EVENER_SHARE_BINDIR fully determine where
 // install.sh writes (PREFIX is only their fallback), so passing the resolved
-// defaults pins the layout to the run target this function returns.
+// defaults pins the layout to the run target this function returns. A configured
+// evener_path whose basename is not `evener` is refused here too (checkRunTarget):
+// the installer installs the runtime binary as `evener`, so a path naming
+// anything else is a run target the installer cannot produce a hub for.
 func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, runTarget string, err error) {
 	p := strings.TrimSpace(host.EvenerPath)
 	if p == "" {
@@ -668,9 +702,8 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 		shareBindir = path.Join(home, ".local", "share", "evener", "bin")
 		return bindir, shareBindir, path.Join(bindir, "evener"), nil
 	}
-	base := path.Base(p)
-	if base != "evener" && base != "evener-dev" {
-		return "", "", "", fmt.Errorf("%w: host %q evener_path %q has basename %q, which install.sh does not ship (it installs evener and evener-dev); use the atomic push path", ErrDeploy, host.Name, p, base)
+	if err := checkRunTarget(host.Name, p); err != nil {
+		return "", "", "", err
 	}
 	bindir = path.Dir(p)
 	shareBindir = path.Join(path.Dir(bindir), "share", "evener", "bin")
@@ -766,9 +799,9 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 // existingInstallableEvener resolves the user-facing install path of the evener
 // the host already has — the running hub's own executable first, then whatever
 // `evener` resolves to on the remote PATH — or "" when none can be identified or
-// the found binary has a basename install.sh does not ship. It is how a deploy
-// with no configured evener_path keeps the existing install location instead of
-// writing to an unrelated default.
+// the found binary's basename is not one a hub can be run as
+// (installableEvenerBasename). It is how a deploy with no configured evener_path
+// keeps the existing install location instead of writing to an unrelated default.
 //
 // It deliberately returns the path the installation names (argv[0] / the
 // `command -v` result), not the canonical file a symlink points at. install.sh

@@ -133,6 +133,158 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 	}
 }
 
+// refusingRunner fails the test when any remote command runs. The run-target
+// refusals must arrive before the controller touches the host, so a runner call
+// is itself the defect under test.
+func refusingRunner(t *testing.T) *fakeRunner {
+	t.Helper()
+	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		t.Errorf("a remote command ran for a refused run target: %v", argv)
+		return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	}}
+}
+
+// assertRunTargetRefusal pins the typed refusal and its message: ErrDeploy, the
+// type the neighbouring deploy refusals use, naming what the operator must fix.
+func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
+	t.Helper()
+	if !errors.Is(err, ErrDeploy) {
+		t.Fatalf("err = %v, want ErrDeploy", err)
+	}
+	for _, want := range wants {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestDeployRefusesARunTargetThatCannotServeAHub pins the round-22 decision that
+// the run target must be `evener`. install.sh ships both `evener` and
+// `evener-dev`, but `evener-dev` is the development/test tooling binary
+// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a host
+// configured to run it installs "successfully" and then fails preflight, health,
+// and restart, with the controller having already written to the host. Any other
+// basename is no better: the manager records this one path as the host's run
+// target and probes, restarts, and attaches the binary at it. The refusal is
+// therefore asserted on the recorded commands, not on the error alone: no remote
+// command, install, or push may have run, and the refusal must not depend on a
+// retry to become effective — repeating the deploy changes nothing on the host
+// because nothing reached it the first time.
+func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
+	const devTooling = "/opt/evener/bin/evener-dev"
+	const unshipped = "/opt/evener/bin/evener-hub"
+	wants := map[string][]string{
+		devTooling: {"evener-dev", "development"},
+		unshipped:  {"evener-hub"},
+	}
+
+	for _, target := range []string{devTooling, unshipped} {
+		t.Run(target, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
+
+			t.Run("push path", func(t *testing.T) {
+				builds := 0
+				fr := refusingRunner(t)
+				m := newTestManager(t, testRegistry(t, host), fr, Options{
+					BuildBinary: func(context.Context, string, string, string) error {
+						builds++
+						return nil
+					},
+				})
+
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+				assertRunTargetRefusal(t, err, wants[target]...)
+				// The ordering is the requirement. The first refusal is already
+				// the whole answer, so a supervisor's retry re-runs it with no
+				// install, push, or write to repeat.
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); !errors.Is(again, ErrDeploy) {
+					t.Fatalf("retry err = %v, want the same ErrDeploy refusal", again)
+				}
+				if runs := fr.recordedRuns(); len(runs) != 0 {
+					t.Fatalf("the refused deploy reached the runner: %v", runs)
+				}
+				if builds != 0 {
+					t.Fatalf("cross-compile ran for a run target that cannot serve a hub (builds = %d)", builds)
+				}
+			})
+
+			t.Run("installer fallback", func(t *testing.T) {
+				// The fallback is reached only for a controller whose channel has
+				// a publishable artifact, so the run-target refusal must be the
+				// one that survives that admission.
+				origChannel := buildinfo.Channel
+				t.Cleanup(func() { buildinfo.Channel = origChannel })
+				buildinfo.Channel = "snapshot"
+
+				fr := refusingRunner(t)
+				m := newTestManager(t, testRegistry(t, host), fr, Options{})
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+				assertRunTargetRefusal(t, err, wants[target]...)
+				if runs := fr.recordedRuns(); len(runs) != 0 {
+					t.Fatalf("the refused install reached the runner: %v", runs)
+				}
+			})
+		})
+	}
+}
+
+// TestDeployTargetAcceptsEvenerRunTargets keeps the narrowing from overreaching:
+// a configured evener_path named `evener`, wherever it lives, and the resolved
+// default are unchanged.
+func TestDeployTargetAcceptsEvenerRunTargets(t *testing.T) {
+	t.Run("configured evener_path under a non-default directory", func(t *testing.T) {
+		const exe = "/opt/evener/current/evener"
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: exe}
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "test -d /opt/evener/current"):
+				return nil, nil
+			case strings.Contains(joined, "evener_resolve "+exe):
+				return []byte(exe + "\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+		got, err := m.deployTarget(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+		if err != nil {
+			t.Fatalf("deployTarget: %v", err)
+		}
+		if got != exe {
+			t.Fatalf("deployTarget = %q, want the configured evener_path %q", got, exe)
+		}
+	})
+
+	t.Run("default resolution with no evener_path", func(t *testing.T) {
+		const exe = "/home/dev/.local/bin/evener"
+		host := hostreg.Host{Name: "beta", SSH: "beta.example"}
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "lsof -ti :9180"):
+				return []byte(noListenerMarker + "\n"), nil
+			case strings.Contains(joined, "command -v evener"):
+				return []byte(exe + "\n"), nil
+			case strings.Contains(joined, "evener_resolve "+exe):
+				return []byte(exe + "\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+		got, err := m.deployTarget(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+		if err != nil {
+			t.Fatalf("deployTarget: %v", err)
+		}
+		if got != exe {
+			t.Fatalf("deployTarget = %q, want the PATH evener %q", got, exe)
+		}
+	})
+}
+
 // TestInstallerRefForMapsBuildChannel pins acceptance criterion 16: the installer
 // artifact reference is derived from buildinfo.BuildChannel(), and
 // buildinfo.Version() (a short SHA, possibly -dirty) is never passed as a tag.
@@ -166,8 +318,9 @@ func TestInstallerRefForMapsBuildChannel(t *testing.T) {
 }
 
 // TestInstallerDirsInstallToTheRunTarget pins acceptance criterion 17: with
-// evener_path set the installer's BINDIR is its directory (refusing an unshipped
-// basename); with evener_path empty the installer's default
+// evener_path set the installer's BINDIR is its directory (refusing any basename
+// but `evener` — evener-dev is the development tooling binary, not a run target a
+// hub can serve); with evener_path empty the installer's default
 // ~/.local/bin/evener is the run target the manager records.
 func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 	bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener"}, Preflight{Home: "/home/dev"})
@@ -178,8 +331,13 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 		t.Fatalf("installerDirs(evener_path) = (%q,%q,%q), want (/opt/evener/bin,/opt/evener/share/evener/bin,/opt/evener/bin/evener)", bindir, share, target)
 	}
 
-	if _, _, _, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); err != nil {
-		t.Fatalf("installerDirs(evener-dev): %v (install.sh ships evener-dev)", err)
+	// Round 22: install.sh still ships evener-dev, but it is the development
+	// tooling binary and can never serve a hub, so it is not a run target the
+	// installer may be pointed at (component-04 criterion 17).
+	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, ErrDeploy) {
+		t.Fatalf("installerDirs(evener-dev) err = %v, want ErrDeploy", err)
+	} else if bindir != "" || share != "" || target != "" {
+		t.Fatalf("installerDirs(evener-dev) = (%q,%q,%q), want all empty", bindir, share, target)
 	}
 
 	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-hub"}, Preflight{Home: "/home/dev"})
@@ -442,7 +600,11 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 // space or shell metacharacter is quoted in every deploy command, so it neither
 // breaks the command nor injects additional remote commands.
 func TestDeployQuotesRemotePaths(t *testing.T) {
-	const target = "/opt/my evener/bin/evener;rm"
+	// The basename itself must be `evener` (checkRunTarget): the space and the
+	// shell metacharacter live in the directory, so the `test -d` probe and the
+	// pushed target still have to quote a path that would break the command line
+	// or inject a second remote command if it were left bare.
+	const target = "/opt/my evener/bin;rm/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
 	var testDirRemote, pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {

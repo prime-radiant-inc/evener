@@ -1400,16 +1400,14 @@ func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Hos
 	return exe
 }
 
-// installableEvenerBasename reports whether install.sh ships a binary with this
-// basename (evener and evener-dev). A deploy cannot preserve an install location
-// the installer does not produce.
+// installableEvenerBasename reports whether a basename names the binary a host
+// hub can be run as. Only `evener` does: install.sh ships `evener-dev` too
+// (install.sh:5), but that is the development/test tooling binary
+// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a run
+// target naming it would be probed, relaunched, and attached as a hub that can
+// never answer. A deploy cannot preserve a run target the host cannot serve.
 func installableEvenerBasename(p string) bool {
-	switch path.Base(strings.TrimSpace(p)) {
-	case "evener", "evener-dev":
-		return true
-	default:
-		return false
-	}
+	return path.Base(strings.TrimSpace(p)) == "evener"
 }
 
 // hubExecutableMatches proves a recovered hub argv[0] is the executable the
@@ -1418,9 +1416,11 @@ func installableEvenerBasename(p string) bool {
 // plain readlink — no `readlink -f`, which BSD readlink rejects) and compares it
 // to the canonical configured target: evener_path when set, else the canonical
 // `command -v evener`. A hardcoded basename would refuse every valid custom
-// target (say /opt/evener/current/evener-hub) that configuration and deploy
-// accept; a basename is also not sufficient, since an unrelated binary can share
-// one. A mismatch is ErrRestart with no kill.
+// target (say /opt/evener/current/evener-hub) that configuration accepts and
+// that a host may already be running — restart is not where the run target's
+// basename is judged (checkRunTarget, deploy.go, is); a basename is also not
+// sufficient, since an unrelated binary can share one. A mismatch is ErrRestart
+// with no kill.
 func (m *Manager) hubExecutableMatches(ctx context.Context, host hostreg.Host, exe string) error {
 	resolved, err := m.resolveExecutableName(ctx, host, exe)
 	if err != nil {
