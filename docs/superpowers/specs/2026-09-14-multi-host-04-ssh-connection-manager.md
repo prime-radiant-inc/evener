@@ -785,31 +785,38 @@ Two paths, chosen per host (open question: which wins when both are viable):
   driven by the controller's own build channel, `buildinfo.BuildChannel()`
   (`buildinfo/buildinfo.go`):
 
-  - **release** (`Channel == "release"`): pass the release tag. `buildinfo` does
-    not carry it today, so the controller build must stamp it
-    (`-X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}` in
-    `.goreleaser.yml`, a new `ReleaseTag` var), and the installer is invoked
-    with `EVENER_INSTALL_VERSION=<buildinfo.ReleaseTag>`.
-  - **snapshot** (`Channel == "snapshot"`): the `snapshot` tag is **mutable** —
+  - **release** (`Channel == "release"`): pass the stamped release tag. The
+    controller build stamps it (`buildinfo.ReleaseTag`, set by `.goreleaser.yml`
+    as `-X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}`), and the
+    installer is invoked with `EVENER_INSTALL_VERSION=<buildinfo.ReleaseTag>`. A
+    release build carrying **no** stamped tag is refused (`ErrDeploy`) rather
+    than passed `buildinfo.Version()`: a Git SHA is never a release tag.
+  - **snapshot** (`Channel == "snapshot"`): pass the **mutable** `snapshot` tag,
+    accepted as a **best-effort pin**. It is not a provable pin:
     `.github/workflows/binaries.yml` force-moves the tag *and* re-uploads
-    `checksums.txt` with `--clobber` on every green `main` build — so neither
-    the tag nor the checksum it publishes pins the controller's commit. The
-    checksum proves only that the downloaded archive is the one that release
-    published *now*; it says nothing about which commit that is. The installer
-    fallback is therefore **refused for a snapshot controller** with `ErrDeploy`
-    ("the installer fallback needs an immutable artifact reference; use the
-    atomic push path or an explicit `Options.BuildBinary`"), exactly as the
-    dev/dirty rule below refuses it. Running `install.sh` first and discovering
-    the mismatch afterwards is **not** an acceptable substitute: `install.sh`
-    has no commit-pinned mode, so it has already replaced the installed
-    `evener`, and the after-the-fact identity probe (`deployInstaller`'s
-    `probeLaunchCheck` → terminal `ErrVersionMismatch`, `deploy.go`) leaves the
-    host holding a build from a commit the controller never intended while the
-    deploy reports failure. A future snapshot-like channel may re-enable the
-    fallback only together with a **per-commit immutable artifact reference** (a
-    tag that names the commit, e.g. `snapshot-<sha>`, published once and never
-    re-pointed) whose bytes `install.sh` verifies against that reference's
-    `checksums.txt` before it replaces anything.
+    `checksums.txt` with `--clobber` on every green `main` build, so neither the
+    tag nor the checksum it publishes names the controller's commit. The install
+    is verified *afterwards* by the same on-host identity check
+    (`deployInstaller`'s `probeLaunchCheck`), and once the tag has moved past
+    this controller's commit that check refuses **terminally**
+    (`ErrVersionMismatch`, "a moved channel tag cannot be resolved by retrying")
+    instead of re-fetching the same artifact forever.
+
+    The trade this accepts is real and is stated here because the earlier text
+    in this section rejected exactly it. For a snapshot controller the installer
+    writes a binary whose commit is **not provable from the artifact
+    reference**, and the proof arrives only *after* the write. So the failure
+    mode the old text named remains: once the tag moves past the controller's
+    commit, `install.sh` has already replaced the host's `evener`, and the
+    deploy reports failure while the host holds a snapshot build from an
+    unknown — possibly **newer** — commit. What makes it acceptable is the path
+    that does carry a provable identity, and that it is now actually reachable:
+    the atomic push path (§4, "Cross-compile + push") cross-compiles the
+    controller's own tree and stamps the build in-process, it is wired from a
+    production hub by `-deploy-binary` / `-build-source`, and the terminal
+    refusal names it as the remedy ("use the atomic push path or
+    `Options.BuildBinary`"). The `snapshot` tag is not an immutability to lean
+    on; it is a movable default whose cost the operator is told how to avoid.
   - **dev / dirty** (`Channel == ""`/"dev", or `GitDirty == "true"`): there is
     no publishable identity to pin, so the installer fallback is **refused**
     (`ErrDeploy`, the same rule as §"Dev builds must not auto-match"); the
@@ -823,11 +830,13 @@ Two paths, chosen per host (open question: which wins when both are viable):
   attachment; a host that cannot be pinned or resolves the wrong build is a
   **failed verification** (`ErrDeploy`), never an attach.
 
-  **No deploy path may replace the installed binary before the artifact's
-  identity is pinned to the controller's build.** The atomic push path already
-  has this property: the binary is cross-compiled by the controller from a
-  source revision it verified (`verifyBuildRevision` refuses a dirty tree and an
-  ignored-but-compiled `.go` file), stamped with the controller's own buildinfo
+  **The atomic push path cannot replace the installed binary before the
+  artifact's identity is pinned to the controller's build; the installer
+  fallback has no such property, and for a snapshot controller it trades it
+  away deliberately.** The push path already has this property: the binary is
+  cross-compiled by the controller from a source revision it verified
+  (`verifyBuildRevision` refuses a dirty tree and an ignored-but-compiled `.go`
+  file), stamped with the controller's own buildinfo
   (`-X buildinfo.GitSHA`/`BuildTime`/`ReleaseTag`), streamed into a `mktemp`
   temp file whose byte count must equal the staged file's length before
   `chmod +x` and a single `mv` onto the resolved run target
@@ -838,14 +847,17 @@ Two paths, chosen per host (open question: which wins when both are viable):
   `install.sh` copies the archive's binaries into `share_bindir` and re-points
   the `bindir` symlinks (`install.sh:140-152`), which is neither an atomic swap
   nor an identity check — the `checksums.txt` it verifies belongs to whatever
-  the tag resolves to at that moment. It is therefore admitted only for a
-  channel whose artifact reference is **immutable and checksum-verified before
-  unpacking** — today `release` alone: an immutable tag, plus
-  `install.sh:88-130`'s sha256 verification of the archive against that
-  release's `checksums.txt`, which fails closed and installs nothing on any
-  mismatch — and is refused for every other channel (`snapshot`, `dev`,
-  dirty). The post-install `/api/health` identity probe stays as the last
-  verification, but it checks an already-replaced file; it is never the pin.
+  the tag resolves to at that moment. It is therefore admitted for `release` —
+  an immutable tag, plus `install.sh:88-130`'s sha256 verification of the
+  archive against that release's `checksums.txt`, which fails closed and
+  installs nothing on any mismatch — and for `snapshot` only as the best-effort
+  pin §"Installer (fallback)" describes, where the post-install identity check
+  is the whole verification and a tag that has moved past the controller's
+  commit is refused terminally. It is refused for `dev` and dirty, which have no
+  publishable identity to pin. The post-install `/api/health` identity probe
+  stays as the last verification either way, but for a release pin it checks an
+  already-replaced file and is never the pin; for a snapshot pin it is the only
+  verification there is, which is the trade §"Installer (fallback)" states.
 
 - **Push target resolution (shipped).** A push must install to the absolute path
   of the executable the host will *run*, or version auto-match deploys the new
@@ -942,11 +954,13 @@ the file it already had. The push writes a temp name and `mv`s it into place
 (`pushBinaryRemote`/`pushBinary` in `deploy.go`), so an interrupted push never
 leaves a truncated `evener`. The installer path's own copy is **not** atomic
 (`install -m 0755` into `share_bindir`, then `ln -sfn`, `install.sh:140-152`),
-which is precisely why it is admitted only for the immutable, checksum-verified
-release reference above — there, re-running the same pinned install converges
-the same verified bytes idempotently, so a torn install is recoverable rather
-than silently different. Record the binary's source (`git SHA`) so the
-version-match can verify the deploy landed.
+so its admission is tied to what the reference can prove: for a release
+reference, re-running the same pinned install converges the same
+checksum-verified bytes idempotently, so a torn install is recoverable rather
+than silently different, while the `snapshot` reference above is admitted only
+as the best-effort pin §4 states, where the post-install check refuses a moved
+tag terminally and a torn install is a failed verification. Record the
+binary's source (`git SHA`) so the version-match can verify the deploy landed.
 
 ### 5. Version auto-match + restart — `version.go`
 
@@ -1062,13 +1076,11 @@ version-match can verify the deploy landed.
   (`version.go`): it polls the host's `/api/health` until the response reports
   the *expected build identity*, or the bound is exhausted (`ErrRestart`). That
   identity is **passed into** `waitHealthy` as an argument — the expected
-  `version` always, and, for a controller on the **snapshot build channel** (a
-  build the installer fallback can no longer produce, since it is release-only,
-  but which the atomic push path still deploys), the expected `backend_git_sha`
-  from `buildinfo.GitSHA` — because a version-only probe cannot tell two snapshot
-  builds that share a `version` apart. A bare 200 — or any non-empty body — is
-  not sufficient, and a body that is not a `hubapi.HealthResponse` is not usable
-  evidence (`parseHealthVersion`).
+  `version` always, and, for a controller on the **snapshot build channel**, the
+  expected `backend_git_sha` from `buildinfo.GitSHA` — because a version-only
+  probe cannot tell two snapshot builds that share a `version` apart. A bare
+  200 — or any non-empty body — is not sufficient, and a body that is not a
+  `hubapi.HealthResponse` is not usable evidence (`parseHealthVersion`).
 
   **Version equality is the fresh-process marker; there is no clock
   comparison.** Because the restart is entered only when the running version
@@ -1082,16 +1094,17 @@ version-match can verify the deploy landed.
   `started_at`, so it cannot distinguish processes, and comparing host-stamped
   `started_at` to the controller's clock adds skew for no benefit. No host-side
   timestamp and no skew tolerance is used or needed. **For a snapshot pin the
-  probe must reject a missing or mismatched `backend_git_sha`.** The response
-  carries `backend_git_sha`, but the shipped `waitHealthy` consults only
-  `version`; a snapshot that shares the controller's `version` but not its commit
-  would therefore pass. The implementing PR passes the expected Git SHA into
-  `waitHealthy` and treats a response whose `backend_git_sha` is empty or not
-  equal to `buildinfo.GitSHA` as **not yet healthy** for a snapshot pin — it
-  keeps polling and fails with `ErrRestart` on exhaustion — which is the stricter
-  *build*-identity check the earlier rule anticipated, and without changing the
-  version-equality rule above. This is a tracked code follow-up ([04], round 15),
-  not a present fact.
+  probe rejects a missing or mismatched `backend_git_sha`.** The response carries
+  `backend_git_sha`, and `waitHealthy` takes the expected Git SHA alongside the
+  expected version (`snapshotPinGitSHA` returns `buildinfo.GitSHA` for a
+  snapshot channel and "" otherwise, `version.go`). A response whose
+  `backend_git_sha` is empty or not equal to that pin is **not yet healthy** for
+  a snapshot pin — the probe keeps polling and fails with `ErrRestart` on
+  exhaustion, naming the version that answered against the commit that was
+  deployed (`version.go`) — which is the stricter *build*-identity check the
+  earlier rule anticipated, with the version-equality rule above unchanged. The
+  start path passes no pin deliberately: a start has no deferred deploy to
+  re-verify (`waitStartedHealthy`, `version.go`).
 
   **What the version check proves — and what it does not.** `waitHealthy`
   proves that *a* process of the expected build is answering on the configured
@@ -1468,7 +1481,7 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                         │     → protocol? launch_flags? version? (preflight)
                         ├─ verified missing executable? (fresh host)
                         │     └─ deploy/install (creates the missing run target:
-                        │          push, else the release-only installer) → re-run preflight
+                        │          push, else the installer fallback) → re-run preflight
                         ├─ protocol/version != controller?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
                         │     └─ restart host hub (identify → supervisor, else refuse ErrRestart)
@@ -1769,21 +1782,22 @@ with the remote hub and its daemons still running.
     log under `<stateRoot>`), so a host on a non-default port becomes healthy
     rather than failing on the default address.
 16. The installer fallback passes an artifact reference derived from
-    `buildinfo.BuildChannel()` and is admitted only for an **immutable,
-    checksum-verified-before-unpacking** one: the stamped release tag for
-    `release`, whose archive `install.sh` verifies by sha256 against that
-    release's `checksums.txt` before extracting it. It is `ErrDeploy` for
-    `snapshot` — the tag is force-moved and its `checksums.txt` re-uploaded with
-    `--clobber`, so neither pins the controller's commit, and the fallback is
-    refused **before** `install.sh` replaces anything rather than
-    install-then-verify — and for a `dev`/`dirty` controller;
-    `buildinfo.Version()` (a short SHA, possibly `-dirty`) is never passed as
-    the tag. No deploy path replaces the installed binary before the artifact's
-    identity is pinned to the controller's build (the atomic push path pins it
-    by construction: locally cross-compiled from a verified revision, stamped,
-    byte-count-verified, then `mv`). The post-install `/api/health` identity
-    probe stays as the final verification, never as the pin; a future
-    snapshot-like channel needs a per-commit immutable reference.
+    `buildinfo.BuildChannel()`: the stamped release tag for `release` (whose
+    archive `install.sh` verifies by sha256 against that release's
+    `checksums.txt` before extracting it; a release build carrying no stamped
+    tag is `ErrDeploy`), the mutable `snapshot` tag for `snapshot` (a
+    best-effort pin: the post-install version probe refuses terminally,
+    `ErrVersionMismatch`, once the tag has moved past this controller's commit,
+    rather than re-fetching the same artifact), and `ErrDeploy` for a
+    `dev`/`dirty` controller; `buildinfo.Version()` (a short SHA, possibly
+    `-dirty`) is never passed as the tag. For a `snapshot` controller the
+    installer therefore replaces the installed binary before its commit is
+    proven, and the proof arrives only afterwards — the trade §"Installer
+    (fallback)" states, and the reason a `snapshot` controller with no build
+    source still has a deploy path. The atomic push path keeps the stronger
+    property (pinned by construction: locally cross-compiled from a verified
+    revision, stamped, byte-count-verified, then `mv`), which is why the
+    terminal refusal names it as the remedy.
 17. The installer fallback installs to the run target: with `evener_path` set
     it passes `BINDIR=<dirname(evener_path)>` (refusing any basename other than
     `evener` — `evener-dev` is the development tooling binary with no `hub`
@@ -1836,9 +1850,9 @@ with the remote hub and its daemons still running.
     directory created when absent), and the installer fallback installs that
     default when it is the deploy path — followed by a re-preflight before
     version-match/attach; it is not surfaced as `ErrSSHStart` and does not
-    dead-end preflight. Where no deploy path exists (a `snapshot`/`dev`
-    controller with no build source/`Options.BuildBinary`, and an installer
-    fallback that is not admitted) the missing executable is refused
+    dead-end preflight. Where no deploy path exists (a `dev`/dirty controller,
+    or a `release` build with no stamped tag, whose installer fallback
+    `canDeploy()` refuses) the missing executable is refused
     `ErrDeploy`: there is nothing that controller can install, so that
     bootstrap is not a supported path.
     An unreachable host (`ErrSSHStart`), an ssh-level
@@ -1907,10 +1921,11 @@ from the component-03 registry.
   the post-restart check (`waitHealthy`) requires the running `version` to equal
   the deployed build — no `started_at`/clock comparison is used (see §5). The
   `backend_git_sha` field is carried by the response and the hub's own
-  self-update flow polls it; the shipped `waitHealthy` does not consult it, and
-  it may be added as a stricter identity check. The AppWire `ServerInfo.Version`
-  is the static `"0.1.0"` constant (`cmd/evener-hub/main.go`, wired at
-  `cmd/evener-hub/app_rpc.go`, surfaced at `appwire/types.go`)
+  self-update flow polls it; `waitHealthy` consults it as the snapshot pin (§5),
+  and for every other channel the version-equality check stands. The AppWire
+  `ServerInfo.Version` is the static `"0.1.0"` constant
+  (`cmd/evener-hub/main.go`, wired at `cmd/evener-hub/app_rpc.go`, surfaced at
+  `appwire/types.go`)
   and must **not** be used to compare builds.
 - **Detach idiom on the host (partly resolved).** Supervised hubs restart
   through their supervisor (`launchctl kickstart -k`, `systemctl restart`); a
