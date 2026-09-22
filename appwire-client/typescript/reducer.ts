@@ -646,6 +646,21 @@ function preferredToolField<K extends ToolResultField>(
   return item[field];
 }
 
+// The tool-result fold rewrites a surviving call as a NEW object, so any
+// identity-fold membership recorded on the pre-rewrite object stops
+// answering for the call the turns now carry — a caller following merged
+// items through the provenance (the mobile store's retained-turn window
+// reads exactly that) would lose the identities the call folded from, and
+// a display row naming one of them would stop keeping the rewritten call's
+// turn in the window. Only the rewritten call's OWN membership transfers:
+// the callId candidates drew fields by call-precedence, not by an identity
+// match, so recording them as fold sources would make a surviving candidate
+// read as a source the call never merged from.
+function recordToolFoldRewrite(context: ToolItemMergeContext, rewritten: ItemModel, source: ItemModel): void {
+  const provenance = context.provenance.get(source);
+  if (provenance !== undefined) context.provenance.set(rewritten, provenance);
+}
+
 function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeContext, view?: ToolFoldView): TurnModel[] {
   const fold = view ?? toolFoldView(turns, context);
   if (fold.noOp) return turns;
@@ -661,19 +676,19 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
         if (fresh.results.length > 0 || older.results.length > 0) {
           const field = <K extends ToolResultField>(name: K) =>
             preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
-          items.push(
-            copyItemTextPresence(item, {
-              ...item,
-              output: field("output"),
-              error: field("error"),
-              prevalOnly: field("prevalOnly"),
-              exitCode: field("exitCode"),
-              completedAt: field("completedAt"),
-              status: field("status"),
-              outputImages: field("outputImages"),
-              raw: field("raw"),
-            }),
-          );
+          const rewritten = copyItemTextPresence(item, {
+            ...item,
+            output: field("output"),
+            error: field("error"),
+            prevalOnly: field("prevalOnly"),
+            exitCode: field("exitCode"),
+            completedAt: field("completedAt"),
+            status: field("status"),
+            outputImages: field("outputImages"),
+            raw: field("raw"),
+          });
+          if (context) recordToolFoldRewrite(context, rewritten, item);
+          items.push(rewritten);
           continue;
         }
       }

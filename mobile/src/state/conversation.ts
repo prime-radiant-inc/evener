@@ -1289,7 +1289,7 @@ export function createConversationStore() {
   function boundRetainedTurns(
     turns: TurnModel[],
     retainedItems: MobileTimelineItem[],
-    itemFoldSources?: WeakMap<ItemModel, readonly ItemModel[]>,
+    itemFoldIdentities?: WeakMap<ItemModel, ReadonlySet<string>>,
   ): TurnModel[] {
     const retainedIdentities = new Set(
       retainedItems.flatMap((item) => [...timelineIdentities(item)]),
@@ -1310,16 +1310,13 @@ export function createConversationStore() {
       // chain can settle content on an identity no row carries while the
       // row still names the keyless id the chain consumed, so a turn whose
       // items all match by their own identities alone can still back a
-      // visible row through the sources those items folded from.
+      // visible row through the sources those items folded from (review
+      // round 15: those sources are remembered as identity strings).
       const inWindow = turn.items.some(
         (item) =>
           retainedIdentities.has(item.transcriptKey ?? item.id) ||
           retainedIdentities.has(item.id) ||
-          (itemFoldSources?.get(item) ?? []).some(
-            (source) =>
-              retainedIdentities.has(source.transcriptKey ?? source.id) ||
-              retainedIdentities.has(source.id),
-          ),
+          [...(itemFoldIdentities?.get(item) ?? [])].some((identity) => retainedIdentities.has(identity)),
       );
       if (inWindow) return turn;
       trimmed = true;
@@ -1383,21 +1380,41 @@ export function createConversationStore() {
     return `${skeleton.id}\u0000${skeleton.transcriptKey ?? ""}`;
   }
 
-  // Each merged item's participating sources, remembered past the merge that
-  // produced them. The keep-window check needs them (review round 14): a
-  // fold can land content on an identity the display rows never carried —
+  // Each merged item's folded-from identities, remembered past the merge
+  // that produced them. The keep-window check needs them (review round 14):
+  // a fold can land content on an identity the display rows never carried —
   // an alias chain settles on the second alias's keyed identity while the
   // page's row still names the keyless id the chain started from — so
   // whether a merged turn backs a visible row can only be answered through
   // the identities its items folded FROM, and the live-path bound sites ask
-  // long after the merge is gone.
-  const mergedItemFoldSources = new WeakMap<ItemModel, readonly ItemModel[]>();
+  // long after the merge is gone. Review round 15: only the identity
+  // strings are remembered, never the source items — holding the sources
+  // themselves would keep every superseded payload of an alias chain alive
+  // for exactly as long, the retention this bound exists to close — and an
+  // untouched item keeps the identities an earlier merge already recorded,
+  // so a later unrelated merge cannot erase a prior chain's aliases, while
+  // a source that was itself a merged item contributes the identities IT
+  // folded from (the per-merge provenance does not chain across merges).
+  const mergedItemFoldIdentities = new WeakMap<ItemModel, ReadonlySet<string>>();
   function recordItemFoldSources(
     turns: TurnModel[],
     itemFoldSources: (item: ItemModel) => readonly ItemModel[],
   ): void {
     for (const turn of turns) {
-      for (const item of turn.items) mergedItemFoldSources.set(item, itemFoldSources(item));
+      for (const item of turn.items) {
+        const sources = itemFoldSources(item);
+        // Untouched — no fold combined anything into it. The window check
+        // already reads the item's own fields; recording the entry would
+        // overwrite the identities an earlier merge remembered for it.
+        if (sources.length === 1 && sources[0] === item) continue;
+        const identities = new Set(mergedItemFoldIdentities.get(item));
+        for (const source of sources) {
+          identities.add(source.transcriptKey ?? source.id);
+          identities.add(source.id);
+          for (const carried of mergedItemFoldIdentities.get(source) ?? []) identities.add(carried);
+        }
+        if (identities.size > 0) mergedItemFoldIdentities.set(item, identities);
+      }
     }
   }
 
@@ -2435,7 +2452,7 @@ export function createConversationStore() {
             // fragments supplied, and only out-of-window payloads trim. The
             // final retained rows (rehydrateCapped) are the window; the pass
             // settles page turn ownership with the same bound.
-            mergedTurns = boundRetainedTurns(mergedTurns, rehydrateCapped, mergedItemFoldSources);
+            mergedTurns = boundRetainedTurns(mergedTurns, rehydrateCapped, mergedItemFoldIdentities);
           }
           if (replacesInstance) {
             pageOwnedIds.clear();
@@ -2691,7 +2708,7 @@ export function createConversationStore() {
             const boundedTurns = boundRetainedTurns(
               strippedPageTurns,
               pageMerged,
-              mergedItemFoldSources,
+              mergedItemFoldIdentities,
             );
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
@@ -3308,7 +3325,7 @@ export function createConversationStore() {
                 conversation: {
                   ...conv,
                   items: cappedItems,
-                  turns: boundRetainedTurns(conv.turns, cappedItems, mergedItemFoldSources),
+                  turns: boundRetainedTurns(conv.turns, cappedItems, mergedItemFoldIdentities),
                 },
               });
             } else {
@@ -3577,7 +3594,7 @@ export function createConversationStore() {
               conversation: {
                 ...conv,
                 items: warningCappedItems,
-                turns: boundRetainedTurns(conv.turns, warningCappedItems, mergedItemFoldSources),
+                turns: boundRetainedTurns(conv.turns, warningCappedItems, mergedItemFoldIdentities),
               },
             });
             break;
@@ -3954,7 +3971,7 @@ export function createConversationStore() {
                   conversation: {
                     ...conv,
                     items: reprojected,
-                    turns: boundRetainedTurns(conv.turns, reprojectedCapped, mergedItemFoldSources),
+                    turns: boundRetainedTurns(conv.turns, reprojectedCapped, mergedItemFoldIdentities),
                   },
                 });
                 break;

@@ -8411,6 +8411,40 @@ describe("ConversationStore", () => {
       expect(folded).toEqual([
         expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "restored fa" }),
       ]);
+
+      // An unrelated later page must not erase the chain's aliases (review
+      // round 15): its merge leaves rt's items untouched, and recording an
+      // untouched item must keep the identities the earlier page's merge
+      // remembered for it, or the bound trims the turn the row still backs.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "un",
+              [
+                {
+                  id: "un-0",
+                  transcriptKey: "un",
+                  turnId: "un",
+                  type: "agentMessage",
+                  text: "unrelated",
+                  position: { entry: 90, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 9, outputTokens: 9 },
+            ),
+          ],
+          "c3",
+        ),
+        nextCursor: "c3",
+      };
+      await store.getState().loadOlder(service);
+      const afterUnrelated = store.getState().conversation!;
+      expect(afterUnrelated.turns.find((turn) => turn.id === "rt")?.items ?? []).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "restored fa" }),
+      ]);
     });
 
     // Review round 9, pagination bridges: a loadOlder page can bridge a
@@ -8848,10 +8882,13 @@ describe("ConversationStore", () => {
       // together with its RESULT. The identity fold consumes the page's
       // call through both remembered aliases (the merged call ends on the
       // second alias's id), and the tool fold removes the result item while
-      // carrying its fields onto that call. The kc row keeps the turn in
-      // window, so the result's content must survive on the folded call.
+      // carrying its fields onto that call. The real projector rows the
+      // keyless call under its bare id (item_tool_1) — the surviving call's
+      // own identity names no row, so the window must see the identity the
+      // call folded from to keep the turn and its result content (review
+      // round 15).
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "kc", text: "kc row" }],
+        items: [{ kind: "user" as const, id: "item_tool_1", text: "call row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
