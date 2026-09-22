@@ -3,7 +3,11 @@
 // marketplace the hub says it already removed across browser remounts, the
 // cleanup warning survives the browser's own revision fence and tab switches,
 // a clean applied removal retires an obsolete cleanup warning, and a late
-// outcome from a replaced client changes nothing on the new one.
+// outcome from a replaced client changes nothing on the new one. The fence
+// covers only the window between an applied outcome and the first trusted
+// read after it - presence retires it too (the fallback ruling), so a
+// re-registration the wire cannot tell from a stale row can never stay
+// fenced forever.
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -111,15 +115,26 @@ beforeEach(() => {
   alertRequests.length = 0;
 });
 
-it("keeps an unavailable applied removal fenced across browser remounts", async () => {
+it("re-fences a name a stale presence read cleared after a browser remount", async () => {
   let listCalls = 0;
+  let removals = 0;
   const hub = marketplaceClient({
     list: async () => {
       listCalls += 1;
-      if (listCalls === 2) throw new Error("list unavailable");
+      // The mount read shows the registration the removal targets; the
+      // post-removal reconciliation read fails; the remount's own read
+      // answers with the stale row again - the wire's whole-second stamp
+      // cannot tell it from a re-registration, and the fallback ruling
+      // trusts it as one - and the read after the second removal's outcome
+      // fails too, so the re-fence holds to the assertion.
+      if (listCalls === 2 || listCalls === 4) throw new Error("list unavailable");
       return { marketplaces: [marketplace] };
     },
-    remove: async () => {
+    remove: () => {
+      removals += 1;
+      // The hub answers BOTH removals with the idempotent applied outcome:
+      // the removal already stood, so a repeat press never reads as a
+      // failed write.
       throw cloneLitterError(null, false);
     },
   });
@@ -132,7 +147,13 @@ it("keeps an unavailable applied removal fenced across browser remounts", async 
   await browseMarketplace(tree);
   await confirmMarketplaceRemoval(tree);
   expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
 
+  // Leave the browse tab and come back: the guard lives at the screen, so
+  // it survives the browser's death, but the remount's own read answers
+  // with the stale row - the first authoritative read after the outcome -
+  // and the fallback retires the fence for whatever the trusted read
+  // vouches for, so Remove re-enables.
   await act(async () => {
     tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
   });
@@ -146,8 +167,17 @@ it("keeps an unavailable applied removal fenced across browser remounts", async 
   await act(async () => {});
 
   const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-  expect(remove.props.disabled).toBe(true);
-  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+  expect(remove.props.disabled).toBe(false);
+  // Pressing Remove on the stale row reaches a hub that already applied the
+  // removal: the same applied outcome answers, which re-fences the name and
+  // re-raises the warning - idempotent, never a failed write.
+  await confirmMarketplaceRemoval(tree);
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+  const fenced = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(fenced.props.disabled).toBe(true);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 });
 
 it("fences the name when a re-registration lands while the confirm dialog is open", async () => {
@@ -288,8 +318,11 @@ it("clears an obsolete cleanup warning when a later applied removal is clean", a
       listCalls += 1;
       // The mount read shows the registration the removal targets; the
       // post-removal reconciliation read establishes its absence; a later
-      // pull-to-refresh answers with another client's re-registration.
+      // pull-to-refresh answers with another client's re-registration; the
+      // read after the second removal's outcome fails, so the clean
+      // outcome's own re-fence holds to the assertion.
       if (listCalls === 2) return Promise.resolve({ marketplaces: [] });
+      if (listCalls >= 4) return Promise.reject(new Error("list unavailable"));
       return Promise.resolve({ marketplaces: [marketplace] });
     },
     remove: () => {
@@ -360,7 +393,17 @@ it("records an applied removal after selection changes while the request is pend
   const pendingRemoval = new Promise<never>((_resolve, reject) => {
     releaseRemoval = () => reject(cloneLitterError(null, false));
   });
-  const hub = marketplaceClient({ remove: () => pendingRemoval });
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; every
+      // later read fails, so no authoritative read lands after the outcome.
+      if (listCalls === 1) return { marketplaces: [marketplace] };
+      throw new Error("list unavailable");
+    },
+    remove: () => pendingRemoval,
+  });
   harness.connection = readyConnection(hub.client);
   const props = {
     route: { params: { hubId: "hub-1" } },
@@ -453,7 +496,16 @@ it("leaves ordinary marketplace removal failures retryable", async () => {
 });
 
 it("keeps the guard and warning across a same-client connection flap", async () => {
+  let listCalls = 0;
   const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; every
+      // later read - the post-removal refetch and the store's own reconnect
+      // re-read - fails, so no authoritative read lands after the outcome.
+      if (listCalls === 1) return { marketplaces: [marketplace] };
+      throw new Error("list unavailable");
+    },
     remove: async () => {
       throw cloneLitterError(null, false);
     },
@@ -485,9 +537,9 @@ it("keeps the guard and warning across a same-client connection flap", async () 
   expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
   // The banner kept this browser mounted through the flap (connectionDisplay:
   // everReady already true, the SAME client throughout), so the detail it had
-  // open survives with it - the retention #1952 bought - and the reconnect
-  // re-read republishes the stale registration, the very row the fence
-  // guards.
+  // open survives with it - the retention #1952 bought - while the store's
+  // own reconnect re-read fails, so no authoritative read has landed and
+  // the fence still guards the stale row in the retained detail.
   expect(renderedText(tree)).toContain("All marketplaces");
   expect(renderedText(tree)).toContain("Refresh source");
   const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
@@ -550,12 +602,16 @@ it("records a pending removal settling after a remount whose list read failed", 
     tree.root.findByProps({ accessibilityLabel: "Retry marketplaces" }).props.onPress();
   });
   await act(async () => {});
+  // The retry read answers with the stale row - the first authoritative read
+  // after the outcome, which the fallback trusts - so the fence retires and
+  // Remove re-enables; a press on it would only draw the hub's same
+  // idempotent applied outcome.
   await act(async () => {
     tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
   });
   await act(async () => {});
   const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-  expect(remove.props.disabled).toBe(true);
+  expect(remove.props.disabled).toBe(false);
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
 });
 
@@ -1266,7 +1322,57 @@ it("clears the fence when another client re-adds the name from a different sourc
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 });
 
-it("keeps the fence when an add resolving after unmount registers another name", async () => {
+it("re-enables Remove for a same-source same-second re-registration", async () => {
+  let removals = 0;
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; the
+      // post-removal reconciliation read fails; the retry read carries
+      // another client's re-registration - the SAME source, stamped within
+      // the SAME whole second, indistinguishable on the wire from the row
+      // the removal took out.
+      if (listCalls === 2) throw new Error("list unavailable");
+      return { marketplaces: [marketplace] };
+    },
+    remove: () => {
+      removals += 1;
+      return removals === 1
+        ? Promise.reject(cloneLitterError(null, false))
+        : Promise.resolve({ marketplaces: [] });
+    },
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await confirmMarketplaceRemoval(tree);
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+
+  // The reconciliation read failed, so the retry read is the first
+  // authoritative read after the outcome - and it carries a row the wire
+  // cannot tell from the stale one. The fence has to retire for it (the
+  // fallback ruling), or the re-registered marketplace could never be
+  // removed from this client.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Retry marketplaces" }).props.onPress();
+  });
+  await act(async () => {});
+  // The removal's detail is still the open view - the retry read re-enables
+  // Remove in place.
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(false);
+  await confirmMarketplaceRemoval(tree);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
+
+it("retires the fence on the trusted read when an add resolving after unmount registers another name", async () => {
   let releaseAdd!: () => void;
   const pendingAdd = new Promise<{ marketplaces: MarketplaceEntry[] }>(
     (resolve) => {
@@ -1279,7 +1385,25 @@ it("keeps the fence when an add resolving after unmount registers another name",
         });
     },
   );
+  let listCalls = 0;
   const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; the
+      // post-removal reconciliation read fails; the remount's read carries
+      // the hub's truth after the add registered gamma - acme's stale row
+      // still under the wire-indistinguishable identity, gamma beside it.
+      if (listCalls === 2) throw new Error("list unavailable");
+      return {
+        marketplaces:
+          listCalls === 1
+            ? [marketplace]
+            : [
+                marketplace,
+                { name: "gamma", source: { kind: "github", repo: "gamma/plugins" }, lastUpdated: 2 },
+              ],
+      };
+    },
     remove: async () => {
       throw cloneLitterError(null, false);
     },
@@ -1297,8 +1421,8 @@ it("keeps the fence when an add resolving after unmount registers another name",
 
   // Start an add for another marketplace and leave the browse tab before it
   // resolves: the browser that started it is gone with its store, which
-  // discards the answer, so nothing about acme's registration changed - the
-  // fence the applied removal raised has to hold.
+  // discards the answer's publication, and the answer's own naming reports
+  // only the name it registered - gamma - never acme.
   await act(async () => {
     tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
   });
@@ -1325,15 +1449,25 @@ it("keeps the fence when an add resolving after unmount registers another name",
     tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
   });
   await act(async () => {});
+
+  expect(hub.methods.filter((method) => method === "evener/marketplace/add")).toHaveLength(1);
+  // The remount's read carries the hub's truth - gamma registered, acme's
+  // row under the identity the wire cannot tell from the stale one - and it
+  // is the first authoritative read after the outcome, so the fallback
+  // retires acme's fence for whatever it vouches for: both rows render and
+  // acme is removable again, a press only drawing the same idempotent
+  // applied outcome.
+  expect(
+    tree.root.findAllByProps({ accessibilityLabel: "Browse gamma" }).length,
+  ).toBeGreaterThan(0);
   await act(async () => {
     tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
   });
   await act(async () => {});
-
-  expect(hub.methods.filter((method) => method === "evener/marketplace/add")).toHaveLength(1);
   const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
-  expect(remove.props.disabled).toBe(true);
-  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+  expect(remove.props.disabled).toBe(false);
+  await confirmMarketplaceRemoval(tree);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 });
 
 it("briefly fences a re-added registration observed before the removal settles, then clears it", async () => {

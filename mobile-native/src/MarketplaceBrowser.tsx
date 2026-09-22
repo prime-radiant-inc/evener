@@ -86,12 +86,10 @@ export function MarketplaceBrowser({
   /** Records an applied removal with the screen. `notice` is
    * appliedRemovalNotice's answer - the cleanup warning, or null when only
    * the list read failed - and becomes the screen-level warning; the name
-   * joins the guard whatever the hub's truth currently carries: the fence
-   * holds until an authoritative read establishes that truth - absence or
-   * a replacement registration clears it, and only a stale row still
-   * carrying `removed` - the registration the write removed - keeps it;
-   * the return value says whether `owner` was still the current client,
-   * false meaning a replaced client's late result is dropped whole. */
+   * joins the guard whatever the hub's truth currently carries, for the
+   * window between the outcome and the first authoritative read after it;
+   * the return value says whether the entry was actually stored, false
+   * meaning a replaced client's late result is dropped whole. */
   onAppliedRemoval(
     name: string,
     notice: string | null,
@@ -99,7 +97,10 @@ export function MarketplaceBrowser({
     removed: MarketplaceEntry,
   ): boolean;
   /** Reports every authoritative list read, so the screen can prune guard
-   * names the hub no longer carries. */
+   * names the read speaks for - the first read after an outcome retires
+   * the fence whether it carries the name (the fallback ruling: a row a
+   * trusted read vouches for, once the removal stood, can only be a
+   * re-registration) or omits it (the removal reconciled). */
   onAuthoritativeMarketplaces(
     marketplaces: readonly MarketplaceEntry[],
     owner: ConversationClientLike,
@@ -251,10 +252,10 @@ export function MarketplaceBrowser({
     )
       return;
     const name = marketplace.name;
-    // The registration this write targets: the outcome fences the name until
-    // an authoritative read establishes what the hub now carries - absence
-    // or a replacement registration clears the fence, and only a stale row
-    // still carrying this registration's own source and stamp keeps it.
+    // The registration this write targets: the outcome fences the name for
+    // the window until the first authoritative read after it, whatever that
+    // read then carries - the screen owns the fence (PluginsScreen's
+    // reconcile).
     const target = marketplace;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [

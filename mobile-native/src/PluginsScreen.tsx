@@ -41,7 +41,6 @@ import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
 } from "./MarketplaceBrowser";
-import { sameRemovedRegistration } from "./marketplaceBrowserModel";
 import {
   createPluginMutationGate,
   PLUGIN_MUTATION_BUSY,
@@ -53,9 +52,11 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 /** The registration an applied removal took out, as the wire names it: the
  * source the hub recorded for it and the whole-second `lastUpdated` stamp
- * it carries. A row carrying exactly this identity is the removed
- * registration itself; any other identity - or no row at all - is a
- * replacement or an absence. */
+ * it carries. The fallback ruling no longer consults it when reads retire
+ * the fence - the wire's whole-second stamp cannot tell a stale row from a
+ * same-second re-registration anyway - but it documents what the write took
+ * out, and the durable fix (a hub-assigned registration id the wire can
+ * compare, recorded on PR #2137's protocol backlog) will compare it. */
 type RemovedRegistration = {
   source: MarketplaceEntry["source"];
   lastUpdated: MarketplaceEntry["lastUpdated"];
@@ -65,13 +66,9 @@ type RemovedRegistration = {
  * name to the registration the write removed: names a write said the hub
  * already removed, held with the client whose write said so because a fresh
  * browser must not offer Remove again for any of them. The fence covers the
- * name from the applied outcome until the authoritative reads establish
- * what the hub now carries: a list omitting the name (the removal
- * reconciled) or carrying a different registration (a re-add - a fresh
- * stamp, which the hub writes on every registration, or a different source
- * within the wire's whole-second stamp - internal/plugins/marketplaces.go)
- * clears it, and only a stale row still carrying the removed
- * registration's own identity keeps it. */
+ * name only for the window between the applied outcome and the first
+ * authoritative read that lands after it, whatever that read carries - see
+ * reconcileAppliedRemovals. */
 type AppliedRemovalGuard = {
   client: ConversationClientLike | null;
   entries: ReadonlyMap<string, RemovedRegistration>;
@@ -151,46 +148,44 @@ function PluginsScreenBody({
       current?.client === client ? current : null,
     );
   }, [client]);
-  // A guard name the hub's own list no longer carries is fully reconciled -
-  // its row is gone with it - and one it carries under a NEW registration
-  // identity - a fresh stamp, or a different source the wire's whole-second
-  // stamp cannot tell apart on its own - is a re-add, a write someone made
-  // after the removal this fence guards. The guard forgets both, so neither
-  // a reconciled name nor a re-added one is fenced forever.
+  // The fallback ruling: a guard name retires with the FIRST authoritative
+  // read that lands after the outcome recorded it. A read omitting the name
+  // reconciles the removal the way it always did; a read still CARRYING it -
+  // whatever registration the row bears, even the removed one's own
+  // whole-second identity, which the wire cannot tell from a stale read -
+  // now retires the fence too. Once the outcome said the removal stood, a
+  // row a trusted read vouches for can only be a hub re-registration, and
+  // the fence's alternative is a permanent lockout: a same-source
+  // same-second re-registration is indistinguishable on the wire, so keeping
+  // the fence for it could never be undone from this client. The worst case
+  // is a row the read had not caught up with - pressing Remove on it draws
+  // the same idempotent applied outcome, which re-fences the name and
+  // re-raises the warning. The durable fix is a hub-assigned registration id
+  // the wire can compare (protocol backlog, PR #2137). Only reads the
+  // browser's own revision fencing already vouches for are reported here,
+  // so stale and in-flight replies never retire anything.
   const reconcileAppliedRemovals = useCallback(
     (
       marketplaces: readonly MarketplaceEntry[],
       owner: ConversationClientLike,
     ): void => {
       if (currentClient.current !== owner) return;
-      const currentEntries = new Map(
-        marketplaces.map((item) => [item.name, item] as const),
-      );
       setAppliedRemovalGuard((current) => {
-        if (current.client !== owner) return current;
-        let changed = false;
-        const next = new Map(current.entries);
-        for (const [name, removed] of current.entries) {
-          const seen = currentEntries.get(name);
-          if (seen && sameRemovedRegistration(seen, removed)) continue;
-          next.delete(name);
-          changed = true;
-        }
-        return changed ? { client: owner, entries: next } : current;
+        // The read's contents no longer decide anything - its arrival does.
+        if (current.client !== owner || !current.entries.size) return current;
+        return { client: owner, entries: new Map() };
       });
     },
     [],
   );
   // The browser's recording path for an applied removal: fences the name
-  // whatever the hub's truth currently carries, until an authoritative read
-  // establishes it - a list omitting the name (the removal reconciled) or
-  // carrying a newer registration (a re-add) clears the fence there, and
-  // only a stale row still carrying the removed registration's own identity
-  // keeps it - sets the warning to the outcome's own notice, a clean one
-  // clearing whatever earlier outcome raised (the warning reports the
-  // latest applied removal, never a residue an obsolete one left), and
-  // answers whether `owner` was still current - false means the outcome
-  // came from a client this screen has replaced.
+  // whatever the hub's truth currently carries, for the window between the
+  // outcome and the first authoritative read after it (reconcile's doc),
+  // sets the warning to the outcome's own notice - a clean one clearing
+  // whatever earlier outcome raised (the warning reports the latest applied
+  // removal, never a residue an obsolete one left) - and answers whether
+  // the entry was actually stored: false means the outcome came from a
+  // client this screen has replaced, and the browser drops it whole.
   const markAppliedRemoval = useCallback(
     (
       name: string,
@@ -198,7 +193,16 @@ function PluginsScreenBody({
       owner: ConversationClientLike,
       removed: MarketplaceEntry,
     ): boolean => {
-      if (currentClient.current !== owner) return false;
+      // The outer check reads the same reconciled source the update below
+      // applies - the guard's own client - so `true` can only mean the
+      // entry was actually stored: an owner the guard no longer belongs to
+      // changes nothing here and answers false, for the browser to drop
+      // the outcome whole.
+      if (
+        currentClient.current !== owner ||
+        appliedRemovalGuard.client !== owner
+      )
+        return false;
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
         const entries = new Map(current.entries);
@@ -213,7 +217,7 @@ function PluginsScreenBody({
       );
       return true;
     },
-    [],
+    [appliedRemovalGuard],
   );
   // A name this screen's own add just registered: the write replaced the
   // registration the fence guards - which the wire's whole-second
