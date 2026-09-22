@@ -737,6 +737,22 @@ func leaseOwningBinding(manifest ScratchManifest, canonicalDir string) (string, 
 	return "", false
 }
 
+// consumersNamingScratchBinding returns every consumer row that names bindingID
+// in any of its roles: the rows a carried binding must travel with for the
+// graph's reader to accept an owning binding.
+func consumersNamingScratchBinding(consumers []ScratchConsumerBinding, bindingID string) []ScratchConsumerBinding {
+	var named []ScratchConsumerBinding
+	for _, consumer := range consumers {
+		if consumer.CurrentBindingID == bindingID ||
+			consumer.ParentSharedBindingID == bindingID ||
+			consumer.WorktreeRestoreBindingID == bindingID ||
+			slices.Contains(consumer.AbandonedBindingIDs, bindingID) {
+			named = append(named, consumer)
+		}
+	}
+	return named
+}
+
 func validateScratchBindingUpdate(manifest ScratchManifest, mergedBindings []ScratchBinding, suppliedBindings []ScratchBinding, suppliedConsumers []ScratchConsumerBinding) error {
 	refs := make(map[string]struct{}, len(manifest.References))
 	for _, ref := range manifest.References {
@@ -1096,6 +1112,77 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 			Revision: manifest.Revision + 1,
 			Owner:    manifest.Owner,
 		}
+		// A carried reference must travel with the rows that make the graph
+		// valid for its own reader (validateRetainedScratchGraph): the binding
+		// that owns its directory and every consumer role that names it.
+		// Carrying a reference alone would commit a manifest whose restore
+		// validation fails forever — references with no binding — with no
+		// later reset to repair it, Released being false again (round 16). A
+		// reference nothing in the tombstoned manifest owns is nothing a
+		// restore could re-probe: its pair dies here instead — this owner's
+		// pin is removed and the reference drops; a foreign pin belongs to its
+		// own manifest and is left alone.
+		carriedBindings := make(map[string]ScratchBinding)
+		carriedConsumers := make(map[string]ScratchConsumerBinding)
+		carryReference := func(dir, kind string) {
+			ownerID, owned := leaseOwningBinding(manifest, dir)
+			binding, found := scratchBindingByID(manifest.Bindings, ownerID)
+			consumers := consumersNamingScratchBinding(manifest.Consumers, ownerID)
+			if !owned || !found || len(consumers) == 0 {
+				// Ownerless, or an owning binding no consumer names — the
+				// crash-window artifact the graph reader fails closed on:
+				// carrying either would wedge every later restore on the
+				// fresh manifest. Let the pair die together, removing only
+				// this owner's pin (a foreign pin belongs to its own
+				// manifest).
+				if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil && pin.Owner == owner {
+					_ = os.Remove(filepath.Join(dir, scratchPinName))
+				}
+				return
+			}
+			fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: kind})
+			// The binding narrows to the slots whose directories carried: its
+			// other slots may name pins the terminal release already removed,
+			// and a slot naming an unpinned directory fails the graph reader.
+			narrowed, ok := carriedBindings[ownerID]
+			if !ok {
+				narrowed = binding
+				narrowed.Slots = map[string]ScratchSlot{}
+				carriedBindings[ownerID] = narrowed
+			}
+			for slotKind, slot := range binding.Slots {
+				if !slot.OwnsLease {
+					continue
+				}
+				if slotDir, err := canonicalScratchPath(slot.Dir); err == nil && slotDir == dir {
+					narrowed.Slots[slotKind] = slot
+				}
+			}
+			// The consumers narrow the same way: a role naming a binding this
+			// reset did not carry would fail the graph reader too.
+			for _, consumer := range consumers {
+				narrowedConsumer := consumer
+				if narrowedConsumer.CurrentBindingID != ownerID {
+					narrowedConsumer.CurrentBindingID = ""
+				}
+				if narrowedConsumer.ParentSharedBindingID != "" && narrowedConsumer.ParentSharedBindingID != ownerID {
+					narrowedConsumer.ParentSharedBindingID = ""
+				}
+				if narrowedConsumer.WorktreeRestoreBindingID != "" && narrowedConsumer.WorktreeRestoreBindingID != ownerID {
+					narrowedConsumer.WorktreeRestoreBindingID = ""
+				}
+				abandoned := make([]string, 0, len(narrowedConsumer.AbandonedBindingIDs))
+				for _, id := range narrowedConsumer.AbandonedBindingIDs {
+					if id == ownerID {
+						abandoned = append(abandoned, id)
+					}
+				}
+				if len(abandoned) != len(narrowedConsumer.AbandonedBindingIDs) {
+					narrowedConsumer.AbandonedBindingIDs = abandoned
+				}
+				carriedConsumers[narrowedConsumer.SessionID] = narrowedConsumer
+			}
+		}
 		// The terminal release that tombstoned this manifest removed every
 		// pin whose lease it could take; the ones left behind were contended
 		// by live owners, and Released:true was what made them collectible. A
@@ -1113,7 +1200,15 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 			}
 			lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
 			if contended {
-				fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: ref.Kind})
+				// The pin decides whether the pair is still real: a pin the
+				// crash window removed between pin removal and publication
+				// leaves nothing a carried reference could pair with, and
+				// carrying it would wedge every later restore at its pin
+				// verification (round 16).
+				if _, pinErr := readScratchDirectoryPin(dir); os.IsNotExist(pinErr) {
+					continue
+				}
+				carryReference(dir, ref.Kind)
 				continue
 			}
 			if err != nil {
@@ -1143,11 +1238,17 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 			default:
 				// An unreadable or foreign pin: leave it and carry the
 				// reference so the pair never reads as incoherent.
-				fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: ref.Kind})
+				carryReference(dir, ref.Kind)
 			}
 			if releaseErr := lease.Release(); releaseErr != nil {
 				return fmt.Errorf("sandbox: release retention lease for %q: %w", dir, releaseErr)
 			}
+		}
+		for _, id := range slices.Sorted(maps.Keys(carriedBindings)) {
+			fresh.Bindings = append(fresh.Bindings, carriedBindings[id])
+		}
+		for _, id := range slices.Sorted(maps.Keys(carriedConsumers)) {
+			fresh.Consumers = append(fresh.Consumers, carriedConsumers[id])
 		}
 		if err := writeScratchRetention(owner, fresh); err != nil {
 			return err

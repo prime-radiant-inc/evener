@@ -621,6 +621,12 @@ type testConfig struct {
 	// Nil in production.
 	scratchAdoptionAfterClaim func()
 
+	// scratchClaimResolved runs immediately after a pool claim resolves and
+	// before the adoption switch classifies it — the window where a concurrent
+	// refresh fold must not flip the contention mark between the claim's
+	// snapshot and a second lookup. Nil in production.
+	scratchClaimResolved func()
+
 	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
 	// before each UpdateScratchBindings attempt, so a test can make the first
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.

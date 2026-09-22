@@ -1373,9 +1373,12 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			continue
 		}
 		handle, prior, already, contended := pool.claimRetainedScratchSlot(key, adopterID)
+		if hook := s.cfg.testOnly.scratchClaimResolved; hook != nil {
+			hook()
+		}
 		switch {
 		case already && prior == adopterID:
-			if pool.scratchSlotContended(key) {
+			if contended {
 				// The refresh's stale-claim probe proved this claim's lease
 				// held elsewhere in this process — the idle-release teardown
 				// racing the restore — and left the claim in place, since it
@@ -1384,7 +1387,10 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				// the restore runs on fresh scratch and the row must keep
 				// naming the retained directory for the next refresh to
 				// re-probe: mark the kind pending, exactly like the
-				// uncontended-claim path (round 14).
+				// uncontended-claim path. The contention verdict is the
+				// claim's own snapshot — a second lookup after the claim
+				// would race a concurrent refresh fold flipping the mark
+				// between the two holds (round 16).
 				env.MarkRetainedSlotPending(kind)
 				continue
 			}
@@ -1467,7 +1473,11 @@ func (p *retainedScratchPool) claimRetainedScratchSlot(key, adopterID string) (h
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if prior, already = p.adopted[key]; already {
-		return nil, prior, true, false
+		// The contention snapshot rides this hold: a lookup after the claim
+		// would race a concurrent refresh fold flipping the mark between the
+		// two holds and misclassify the own-claim (round 16).
+		_, contended = p.contended[key]
+		return nil, prior, true, contended
 	}
 	if handle = p.handles[key]; handle != nil {
 		// Claim the transfer before the environment restore so a concurrent

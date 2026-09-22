@@ -1874,6 +1874,115 @@ func TestChildTeardownReleasesTheSeededPool(t *testing.T) {
 	}
 }
 
+// TestScratchReinstallKeepsLiveLeasedScratch pins the round-16 republish gap:
+// when a manifest reset orphaned an environment's binding, the re-registration
+// republished the identity with its slots cleared and never re-pinned the
+// environment's live leased scratch — leaving the manifest with no reference
+// or slot naming a directory the session is still working in, breaking
+// continuity on every later restore.
+func TestScratchReinstallKeepsLiveLeasedScratch(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("mint the environment's live scratch: %v", err)
+	}
+	liveDir := env.SessionScratchDir()
+	if liveDir == "" {
+		t.Fatal("fixture expected a minted scratch directory")
+	}
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("fixture binding installation: %v", err)
+	}
+	installed, err := env.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("read the installed binding: %v", err)
+	}
+
+	// The terminal release tombstones the manifest (the env holds its lease,
+	// so its pin survives); the reinstall resets it, and the live allocation
+	// must still be owned afterwards.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("reinstall over the reset manifest: %v", err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, installed.BindingID)
+	if !ok {
+		t.Fatalf("binding %q is absent after the reinstall", installed.BindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(liveDir) {
+		t.Fatalf("the reinstalled binding lost the live leased scratch: slot = %+v, want the live %q", slot, liveDir)
+	}
+	referenced := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(liveDir) {
+			referenced = true
+		}
+	}
+	if !referenced {
+		t.Fatalf("the live leased scratch %q is referenced by no allocation in the reinstalled manifest", liveDir)
+	}
+}
+
+// TestScratchOwnClaimReadsContentionAtomically pins the round-16 snapshot gap:
+// the own-claim branch read contention with a second pool lookup after the
+// claim's own hold, so a concurrent refresh fold flipping the mark between
+// the two misclassified a stale own-claim as a hard "already transferred"
+// error. The claim's snapshot must be the authority.
+func TestScratchOwnClaimReadsContentionAtomically(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01ATOMICCLAIM1"
+	const bindingID = "b-atomic-claim"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{key: {}},
+		adopted:   map[string]string{key: consumerID},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	s.cfg.testOnly.scratchClaimResolved = func() {
+		// A concurrent refresh fold clears the contention mark between the
+		// claim's snapshot and a second lookup.
+		pool := s.retainedScratch.Load()
+		pool.mu.Lock()
+		delete(pool.contended, key)
+		pool.mu.Unlock()
+	}
+	if _, err := s.adoptConsumerScratch(env, consumerID); err != nil {
+		t.Fatalf("the adoption misclassified its own contended claim after the fold: %v", err)
+	}
+	pending := env.RetentionPendingKinds()
+	if len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the contended own-claim must mark the kind pending off the claim's own snapshot, got %v", pending)
+	}
+}
+
 // TestScratchNewBindingRetryKeepsConcurrentRoleUpdate is the new-binding twin of
 // TestScratchUpsertRetryKeepsConcurrentRoleUpdate: the first-ever publication's
 // retry closure must recompute its rows too, or a role update committed while a

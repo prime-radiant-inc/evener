@@ -847,6 +847,12 @@ func TestResetReleasedReconcilesLeftoverPins(t *testing.T) {
 	if err := PinScratchBinding(owner, second, map[string]*SessionScratch{ScratchKindSandbox: held}, nil); err != nil {
 		t.Fatalf("pin the second pre-release binding: %v", err)
 	}
+	// The round-16 reset only carries a reference whose graph rows can
+	// travel with it: the still-held binding's consumer is what makes the
+	// carried pair one the root's own reader accepts.
+	if err := UpsertScratchBinding(owner, second, ScratchConsumerBinding{SessionID: "consumer-reconcile", CurrentBindingID: second.BindingID}); err != nil {
+		t.Fatalf("publish the second binding's consumer: %v", err)
+	}
 	if err := ReleaseScratchRetention(owner); err != nil {
 		t.Fatalf("second terminal release: %v", err)
 	}
@@ -1113,5 +1119,98 @@ func TestScratchRevalidationReportsReleasedTyped(t *testing.T) {
 	err = revalidateRetainedScratchAfterLease(owner, scratch.Dir, ScratchKindSandbox)
 	if !errors.Is(err, ErrScratchRetentionReleased) {
 		t.Fatalf("revalidation over a released manifest: %v, want the typed %v", err, ErrScratchRetentionReleased)
+	}
+}
+
+// TestResetReleasedCarriesAValidGraph pins the round-16 reset gap: the reset
+// carried references for still-held pins into a fresh manifest that never
+// gained a single binding row, committing a graph its own restore validator
+// rejects — "references but no binding" — that no later reset would repair
+// (Released is false again). A carried reference must travel with the binding
+// that owns its directory and the consumer role that names it.
+func TestResetReleasedCarriesAValidGraph(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-graph", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); err != nil {
+		t.Fatalf("publish the pre-release consumer: %v", err)
+	}
+	// The scratch's own lease stays held, so the terminal release leaves the
+	// pin behind and the reset must carry the reference.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	fresh, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over the held pin: %v", err)
+	}
+	if len(fresh.References) == 0 {
+		t.Fatal("fixture expected the held pin's reference to carry")
+	}
+	for _, ref := range fresh.References {
+		dir := filepath.Clean(ref.Dir)
+		ownerID, ok := leaseOwningBinding(fresh, dir)
+		if !ok {
+			t.Fatalf("carried reference %q is owned by no binding in the reset manifest %+v", ref.Dir, fresh)
+		}
+		if _, ok := scratchBindingByID(fresh.Bindings, ownerID); !ok {
+			t.Fatalf("the carried reference's owning binding %q is absent from the reset manifest", ownerID)
+		}
+		named := false
+		for _, consumer := range fresh.Consumers {
+			if consumer.CurrentBindingID == ownerID {
+				named = true
+			}
+		}
+		if !named {
+			t.Fatalf("the carried binding %q is named by no consumer in the reset manifest %+v", ownerID, fresh.Consumers)
+		}
+	}
+}
+
+// TestResetReleasedDropsContendedReferenceWithoutPin pins the round-16
+// pin-validation gap: the contended-carry path preserved a manifest reference
+// without checking its immutable pin still exists, so a crash between pin
+// removal and publication left the reset persisting a reference that wedges
+// every later restore at its pin verification.
+func TestResetReleasedDropsContendedReferenceWithoutPin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	// The lease stays held, so the terminal release leaves the pin — and the
+	// crash simulation removes the pin file it would have published.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if err := os.Remove(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over the held, unpinned reference: %v", err)
+	}
+	for _, ref := range fresh.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			t.Fatalf("the reset carried a reference whose pin is gone: %+v", fresh.References)
+		}
 	}
 }
