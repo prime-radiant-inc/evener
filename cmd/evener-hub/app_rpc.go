@@ -385,18 +385,11 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 // struct on others, so both shapes are read -- the same convention
 // app_retirement_resume.go's isLifecycleRetiringError follows.
 func errorNamesClientMutation(err error) bool {
-	wire, ok := errors.AsType[appwire.WireError](err)
+	wire, ok := wireErrorFromError(err)
 	if !ok {
 		return false
 	}
-	switch data := wire.Data.(type) {
-	case appwire.ErrorData:
-		return strings.TrimSpace(data.ClientMutationID) != ""
-	case map[string]any:
-		id, _ := data["clientMutationId"].(string)
-		return strings.TrimSpace(id) != ""
-	}
-	return false
+	return strings.TrimSpace(clientMutationIDFromData(wire.Data)) != ""
 }
 
 // isShapeRefusal reports whether err refuses the request's shape: appwire's
@@ -406,7 +399,7 @@ func errorNamesClientMutation(err error) bool {
 // uncorrelated one, so wrapping it as an unknown mutation outcome would tell
 // the caller less than the refusal itself does.
 func isShapeRefusal(err error) bool {
-	wire, ok := errors.AsType[appwire.WireError](err)
+	wire, ok := wireErrorFromError(err)
 	return ok && (wire.Code == appwire.CodeInvalidParams || wire.Code == appwire.CodeInvalidRequest)
 }
 

@@ -69,6 +69,22 @@ func evenerErrorInfoFromData(data any) string {
 	return ""
 }
 
+// clientMutationIDFromData reads the clientMutationId out of a WireError's Data.
+// The wire client decodes Data as the typed appwire.ErrorData on some paths and
+// as map[string]any on others, so both shapes are read — the convention
+// evenerErrorInfoFromData follows. Callers decide what an empty id means.
+func clientMutationIDFromData(data any) string {
+	switch v := data.(type) {
+	case appwire.ErrorData:
+		return v.ClientMutationID
+	case map[string]any:
+		if id, ok := v["clientMutationId"].(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
 func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
