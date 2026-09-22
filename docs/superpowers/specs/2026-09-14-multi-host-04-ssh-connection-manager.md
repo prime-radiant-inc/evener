@@ -1780,8 +1780,9 @@ with the remote hub and its daemons still running.
 12. The restart is entered when a deploy replaced a present hub, or when the
     running `version` differs while the on-disk build already matches — an on-disk
     difference with nothing to deploy attaches instead of restarting — and the
-    post-restart verification requires the running hub to report the expected
-    `version`; no host-side
+    post-restart verification requires the running hub to report the build the host
+    is expected to serve (`expectedServedBuild`: the controller's own when the host
+    carries it, the host's own otherwise); no host-side
     timestamp and no clock comparison is used.
 13. A wildcard-bound hub (`0.0.0.0:<port>` / `::`) is restart-eligible:
     identification normalizes the configured `addr` to loopback exactly as the

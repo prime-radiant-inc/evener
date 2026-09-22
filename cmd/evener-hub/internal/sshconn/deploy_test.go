@@ -1574,9 +1574,8 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 // TestDevControllerWithoutADeployPathAttaches covers acceptance criterion 5's
 // first half under the rule that a build VERSION is not an attach gate: an
 // identity-less "dev" controller with no deploy path attaches to a host running
-// another build, because it speaks the same protocol. Refusing used to tell the
-// operator to configure a deploy path they may not need; the accepted difference
-// is reported instead (ensureOnce's skew notice), so it is not silent. The
+// another build, because it speaks the same protocol. The accepted difference is
+// reported (ensureOnce's notice at the attach), so it is not silent. The
 // installer refusals still reject an artifact an unstamped controller cannot
 // identify, and the deploy-configured half of criterion 5 is unchanged
 // (TestDevControllerWithADeployPathForcesTheDeploy).
@@ -2014,10 +2013,6 @@ func requireNoAttach(t *testing.T, fr *fakeRunner) {
 // restart, while the on-disk file re-reads as "othersha" (a binary swapped under
 // the controller, or just a host that keeps its own build). Judging that file
 // refused a host whose serving hub is exactly the build this controller asked for.
-//
-// Superseded: this test pinned a terminal errDeployUnstamped refusal with the
-// "restarted onto" wording for the same scenario. That refusal now applies only
-// where a deploy ran, which its own test covers with a push.
 func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
@@ -2053,9 +2048,17 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 	if got := len(fr.recordedStarts()); got != 1 {
 		t.Fatalf("Start calls = %d, want 1 (attach to the verified serving process)", got)
 	}
+	restarted := false
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "cat >") {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "systemctl restart") {
+			restarted = true
+		}
+		if strings.Contains(joined, "cat >") {
 			t.Fatalf("a restart-only attempt pushed a binary: %v", argv)
 		}
+	}
+	if !restarted {
+		t.Fatal("no restart ran, so the pass under test was not the restart-only one")
 	}
 }

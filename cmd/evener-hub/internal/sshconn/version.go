@@ -540,15 +540,22 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 	}
 }
 
-// restartHub restarts the host's hub after a deploy. It prefers a detected
-// supervisor (launchd/systemd) and otherwise restarts the bare process by
-// recovering its pid, argv, and log. It never starts a second hub while the old
-// one holds hub.lock: the bare path waits for the port to clear before
+// restartHub restarts the host's hub: after a deploy, to replace a stale process,
+// or to settle a restart or start an earlier attempt recorded. It prefers a
+// detected supervisor (launchd/systemd) and otherwise restarts the bare process
+// by recovering its pid, argv, and log. It never starts a second hub while the
+// old one holds hub.lock: the bare path waits for the port to clear before
 // relaunching. replaced is the identity of the hub process this restart expects
 // to replace, so a non-unique version cannot make the old process look like a
 // successful replacement.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, replaced hubIdentity) error {
-	expected := m.opts.controllerVersion()
+	// Judge the restart against the build the host will actually serve, which is
+	// this controller's own only when a deploy converged the host on it
+	// (expectedServedBuild). This is the same rule recoverRestart applies to a
+	// recorded start, and it has to be: the two branches differ only in whether a
+	// hub happens to answer /api/health, so deriving the expectation per branch made
+	// one recorded start succeed or fail on that accident.
+	expectVersion, expectPin := expectedServedBuild(facts, m.opts.controllerVersion())
 	set, err := m.detectSupervisor(ctx, host, facts)
 	if err != nil {
 		return err
@@ -570,7 +577,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	if sup.kind != supervisorNone {
 		if remote, ok := sup.restartRemote(facts.UID); ok {
-			return m.restartSupervised(ctx, host, sup, remote, expected, replaced)
+			return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
 		}
 		// A supervisor whose command cannot be built safely — launchd with no
 		// numeric uid from preflight, or a label outside the bare-safe set — falls
@@ -581,7 +588,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	if err := m.restartBare(ctx, host, replaced); err != nil {
 		return err
 	}
-	if err := m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), replaced); err != nil {
+	if err := m.waitHealthy(ctx, host, expectVersion, expectPin, replaced); err != nil {
 		return err
 	}
 	// A healthy replacement is serving, so any relaunch this Manager recorded for
@@ -593,7 +600,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 // restartSupervised runs a detected supervisor's restart command and verifies
 // the host hub afterwards. The restart command is recorded before it runs, so a
 // restart that leaves no listener is completed by the next Ensure.
-func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup supervisor, remote, expected string, replaced hubIdentity) error {
+func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup supervisor, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) error {
 	// Record the restart before running it, exactly as restartBare does: a
 	// restart that leaves no listener must be completed by the next Ensure.
 	// Without this a supervisor restart that failed with the on-disk version
@@ -609,7 +616,7 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 		// this cause is what let a failed restart look like success.
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 	}
-	if err := m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), replaced); err != nil {
+	if err := m.waitHealthy(ctx, host, expectedVersion, expectedGitSHA, replaced); err != nil {
 		if runErr != nil {
 			// launchd: docs note an interrupted `kickstart` can report failure
 			// even when the restart succeeded
@@ -630,27 +637,24 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 // completed by the next Ensure, which is what ErrRestart promises. There is no
 // hub to kill here, so it runs the recorded command directly and waits for the
 // expected build to answer.
-func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) error {
+func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts Preflight, expected string, pending pendingRestartState) error {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, pending.command), nil)
 	if err != nil {
 		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
-	expected := m.opts.controllerVersion()
-	// Both branches wait for the build the host will actually serve, which
-	// startExpectation resolves exactly as the bootstrap that recorded the start
-	// resolves it: waiting for the controller's version would strand a host that
-	// kept its own build at the last step of its own recovery. A recorded START has
-	// no predecessor to exclude (bootstrapHub only starts a hub where nothing was
-	// serving), so that expectation alone decides. A recorded REPLACEMENT must
-	// additionally prove the process that answers is different from the one it
-	// recorded: for an unverifiable version an unknown start time on either side
-	// proves nothing, and the restart stays pending.
+	// Both branches wait for the build the host will actually serve
+	// (expectedServedBuild), so a recorded start is settled by one rule whether or
+	// not a hub answers /api/health. A recorded START has no predecessor to exclude
+	// (bootstrapHub only starts a hub where nothing was serving), so that build
+	// alone decides; a recorded REPLACEMENT must additionally prove the answering
+	// process is not the one it replaced, which for an unverifiable version means
+	// both start times must be known and different.
+	servedVersion, servedPin := expectedServedBuild(facts, expected)
 	var waitErr error
-	startVersion, startPin := m.startExpectation(facts, expected)
 	if pending.start {
-		waitErr = m.waitStartedHealthy(ctx, host, startVersion, startPin)
+		waitErr = m.waitStartedHealthy(ctx, host, servedVersion, servedPin)
 	} else {
-		waitErr = m.waitHealthy(ctx, host, startVersion, startPin, pending.replaced)
+		waitErr = m.waitHealthy(ctx, host, servedVersion, servedPin, pending.replaced)
 	}
 	if waitErr != nil {
 		return waitErr
@@ -1182,31 +1186,30 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 //
 // Neither argument is unconditionally the controller's own build: a host that
 // kept its own binary is started and judged against THAT build, and against no
-// pin at all. startExpectation decides which, and why.
+// pin at all. expectedServedBuild decides which, and why.
 func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
 	return m.waitForHealthyHub(ctx, host, expectedVersion, expectedGitSHA, hubIdentity{}, false)
 }
 
-// startExpectation decides what a hub this Manager STARTS must report before the
-// bridge attaches: the version to wait for, and the snapshot pin that goes with
-// it.
+// expectedServedBuild is the build a wait should expect the host to serve: the
+// version to wait for, and the snapshot pin that goes with it.
 //
 // The controller's own build is the answer only when the host actually carries
 // it. A configured deploy path converges the host onto this controller's build,
-// and the deployed build's identity is judged before any start, so by the time a
-// start runs the host either already carries the controller's build or nothing
-// was ever going to install one. Waiting for the controller's version in the
-// second case could never converge — a binary cannot report a version it does not
-// carry — and would refuse a working, protocol-compatible host at the last step,
-// which is exactly the refusal the attach path no longer makes (ensureOnce). The
-// snapshot pin is dropped for the same reason: it names the controller's commit,
-// which a host that kept its own build was never given.
+// and the result is judged before any wait runs, so by then the host either
+// already carries the controller's build or nothing was ever going to install
+// one. Waiting for the controller's version in that second case could never
+// converge — a binary cannot report a version it does not carry — and refuses a
+// working, protocol-compatible host at the last step, which is the refusal the
+// attach path no longer makes (ensureOnce). The snapshot pin is dropped for the
+// same reason: it names the controller's commit, which a host that kept its own
+// build was never given.
 //
-// A foreign build is still allowed to be foreign here only because the host
-// answered the controller's launch-check, so the protocol matches; that is the
-// attach path's rule, and this is its last step.
-func (m *Manager) startExpectation(facts Preflight, expected string) (version, gitSHA string) {
-	if facts.LaunchCheckKnown && facts.Version != expected {
+// A host that keeps its own build only ever gets this far because it answered
+// this controller's launch-check, so the protocol matches; the build label is not
+// a compatibility signal.
+func expectedServedBuild(facts Preflight, expected string) (version, gitSHA string) {
+	if hostBuildDiffers(facts, expected) {
 		return facts.Version, ""
 	}
 	return expected, snapshotPinGitSHA()

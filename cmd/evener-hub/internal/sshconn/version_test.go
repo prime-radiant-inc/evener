@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/shellquote"
 )
@@ -1716,15 +1717,42 @@ func TestFirstAttachBootstrapsStoppedHost(t *testing.T) {
 	}
 }
 
+// TestExpectedServedBuildPinsOnlyTheControllersBuild pins the three branches of
+// the rule every wait depends on. A host carrying this controller's build is
+// waited for by version AND by the snapshot pin that proves which commit it is; a
+// host that kept its own build is waited for by its own version and needs no pin —
+// the controller's pin names a commit that host was never given; and a host whose
+// contract could not be read carries no build to differ from, so the controller's
+// build stays the expectation (the launch-contract gates handle that host).
+func TestExpectedServedBuildPinsOnlyTheControllersBuild(t *testing.T) {
+	origChannel, origSHA := buildinfo.Channel, buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitSHA = origChannel, origSHA })
+	buildinfo.Channel, buildinfo.GitSHA = "snapshot", "controllersha"
+
+	for _, tc := range []struct {
+		name        string
+		facts       Preflight
+		wantVersion string
+		wantGitSHA  string
+	}{
+		{"the controller's build", Preflight{LaunchCheckKnown: true, Version: "newsha"}, "newsha", "controllersha"},
+		{"the host's own build", Preflight{LaunchCheckKnown: true, Version: "oldsha"}, "oldsha", ""},
+		{"an unreadable contract", Preflight{}, "newsha", "controllersha"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotVersion, gotSHA := expectedServedBuild(tc.facts, "newsha")
+			if gotVersion != tc.wantVersion || gotSHA != tc.wantGitSHA {
+				t.Fatalf("expectedServedBuild = (%q, %q), want (%q, %q)", gotVersion, gotSHA, tc.wantVersion, tc.wantGitSHA)
+			}
+		})
+	}
+}
+
 // TestFirstAttachBootstrapsStoppedHostOnAnotherBuild is the stopped-host twin of
-// TestEnsureAttachesToAnotherBuildWhenProtocolMatches, and it is what makes that
-// rule actually reachable: removing the version gate gets a skewed host as far as
-// the first-attach bootstrap, whose start waits for the CONTROLLER's version to
-// appear in /api/health. A host whose binary is "oldsha" can never report the
-// controller's "newsha", so the wait would exhaust and refuse a host that is
-// perfectly usable — the same refusal in a later guise. The start must therefore
-// be judged against the build the host actually runs, and against no snapshot pin
-// (the controller's pin names a commit this host was never given).
+// TestEnsureAttachesToAnotherBuildWhenProtocolMatches: the first-attach bootstrap
+// starts the host's hub and waits for it to answer, and the build it will answer
+// with is the one the host runs. A binary reporting "oldsha" can never report the
+// controller's "newsha", so the start is judged against the host's own build.
 func TestFirstAttachBootstrapsStoppedHostOnAnotherBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	started := false
@@ -1779,10 +1807,8 @@ func TestFirstAttachBootstrapsStoppedHostOnAnotherBuild(t *testing.T) {
 // same rule as TestFirstAttachBootstrapsStoppedHostOnAnotherBuild. A first attach
 // records the command it ran (setPendingStart) so an interrupted bootstrap can be
 // completed by the next Ensure; recoverRestart then re-runs that command and waits
-// for the hub to answer. It recomputed the CONTROLLER's version to wait for, so a
-// host that kept its own build never converged — the gate this change removed,
-// reappearing in the recovery path. The wait must be the same one the bootstrap
-// itself chooses.
+// for the hub to answer. The build it must answer with is the host's own: the one
+// the bootstrap that recorded the start was judged against.
 func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 	const relaunch = "relaunch-the-host-hub"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -1824,6 +1850,59 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 	}
 	if !started {
 		t.Fatal("the recorded start command was never re-run")
+	}
+	if got := len(fr.recordedStarts()); got != 1 {
+		t.Fatalf("Start calls = %d, want 1 (the bridge attaches once the host's build answers)", got)
+	}
+}
+
+// TestRestartOnlyMismatchOnAnotherBuildAttaches covers the same rule where a
+// recorded start is replayed while a hub IS answering. ensureOnce then takes the
+// restartHub branch rather than the recovery branch, and restartHub re-derived the
+// controller's own version to wait for — so the same pending record was judged by
+// two different rules depending on whether anything answered /api/health, and a
+// host that kept its own build failed its restart with a permanent ErrRestart.
+func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
+	const relaunch = "systemctl restart evener-hub.service"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	restarted := false
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "systemctl restart"):
+			restarted = true
+			return nil, nil
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "api/health"):
+			// The hub that answers serves the host's own build, before and after
+			// the restart: nothing here can ever report the controller's version.
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+	m.setPendingStart(host.Name, relaunch)
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
+	}
+	if !restarted {
+		t.Fatal("the recorded start was never replayed")
 	}
 	if got := len(fr.recordedStarts()); got != 1 {
 		t.Fatalf("Start calls = %d, want 1 (the bridge attaches once the host's build answers)", got)
@@ -3274,13 +3353,8 @@ func TestRestartBareFailsClosedOnUnusableProcArgv(t *testing.T) {
 // refused. The build label is not a compatibility signal; the protocol version
 // is, and the wire layer enforces it independently at Initialize
 // (appwire.ProtocolVersionMismatchError), with the preflight protocol refusal
-// covering the host that cannot answer at all.
-//
-// This replaces TestEnsureVersionMismatchWithoutADeploySourceIsRefused, which
-// refused this same host. That refusal was itself a fix for a High finding whose
-// concern was that attaching to a foreign build happened SILENTLY — attaching is
-// what the operator wants, and the skew notice asserted here is what keeps it
-// from being silent again.
+// covering the host that cannot answer at all. Attaching is reported, not silent:
+// the notice this asserts is how an operator learns which build the host kept.
 func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
@@ -3305,12 +3379,9 @@ func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	}
 	// Accepting another build must not be silent: the operator sees which build
 	// the host kept and which one this controller runs.
-	var reported bool
-	for _, line := range logged {
-		if strings.Contains(line, `"oldsha"`) && strings.Contains(line, `"newsha"`) {
-			reported = true
-		}
-	}
+	reported := slices.ContainsFunc(logged, func(line string) bool {
+		return strings.Contains(line, `"oldsha"`) && strings.Contains(line, `"newsha"`)
+	})
 	if !reported {
 		t.Fatalf("attaching to another build was not reported: logged %q", logged)
 	}

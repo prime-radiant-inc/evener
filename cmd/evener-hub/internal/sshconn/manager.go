@@ -1557,7 +1557,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
 			// no hub to kill now, so complete the recorded restart instead.
-			restartErr = m.recoverRestart(restartCtx, host, facts, pending)
+			restartErr = m.recoverRestart(restartCtx, host, facts, expected, pending)
 		} else {
 			restartErr = m.restartHub(restartCtx, host, facts, running)
 		}
@@ -1601,29 +1601,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// configure a deploy path they did not need, for a difference the protocol
 	// already tolerates.
 	//
-	// Version auto-match still runs where it can. With a deploy path configured,
-	// deployRequired above installs the controller's build and
-	// deployedBuildNotStamped below proves the result; the installer path keeps its
-	// own terminal ErrVersionMismatch for a moved channel tag. What is left here is
-	// the case with nothing to install, where the host keeps its own binary — and
-	// that is reported rather than repaired, so accepting a skew is never silent
-	// (the defect this refusal was originally added for was the silence, not the
-	// attach).
-	if facts.LaunchCheckKnown && facts.Version != expected && !deploy && !restart {
-		m.logf("sshconn: host %s runs build %q, controller is %q; attaching anyway (a protocol-compatible host need not run this controller's build, and no deploy path is configured to replace it)", host.Name, facts.Version, expected)
-	}
-	// A pass that DEPLOYED something must have left the controller's build on the
-	// host, and that is what this judges. A pass that only started or restarted the
-	// hub launched the build already on disk, which the attach rule allows to be the
-	// host's own, so a restart-only mismatch is accepted rather than refused; the
-	// waits above already make the serving process prove itself. The judgement is
-	// made right after the write, before the restart path (above), so a permanent
-	// cause wins over a retryable restart failure.
-	if deploy {
-		if err := m.deployedBuildNotStamped(host.Name, facts, expected); err != nil {
-			return nil, err
-		}
-	}
+	// Version auto-match still converges a host that can be converged: with a deploy
+	// path configured, deployRequired above installs this controller's build and the
+	// judgement right after the write (above) proves the result, while the installer
+	// path keeps its own terminal ErrVersionMismatch for a moved channel tag. What
+	// is left here attaches on the host's own build, and reports the difference
+	// where it accepts it — at the attach, so a passed-over bootstrap cannot leave a
+	// notice for an attach that never happened.
 	// First attach to a stopped host must be able to start the hub. The probe
 	// above only restarts a hub that is already answering, and the bridge is a
 	// client that must not start one, so a configured host whose hub is not
@@ -1641,6 +1625,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			return nil, bootErr
 		}
 	}
+	// The host keeps the build it has: nothing installed this controller's, and the
+	// protocol — not the build label — decides compatibility. Say so, so accepting
+	// the difference is never silent.
+	if hostBuildDiffers(facts, expected) {
+		m.logf("sshconn: host %s runs build %q, controller is %q; attaching anyway (a protocol-compatible host need not run this controller's build, and no deploy path replaced it)", host.Name, facts.Version, expected)
+	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)
 }
@@ -1655,9 +1645,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 // supervisor is refused with ErrRestart, so the first host action surfaces the
 // failure instead of attaching nothing.
 func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expected string) error {
-	// What this start must see is the build the host will actually run, which is
-	// the controller's own only when a deploy converged it: startExpectation.
-	startVersion, startPin := m.startExpectation(facts, expected)
+	// The build this start must see is the one the host will actually run, not
+	// necessarily this controller's: expectedServedBuild.
+	startVersion, startPin := expectedServedBuild(facts, expected)
 	port := hubPort(m.hostAddr(host))
 	lp, err := m.probeListeners(ctx, host, port)
 	if err != nil {
@@ -1724,7 +1714,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 func (m *Manager) deployRequired(name string, facts Preflight, expected string) bool {
 	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
 	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
-	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+	versionDiffers := hostBuildDiffers(facts, expected)
 	deployNeeded := versionDiffers || !protocolOK || !flagsOK
 
 	// "dev" is not an identity: an unstamped controller and an unstamped host
@@ -1772,7 +1762,7 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 // are judged by ensureOnce only after a deploy/restart has run.
 func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown, hubPresent bool) (deploy, restart bool) {
 	deploy = m.deployRequired(name, facts, expected)
-	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+	versionDiffers := hostBuildDiffers(facts, expected)
 	// Replace the RUNNING hub only when the binary a restart would launch (the
 	// on-disk one) already matches the controller. A restart cannot give the
 	// on-disk binary a version it does not carry, so an on-disk mismatch needs the
@@ -1868,7 +1858,7 @@ func (m *Manager) reReadLaunchContract(ctx context.Context, host hostreg.Host, f
 // names the flags to set exactly as its sibling refusals do while an embedder with
 // no flags keeps the library's own sentence.
 func (m *Manager) deployedBuildNotStamped(hostName string, facts Preflight, expected string) error {
-	if !facts.LaunchCheckKnown || facts.Version == expected {
+	if !hostBuildDiffers(facts, expected) {
 		return nil
 	}
 	return fmt.Errorf("%w: host %q still reports version %q after this controller deployed its build, want %q; the build the host now holds was not built from this controller's tree, so the host cannot be pinned to the controller's build — %s",
@@ -2554,6 +2544,19 @@ func isDirtyVersion(v string) bool {
 // checkout of that commit.
 func isUnverifiableVersion(v string) bool {
 	return isDevVersion(v) || isDirtyVersion(v)
+}
+
+// hostBuildDiffers reports whether the host's known on-disk build is a build other
+// than the one this controller expects to find there. An unreadable contract
+// carries no build at all, so it is not a difference to report: the launch-contract
+// gates handle a host that could not answer.
+//
+// Every place that compares the host's build against the controller's asks this,
+// so the rule has one expression: when the attach stopped being gated on the build
+// version, four copies of it had to be found and reconsidered, and the copies that
+// were missed were exactly the ones that kept refusing.
+func hostBuildDiffers(facts Preflight, expected string) bool {
+	return facts.LaunchCheckKnown && facts.Version != expected
 }
 
 // canBuild reports whether the primary cross-compile + push path is available: a
