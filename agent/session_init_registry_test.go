@@ -245,15 +245,15 @@ func TestCanonicalStateDirResolvesDotDotThroughSymlink(t *testing.T) {
 // process-global.
 func TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd(t *testing.T) {
 	work := t.TempDir()
-	real := filepath.Join(work, "real-work")
-	if err := os.MkdirAll(real, 0o700); err != nil {
+	realWork := filepath.Join(work, "real-work")
+	if err := os.MkdirAll(realWork, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	link := filepath.Join(work, "link-work")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realWork, link); err != nil {
 		t.Fatalf("Symlink: %v", err)
 	}
-	state := filepath.Join(real, "state")
+	state := filepath.Join(realWork, "state")
 	if err := os.Mkdir(state, 0o700); err != nil {
 		t.Fatalf("Mkdir: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd(t *testing.
 		t.Fatalf("canonicalStateDir(%q) = %q, want %q (an existing relative state dir under a symlinked cwd must resolve to the physical path)", "state", got, state)
 	}
 	fresh := filepath.Join("fresh", "inner")
-	wantFresh := filepath.Join(resolvedPath(t, real), "fresh", "inner")
+	wantFresh := filepath.Join(resolvedPath(t, realWork), "fresh", "inner")
 	if got := canonicalStateDir(fresh); got != wantFresh {
 		t.Fatalf("canonicalStateDir(%q) = %q, want %q (a missing relative state dir under a symlinked cwd must resolve to the physical path)", fresh, got, wantFresh)
 	}
