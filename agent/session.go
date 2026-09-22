@@ -520,6 +520,13 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// recoveredTurnID is the ActiveTurnID the durable client-mutation snapshot
+	// named when this process restored the session: the turn a dead process
+	// left running, whose own pending start restore reclaims and re-runs. It is
+	// a per-process fact and is deliberately never persisted. A turn id is
+	// never reused, so the field needs no clearing: once the inherited turn
+	// ends, no later active turn can equal it again.
+	recoveredTurnID string
 	// clientMutationAppendedTurn flags that a restore-time client-mutation
 	// recovery appended turns to the transcript file. Restore consults it
 	// after the recovery pass to decide whether the retained transcript

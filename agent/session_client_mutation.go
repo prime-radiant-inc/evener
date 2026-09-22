@@ -281,8 +281,23 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			return nil
 		}
 		if snapshot.ActiveTurnID != "" {
-			rejectClientMutation(record, appwire.Conflict("turn is already active"))
-			return nil
+			// The recovered turn is this session's own work: the durable
+			// snapshot named it active because a process died mid-turn, and the
+			// pending start restore reclaims owns it. The caller's prompt
+			// belongs behind it, not refused on the floor, so accept the start:
+			// the caller keeps its identity and the send settles with an
+			// applied receipt instead of being returned as an unaccepted
+			// mutation. Only the inherited turn is eligible -- a turn the
+			// session started in this process keeps the refusal below, because
+			// the web composer's routing contract treats "turn is already
+			// active" as the answer to a turn/start while a turn is active. The
+			// serve loop runs one turn at a time and processes a wake only
+			// after the current turn returns, so this accepted start is claimed
+			// after the recovered turn finishes.
+			if snapshot.ActiveTurnID != s.recoveredTurnID {
+				rejectClientMutation(record, appwire.Conflict("turn is already active"))
+				return nil
+			}
 		}
 		if s.cfg.MaxTurns > 0 && snapshot.AcceptedTurns+reservedClientMutationTurns(snapshot) >= uint64(s.cfg.MaxTurns) {
 			rejectClientMutation(record, appwire.Conflict((&budgetExhaustionError{
