@@ -481,7 +481,11 @@ export function MarketplaceBrowser({
         <FlatList
           // A failed read keeps the last list in the store; rows a failed
           // read cannot vouch for stay hidden until a fresh read lands, and
-          // the error copy and Retry above speak instead.
+          // the error copy and Retry above speak instead. The empty-state
+          // copy below claims only what the retained list itself says: a
+          // non-empty list a failed read hides must not also read as "no
+          // marketplaces" beside that error, while a list the last trusted
+          // read left genuinely empty may still say so.
           data={state.marketplacesError === null ? state.marketplaces ?? [] : []}
           keyExtractor={(item) => item.name}
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
@@ -493,7 +497,7 @@ export function MarketplaceBrowser({
           ListEmptyComponent={
             state.marketplacesLoading ? (
               <ActivityIndicator accessibilityLabel="Loading marketplaces" />
-            ) : state.marketplaces ? (
+            ) : state.marketplaces?.length === 0 ? (
               <Copy muted>No marketplaces on this hub.</Copy>
             ) : null
           }

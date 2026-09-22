@@ -725,6 +725,48 @@ it("keeps a valid applied list after the old browser is disposed", async () => {
 	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
 });
 
+it("shows the failed read's error alone when the retained list is not empty", async () => {
+	let listCalls = 0;
+	const hub = marketplaceClient({
+		list: async () => {
+			listCalls += 1;
+			// The mount read answers a non-empty list the store keeps; the
+			// pull-to-refresh read fails, so the retained rows hide behind
+			// the error copy without a fresh list ever replacing them.
+			if (listCalls === 1) return { marketplaces: [marketplace] };
+			throw new Error("list unavailable");
+		},
+	});
+	harness.connection = readyConnection(hub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("acme");
+	const refresh = tree.root
+		.findAll((node) => typeof node.props?.onRefresh === "function")
+		.at(-1);
+	if (!refresh) throw new Error("no marketplaces list to refresh");
+	await act(async () => {
+		refresh.props.onRefresh();
+		await Promise.resolve();
+	});
+	await act(async () => {});
+	// A failed read keeps the last list in the store: the rows it cannot
+	// vouch for hide behind the error and Retry, but the retained list is not
+	// empty, so the empty-state copy must not claim the hub has no
+	// marketplaces beside the error that says the load failed.
+	expect(renderedText(tree)).toContain(
+		"Could not load marketplaces. Try again when connected.",
+	);
+	expect(renderedText(tree)).not.toContain("No marketplaces on this hub.");
+});
+
 it("reconciles through the remounted browser after the old browser is disposed", async () => {
 	let listCalls = 0;
 	let releaseRemoval!: () => void;
