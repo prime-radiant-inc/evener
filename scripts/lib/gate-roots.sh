@@ -2,7 +2,7 @@
 # gate-roots.sh — the durable per-worktree roots the Go test streams run in.
 #
 # Sourced, never executed, and POSIX sh so a test can drive it through `sh -c`.
-# It defines six functions and touches nothing until a caller asks.
+# It touches nothing until a caller asks.
 #
 # Why these roots are durable rather than minted per run: Go's test cache keys
 # on the *values* of the environment variables a test consults. The test binary
@@ -39,33 +39,43 @@ evener_durable_gate_root() {
 		evener_gate_root_tmp=$(cd "$evener_gate_root_tmp" && pwd -P) || return 1
 	fi
 	evener_gate_root_id=$(printf '%s' "$evener_gate_root_repo" | shasum -a 256 | cut -c1-16)
+	if [ -z "$evener_gate_root_id" ]; then
+		printf 'gate-roots: could not hash %s; refusing to derive a root every checkout would share\n' \
+			"$evener_gate_root_repo" >&2
+		return 1
+	fi
 	printf '%s/evener-gate-roots-%s\n' "$evener_gate_root_tmp" "$evener_gate_root_id"
 }
 
-# evener_remove_gate_root ROOT — delete a durable root.
+# evener_gate_root_is_owned PATH — whether PATH is one this library may create,
+# empty, or delete: absolute, inside an `evener-gate-roots-*` directory, and
+# naming no parent.
 #
-# This is the one recursive delete in this file, and the guard is what makes it
-# reviewable: ROOT must sit inside an `evener-gate-roots-*` directory and must
-# not name a parent, so an emptied, clobbered, or relative path fails loudly
-# instead of deleting somewhere else.
-evener_remove_gate_root() {
-	evener_gate_root_dir=$1
-	case "$evener_gate_root_dir" in
+# Every entry point checks it before touching the filesystem, so a clobbered,
+# emptied, or relative argument cannot reach a recursive delete, a chmod, or a
+# lock write somewhere else — the shapes kata 5hs2 reached.
+evener_gate_root_is_owned() {
+	case "${1:-}" in
 	/*/evener-gate-roots-*/*) ;;
 	*)
-		printf 'gate-roots: refusing to remove %s: not an absolute path under an evener-gate-roots-* directory\n' \
-			"$evener_gate_root_dir" >&2
+		printf 'gate-roots: refusing %s: not an absolute path under an evener-gate-roots-* directory\n' \
+			"${1:-}" >&2
 		return 1
 		;;
 	esac
-	case "$evener_gate_root_dir" in
+	case "$1" in
 	*..*)
-		printf 'gate-roots: refusing to remove %s: path names a parent directory\n' \
-			"$evener_gate_root_dir" >&2
+		printf 'gate-roots: refusing %s: path names a parent directory\n' "$1" >&2
 		return 1
 		;;
 	esac
-	rm -rf "$evener_gate_root_dir" || return 1
+}
+
+# evener_remove_gate_root ROOT — delete a durable root. This is the one
+# recursive delete in this file; the guard is what makes it reviewable.
+evener_remove_gate_root() {
+	evener_gate_root_is_owned "${1:-}" || return 1
+	rm -rf "$1" || return 1
 }
 
 # evener_reset_gate_root ROOT — empty ROOT and make it private, creating it if
@@ -80,20 +90,33 @@ evener_reset_gate_root() {
 
 # evener_take_gate_root_lock LOCK — create LOCK, holding this shell's pid, if it
 # does not already exist. Returns 0 when this shell created it, 1 when it was
-# already there. That creation is the moment ownership passes, which is why it
-# is the single place the pid is written.
+# already there.
+#
+# The pid goes into a private file that is then linked into place, because a
+# plain redirect publishes the lock before its contents: a second run reading
+# the empty file in that window would judge the owner dead and take a root a
+# live run is using. link(2) installs a complete file or fails.
 evener_take_gate_root_lock() {
-	(set -C; printf '%s\n' "$$" >"$1") 2>/dev/null
+	evener_gate_root_newlock="$1.$$"
+	printf '%s\n' "$$" >"$evener_gate_root_newlock" || return 1
+	if ln "$evener_gate_root_newlock" "$1" 2>/dev/null; then
+		rm -f "$evener_gate_root_newlock"
+		return 0
+	fi
+	rm -f "$evener_gate_root_newlock"
+	return 1
 }
 
 # evener_claim_gate_root ROOT — claim ROOT for this run.
 #
-# Returns 0 when claimed, 1 when another live gate run in this worktree already
-# holds it; the caller must then fall back to a per-run root, which is correct
-# but cannot reuse Go's test cache, and should say so. A run killed outright
-# leaves a lock whose pid no longer answers, which a later run reclaims.
+# Returns 0 when claimed, 1 when another live gate run in this worktree holds it
+# or ROOT is not a path this library owns; the caller must then fall back to a
+# per-run root, which is correct but cannot reuse Go's test cache, and should
+# say so. A run killed outright leaves a lock whose pid no longer answers, which
+# a later run reclaims.
 evener_claim_gate_root() {
 	evener_gate_root_dir=$1
+	evener_gate_root_is_owned "$evener_gate_root_dir" || return 1
 	evener_gate_root_lock="$1.lock"
 	evener_gate_root_base=$(dirname -- "$evener_gate_root_dir")
 	mkdir -p "$evener_gate_root_base" || return 1
@@ -127,6 +150,7 @@ evener_claim_gate_root() {
 # it exists only while a run holds the root.
 evener_release_gate_root() {
 	evener_gate_root_dir=$1
+	evener_gate_root_is_owned "$evener_gate_root_dir" || return 1
 	evener_gate_root_keep=${2:-}
 	evener_gate_root_lock="$1.lock"
 	if [ -z "$evener_gate_root_keep" ]; then

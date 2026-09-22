@@ -104,9 +104,73 @@ func TestDurableGateRootIsStablePerWorktree(t *testing.T) {
 	if lines[0] == lines[2] {
 		t.Errorf("two different worktrees derived the same root %q; sibling checkouts would share roots", lines[0])
 	}
-	wantPrefix := filepath.Join(tmpHome, "evener-gate-roots-")
+	// The library canonicalizes TMPDIR with `pwd -P`, so the prefix must be the
+	// resolved fixture path: on macOS the raw t.TempDir() path runs through
+	// /var -> /private/var, and on Linux TMPDIR itself may be a symlink.
+	resolvedHome, err := filepath.EvalSymlinks(tmpHome)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", tmpHome, err)
+	}
+	wantPrefix := filepath.Join(resolvedHome, "evener-gate-roots-")
 	if !strings.HasPrefix(lines[0], wantPrefix) {
 		t.Errorf("root %q is not under %q", lines[0], wantPrefix)
+	}
+}
+
+// TestDurableGateRootResolvesASymlinkedTMPDIR is that macOS case as a test this
+// platform can run: TMPDIR reached through a symlink must derive the root at
+// the resolved location, because the derived path has to be the same string on
+// every run for Go's test cache to match it.
+func TestDurableGateRootResolvesASymlinkedTMPDIR(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", real, err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", real, err)
+	}
+
+	out, code := runShSource(t, ". "+gateRootsLib+"\nevener_durable_gate_root \"$1\"",
+		[]string{"TMPDIR=" + link}, "/tmp/worktree-a")
+	if code != 0 {
+		t.Fatalf("evener_durable_gate_root exited %d:\n%s", code, out)
+	}
+	if want := filepath.Join(resolved, "evener-gate-roots-"); !strings.HasPrefix(out, want) {
+		t.Errorf("root %q is not under the resolved TMPDIR %q", out, want)
+	}
+}
+
+// TestClaimGateRootRefusesAnUnownedPathBeforeSideEffects pins the guard's
+// position rather than only its verdict: an argument this library does not own
+// must be refused before anything is created or chmodded, so a bad argument
+// cannot tighten a caller's directory permissions or drop a lock beside it.
+func TestClaimGateRootRefusesAnUnownedPathBeforeSideEffects(t *testing.T) {
+	t.Parallel()
+	notOurs := filepath.Join(t.TempDir(), "not-ours")
+	if err := os.Mkdir(notOurs, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", notOurs, err)
+	}
+
+	out, code := runShSource(t, gateRootsClaim, nil, filepath.Join(notOurs, "root"))
+	if code == 0 {
+		t.Fatalf("claiming a path this library does not own succeeded; it must refuse:\n%s", out)
+	}
+	info, err := os.Stat(notOurs)
+	if err != nil {
+		t.Fatalf("stat %s: %v", notOurs, err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("the refused claim chmodded %s to %o, want 755", notOurs, got)
+	}
+	if _, err := os.Stat(filepath.Join(notOurs, "root.lock")); err == nil {
+		t.Errorf("the refused claim created a lock beside an unowned path")
 	}
 }
 
@@ -286,7 +350,7 @@ func TestRunModuleTestsRetainsDurableRootsOnFailure(t *testing.T) {
 	}
 
 	logdir := ""
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "full logs: "); ok {
 			logdir = strings.TrimSpace(rest)
 		}

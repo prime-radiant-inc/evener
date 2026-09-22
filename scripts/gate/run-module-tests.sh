@@ -492,7 +492,10 @@ run_wave() {
 			printf 'NOTE  %-8s durable test root held by another run; using a per-run root (uncached)\n' "$m"
 			root="$(tmppath "$m")"
 		fi
-		( mkdir -p "$root" && export TMPDIR="$root" && evener_prepare_private_go_home "$root" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
+		# -m 0700 matches evener_reset_gate_root: the root becomes TMPDIR for
+		# the stream, and the skill-cache trust check refuses a temp root any
+		# other user can write to, umask or not.
+		( mkdir -p -m 0700 "$root" && export TMPDIR="$root" && evener_prepare_private_go_home "$root" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")
 	done
 	local i status
