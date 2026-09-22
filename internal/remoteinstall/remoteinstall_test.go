@@ -47,8 +47,11 @@ func TestCommandChecksTheEmbeddedScriptSize(t *testing.T) {
 // extraction must read the separator the same way, or verification fails on a
 // valid release and the install refuses to happen.
 func TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine(t *testing.T) {
-	if !((runtime.GOOS == "linux" && runtime.GOARCH == "amd64") ||
-		(runtime.GOOS == "darwin" && runtime.GOARCH == "arm64")) {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64", "darwin/arm64":
+		// install.sh ships release archives for exactly these; the harness
+		// serves the archive the script computes for its own platform.
+	default:
 		t.Skipf("install.sh ships no release archive for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	for _, tool := range []string{"sh", "tar", "install", "mktemp", "uname"} {

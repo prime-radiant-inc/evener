@@ -474,10 +474,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		upgrade: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 			return runUpgrade(args, stdout, stderr)
 		},
-		install: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-			return runInstall(args, stdin, stdout, stderr)
-		},
-		plugin: runPlugin,
+		install: runInstall,
+		plugin:  runPlugin,
 		hub: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// The hub's attach subcommand bridges AppWire over this process's
 			// stdin/stdout, so they must be threaded through rather than dropped:
