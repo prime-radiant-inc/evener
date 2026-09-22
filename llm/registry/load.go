@@ -735,6 +735,13 @@ func (rec *record) fold(src Provider, tag string, presets map[string]Transport) 
 	}
 	h.Headers = mergeStringMap(h.Headers, src.Headers)
 	h.CredentialHeaders = mergeStringMap(h.CredentialHeaders, src.CredentialHeaders)
+	// The per-layer validation cannot see across the fold: a base layer's
+	// "Authorization" and this layer's "authorization" are individually
+	// clean and collide only once merged, which is when the wire would
+	// carry both while resolution picks one.
+	if err := checkCredentialHeaderNames(h.CredentialHeaders, where); err != nil {
+		return err
+	}
 	rec.notes = append(rec.notes, src.notes...)
 	for _, id := range sortedKeys(src.Models) {
 		m := src.Models[id]

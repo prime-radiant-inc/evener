@@ -171,6 +171,9 @@ func CheckCredentialHeaderValue(value string) error {
 			seenMaterial = true
 		}
 	}
+	if schemeControl {
+		return errors.New("an auth scheme word must be separated from the credential material by a space or tab, not a control character: a header value cannot carry one")
+	}
 	if !seenMaterial {
 		return errors.New("the value must reference a $VARIABLE or run a $(command), never a literal secret")
 	}

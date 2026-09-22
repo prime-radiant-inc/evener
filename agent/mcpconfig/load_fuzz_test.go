@@ -88,7 +88,7 @@ func FuzzMCPConfigLoad(f *testing.F) {
 		`{"mcpServers":{"a":{"command":"x","args":["$(fuzz-refused) ${unterminated"]}}}`,
 		// ${VAR:-default} on an unset variable → default branch.
 		`{"mcpServers":{"a":{"command":"pre${` + fuzzUnsetVar + `:-def}post"}}}`,
-		// Unterminated ${ → treated literally (no closing brace).
+		// Unterminated ${ → a syntax error, so the load refuses the layer.
 		`{"mcpServers":{"a":{"command":"tail-${b"}}}`,
 		// Whitespace-only type → defaulted to stdio.
 		`{"mcpServers":{"a":{"type":"  ","command":"x"}}}`,

@@ -260,7 +260,13 @@ func realRunCommand(command string) (string, error) {
 		// without a context deadline (os/exec calls it only from the
 		// Context's watcher), so every failure path kills the group here:
 		// the pgid is the only handle on descendants the shell left
-		// behind, and a failed mint is retried on the next resolve.
+		// behind, and a failed mint is retried on the next resolve. The
+		// kill signals a raw pgid the reaped shell left named: the group
+		// holds the pgid while any member lives, and a recycled pid needs
+		// a full pid-space wrap inside one drain window — the same
+		// microscopic race devtool's Stop documents and accepts, because
+		// closing it fully would need waitid(WNOWAIT), which pure Go
+		// doesn't expose.
 		procgroup.Kill(cmd.Process.Pid)
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}

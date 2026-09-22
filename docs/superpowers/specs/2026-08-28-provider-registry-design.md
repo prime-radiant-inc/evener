@@ -1860,7 +1860,10 @@ The forms:
   never resolves as a present one.
 - `${NAME:-default}` — a reference with a default, POSIX `:-` semantics:
   the default fills a missing (unset or empty) variable, and is literal
-  text, never re-expanded.
+  text, never re-expanded. A default that fills in nothing but an auth
+  scheme word carries no credential: `${KEY:-Bearer}` with KEY unset
+  resolves as no credential with a warning, because a bare scheme word
+  is never credential material.
 - `$(command)` — a command expression. The interior is opaque to the
   parser — the shell owns its syntax at run time — and the command's
   whitespace-trimmed stdout is the value, verbatim: extracting the exact

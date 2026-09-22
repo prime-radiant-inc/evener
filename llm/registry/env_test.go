@@ -174,6 +174,7 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		{"a scheme word glued to the reference", "Bearer$PORTKEY_KEY", "separated from the credential material by whitespace", ""},
 		{"a scheme word separated by a control character", "Bearer\n$PORTKEY_KEY", "space or tab, not a control character", ""},
 		{"a control character hiding behind a space", "Bearer\n $PORTKEY_KEY", "space or tab, not a control character", ""},
+		{"a control character trailing the material", "Bearer $PORTKEY_KEY\n", "space or tab, not a control character", ""},
 		{"a scheme word glued to a command expression", "Bearer$(cat /tmp/planted-secret)", "separated from the credential material by whitespace", "/tmp/planted-secret"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

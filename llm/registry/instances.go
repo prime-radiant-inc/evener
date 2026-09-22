@@ -134,7 +134,7 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	// not fall through to the api_key_env candidates below. A present
 	// expression whose variables are unset means the row resolves nothing at
 	// all, which is also false.
-	if rec.head.APIKey != "" || rec.head.CredentialHeaders["Authorization"] != "" {
+	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders) != "" {
 		return false
 	}
 	for _, name := range r.effectiveAPIKeyEnv(rec) {
@@ -544,18 +544,19 @@ func (r *Registry) authorization(rec *record) authExpansion {
 }
 
 // schemeWordDefault reports whether the raw credential-header value's only
-// possible material is an auth scheme word. Minted and environment-supplied
-// bytes are data — a command's all-letters output is a token, not a scheme
-// word — so only authored text is judged: literal runs and the defaults
-// references fall back to, the two places the authoring boundary admits a
-// scheme word. A value whose authored text is a bare scheme word can never
-// carry a credential, whatever the environment holds.
+// possible material is an auth scheme word, and only when a reference's
+// default supplied it. Minted and environment-supplied bytes are data — a
+// command's all-letters output is a token, not a scheme word — and a pure
+// literal is the author's own key material, trusted exactly like an api_key
+// literal; the one judged case is "${KEY:-Bearer}" with KEY missing, where
+// authored default text stands in for a credential and carries none.
 func (r *Registry) schemeWordDefault(raw string) bool {
 	pieces, err := valueexpr.Pieces(raw)
 	if err != nil {
 		return false
 	}
 	var material strings.Builder
+	filledByDefault := false
 	for _, p := range pieces {
 		switch p.Kind {
 		case valueexpr.PieceLit:
@@ -565,13 +566,14 @@ func (r *Registry) schemeWordDefault(raw string) bool {
 				return false
 			}
 			if p.Ref.HasDefault {
+				filledByDefault = true
 				material.WriteString(p.Ref.Default)
 			}
 		case valueexpr.PieceCommand:
 			return false
 		}
 	}
-	return isAuthSchemeWord(strings.TrimSpace(material.String()))
+	return filledByDefault && isAuthSchemeWord(strings.TrimSpace(material.String()))
 }
 
 // credentialWithAuth is credential with the Authorization header's expansion

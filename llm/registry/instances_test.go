@@ -1033,3 +1033,26 @@ func TestGenericCredentialHeaderSchemeWordDefaultDrops(t *testing.T) {
 		t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
 	}
 }
+
+// A literal credential-header value is the author's own key material,
+// trusted exactly like an api_key literal: the no-material rule judges
+// only reference defaults, never literals or minted output, so an
+// all-letters literal key stays on the wire.
+func TestLiteralCredentialHeaderValueStays(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Api-Key\"\n" +
+		"credential_headers = { \"X-Api-Key\" = \"abcdef\" }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.CredentialHeaders["X-Api-Key"]; got != "abcdef" {
+		t.Fatalf("credential header map carries %q; want the literal key kept", got)
+	}
+}
