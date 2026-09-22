@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -211,5 +212,40 @@ func TestEvenerEnvScrubHelper(t *testing.T) {
 		if value, ok := os.LookupEnv(v.Name); ok {
 			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `evener launch-check` all inherit it", v.Name, value)
 		}
+	}
+}
+
+// chdirTemp is testing.T.Chdir minus the os.Open(".") the standard
+// implementation performs first: the test log records it as a relative "open
+// .", cmd/go resolves that against this package's directory and hashes the
+// whole directory into the test cache key, so churn there -- frontend/dist is
+// rebuilt unconditionally and is go:embed-pinned -- re-ran every test in this
+// package. Changing directory with a saved path keeps the same isolation
+// without that enumeration. It lives in this file so the next test that wants
+// a different working directory finds it rather than reaching for t.Chdir.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set PWD before changing directory: t.Setenv carries T.Chdir's
+	// parallel-test guard (checkParallel), and it has to fire while the process
+	// is still where it started, or a parallel test could resolve relative
+	// paths against the changed directory in the window before the panic.
+	t.Setenv("PWD", abs)
+	// Registered before the chdir so a failed one cannot leave the process in
+	// the new directory.
+	t.Cleanup(func() {
+		if err := os.Chdir(old); err != nil {
+			t.Errorf("restore working directory to %s: %v", old, err)
+		}
+	})
+	if err := os.Chdir(abs); err != nil {
+		t.Fatal(err)
 	}
 }

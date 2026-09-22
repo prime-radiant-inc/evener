@@ -2474,6 +2474,103 @@ func TestAskUser_RestoreResolvesAcrossUserSteer(t *testing.T) {
 	}
 }
 
+// TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder
+// is the combined fixture #1946 asks for alongside the individual oracles:
+// TestAskUser_RestoreResolvesAcrossUserSteer pins a resolving user steer
+// alone, TestAskUser_RestoreRederivesAwaitingAcrossTrailingSteering pins a
+// trailing reminder alone — this pins the two together, in one round. The
+// steer is accepted through the real queue/claim/carrier path (so its turn
+// and journal record are exactly what production writes), and the round it
+// opens then carries a daemon task reminder (the same shape
+// injectPostToolSteering appends via appendSteeringTurn: kind task-nudge, no
+// user source) before a plain final response. On restore, the final
+// response is a generic completion whose round-entry check
+// (roundEntryResolvesAskBoundary) walks back and FIRST meets the reminder —
+// non-resolving — so the completion cannot settle the boundary there; the
+// scan must continue past the reminder and reach the user steer entry,
+// which resolves it and keeps the older ask cleared. No production defect
+// was found in this interaction; the fixture exists to pin it.
+func TestAskUser_RestoreResolvesAcrossUserSteerFollowedBySameRoundDaemonReminder(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-steer pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-1",
+		Input:            clientMutationInput("focus on the tests", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "steer-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the accepted steer = %d, want 0", got)
+	}
+
+	// The same-round daemon task reminder, appended exactly as production
+	// appends daemon nudges (appendSteeringTurn: task-nudge kind, no user
+	// source), and the round's plain final response after it. Both are
+	// transcript-shape-only appends, like the trailing-steering oracle's:
+	// the restore scan inspects shape, not which mechanism produced it.
+	sess.appendSteeringTurn(taskReminderNudge(), events.SteeringKindTaskNudge)
+	sess.appendTurn(schema.TurnAssistant, llm.Assistant("noted"))
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the reminder and completion = %d, want 0 (neither may resurrect the cleared ask)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (the outer scan must pass the reminder and resolve at the user steer entry)", restored.askPending)
+	}
+	// The round ends in a plain final response with nothing after it, so the
+	// restored at-rest state is the generic "agent moved last" awaiting of
+	// deriveRestoredState's TurnAssistant branch — with no ask pending. That
+	// Awaiting-with-empty-pending pair is the shape
+	// TestAskUser_RestoreGenericAwaitingKeepsPendingEmptyAndGoalKicks pins;
+	// what this fixture adds is that the reminder never lets the scan
+	// re-derive the older ask underneath it.
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (generic awaiting: agent moved last, no ask pending)", got, SessionAwaiting)
+	}
+}
+
 // TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt covers RoboRev
 // #1806 round 4's High/Medium: a human-note update is user-sourced
 // (events.SteeringSourceUser) exactly like an answering steer, but it does
@@ -2542,6 +2639,16 @@ func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 // contract tests in session_tools_misc_contract_fuzz_test.go do) rather than
 // through a live session, since a fresh session always stamps kinds and so
 // cannot reproduce the legacy (pre-stamping) shape.
+// The fixture text deliberately does NOT carry the write-path human-note
+// prefix (humanNoteSteerPrefix): isHumanNoteSteer's last-resort text-shape
+// fallback would classify the turn as a note even with the journal ignored,
+// leaving the journal record with nothing left to prove. With the prefix
+// absent, only the origins lookup can keep the ask pending, and the
+// nil-origins control below asserts the discriminating pair directly: the
+// same kindless turn resolves as an ordinary answering steer exactly when
+// no journal record backs it (the text-shape fallback itself is the
+// sibling test TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape's
+// own subject, and keeps its prefixed fixture for exactly that reason).
 func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -2569,7 +2676,9 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	// A legacy human-note steering turn: user-sourced, kindless (as it would
 	// be if written before SteeringKind existed), its ClientMutationID the
 	// only link back to the journal record that still says what wrote it.
-	legacyNote := schema.NewTurn(schema.TurnSteering, llm.User("human updated their whiteboard: watch the ingest path"))
+	// The text carries no human-note prefix, so the journal record is the
+	// only note evidence this turn has.
+	legacyNote := schema.NewTurn(schema.TurnSteering, llm.User("watch the ingest path"))
 	legacyNote.SteeringSource = events.SteeringSourceUser
 	legacyNote.ClientMutationID = "note-legacy"
 	history := append(append([]schema.Turn{}, sess.history...), legacyNote)
@@ -2581,6 +2690,21 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	}
 	if state := deriveRestoredState(history, 0, origins); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
+	}
+
+	// The discriminating nil-origins control: the SAME kindless, prefix-free
+	// turn with no journal record to consult reads as an ordinary answering
+	// steer and resolves the ask. Only the origins-versus-nil difference
+	// separates the two runs, so the journal's notes/human/set evidence is
+	// load-bearing: a restore path that ignored it would fail the first
+	// half, and one that hallucinated note classification without it would
+	// fail this one.
+	pending, isAskRound = deriveRestoredAskPending(history, 0, nil)
+	if isAskRound || len(pending) != 0 {
+		t.Fatalf("deriveRestoredAskPending without journal provenance = pending=%#v isAskRound=%v, want the kindless turn to resolve the ask as an ordinary answering steer", pending, isAskRound)
+	}
+	if state := deriveRestoredState(history, 0, nil); state != SessionIdle {
+		t.Fatalf("deriveRestoredState without journal provenance = %q, want %q", state, SessionIdle)
 	}
 }
 

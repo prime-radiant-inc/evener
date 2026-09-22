@@ -412,7 +412,7 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 	for _, reason := range []string{"disconnect", "stop"} {
 		t.Run(reason, func(t *testing.T) {
 			root := t.TempDir()
-			t.Chdir(root)
+			chdirTemp(t, root)
 			t.Setenv(envvars.XDGStateHome.Name, filepath.Join(root, "state-home"))
 			runDir := filepath.Join(root, "run")
 			if err := os.MkdirAll(runDir, 0o700); err != nil {
@@ -612,7 +612,7 @@ func TestLongRunningResumeCleanupErrorIsNotNested(t *testing.T) {
 
 func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	root := t.TempDir()
-	t.Chdir(root)
+	chdirTemp(t, root)
 	t.Setenv(envvars.XDGStateHome.Name, filepath.Join(root, "state-home"))
 	runDir, recoveryRoot := filepath.Join(root, "run"), filepath.Join(root, "recovery")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {

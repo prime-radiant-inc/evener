@@ -245,6 +245,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
+  DRAFT_RESTORE_FAILED_MESSAGE,
   decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
