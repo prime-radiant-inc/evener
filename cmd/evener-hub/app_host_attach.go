@@ -186,7 +186,8 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 // appserver.WireError.
 //
 // The manager's deploy-family sentinels (ErrDeploy, ErrVersionMismatch,
-// ErrControllerDirty, ErrExecutableMissing) win over the source's generic
+// ErrControllerDirty, ErrRunTargetUnservable, ErrDeployArtifactUnusable,
+// ErrDeployUnstamped, ErrExecutableMissing) win over the source's generic
 // deadline mapping: a timed-out deployment still carries the deploy sentinel in
 // its chain, and it must reach the browser as the typed HubLaunchError the
 // Connect surface matches, not as SessionUnavailable. Every other error keeps
@@ -231,8 +232,11 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //     host, closed manager) → Unavailable (actionUnavailable): the host refused
 //     the controller, and no retry of this attach can change that.
 //   - deploy failures (ErrDeploy), the dirty-controller deploy refusal
-//     (ErrControllerDirty), a version mismatch a deploy would have to fix, and
-//     the missing-executable refusal a host with no deploy path produces
+//     (ErrControllerDirty), the unservable-run-target deploy refusal
+//     (ErrRunTargetUnservable), the post-deploy identity refusal
+//     (ErrDeployUnstamped), the wrong-platform-artifact refusal
+//     (ErrDeployArtifactUnusable), a version mismatch a deploy would have to fix,
+//     and the missing-executable refusal a host with no deploy path produces
 //     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
 //     not install or match its build on the host, so the host cannot be
 //     attached/launched.
@@ -252,6 +256,9 @@ func hostAttachWireError(err error) error {
 	case errors.Is(err, sshconn.ErrDeploy),
 		errors.Is(err, sshconn.ErrVersionMismatch),
 		errors.Is(err, sshconn.ErrControllerDirty),
+		errors.Is(err, sshconn.ErrRunTargetUnservable),
+		errors.Is(err, sshconn.ErrDeployArtifactUnusable),
+		errors.Is(err, sshconn.ErrDeployUnstamped),
 		errors.Is(err, sshconn.ErrExecutableMissing):
 		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
 	default:

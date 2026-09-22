@@ -309,6 +309,46 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
   go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
 ~~~
 
+### `EVENER_SSH_E2E_DEPLOY=1` — the live deploy to a host with no evener
+
+The deploy slice's criteria 1 and 2
+(`docs/superpowers/specs/2026-09-22-multi-host-deploy-slice.md`): a disposable
+host with no `evener` at its run target is given one by the controller and
+attaches, and the binary the controller leaves there reports the controller's
+own `buildinfo.Version()` from its `launch-check`. It drives the same private
+loopback hub and `evener/host/add` → `evener/host/attach` wire path the
+`EVENER_SSH_E2E` check does, in two cases: `-build-source` (the controller
+cross-compiles this checkout for the host's target, the primary path whose
+identity is true by construction) and `-deploy-binary` (the controller pushes an
+artifact the check staged by cross-compiling the same tree).
+
+**This gate writes to the host**, which is why it is a separate opt-in from the
+read-only `EVENER_SSH_E2E` check: a developer running that one is not signed up
+for a write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as well, and
+skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
+sibling check.
+
+What it writes, and where: under the host's `HOME` it creates its own
+`evener-deploy-e2e-{source,binary}` directory, deploys the binary to
+`<dir>/bin/evener` (the basename `checkRunTarget` requires), and writes a private
+`hub.toml` and state root beside it so the host hub it starts uses its own
+loopback port (`127.0.0.1:19180` / `:19181`) and its own lock. It removes that
+directory when it finishes. It never addresses the host's real install
+(`~/.local/bin/evener`); the check hashes that file before and after and fails if
+it changed.
+
+Prerequisites: a disposable host reachable over non-interactive ssh, with a
+supported target (`linux/amd64` or `darwin/arm64`); the Go toolchain and this
+checkout on the controller; a **clean** checkout (the controller's build identity
+is stamped from `HEAD`, and `-build-source` refuses a dirty tree — the check
+skips with that reason); and the embedded web UI built (`make build-web`), which
+the cross-compile verifies before it builds.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
+~~~
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
