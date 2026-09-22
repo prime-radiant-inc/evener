@@ -888,26 +888,24 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 	// other: route it through the list-result logic so it settles a
 	// pending reconciliation and advances the applied generation under the
 	// same guards that order every other list response. The clear is
-	// selective about what a fresh response may replace: a pending
-	// reconciliation's removed- or unavailable-outcome warning must
-	// survive the routing so the settle can classify it - the clone files
-	// an unavailable outcome reported are still on disk whatever this
-	// mutation did, and clearing the account wholesale here would erase
-	// that fact before the classification could keep it - while an
-	// ordinary failure the mutation supersedes, and anything standing
-	// once no reconciliation is pending, clears exactly like the fresh
-	// news it is. The guards above already established this response
-	// passes the read boundary, so the routed settle always reaches the
-	// classification when a reconciliation is pending.
-	if !m.marketplaceReconcilePending {
-		m.err = nil
-	} else {
-		switch state, _ := classifyMarketplaceRemovalOutcome(m.err); state {
-		case marketplaceRemovalRemoved, marketplaceRemovalUnavailable:
-			// Kept standing for the routed settle to classify.
-		default:
+	// classification-driven - a fresh response replaces only the account it
+	// actually supersedes: a clone-remains warning, applied or unavailable,
+	// reports clone files that are still on disk whether the fence has
+	// settled or not, and nothing re-derives that fact, so no fresh
+	// response may erase it; an ordinary failure the mutation supersedes
+	// clears as the fresh news it is; and the removed outcome's "being
+	// refreshed" account clears too - while a reconciliation is pending
+	// the routed settle clears it exactly like a confirming read, which
+	// the guards above already guaranteed this response reaches.
+	switch state, _ := classifyMarketplaceRemovalOutcome(m.err); state {
+	case marketplaceRemovalApplied, marketplaceRemovalUnavailable:
+		// The clone-files-remains fact keeps standing, fence or no fence.
+	case marketplaceRemovalRemoved:
+		if !m.marketplaceReconcilePending {
 			m.err = nil
 		}
+	default:
+		m.err = nil
 	}
 	return m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
 		List:                msg.List,

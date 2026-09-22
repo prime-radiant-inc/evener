@@ -175,12 +175,13 @@ type hubModel struct {
 	marketplaceReconcilePending    bool
 	marketplaceReconcileGeneration uint64
 	// marketplaceListReadsOrdered turns on the first time a marketplace
-	// removal lands on the hub, whatever the outcome carried. From then on
-	// the model issues only generation-tagged reads, and rejects every read
-	// whose generation predates the latest landed removal: such a read was
-	// issued before that removal stood and can never describe the
-	// post-removal state, so accepting it - however late it arrives - would
-	// resurrect the removed marketplace's row.
+	// removal lands on the hub, whatever the outcome carried. Every list
+	// read is generation-tagged from the first one the model issues, so
+	// this flag no longer governs tagging: it only arms the floor that
+	// rejects every read whose generation predates the latest landed
+	// removal - such a read was issued before that removal stood and can
+	// never describe the post-removal state, so accepting it - however
+	// late it arrives - would resurrect the removed marketplace's row.
 	marketplaceListReadsOrdered bool
 	// marketplaceListReadIssued is the generation of the newest list read
 	// this model has issued. The reconciliation gate holds back failed
