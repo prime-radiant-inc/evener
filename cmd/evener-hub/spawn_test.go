@@ -1247,7 +1247,7 @@ func TestValidateProviderCredentials_AuthSchemesNeedingNothing(t *testing.T) {
 }
 
 // TestValidateProviderCredentials_ResolvedKeyPasses walks the credential
-// sources a bearer instance can launch with, and the empty environment that
+// sources an instance can launch with, and the empty environment that
 // refuses it.
 func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 	for _, tt := range []struct {
@@ -1261,8 +1261,10 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 			provider: registry.Provider{Base: "anthropic", APIKey: "sk-inline-key"},
 		},
 		{
+			// The credential follows the scheme's auth header, and the
+			// anthropic base sends x-api-key.
 			name:     "credential header",
-			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"x-api-key": "$GATEWAY_KEY"}},
 			env:      map[string]string{"GATEWAY_KEY": "gk"},
 		},
 		{
@@ -1277,7 +1279,16 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 		},
 		{
 			name:     "credential header whose variable is unset",
+			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"x-api-key": "$GATEWAY_KEY"}},
+			wantErr:  true,
+		},
+		{
+			// The credential follows the scheme's auth header: anthropic
+			// sends x-api-key, so an Authorization entry is a plain header
+			// and authors no credential for the gate to pass.
+			name:     "authorization entry under an x-api-key scheme",
 			provider: registry.Provider{Base: "anthropic", CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"}},
+			env:      map[string]string{"GATEWAY_KEY": "gk"},
 			wantErr:  true,
 		},
 	} {

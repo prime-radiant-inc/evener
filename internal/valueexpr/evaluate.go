@@ -174,23 +174,19 @@ func mint(command string) (Result, error) {
 	if value == "" {
 		return Result{}, &CommandError{Detail: "command produced no output"}
 	}
-	return Result{Value: value, ExpiresAt: expiry(value, now)}, nil
-}
-
-// expiry decides how long a freshly minted value stays fresh: until a JWT
-// exp claim's refresh margin, or the default TTL when the value carries no
-// readable claim.
-func expiry(value string, now time.Time) time.Time {
 	if exp, ok := tokenExpiry(value); ok {
 		fresh := exp.Add(-refreshMargin)
-		if fresh.After(now) {
-			return fresh
+		if !fresh.After(now) {
+			// A token at or past its refresh margin is dead on arrival:
+			// handing it out would send a credential the cache already
+			// considers expired, so the mint fails and nothing is cached.
+			return Result{}, &CommandError{Detail: "token at or past its refresh margin"}
 		}
-		// The token is at or past its margin: cache the run's bookkeeping but
-		// let the next call re-mint immediately.
-		return now
+		return Result{Value: value, ExpiresAt: fresh}, nil
 	}
-	return now.Add(defaultTTL)
+	// A value with no readable expiry claim stays fresh for the default TTL,
+	// anchored at completion.
+	return Result{Value: value, ExpiresAt: now.Add(defaultTTL)}, nil
 }
 
 // tokenExpiry reads the exp claim out of a three-segment JWT payload, the

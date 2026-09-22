@@ -556,12 +556,13 @@ func (r *Registry) authorization(rec *record) authExpansion {
 
 // schemeWordDefault reports whether a raw credential field's — the
 // Authorization credential header's, or api_key's — only possible material
-// is an auth scheme word, and only when a reference's default supplied it.
+// is auth scheme words, and only when a reference's default supplied it.
 // Minted and environment-supplied bytes are data — a command's all-letters
 // output is a token, not a scheme word — and a pure literal is the author's
-// own key material, trusted exactly like any hand-typed secret; the one
-// judged case is "${KEY:-Bearer}" with KEY missing, where authored default
-// text stands in for a credential and carries none.
+// own key material, trusted exactly like any hand-typed secret; the judged
+// cases are authored defaults that assemble to nothing but scheme words —
+// "${KEY:-Bearer}", or "Bearer ${KEY:-Basic}" with KEY missing — where
+// authored default text stands in for a credential and carries none.
 func (r *Registry) schemeWordDefault(raw string) bool {
 	pieces, err := valueexpr.Pieces(raw)
 	if err != nil {
@@ -585,7 +586,16 @@ func (r *Registry) schemeWordDefault(raw string) bool {
 			return false
 		}
 	}
-	return filledByDefault && isAuthSchemeWord(strings.TrimSpace(material.String()))
+	assembled := strings.TrimSpace(material.String())
+	if !filledByDefault || assembled == "" {
+		return false
+	}
+	for token := range strings.FieldsSeq(assembled) {
+		if !isAuthSchemeWord(token) {
+			return false
+		}
+	}
+	return true
 }
 
 // credentialWithAuth is credential with the Authorization header's expansion

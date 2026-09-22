@@ -955,32 +955,37 @@ func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
 	}
 }
 
-// A default that fills in a bare scheme word carries no credential: the
-// authoring boundary admits a scheme word only standing ahead of material,
-// so an expansion that rounds to the word alone resolves as no credential
-// with a warning, never as a present one whose value is just "Bearer".
+// Authored defaults that fill in nothing but scheme words carry no
+// credential: the authoring boundary admits a scheme word only standing
+// ahead of material, so an expansion whose only material is scheme words —
+// the bare "${KEY:-Bearer}", or "Bearer ${KEY:-Basic}" — resolves as no
+// credential with a warning, never as a present one.
 func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
-	const config = "[providers.gw]\n" +
-		"base = \"openai-compatible\"\n" +
-		"base_url = \"https://gw.internal.example/v1\"\n" +
-		"protocol = \"openai-chat\"\n" +
-		"auth = \"header\"\n" +
-		"auth_header = \"Authorization\"\n" +
-		"credential_headers = { \"Authorization\" = '''${MISSING:-Bearer}''' }\n" +
-		"[providers.gw.models.\"house-model\"]\n"
-	r := fixtureLoad(t, nil, config)
-	res, err := r.Resolve("gw/house-model")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Credential.Source != "none" || res.Credential.Value != "" {
-		t.Fatalf("credential = %+v; want none: the default is only a scheme word", res.Credential)
-	}
-	if _, ok := res.CredentialHeaders["Authorization"]; ok {
-		t.Fatal("the header map carries the scheme-word-only expansion; want it dropped")
-	}
-	if !strings.Contains(strings.Join(res.Warnings, ";"), "nothing but an auth scheme word") {
-		t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
+	for _, value := range []string{`${MISSING:-Bearer}`, `Bearer ${MISSING:-Basic}`} {
+		t.Run(value, func(t *testing.T) {
+			config := "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"Authorization\"\n" +
+				"credential_headers = { \"Authorization\" = '''" + value + "''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n"
+			r := fixtureLoad(t, nil, config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "none" || res.Credential.Value != "" {
+				t.Fatalf("credential = %+v; want none: the default is only scheme words", res.Credential)
+			}
+			if _, ok := res.CredentialHeaders["Authorization"]; ok {
+				t.Fatal("the header map carries the scheme-word-only expansion; want it dropped")
+			}
+			if !strings.Contains(strings.Join(res.Warnings, ";"), "nothing but an auth scheme word") {
+				t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
+			}
+		})
 	}
 }
 
@@ -1027,6 +1032,27 @@ func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 	}
 	if len(res.Warnings) != 0 {
 		t.Fatalf("warnings = %v; the literal is trusted without warnings", res.Warnings)
+	}
+
+	// Multiple scheme words are still no material: a default that assembles
+	// "Bearer Basic" authors words all the way down, never a key.
+	const multiWord = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"Bearer ${MISSING:-Basic}\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r = fixtureLoad(t, nil, multiWord)
+	res, err = r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v; want none: the default is only scheme words", res.Credential)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "api_key expands to nothing but an auth scheme word") {
+		t.Fatalf("warnings = %v; want the api_key scheme-word warning", res.Warnings)
 	}
 }
 
@@ -1122,7 +1148,7 @@ func TestCustomAuthHeaderConsumedEnvVarNotShadowed(t *testing.T) {
 func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
 	pairs := make([]string, 0, 6)
 	for _, k := range []string{"X-C", "X-A", "X-D", "X-B", "X-F", "X-E"} {
-		pairs = append(pairs, fmt.Sprintf("\"%s\" = \"$%s\"", k, strings.TrimPrefix(k, "X-")))
+		pairs = append(pairs, fmt.Sprintf("%q = %q", k, "$"+strings.TrimPrefix(k, "X-")))
 	}
 	config := "[providers.gw]\n" +
 		"base = \"openai-compatible\"\n" +

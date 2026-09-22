@@ -45,10 +45,12 @@ func TestEvaluateCachesShortLivedValue(t *testing.T) {
 		t.Fatalf("executor ran %d times inside the margin; want 1", runs)
 	}
 
-	// Crossing exp minus the refresh margin re-mints.
+	// Crossing exp minus the refresh margin re-mints; a command that keeps
+	// serving the same one-hour token now fails the margin, because that
+	// token is dead on arrival.
 	now = base.Add(3600*time.Second - refreshMargin + time.Second)
-	if _, err := evaluate("get-token"); err != nil {
-		t.Fatalf("evaluate: %v", err)
+	if _, err := evaluate("get-token"); err == nil {
+		t.Fatal("evaluate returned nil; a token inside its margin must fail the mint")
 	}
 	if runs != 2 {
 		t.Fatalf("executor ran %d times after the margin passed; want 2", runs)
@@ -84,7 +86,7 @@ func TestEvaluateCachesLongLivedValueWithTTL(t *testing.T) {
 	}
 }
 
-func TestEvaluateExpiredJWTDoesNotCache(t *testing.T) {
+func TestAtMarginJWTIsAFailedMint(t *testing.T) {
 	ResetForTest()
 	base := time.Unix(1_800_000_000, 0)
 	Now = func() time.Time { return base }
@@ -96,12 +98,26 @@ func TestEvaluateExpiredJWTDoesNotCache(t *testing.T) {
 		return makeJWT(base.Unix() - 10), nil // already expired
 	}
 	for range 2 {
-		if _, err := evaluate("get-token"); err != nil {
-			t.Fatalf("evaluate: %v", err)
+		_, err := evaluate("get-token")
+		cmdErr, ok := errors.AsType[*CommandError](err)
+		if !ok || cmdErr.Detail != "token at or past its refresh margin" {
+			t.Fatalf("err = %v; want the refresh-margin failure", err)
 		}
 	}
 	if runs != 2 {
-		t.Fatalf("an expired token cached: executor ran %d times; want 2", runs)
+		t.Fatalf("a failed margin mint was cached: executor ran %d times; want 2", runs)
+	}
+
+	// Inside the margin is the same failure: exp 30s out leaves nothing
+	// once the 60s margin is taken, and the caller must not receive it.
+	RunCommand = func(string) (string, error) {
+		runs++
+		return makeJWT(base.Unix() + 30), nil // inside the refresh margin
+	}
+	_, err := evaluate("get-token")
+	cmdErr, ok := errors.AsType[*CommandError](err)
+	if !ok || cmdErr.Detail != "token at or past its refresh margin" {
+		t.Fatalf("err = %v; want the refresh-margin failure for a token inside the margin", err)
 	}
 }
 
