@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/shellquote"
@@ -580,7 +581,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	if err := m.restartBare(ctx, host, replaced); err != nil {
 		return err
 	}
-	if err := m.waitHealthy(ctx, host, expected, replaced); err != nil {
+	if err := m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), replaced); err != nil {
 		return err
 	}
 	// A healthy replacement is serving, so any relaunch this Manager recorded for
@@ -608,7 +609,7 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 		// this cause is what let a failed restart look like success.
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 	}
-	if err := m.waitHealthy(ctx, host, expected, replaced); err != nil {
+	if err := m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), replaced); err != nil {
 		if runErr != nil {
 			// launchd: docs note an interrupted `kickstart` can report failure
 			// even when the restart succeeded
@@ -642,9 +643,9 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, pending
 	// on either side proves nothing, and the restart stays pending.
 	var waitErr error
 	if pending.start {
-		waitErr = m.waitStartedHealthy(ctx, host, expected)
+		waitErr = m.waitStartedHealthy(ctx, host, expected, snapshotPinGitSHA())
 	} else {
-		waitErr = m.waitHealthy(ctx, host, expected, pending.replaced)
+		waitErr = m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), pending.replaced)
 	}
 	if waitErr != nil {
 		return waitErr
@@ -1113,6 +1114,20 @@ func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubId
 	return parseHubHealth(out, addr)
 }
 
+// snapshotPinGitSHA is the Git SHA a snapshot deploy's post-restart probe must
+// see the host hub report, or "" when this controller carries no such pin. The
+// build channel (buildinfo.BuildChannel()) is the source, not a second flag: the
+// channel decides whether a version names the build. A snapshot version does not
+// — two snapshot builds can share it — so only backend_git_sha, the running
+// hub's own buildinfo.GitSHA, tells them apart. Release and dev versions are
+// left to the version-equality rule the probe already applies.
+func snapshotPinGitSHA() string {
+	if buildinfo.BuildChannel() != "snapshot" {
+		return ""
+	}
+	return buildinfo.GitSHA
+}
+
 // waitHealthy polls the host hub's /api/health until the response reports
 // expectedVersion or the bound is exhausted. The expected version is what makes
 // this the authoritative restart check: any hub answer proves a hub is serving,
@@ -1120,6 +1135,11 @@ func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubId
 // Accepting a bare healthy response would mask a failed restart (the old hub
 // still answering) and could attach to the dying old process during its
 // shutdown drain, tearing down the fresh channel.
+//
+// expectedGitSHA is the snapshot pin described by snapshotPinGitSHA, already
+// resolved by the caller; empty means there is none (see hubBuildSHAMatches for
+// what the pin adds). It is a separate argument rather than something this
+// function reads itself so a caller's choice of pin is visible at the call.
 //
 // replaced is the identity of the hub process the restart expects to have
 // replaced. A stamped version is a content identity, so an answer reporting it
@@ -1132,8 +1152,8 @@ func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubId
 // on either side proves nothing, so such an answer is never accepted: the
 // restart is left unresolved and retried instead of being read as a replacement.
 // waitStartedHealthy is the same wait for a hub this Manager STARTS.
-func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string, replaced hubIdentity) error {
-	return m.waitForHealthyHub(ctx, host, expectedVersion, replaced, true)
+func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string, replaced hubIdentity) error {
+	return m.waitForHealthyHub(ctx, host, expectedVersion, expectedGitSHA, replaced, true)
 }
 
 // waitStartedHealthy verifies a hub this Manager started where nothing was
@@ -1144,23 +1164,37 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 // offer. The exception belongs to the start paths only — a restart whose
 // predecessor identity is unknown must fail closed (see waitHealthy), or an old
 // process whose health body carries no started_at would satisfy it.
-func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
-	return m.waitForHealthyHub(ctx, host, expectedVersion, hubIdentity{}, false)
+//
+// expectedGitSHA is the snapshot pin described by snapshotPinGitSHA, resolved by
+// the caller exactly as waitHealthy takes it. A start passes one too: the binary
+// it launches is the one on disk, but "on disk" was accepted by the
+// version-equality rule, and a snapshot version cannot tell two builds apart —
+// so a start on a stopped host (a deploy that found no hub present, or a first
+// attach to a host already running a foreign snapshot build of the same version)
+// would otherwise attach to a commit this controller did not install. The pin is
+// the only build evidence a start can offer; an empty pin leaves a non-snapshot
+// start on the version-equality rule unchanged.
+func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
+	return m.waitForHealthyHub(ctx, host, expectedVersion, expectedGitSHA, hubIdentity{}, false)
 }
 
 // waitForHealthyHub is the shared poll behind waitHealthy and
 // waitStartedHealthy. replacing says whether the wait verifies a REPLACEMENT (a
 // restart) rather than a start where nothing was serving.
-func (m *Manager) waitForHealthyHub(ctx context.Context, host hostreg.Host, expectedVersion string, replaced hubIdentity, replacing bool) error {
+func (m *Manager) waitForHealthyHub(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string, replaced hubIdentity, replacing bool) error {
 	port := hubPort(m.hostAddr(host))
 	addr := m.hostAddr(host)
 	remote := hubHealthRemote(addr)
 	var last hubIdentity
+	var lastGitSHA string
 	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
-			if got, ok := parseHubHealth(out, addr); ok {
+			if got, gitSHA, ok := parseHubHealthBuild(out, addr); ok {
 				last = got
-				if got.version == expectedVersion && hubAnswerProvesReplacement(got, replaced, expectedVersion, replacing) {
+				lastGitSHA = gitSHA
+				if got.version == expectedVersion &&
+					hubAnswerProvesReplacement(got, replaced, expectedVersion, replacing) &&
+					hubBuildSHAMatches(gitSHA, expectedGitSHA) {
 					return nil
 				}
 			}
@@ -1182,9 +1216,27 @@ func (m *Manager) waitForHealthyHub(ctx context.Context, host hostreg.Host, expe
 			return fmt.Errorf("%w: host %q hub on :%s reports the expected version %q but not a provably different process (pre-restart: %s; answer: %s); the restart is unverified",
 				ErrRestart, host.Name, port, expectedVersion, describeHubIdentity(replaced), describeHubIdentity(last))
 		}
+		if expectedGitSHA != "" && last.version == expectedVersion && lastGitSHA != expectedGitSHA {
+			// The version matched but the build identity did not: two snapshot
+			// builds share a version, so this is exactly the mismatch the
+			// version-equality rule cannot see. The hub is not the deployed commit.
+			return fmt.Errorf("%w: host %q hub on :%s reports version %q but backend_git_sha %q, want %q; the running hub is not the snapshot build this controller carries",
+				ErrRestart, host.Name, port, last.version, lastGitSHA, expectedGitSHA)
+		}
 		return fmt.Errorf("%w: host %q hub on :%s reports version %q, want %q after restart", ErrRestart, host.Name, port, last.version, expectedVersion)
 	}
 	return fmt.Errorf("%w: host %q hub not healthy on :%s after restart", ErrRestart, host.Name, port)
+}
+
+// hubBuildSHAMatches reports whether a health answer's backend_git_sha satisfies
+// the expected build identity. With no snapshot pin (expected == "") there is
+// nothing to match and every answer does, which is what keeps a non-snapshot
+// deploy on the version-equality rule exactly as before. With a pin, an empty or
+// different SHA is not yet healthy: the version cannot distinguish two snapshot
+// builds, so a response that does not report the deployed commit is not proof
+// the deploy took.
+func hubBuildSHAMatches(got, expected string) bool {
+	return expected == "" || got == expected
 }
 
 // hubAnswerProvesReplacement reports whether an answer carrying expectedVersion
@@ -1234,17 +1286,27 @@ func describeHubIdentity(h hubIdentity) string {
 //     this controller configured (normalized the same way the probe's URL is,
 //     so a wildcard bind still matches the loopback address it is reached on).
 func parseHubHealth(out []byte, addr string) (hubIdentity, bool) {
+	id, _, ok := parseHubHealthBuild(out, addr)
+	return id, ok
+}
+
+// parseHubHealthBuild is parseHubHealth plus the build's backend_git_sha, the
+// field a snapshot pin's post-restart check compares against the controller's
+// own commit. Everything that makes a body usable as the hub's (a version, the
+// hub's contract version, the bound address) is decided once here, so the SHA is
+// only ever read from a body already accepted as this hub.
+func parseHubHealthBuild(out []byte, addr string) (hubIdentity, string, bool) {
 	var resp hubapi.HealthResponse
 	if err := json.Unmarshal(out, &resp); err != nil || resp.Version == "" {
-		return hubIdentity{}, false
+		return hubIdentity{}, "", false
 	}
 	if resp.MobileAPIVersion != hubapi.MobileAPIVersion {
-		return hubIdentity{}, false
+		return hubIdentity{}, "", false
 	}
 	if loopbackAddr(resp.HubAddr) != loopbackAddr(addr) {
-		return hubIdentity{}, false
+		return hubIdentity{}, "", false
 	}
-	return hubIdentity{version: resp.Version, startedAt: resp.StartedAt}, true
+	return hubIdentity{version: resp.Version, startedAt: resp.StartedAt}, resp.BackendGitSha, true
 }
 
 // recoverHubArgv recovers the argv of pid. It prefers the host's null-delimited
@@ -1344,16 +1406,14 @@ func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Hos
 	return exe
 }
 
-// installableEvenerBasename reports whether install.sh ships a binary with this
-// basename (evener and evener-dev). A deploy cannot preserve an install location
-// the installer does not produce.
+// installableEvenerBasename reports whether a basename names the binary a host
+// hub can be run as. Only `evener` does: install.sh ships `evener-dev` too
+// (install.sh:5), but that is the development/test tooling binary
+// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a run
+// target naming it would be probed, relaunched, and attached as a hub that can
+// never answer. A deploy cannot preserve a run target the host cannot serve.
 func installableEvenerBasename(p string) bool {
-	switch path.Base(strings.TrimSpace(p)) {
-	case "evener", "evener-dev":
-		return true
-	default:
-		return false
-	}
+	return path.Base(strings.TrimSpace(p)) == "evener"
 }
 
 // hubExecutableMatches proves a recovered hub argv[0] is the executable the
@@ -1361,10 +1421,17 @@ func installableEvenerBasename(p string) bool {
 // with the same portable POSIX-sh resolver deployTarget uses (symlinks resolved,
 // plain readlink — no `readlink -f`, which BSD readlink rejects) and compares it
 // to the canonical configured target: evener_path when set, else the canonical
-// `command -v evener`. A hardcoded basename would refuse every valid custom
-// target (say /opt/evener/current/evener-hub) that configuration and deploy
-// accept; a basename is also not sufficient, since an unrelated binary can share
-// one. A mismatch is ErrRestart with no kill.
+// `command -v evener`. A basename is not sufficient on its own, since an
+// unrelated binary can share one. A mismatch is ErrRestart with no kill.
+//
+// This does not judge the run target's basename, and it must not: a host already
+// running an executable whose basename is not `evener` (say
+// /opt/evener/current/evener-hub) can attach, and restarting that process is not
+// where the basename is judged. checkRunTarget (deploy.go) is: it refuses every
+// basename other than `evener` before the target is probed, pushed, or installed
+// on the deploy path, because install.sh ships the runtime binary as `evener` and
+// cannot produce a hub at any other name. So a non-`evener` basename means "cannot
+// be deployed to", not "cannot be attached to or restarted".
 func (m *Manager) hubExecutableMatches(ctx context.Context, host hostreg.Host, exe string) error {
 	resolved, err := m.resolveExecutableName(ctx, host, exe)
 	if err != nil {

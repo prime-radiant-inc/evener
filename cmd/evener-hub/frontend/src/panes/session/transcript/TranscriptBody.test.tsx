@@ -1075,14 +1075,14 @@ describe("trailingRow", () => {
         config={preset("tools")}
         surface="live"
         disclosureScope="live:trailing-row"
-        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
       />,
     );
 
     const rows = screen.getAllByTestId("transcript-row");
     expect(rows).toHaveLength(2);
     const last = rows.at(-1);
-    expect(last?.getAttribute("data-row-id")).toBe("ask-dock");
+    expect(last?.getAttribute("data-row-id")).toBe("live-edge");
     const sentinel = screen.getByTestId("trailing-sentinel");
     expect(last?.contains(sentinel)).toBe(true);
   });
@@ -1094,7 +1094,7 @@ describe("trailingRow", () => {
         config={preset("tools")}
         surface="live"
         disclosureScope="live:trailing-row-stable"
-        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
       />,
     );
     const before = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
@@ -1104,7 +1104,7 @@ describe("trailingRow", () => {
         config={preset("tools")}
         surface="live"
         disclosureScope="live:trailing-row-stable"
-        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
       />,
     );
     expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(before);
@@ -1137,7 +1137,7 @@ describe("trailingRow scroll coordination", () => {
           config={preset("tools")}
           surface="live"
           disclosureScope="live:trailing-count"
-          trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel" /> }}
+          trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel" /> }}
         />,
       );
       // One turn row + the synthetic trailing row: following-bottom view

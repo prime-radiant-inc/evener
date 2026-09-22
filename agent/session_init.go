@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -93,36 +94,71 @@ func canonicalStateDir(dir string) string {
 	if dir == "" {
 		return dir
 	}
-	// Anchor relative paths BEFORE resolving anything: a relative
-	// EvalSymlinks result stays relative, and anchoring it afterward — or
-	// anchoring through filepath.Abs — can preserve a lexical symlinked
-	// working directory, because os.Getwd prefers PWD whenever it matches
-	// ".", so a shell that cd'd through a symlink hands us the lexical form.
-	// The component walk below resolves every existing component of the
-	// anchored path, lexical or not.
-	//
-	// filepath.Abs would also Clean ".." lexically, which is wrong across a symlink:
-	// the kernel resolves `link/../state` against the physical parent of
-	// link's target, while Clean folds it to link's lexical parent. Anchor
-	// without cleaning and walk the components top-down instead, resolving
-	// symlinks as they accumulate so ".." pops the resolved parent. The walk
-	// ends at the first component that does not exist, joining the missing
-	// tail back unchanged, and always terminates: the root resolves.
-	anchored := dir
-	if !filepath.IsAbs(anchored) {
-		cwd, gerr := os.Getwd()
-		if gerr != nil {
-			// No faithful anchor is available; the cleaning Abs is the
-			// best remaining answer.
-			abs, aerr := filepath.Abs(dir)
-			if aerr != nil {
-				return dir
-			}
-			return resolveStatePathComponents(abs)
+	// Anchor relative paths BEFORE resolving anything —
+	// anchorRelativeStateDir carries the platform-aware anchoring
+	// rationale — then walk the components top-down, resolving
+	// symlinks as they accumulate so ".." pops the resolved parent. The
+	// walk ends at the first component that does not exist, joining the
+	// missing tail back unchanged, and always terminates: the root
+	// resolves.
+	if filepath.IsAbs(dir) {
+		return resolveStatePathComponents(dir)
+	}
+	anchored, ok := anchorRelativeStateDir(dir)
+	if !ok {
+		// No faithful anchor is available; the cleaning Abs is the
+		// best remaining answer.
+		abs, aerr := filepath.Abs(dir)
+		if aerr != nil {
+			return dir
 		}
-		anchored = cwd + string(filepath.Separator) + dir
+		return resolveStatePathComponents(abs)
 	}
 	return resolveStatePathComponents(anchored)
+}
+
+// anchorRelativeStateDir anchors a relative --state-dir for the
+// component walk. The platform split is a runtime check, not
+// per-platform files: this package's top-level production files must
+// stay loadable on every GOOS, because the dormancy inventory requires
+// packages.Load to admit them all
+// (TestDelegateControllerProductionIntegrationMatchesInventory).
+//
+// Windows routes only its volume-bearing input classes through
+// filepath.Abs, which delegates to syscall.FullPath (GetFullPathName):
+// drive-relative (C:state) belongs to the current directory of its own
+// drive and volume-root (\state) to the current drive's root, so
+// concatenating the process cwd corrupts C:state into D:\cwd\C:state.
+// GetFullPathName folds ".." lexically, an unavoidable trade for those
+// classes, whose per-drive anchoring nothing else provides. Plain
+// relative Windows inputs must NOT go through it: they fall through to
+// the raw cwd anchoring below, which keeps ".." raw for the component
+// walk to pop against a symlink or junction's physical parent.
+//
+// Every other input anchors through the RAW process cwd without
+// cleaning: anchoring through filepath.Abs can preserve a lexical
+// symlinked working directory, because os.Getwd prefers PWD whenever
+// it matches ".", so a shell that cd'd through a symlink hands us the
+// lexical form — the walk physicalizes it either way. Abs would also
+// Clean ".." lexically, which is wrong across a symlink: the kernel
+// resolves `link/../state` against the physical parent of link's
+// target, while Clean folds it to link's lexical parent. Concatenation
+// keeps every component raw so the walk can pop ".." against the
+// resolved parent. On Getwd failure no faithful anchor is available;
+// the caller falls back to the cleaning Abs.
+func anchorRelativeStateDir(dir string) (string, bool) {
+	if runtime.GOOS == "windows" && (filepath.VolumeName(dir) != "" || (len(dir) > 0 && os.IsPathSeparator(dir[0]))) {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return dir, false
+		}
+		return abs, true
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	return cwd + string(filepath.Separator) + dir, true
 }
 
 // resolveStatePathComponents walks an absolute path component by component,

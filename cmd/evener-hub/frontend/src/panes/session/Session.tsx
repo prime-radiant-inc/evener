@@ -41,7 +41,7 @@ import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { useBlockedMutationEntries } from "./composer/queue/pendingTurnsStore";
+import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
@@ -53,6 +53,8 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
+import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
+import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
 import {
@@ -64,6 +66,15 @@ import {
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
+
+// Spec §1: held-steer surfaces render only while the session is live -
+// never on notLoaded or read-only surfaces. The read-only status family
+// matches the shared-notes surface's (humanNoteDrafts.ts): ended, closed,
+// notLoaded, restartRequired. Awaiting stays live: a hold parked at a
+// boundary delivers with the next turn. Two further read-only marks ride
+// outside status - a snapshot's resumeRequired and the recovery-fence
+// obligation - and are read where the live gate composes them below.
+const HELD_SURFACE_OFF_STATUSES = new Set(["ended", "closed", "notLoaded", "restartRequired"]);
 
 export interface SessionPaneParams {
   ref: string;
@@ -295,6 +306,42 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // The pending set's activation counter: the pill edge keys on this (not
   // the boolean) so an atomic pending-set replacement on resync re-fires it.
   const askEpoch = useAskDockActivationEpoch(ref);
+  // Held steering (steer/drain/promote ghosts - HeldSteerStack) renders as
+  // the transcript's second trailing-row tenant, below the AskDock when both
+  // exist (steering-ghost spec §1). Read ahead of the !model early return,
+  // per the rules of hooks, same as askPending/askEpoch above.
+  const pendingEntries = usePendingTurnEntries(ref);
+  const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
+  // Spec §1's live gate, complete: the read-only status family, plus the two
+  // fence marks that can hold a session read-only while its status still
+  // reads active/idle - a snapshot's resumeRequired (cleared only by an
+  // explicit thread/resume) and the restart-blocking recovery obligation
+  // (restartPending above, the same fence liveControls' press-time rule
+  // consults). Composed ahead of the epoch so the pill signal and ghost
+  // visibility agree: the epoch counts only VISIBLE arrivals.
+  const heldSurfaceLive =
+    model !== undefined &&
+    model.resumeRequired !== true &&
+    !restartPending &&
+    !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
+  const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
+  // One predicate decides the row and the count (spec §1): renderedRowCount
+  // derives from the trailingRow handed to the list - the same form
+  // TranscriptBody itself uses - so the count and the row cannot drift and
+  // jump-to-bottom/append-follow cannot land one row short.
+  const heldVisible = heldSurfaceLive && heldSteers.length > 0;
+  const trailingRow =
+    askPending || heldVisible
+      ? {
+          id: "live-edge",
+          content: (
+            <>
+              {askPending && <AskDock ref={ref} />}
+              {heldVisible && <HeldSteerStack ref={ref} />}
+            </>
+          ),
+        }
+      : undefined;
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const displayLocal = useStore(transcriptDisplayStore, (state) => state.local[displayViewport]);
   const displayHub = useStore(transcriptDisplayStore, (state) => state.hub[displayViewport]);
@@ -332,11 +379,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     loadOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    // The pending-questions dock is a real virtual row (trailingRow below),
-    // so every end-targeted scroll path - initial positioning, append-follow,
-    // jump-to-bottom - must count it or it lands one row short, leaving the
-    // answering surface below the viewport.
-    renderedRowCount: renderRows.length + (askPending ? 1 : 0),
+    // The transcript's trailing row - the ONE live-edge row the AskDock and
+    // the held-steer ghost stack share below - is a real virtual row
+    // (trailingRow below), so every end-targeted scroll path - initial
+    // positioning, append-follow, jump-to-bottom - must count it or it lands
+    // one row short, leaving the answering surface or the ghost below the
+    // viewport. The count derives from that same trailingRow value - the
+    // form TranscriptBody itself uses - so the row and the count cannot
+    // drift.
+    renderedRowCount: renderRows.length + (trailingRow !== undefined ? 1 : 0),
     sourceTurnRowIndexes,
     // ...and its activation is new content: an ask_user item completing
     // changes no turn/item shape, so without this signal a scrolled-away
@@ -346,6 +397,17 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     // the boolean never leaves true.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
+    // A held row mounts the transcript even when its only turn is the
+    // synthetic prelude. Keep the coordinator's mounted-content predicate
+    // aligned with the render branch below; ask-only dormant behavior stays
+    // unchanged.
+    heldVisible,
+    // ...and a held steer APPEARING is new content the same way an ask
+    // activation is: it changes no turn/item shape, so the pill's edge
+    // detector never sees it without this signal. Arrival is the only edge
+    // (useHeldSteerEpoch never bumps on removal - departures are announced
+    // by HeldSteerAnnouncements, not counted as new content).
+    heldEpoch,
   });
   // The transcript's keyboard scroll (Alt+Arrow/Alt+Shift+Arrow, Phase 3):
   // per-pane handlers against the shared registry that decline unless THIS
@@ -419,6 +481,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     );
   }
 
+  // A held ghost is mounted content even on a turnless transcript: the
+  // dormant empty surface yields to the transcript subtree so the ghost
+  // stack and its announcements mount for an idle drain (steering-ghost
+  // spec §2).
+  const showDormantSurface = isDormantTranscript(model.turns) && !heldVisible;
+  const dormantSurface = showColdStartSkeleton ? (
+    <ColdStartSkeleton />
+  ) : (
+    <EmptyTranscript
+      active={model.status.type === "active"}
+      restartRequired={model.status.type === "restartRequired"}
+    />
+  );
+
   const recoveryOwnerRef =
     !mutationStateAuthoritative &&
     model.status.type !== "notLoaded" &&
@@ -478,14 +554,19 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         listRef={virtualListRef}
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
-        // The pending-questions dock is the transcript's last row while any
-        // batch is pending: it scrolls with the content (a reader scrolling
-        // back for context scrolls it away), its answer state lives in
-        // askDockStore so the virtual list unmounting the row loses nothing,
-        // and the list's end-anchoring surfaces a new question for a reader
-        // at the bottom without yanking one who scrolled up. Passed only
-        // while pending so no empty zero-height row pads the list otherwise.
-        trailingRow={askPending ? { id: "ask-dock", content: <AskDock ref={ref} /> } : undefined}
+        // The live-edge row is the transcript's last row while either
+        // bottom-dwelling tenant exists: the pending-questions dock while any
+        // batch is pending, and the held-steer ghost stack while any held
+        // steering is in flight, rendered below the dock when both exist
+        // (the one-row decision steering-ghost spec §1 makes). It scrolls
+        // with the content (a reader scrolling back for context scrolls it
+        // away), its tenants' interactive state lives in their own stores
+        // (askDockStore, the shared pendingTurnsStore) so the virtual list
+        // unmounting the row loses nothing, and the list's end-anchoring
+        // surfaces new content for a reader at the bottom without yanking
+        // one who scrolled up. Passed only while a tenant exists so no
+        // empty zero-height row pads the list otherwise.
+        trailingRow={trailingRow}
       />
       <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
         <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
@@ -545,16 +626,16 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <div className={styles.contentColumn}>
         <TopNotesPanel sessionRef={ref} model={model} />
         <SandboxEscalationRail sessionRef={ref} />
-        {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
-          <ColdStartSkeleton />
-        ) : isDormantTranscript(model.turns) ? (
-          <EmptyTranscript
-            active={model.status.type === "active"}
-            restartRequired={model.status.type === "restartRequired"}
-          />
-        ) : (
-          transcript
-        )}
+        {/* The held-steer ghosts' ONE live region, same rule as the ask
+            dock's: outside the virtual list, announcing only real
+            appearance/delivery/departure transitions. It mounts here,
+            INDEPENDENT of the transcript subtree: a dormant transcript's
+            LAST departure unmounts that subtree in the same commit
+            (heldVisible flips false, the dormant empty surface takes
+            over), so a region inside it would never observe the departure
+            it must announce (spec §5). Live-gated per spec §1. */}
+        {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}
+        {showDormantSurface ? dormantSurface : transcript}
       </div>
     </PaneScaffold>
   );

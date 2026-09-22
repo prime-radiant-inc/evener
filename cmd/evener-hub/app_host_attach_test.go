@@ -370,6 +370,34 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 			info:      appwire.ErrorHubLaunch,
 		},
 		{
+			// A run target that cannot serve a hub is the same shape: the
+			// controller can never install a binary the hub can run at that
+			// path, so it is a typed hub-launch failure rather than a generic
+			// internal error.
+			name:      "unservable run target refused",
+			attachErr: fmt.Errorf("%w: host %q evener_path %q", sshconn.ErrRunTargetUnservable, "alpha", "/opt/evener/bin/evener-dev"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// The deploy ran but left a build that is not this controller's:
+			// retrying re-pushes the same artifact, so it is the same terminal
+			// hub-launch shape as the refusals above.
+			name:      "deployed build not stamped by the controller refused",
+			attachErr: fmt.Errorf("%w: host %q still reports version %q", sshconn.ErrDeployUnstamped, "alpha", "othersha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			// The operator's -deploy-binary targets another platform, so it can
+			// never be installed on this host and every retry re-reads the same
+			// file: the same terminal hub-launch shape as the refusals above.
+			name:      "wrong-platform deploy artifact refused",
+			attachErr: fmt.Errorf("host %q build linux/amd64: %w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64", "alpha", sshconn.ErrDeployArtifactUnusable, "/tmp/evener"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
 			// No deploy path exists and the host has no evener at the resolved
 			// path: like the dirty-controller refusal, the controller cannot
 			// install or match its build, so it is a typed hub-launch failure

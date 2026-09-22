@@ -24,6 +24,7 @@ import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { PendingChips } from "../../pending/PendingChips";
 import {
+  pendingTurnEntries,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
@@ -431,6 +432,34 @@ describe("visibility", () => {
 });
 
 describe("durable recovery rows", () => {
+  // A promoted row's composed content lives in its optimisticDisplay - the
+  // wire params carry only the queue position - so a rejected/canceled
+  // promote must still render its words in the durable row (roborev #2140
+  // round 6), never a blank one.
+  test("a rejected promote renders its composed content, not a blank row", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/promoteQueuedAsSteer",
+      payload: { ref: "ref_a", index: 0, expectedInstanceId: "instance", expectedEntryId: "q1" },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/promoteQueuedAsSteer",
+        input: [{ type: "text", text: "promoted words" }],
+      },
+    });
+    const recovery = await storage.transferToRecovery(outbox.clientMutationId, "rejected", "turn is not active");
+    storage.close();
+    if (!recovery) throw new Error("failed to seed recovery");
+    await refreshPendingTurnsProjection("ref_a");
+    renderStrip(defaultProps({ onEditRecovery: vi.fn() }));
+
+    expect(await screen.findByText("promoted words")).toBeTruthy();
+  });
+
   test("a rejected record renders as an ordinary editable queued row", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -1275,6 +1304,62 @@ describe("promote", () => {
       const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
       expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
     });
+  });
+
+  test("promote passes the row's text (or the row's stripped preview) into the optimistic display", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: {
+          revision: 0,
+          depth: 3,
+          ids: ["q1", "q2", "q3"],
+          texts: ["hello", "", ""],
+          preview: ["hello", "[image]", "[skill]"],
+          skillNames: [["pkg:probe"], [], ["pkg:audit"]],
+        },
+      },
+    });
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "pending",
+      },
+    }));
+    renderStrip(defaultProps());
+
+    const rows = await screen.findAllByRole("listitem");
+    await act(async () => {
+      fireEvent.click(within(rows[0]!).getByRole("button", { name: /steer now/i }));
+    });
+    await act(async () => {
+      fireEvent.click(within(rows[1]!).getByRole("button", { name: /steer now/i }));
+    });
+    // The skill-only row (generic "[skill]" preview, no text) must promote with
+    // a blank display text: the ghost renders the named marker alone, matching
+    // the queue row, instead of doubling it behind the raw placeholder.
+    await act(async () => {
+      fireEvent.click(within(rows[2]!).getByRole("button", { name: /steer now/i }));
+    });
+    // Every press must have committed its durable enqueue before the
+    // projection read: a wire call only happens after its enqueue, so this
+    // wait - not a timer - is what makes the read below race-free.
+    await waitFor(() => {
+      expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(3);
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    // The display input is observable where it lands: the optimistic promote
+    // record's preview - the ghost's body (spec §3.2), not a wire param.
+    const entries = pendingTurnEntries("ref_a", "promote");
+    expect(entries).toEqual([
+      expect.objectContaining({ text: "hello", skillNames: ["pkg:probe"] }),
+      expect.objectContaining({ text: "[image]" }),
+      expect.objectContaining({ text: "", skillNames: ["pkg:audit"] }),
+    ]);
   });
 });
 

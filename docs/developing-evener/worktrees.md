@@ -147,6 +147,14 @@ lane. A leaf delegate does not get `manage_worktree` itself — it can look arou
 read-only git commands via its shell tool, but it can't create, switch, or remove
 worktrees.
 
+The lane's *branch* can carry a mnemonic instead: `delegate`'s optional `name`
+argument (e.g. `name="parser-rename"`) is validated at decode and cut as the
+lane's git branch, so `git branch` and merges read clearly, while the lane
+directory, the metadata sidecar, the lock marker, and `dispose` addressing all
+stay keyed to the delegate id. Without a `name`, the branch is the delegate id,
+as before. Collisions refuse loudly: an existing branch by that name fails the
+spawn with a legible error, never a silent suffix.
+
 A delegate that is itself a coordinator — spawned with a delegation allowance so it
 can fan out its *own* isolated sub-delegates — gets a **dispose-only** `manage_worktree`:
 the single `dispose` operation, nothing else. That lets it retire its sub-delegates'

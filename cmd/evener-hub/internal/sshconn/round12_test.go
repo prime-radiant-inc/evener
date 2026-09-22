@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 )
 
 // TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv pins the round-twelve
@@ -31,7 +33,7 @@ func TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
 		"bindir=${BINDIR:-$prefix/bin}",
 		"share_bindir=${EVENER_SHARE_BINDIR:-$prefix/share/evener/bin}",
 	} {
-		if !strings.Contains(string(installerScript), line) {
+		if !strings.Contains(string(remoteinstall.Script), line) {
 			t.Fatalf("install.sh no longer treats BINDIR/EVENER_SHARE_BINDIR as the override for PREFIX (missing %q); an inherited PREFIX could install outside the recorded run target", line)
 		}
 	}
@@ -44,14 +46,18 @@ func TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
 	if target != "/home/dev/.local/bin/evener" {
 		t.Fatalf("run target = %q, want the installer default ~/.local/bin/evener", target)
 	}
-	got := installerCommand("snapshot", bindir, shareBindir, len(installerScript))
+	got := remoteinstall.Command("snapshot", "", bindir, shareBindir)
 	for _, want := range []string{"BINDIR=" + bindir, "EVENER_SHARE_BINDIR=" + shareBindir} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("installer command does not pin %s: %q", want, got)
 		}
 	}
-	if strings.Contains(got, "PREFIX") {
-		t.Fatalf("installer command still leaves the install location to the remote PREFIX: %q", got)
+	// The hub passes no PREFIX, so the variable is pinned to empty rather than
+	// left out: with BINDIR/EVENER_SHARE_BINDIR already pinned, an inherited
+	// remote PREFIX could still move install.sh's fallback layout, and empty is
+	// what makes install.sh compute the documented default.
+	if !strings.Contains(got, "PREFIX=''") {
+		t.Fatalf("installer command does not pin PREFIX to empty, so an inherited remote PREFIX could still move the fallback layout: %q", got)
 	}
 }
 
@@ -63,11 +69,10 @@ func TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
 // share/evener/bin. The count is checked — before the script is handed to sh, not
 // after — exactly as the push path checks the binary it streams.
 func TestRound12InstallerCommandVerifiesByteCount(t *testing.T) {
-	const size = 4242
-	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin", size)
-	check := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = 4242 ]"
+	got := remoteinstall.Command("v1.2.3", "", "/opt/evener/bin", "/opt/evener/share/evener/bin")
+	check := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ]"
 	if !strings.Contains(got, check) {
-		t.Fatalf("installerCommand does not check the streamed script's byte count: %q", got)
+		t.Fatalf("the installer command does not check the streamed script's byte count: %q", got)
 	}
 	// The check must gate the execution: `cat > "$tmp" && <count> && env … sh "$tmp"`.
 	// A check that ran after `sh` (or in a pipeline) would come too late.
@@ -75,7 +80,7 @@ func TestRound12InstallerCommandVerifiesByteCount(t *testing.T) {
 	checkIdx := strings.Index(got, check)
 	shIdx := strings.Index(got, "sh \"$tmp\"")
 	if writeIdx < 0 || checkIdx < 0 || shIdx < 0 {
-		t.Fatalf("installerCommand lost a step of the handoff: %q", got)
+		t.Fatalf("the installer command lost a step of the handoff: %q", got)
 	}
 	if writeIdx >= checkIdx || checkIdx >= shIdx {
 		t.Fatalf("byte-count check is not between the write and the execution: %q", got)
@@ -84,11 +89,12 @@ func TestRound12InstallerCommandVerifiesByteCount(t *testing.T) {
 		t.Fatalf("the byte-count check does not gate the execution: %q", got)
 	}
 
-	// The same rendering with the real embedded script's length is what
-	// deployInstaller sends; a size that is not the script's would fail every
-	// install on the host, so the length is pinned here as well as end to end.
-	if embedded := installerCommand("snapshot", "/b", "/s", len(installerScript)); !strings.Contains(embedded, fmt.Sprintf("[ \"$v\" = %d ]", len(installerScript))) {
-		t.Fatalf("installerCommand does not pin the embedded script's length (%d): %q", len(installerScript), embedded)
+	// The count the command checks is bound to the script it streams (the size
+	// is not a parameter), so a command that counts any length other than the
+	// embedded copy's is not representable; the end-to-end deploy test pins the
+	// same number deployInstaller actually sends.
+	if !strings.Contains(got, fmt.Sprintf("[ \"$v\" = %d ]", len(remoteinstall.Script))) {
+		t.Fatalf("the installer command does not pin the embedded script's length (%d): %q", len(remoteinstall.Script), got)
 	}
 }
 

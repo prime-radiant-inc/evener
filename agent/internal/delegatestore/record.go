@@ -87,19 +87,23 @@ type Descriptor struct {
 	// (description, source, content digests) alongside the unchanged
 	// names/bodies. Absent on legacy descriptors, where the provenance stays
 	// unknown rather than reconstructed.
-	FrozenSkillMetadata           []schema.FrozenSkillPreload `json:"frozen_skill_metadata,omitempty"`
-	WorkingDir                    string                      `json:"working_dir,omitempty"`
-	LocalEnvPolicy                string                      `json:"local_env_policy,omitempty"`
-	ResultSchema                  json.RawMessage             `json:"result_schema,omitempty"`
-	ExplicitToolGrants            []string                    `json:"explicit_tool_grants,omitempty"`
-	DelegationAllowance           int                         `json:"delegation_allowance,omitempty"`
-	Isolation                     string                      `json:"isolation,omitempty"`
-	Sandbox                       *SandboxSnapshot            `json:"sandbox,omitempty"`
-	Config                        schema.ConfigSnapshot       `json:"config"`
-	SharedTaskStoreOwnerSessionID string                      `json:"shared_task_store_owner_session_id,omitempty"`
-	ParentWatchGranted            bool                        `json:"parent_watch_granted,omitempty"`
-	Provenance                    *provenance.Causal          `json:"provenance,omitempty"`
-	Resumable                     bool                        `json:"resumable"`
+	FrozenSkillMetadata []schema.FrozenSkillPreload `json:"frozen_skill_metadata,omitempty"`
+	WorkingDir          string                      `json:"working_dir,omitempty"`
+	LocalEnvPolicy      string                      `json:"local_env_policy,omitempty"`
+	ResultSchema        json.RawMessage             `json:"result_schema,omitempty"`
+	ExplicitToolGrants  []string                    `json:"explicit_tool_grants,omitempty"`
+	DelegationAllowance int                         `json:"delegation_allowance,omitempty"`
+	Isolation           string                      `json:"isolation,omitempty"`
+	// WorktreeBranch is the mnemonic git branch of a worktree-isolated
+	// delegate's lane; empty means the branch is the delegate id. The lane
+	// directory, sidecar, and all addressing stay id-keyed either way.
+	WorktreeBranch                string                `json:"worktree_branch,omitempty"`
+	Sandbox                       *SandboxSnapshot      `json:"sandbox,omitempty"`
+	Config                        schema.ConfigSnapshot `json:"config"`
+	SharedTaskStoreOwnerSessionID string                `json:"shared_task_store_owner_session_id,omitempty"`
+	ParentWatchGranted            bool                  `json:"parent_watch_granted,omitempty"`
+	Provenance                    *provenance.Causal    `json:"provenance,omitempty"`
+	Resumable                     bool                  `json:"resumable"`
 }
 
 type SandboxSnapshot struct {

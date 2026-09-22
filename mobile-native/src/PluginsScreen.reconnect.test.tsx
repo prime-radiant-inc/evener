@@ -47,6 +47,12 @@ const ACME: MarketplaceEntry = {
 	lastUpdated: 1,
 };
 
+// The residue guard PluginsScreen wires around the browser in production, in
+// the minimal shape a reconnect test needs: nothing is fenced, nothing is
+// recorded, and every authoritative read reports to nobody. These tests
+// exercise the connection's own recovery, never a marketplace removal.
+const NO_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
+
 function plugin(name: string): PluginEntry {
 	return {
 		plugin: name,
@@ -190,6 +196,11 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
+			appliedRemovalNames={NO_APPLIED_REMOVALS}
+			onAppliedRemoval={() => true}
+			onAuthoritativeMarketplaces={() => {}}
+			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));
@@ -278,9 +289,11 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	expect(renderedText(tree)).toContain("kept");
 
 	// A manual retry opens a fresh client, and the screen sees it before it is
-	// ready: the replacement store's first read fails with the banner already
-	// over it, and only a recovery read once the connection is ready can land
-	// the list.
+	// ready: the not-yet-ready replacement never displaces the previous client
+	// (useRenderClient adopts it only once ready), so the mounted list keeps
+	// the previous connection's rows under the banner - no doomed first read,
+	// no error copy - and the replacement's own first read lands only once
+	// the connection is ready.
 	const second = new FakeClient("connecting");
 	second.on("evener/plugin/list", () => ({
 		plugins: [plugin("kept"), plugin("added-on-retry")],
@@ -289,7 +302,8 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	await act(async () => {
 		tree.update(<PluginsScreen {...props} />);
 	});
-	expect(renderedText(tree)).toContain("Could not load installed plugins");
+	expect(renderedText(tree)).toContain("kept");
+	expect(renderedText(tree)).not.toContain("Could not load installed plugins");
 
 	second.state = "ready";
 	harness.connection = connection(second, "ready");
@@ -332,6 +346,11 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
+			appliedRemovalNames={NO_APPLIED_REMOVALS}
+			onAppliedRemoval={() => true}
+			onAuthoritativeMarketplaces={() => {}}
+			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));

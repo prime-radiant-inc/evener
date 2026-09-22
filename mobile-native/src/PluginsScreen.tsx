@@ -21,7 +21,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { ConnectionState, PluginRefParams } from "@evener/appwire-client";
+import type {
+  ConnectionState,
+  MarketplaceEntry,
+  PluginRefParams,
+} from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
@@ -45,6 +49,23 @@ import {
 } from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+/** The applied marketplace removals one client's writes reported, keyed by
+ * name: names a write said the hub already removed, held with the client
+ * whose write said so because a fresh browser must not offer Remove again
+ * for any of them. The fence covers a name only for the window between the
+ * applied outcome and the first authoritative read that lands after it -
+ * see reconcileAppliedRemovals. The removed registrations' wire identities
+ * are deliberately not stored: the fallback retires on the read's arrival,
+ * not its contents, and the durable fix (a hub-assigned registration id the
+ * wire can compare, PR #2137's protocol backlog) is what will put identity
+ * back into the comparison. */
+type AppliedRemovalGuard = {
+  client: ConversationClientLike | null;
+  names: ReadonlySet<string>;
+};
+
+const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 
 // A mounted screen re-keyed to another hub is a fresh screen: the
 // reconnect-retention state below - the banner's everReady, the last
@@ -74,14 +95,174 @@ function PluginsScreenBody({
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(state, fatal);
+  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
   const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   // A flap keeps `client` set (the connection layer's own generation guard -
-  // hubConnection.ts), but a manual retry briefly clears it while it opens a
-  // fresh one; the last client this screen had keeps the list mounted
-  // through that gap too, rather than dropping to the wall for a moment the
-  // banner should cover just as well as a passive reconnect does.
-  const renderClient = useRenderClient(client);
+  // hubConnection.ts), but a manual retry clears it, then reports a fresh
+  // client while it is still dialing; the list keeps rendering the previous
+  // one through the whole gap, never the not-yet-ready replacement, rather
+  // than dropping to the wall for a moment the banner should cover just as
+  // well as a passive reconnect does. Scoped to the active hub: see
+  // useRenderClient's own doc.
+  const renderClient = useRenderClient(client, state, activeProfile?.id);
+  // An applied marketplace removal's residue lives beside the gate, above the
+  // early returns below, for the same reason it does: they unmount and remount
+  // the ready-only child on every connection transition, and the browser that
+  // asked for the write does not outlive even a tab switch - a remount
+  // replaces its store, and its select() clears the slot an outcome rendered
+  // into. The guard fences a name the hub already removed and the warning
+  // survives every one of those remounts, both scoped to the client whose
+  // write reported them, so a replaced client's late result changes nothing
+  // (currentClient's checks below).
+  const currentClient = useRef<ConversationClientLike | null>(null);
+  const [marketplaceWarning, setMarketplaceWarning] = useState<{
+    client: ConversationClientLike;
+    name: string;
+    text: string;
+  } | null>(null);
+  const [appliedRemovalGuard, setAppliedRemovalGuard] =
+    useState<AppliedRemovalGuard>(() => ({
+      client: null,
+      names: new Set(),
+    }));
+  // The guard's own store is a ref, so the recording paths below check and
+  // store against one synchronous source; the state beside it exists only to
+  // publish each change to renders (appliedRemovalNames below).
+  // markAppliedRemoval's return has to mean the entry was actually stored,
+  // and an updater's view of the guard arrives only when React applies it -
+  // a client switch landing between a passing check and that apply would let
+  // the function answer true for a store the updater then refused. Reading
+  // the same ref the entry lands in, in one synchronous block nothing can
+  // interleave, makes true structural.
+  const appliedRemovalGuardRef = useRef<AppliedRemovalGuard>(
+    appliedRemovalGuard,
+  );
+  const appliedRemovalNames =
+    appliedRemovalGuard.client === client
+      ? appliedRemovalGuard.names
+      : EMPTY_APPLIED_REMOVALS;
+  const visibleMarketplaceWarning =
+    marketplaceWarning?.client === client ? marketplaceWarning.text : null;
+  useEffect(() => {
+    // Assigned in an effect, never during render: mutating a ref mid-render
+    // is unsafe under concurrent rendering, and effects run before any
+    // outcome a replaced client could send arrives.
+    currentClient.current = client ?? null;
+    if (appliedRemovalGuardRef.current.client !== (client ?? null)) {
+      // A replaced client's fence is not the replacement's: reset the store
+      // and its render mirror together, the way every guard change does.
+      appliedRemovalGuardRef.current = {
+        client: client ?? null,
+        names: new Set(),
+      };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
+    }
+    setMarketplaceWarning((current) =>
+      current?.client === client ? current : null,
+    );
+  }, [client]);
+  // The fallback ruling: a guard name retires with the FIRST authoritative
+  // read that lands after the outcome recorded it. A read omitting the name
+  // reconciles the removal the way it always did; a read still CARRYING it -
+  // whatever registration the row bears, even the removed one's own
+  // whole-second identity, which the wire cannot tell from a stale read -
+  // now retires the fence too. Once the outcome said the removal stood, a
+  // row a trusted read vouches for can only be a hub re-registration, and
+  // the fence's alternative is a permanent lockout: a same-source
+  // same-second re-registration is indistinguishable on the wire, so keeping
+  // the fence for it could never be undone from this client. The worst case
+  // is a row the read had not caught up with - pressing Remove on it draws
+  // the same idempotent applied outcome, which re-fences the name and
+  // re-raises the warning. The durable fix is a hub-assigned registration id
+  // the wire can compare (protocol backlog, PR #2137). Only reads the
+  // browser's own revision fencing already vouches for are reported here,
+  // so stale and in-flight replies never retire anything.
+  const reconcileAppliedRemovals = useCallback(
+    (
+      _marketplaces: readonly MarketplaceEntry[],
+      owner: ConversationClientLike,
+    ): void => {
+      if (currentClient.current !== owner) return;
+      // The read's contents no longer decide anything - its arrival does -
+      // so the list it carried goes unread here; the report's shape stays
+      // the browser's contract.
+      const current = appliedRemovalGuardRef.current;
+      if (current.client !== owner || !current.names.size) return;
+      appliedRemovalGuardRef.current = { client: owner, names: new Set() };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
+    },
+    [],
+  );
+  // The browser's recording path for an applied removal: fences the name
+  // whatever the hub's truth currently carries, for the window between the
+  // outcome and the first authoritative read after it (reconcile's doc),
+  // sets the warning to the outcome's own notice, and answers whether the
+  // entry was actually stored: false means the outcome came from a client
+  // this screen has replaced, and the browser drops it whole.
+  const markAppliedRemoval = useCallback(
+    (
+      name: string,
+      notice: string | null,
+      owner: ConversationClientLike,
+    ): boolean => {
+      // The check reads the same synchronous store the entry lands in
+      // below, so `true` structurally means the entry was stored: a client
+      // switch that already landed has reset the ref and answers false
+      // here, and one that lands after cannot come between the check and
+      // the store - the block is synchronous. An owner the guard no longer
+      // belongs to changes nothing and answers false, for the browser to
+      // drop the outcome whole.
+      if (currentClient.current !== owner) return false;
+      const current = appliedRemovalGuardRef.current;
+      if (current.client !== owner) return false;
+      const names = new Set(current.names);
+      names.add(name);
+      appliedRemovalGuardRef.current = { client: owner, names };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
+      // The warning slot reports the latest outcome for the marketplace it
+      // holds: a noticed outcome replaces whatever the slot showed, and a
+      // clean one (null notice) retires the warning for its own name,
+      // leaving any other marketplace's warning alone.
+      setMarketplaceWarning((current) =>
+        notice !== null
+          ? { client: owner, name, text: notice }
+          : current?.name === name
+            ? null
+            : current,
+      );
+      return true;
+    },
+    [],
+  );
+  // A name this screen's own add just registered: the write replaced the
+  // registration the fence guards - which the wire's whole-second
+  // timestamps can fail to distinguish - so the fence clears for it here.
+  const clearAddedMarketplace = useCallback(
+    (name: string, owner: ConversationClientLike): void => {
+      if (currentClient.current !== owner) return;
+      const current = appliedRemovalGuardRef.current;
+      if (current.client !== owner || !current.names.has(name)) return;
+      const names = new Set(current.names);
+      names.delete(name);
+      appliedRemovalGuardRef.current = { client: owner, names };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
+    },
+    [],
+  );
+  // A removal the hub confirmed outright: the outcome is neither a residue
+  // nor a failure, and the screen-level warning reports the latest outcome
+  // for the name it holds: a clean success retires the warning only for
+  // ITS OWN marketplace, so an unrelated marketplace's success says nothing
+  // about the clone files this one warned about.
+  const clearMarketplaceWarning = useCallback(
+    (name: string, owner: ConversationClientLike): void => {
+      if (currentClient.current !== owner) return;
+      setMarketplaceWarning((current) =>
+        current?.name === name ? null : current,
+      );
+    },
+    [],
+  );
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -103,6 +284,12 @@ function PluginsScreenBody({
         canUseConnection={canUseConnection}
         hubName={activeProfile.name}
         gate={gate}
+        appliedRemovalNames={appliedRemovalNames}
+        marketplaceWarning={visibleMarketplaceWarning}
+        onAppliedRemoval={markAppliedRemoval}
+        onAuthoritativeMarketplaces={reconcileAppliedRemovals}
+        onMarketplaceAdded={clearAddedMarketplace}
+        onRemovedMarketplace={clearMarketplaceWarning}
       />
     </>
   );
@@ -113,12 +300,31 @@ function Plugins({
   connectionState,
   hubName,
   gate,
+  appliedRemovalNames,
+  marketplaceWarning,
+  onAppliedRemoval,
+  onAuthoritativeMarketplaces,
+  onMarketplaceAdded,
+  onRemovedMarketplace,
   canUseConnection,
 }: {
   client: ConversationClientLike;
   connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
+  appliedRemovalNames: ReadonlySet<string>;
+  marketplaceWarning: string | null;
+  onAppliedRemoval(
+    name: string,
+    notice: string | null,
+    owner: ConversationClientLike,
+  ): boolean;
+  onAuthoritativeMarketplaces(
+    marketplaces: readonly MarketplaceEntry[],
+    owner: ConversationClientLike,
+  ): void;
+  onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
+  onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
   canUseConnection: () => boolean;
 }) {
   const colors = useColors();
@@ -183,6 +389,7 @@ function Plugins({
     setNotice(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setActionError(
@@ -203,7 +410,7 @@ function Plugins({
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            if (version === editorVersion.current)
+            if (version === editorVersion.current && canUseConnection())
               void act(() =>
                 state.removePlugin(target.plugin, target.marketplace),
               );
@@ -231,6 +438,7 @@ function Plugins({
           Browse
         </Action>
       </View>
+      <ErrorMessage message={marketplaceWarning} />
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
@@ -244,6 +452,11 @@ function Plugins({
             close();
             setSelected(target);
           }}
+          appliedRemovalNames={appliedRemovalNames}
+          onAppliedRemoval={onAppliedRemoval}
+          onAuthoritativeMarketplaces={onAuthoritativeMarketplaces}
+          onMarketplaceAdded={onMarketplaceAdded}
+          onRemovedMarketplace={onRemovedMarketplace}
         />
       ) : (
         <FlatList
