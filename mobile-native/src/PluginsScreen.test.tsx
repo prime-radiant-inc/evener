@@ -292,6 +292,72 @@ it("fences the name when a re-registration lands while the confirm dialog is ope
   expect(remove.props.disabled).toBe(true);
 });
 
+it("does not confirm a removal a fresh read retired while the dialog was open", async () => {
+  let listCalls = 0;
+  let removals = 0;
+  const hub = marketplaceClient({
+    list: () => {
+      listCalls += 1;
+      // The mount read carries the registration the dialog targets; the
+      // reconnect recovery read answers with what another client's removal
+      // left behind, so every trusted read from there on omits the name.
+      if (listCalls === 1) return Promise.resolve({ marketplaces: [marketplace] });
+      return Promise.resolve({ marketplaces: [] });
+    },
+    remove: () => {
+      removals += 1;
+      throw cloneLitterError(null, false);
+    },
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+  });
+
+  // The connection flaps while the confirmation is open, and the recovery
+  // read that lands once it is ready again no longer carries the name: the
+  // marketplace another client removed is gone from the trusted list.
+  harness.connection = {
+    activeProfile: { id: "hub-1", name: "Work hub" },
+    client: hub.client,
+    state: "reconnecting",
+    retry: () => {},
+  };
+  await act(async () => {
+    tree.update(<PluginsScreen {...props} />);
+  });
+  harness.connection = readyConnection(hub.client);
+  await act(async () => {
+    tree.update(<PluginsScreen {...props} />);
+  });
+  await act(async () => {});
+  expect(listCalls).toBe(2);
+  const request = alertRequests.at(-1);
+  const confirm = request?.buttons?.find((button) => button.text === "Remove");
+  if (!confirm?.onPress) throw new Error("Remove confirmation was not shown");
+  await act(async () => {
+    confirm.onPress?.();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+
+  // The confirmation holds the state it opened on, but the store it must
+  // answer to no longer carries the name: the removal already stood on the
+  // hub, and confirming must not issue the duplicate removal the guard
+  // exists to prevent.
+  expect(removals).toBe(0);
+  expect(renderedText(tree)).not.toContain("Could not confirm the change");
+  expect(renderedText(tree)).not.toContain(
+    "Marketplace removed; clone cleanup failed",
+  );
+});
+
 it("keeps the fence when a pre-removal read lands inside the outcome's window", async () => {
   let releaseStaleRead!: (value: { marketplaces: MarketplaceEntry[] }) => void;
   const staleRead = new Promise<{ marketplaces: MarketplaceEntry[] }>(

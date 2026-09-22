@@ -159,6 +159,16 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // The removal confirmation is native and outlives the renders around it:
+  // the screen's guard can fence or retire a name while its dialog is open,
+  // and the callback the confirm fires holds only the set it captured when
+  // the dialog opened. The ref keeps the latest set reachable from that
+  // callback - assigned in an effect, never during render (the PluginsScreen
+  // currentClient pattern).
+  const appliedRemovalNamesRef = useRef(appliedRemovalNames);
+  useEffect(() => {
+    appliedRemovalNamesRef.current = appliedRemovalNames;
+  }, [appliedRemovalNames]);
   useEffect(() => {
     if (state.marketplaces !== null)
       onAuthoritativeMarketplaces(
@@ -248,10 +258,21 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
+          // The dialog can stay open across another client's removal, which
+          // a trusted read lands without the name, and across the screen
+          // fencing it: re-read both the guard the screen holds now and the
+          // store's own state, never the captured ones, because a removal
+          // that already stood must not be issued again. A failed read
+          // cannot vouch either way, so its retained rows never stop the
+          // write - the hub's own applied answer is what speaks then.
+          const current = marketplaces.getState();
           if (
             revision.current !== version ||
             !canUseConnection() ||
-            appliedRemovalNames.has(name)
+            appliedRemovalNamesRef.current.has(name) ||
+            (current.marketplacesError === null &&
+              current.marketplaces !== null &&
+              !current.marketplaces.some((item) => item.name === name))
           )
             return;
           // Classify, record, and reconcile BEFORE the revision fence: the
