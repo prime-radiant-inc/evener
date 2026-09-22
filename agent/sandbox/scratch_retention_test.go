@@ -1008,3 +1008,78 @@ func TestScratchLockContentionDelayDoublesToACap(t *testing.T) {
 		}
 	}
 }
+
+// TestScratchOpenReportsReleasedManifestTyped pins the round-14 typing gap:
+// OpenRetainedSessionScratch used to report a terminally released manifest
+// with an untyped error, so the refresh could not recognize the seal and
+// failed the restore racing a terminal close.
+func TestScratchOpenReportsReleasedManifestTyped(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	// The scratch's own lease stays held, so the terminal release leaves the
+	// reference and pin behind on the tombstone.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	_, err = OpenRetainedSessionScratch(owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox})
+	if !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("open on a terminally released manifest: %v, want the typed %v", err, ErrScratchRetentionReleased)
+	}
+}
+
+// TestScratchUpsertAtRevisionRefusesMovedManifest pins the round-14 revision
+// check's contract: an upsert built from a superseded snapshot must refuse
+// with the stale-revision sentinel instead of merging, and one built from the
+// manifest as it stands must succeed.
+func TestScratchUpsertAtRevisionRefusesMovedManifest(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the binding: %v", err)
+	}
+	snapshot, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A concurrent writer moves the manifest after the snapshot.
+	rival, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rival.Cleanup() })
+	rivalBinding := retentionBinding("E1", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: rival.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, rivalBinding, map[string]*SessionScratch{ScratchKindSandbox: rival}, nil); err != nil {
+		t.Fatalf("pin the rival binding: %v", err)
+	}
+	consumer := ScratchConsumerBinding{SessionID: "consumer-test", CurrentBindingID: binding.BindingID}
+	err = UpsertScratchBindingAtRevision(owner, binding, consumer, snapshot.Revision)
+	if !errors.Is(err, ErrScratchRetentionStaleRevision) {
+		t.Fatalf("upsert from a superseded snapshot: %v, want %v", err, ErrScratchRetentionStaleRevision)
+	}
+	// The same upsert derived from the manifest as it now stands succeeds.
+	current, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := UpsertScratchBindingAtRevision(owner, binding, consumer, current.Revision); err != nil {
+		t.Fatalf("upsert at the current revision: %v", err)
+	}
+}

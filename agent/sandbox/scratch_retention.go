@@ -582,7 +582,18 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 // different binding already owns is demoted to a wrapper borrow. It never
 // replaces a whole stale record.
 func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
-	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer})
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, -1)
+}
+
+// UpsertScratchBindingAtRevision publishes one binding and its consumer
+// record with the same per-slot rebasing as UpsertScratchBinding, but only
+// when the manifest still stands at expectedRevision. Rows a caller derived
+// from an earlier snapshot must not replace what a concurrent writer committed
+// after that snapshot — the consumer merge replaces rows wholesale — so the
+// check turns that race into ErrScratchRetentionStaleRevision for the caller
+// to retry by re-deriving.
+func UpsertScratchBindingAtRevision(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding, expectedRevision uint64) error {
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, int64(expectedRevision))
 }
 
 // ScratchLockContentionDelay returns the growing spacing the bounded retry
@@ -627,10 +638,10 @@ func RetryScratchLockContention(fn func() error) error {
 // owned by the agent layer, and a shared environment's mint must not re-point
 // its owner's consumer (or erase its recorded roles).
 func UpsertScratchBindingOnly(owner ScratchOwner, binding ScratchBinding) error {
-	return upsertScratchBinding(owner, binding, nil)
+	return upsertScratchBinding(owner, binding, nil, -1)
 }
 
-func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding) error {
+func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding, expectedRevision int64) error {
 	if err := owner.validate(); err != nil {
 		return err
 	}
@@ -648,6 +659,12 @@ func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers 
 	}
 	if manifest.Released {
 		return ErrScratchRetentionReleased
+	}
+	// A negative expectedRevision is the unchecked legacy path; a mismatching
+	// revision refuses the upsert so a caller holding a superseded snapshot
+	// re-derives instead of clobbering whatever committed in between.
+	if expectedRevision >= 0 && manifest.Revision != uint64(expectedRevision) {
+		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
 	if err := applyScratchBindingUpdate(&manifest, binding, consumers); err != nil {
 		return err
@@ -846,7 +863,7 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 		return nil, err
 	}
 	if manifest.Released {
-		return nil, errors.New("sandbox: scratch retention is released")
+		return nil, ErrScratchRetentionReleased
 	}
 	referenced := false
 	for _, existing := range manifest.References {

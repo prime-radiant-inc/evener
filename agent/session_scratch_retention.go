@@ -52,7 +52,8 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		if _, ok := findScratchBinding(manifest, existing.BindingID); !ok {
 			return nil
 		}
-		return sandbox.RetryScratchLockContention(func() error {
+		installRefusals := 0
+		for range 5 {
 			if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
 				hook()
 			}
@@ -65,12 +66,32 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 			if err != nil {
 				return err
 			}
+			if hook := s.cfg.testOnly.scratchUpsertAfterLoad; hook != nil {
+				hook()
+			}
 			freshBinding, ok := findScratchBinding(fresh, existing.BindingID)
 			if !ok {
 				return nil
 			}
-			return sandbox.UpsertScratchBinding(owner, freshBinding, scratchConsumerPreservingRoles(fresh, sessionID, freshBinding.BindingID))
-		})
+			// The revision check refuses a manifest that moved since these
+			// rows were derived — the consumer merge replaces rows
+			// wholesale, so a row from a superseded snapshot would clobber
+			// whatever committed in between (round 14).
+			err = sandbox.UpsertScratchBindingAtRevision(owner, freshBinding, scratchConsumerPreservingRoles(fresh, sessionID, freshBinding.BindingID), fresh.Revision)
+			// A stale revision re-derives immediately; only a fail-fast lock
+			// refusal — transient by construction, held by a mortal
+			// in-process writer — waits out the hold with the shared backoff.
+			if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) ||
+				errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+				if errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+					s.sleepScratchLockBackoff(installRefusals)
+					installRefusals++
+				}
+				continue
+			}
+			return err
+		}
+		return fmt.Errorf("scratch retention: install rows for %q stayed stale", sessionID)
 	}
 	bindingID, err := identifier.NewSessionID()
 	if err != nil {
@@ -87,7 +108,8 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	if err := env.PinOwnedScratch(); err != nil {
 		return err
 	}
-	return sandbox.RetryScratchLockContention(func() error {
+	installRefusals := 0
+	for range 5 {
 		if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
 			hook()
 		}
@@ -107,8 +129,24 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		if err != nil {
 			return err
 		}
-		return sandbox.UpsertScratchBinding(owner, published, scratchConsumerPreservingRoles(fresh, sessionID, published.BindingID))
-	})
+		if hook := s.cfg.testOnly.scratchUpsertAfterLoad; hook != nil {
+			hook()
+		}
+		// The revision check refuses a manifest that moved since these rows
+		// were derived, so a row from a superseded snapshot cannot clobber a
+		// concurrent commit (round 14).
+		err = sandbox.UpsertScratchBindingAtRevision(owner, published, scratchConsumerPreservingRoles(fresh, sessionID, published.BindingID), fresh.Revision)
+		if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) ||
+			errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+			if errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+				s.sleepScratchLockBackoff(installRefusals)
+				installRefusals++
+			}
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("scratch retention: install rows for %q stayed stale", sessionID)
 }
 
 func findScratchBinding(manifest sandbox.ScratchManifest, bindingID string) (sandbox.ScratchBinding, bool) {
@@ -387,7 +425,8 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 	if _, ok := findScratchBinding(manifest, installed.BindingID); !ok {
 		return nil
 	}
-	return sandbox.RetryScratchLockContention(func() error {
+	registerRefusals := 0
+	for range 5 {
 		if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
 			hook()
 		}
@@ -398,6 +437,9 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 		fresh, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
 			return err
+		}
+		if hook := s.cfg.testOnly.scratchUpsertAfterLoad; hook != nil {
+			hook()
 		}
 		freshBinding, ok := findScratchBinding(fresh, installed.BindingID)
 		if !ok {
@@ -426,8 +468,21 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 				consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, id)
 			}
 		}
-		return sandbox.UpsertScratchBinding(owner, freshBinding, consumer)
-	})
+		// The revision check refuses a manifest that moved since these rows
+		// were derived, so a row from a superseded snapshot cannot clobber a
+		// concurrent commit (round 14).
+		err = sandbox.UpsertScratchBindingAtRevision(owner, freshBinding, consumer, fresh.Revision)
+		if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) ||
+			errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+			if errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+				s.sleepScratchLockBackoff(registerRefusals)
+				registerRefusals++
+			}
+			continue
+		}
+		return err
+	}
+	return fmt.Errorf("scratch retention: register rows for %q stayed stale", s.id)
 }
 
 // roleScratchBindingID resolves one role environment's own binding id from the
@@ -756,6 +811,15 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 					// that raced another refresh by microseconds.
 					lockContention = true
 					break
+				}
+				if errors.Is(err, sandbox.ErrScratchRetentionReleased) {
+					// The terminal release sealed the manifest between this
+					// pass's snapshot and the open — the install seal path's
+					// outcome, reached from the reacquire: the leases this
+					// pass already took are handed back above, the refresh
+					// declines, and the restore proceeds on fresh scratch a
+					// later reset will reinitialize into (round 14).
+					return nil
 				}
 				return fmt.Errorf("retained scratch refresh %q: %w", ref.Dir, err)
 			}
@@ -1294,6 +1358,19 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 		handle, prior, already, contended := pool.claimRetainedScratchSlot(key, adopterID)
 		switch {
 		case already && prior == adopterID:
+			if pool.scratchSlotContended(key) {
+				// The refresh's stale-claim probe proved this claim's lease
+				// held elsewhere in this process — the idle-release teardown
+				// racing the restore — and left the claim in place, since it
+				// is also what lets a distinct consumer borrow the directory.
+				// This environment provisions no allocation of the kind, so
+				// the restore runs on fresh scratch and the row must keep
+				// naming the retained directory for the next refresh to
+				// re-probe: mark the kind pending, exactly like the
+				// uncontended-claim path (round 14).
+				env.MarkRetainedSlotPending(kind)
+				continue
+			}
 			return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 		case already:
 			// A distinct consumer sharing the allocation borrows the same

@@ -609,6 +609,12 @@ type testConfig struct {
 	// contention around exact attempts.
 	scratchUpsertAttempt func()
 
+	// scratchUpsertAfterLoad runs immediately after each install/register
+	// closure reloads the manifest to recompute its rows — the window
+	// between that row derivation and the upsert's own update lock, where a
+	// concurrent writer's commit must be observable. Nil in production.
+	scratchUpsertAfterLoad func()
+
 	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
 	// before each UpdateScratchBindings attempt, so a test can make the first
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.

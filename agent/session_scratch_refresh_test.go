@@ -1577,6 +1577,158 @@ func TestContendedSlotPendingSurvivesEnvironmentSwap(t *testing.T) {
 	}
 }
 
+// TestScratchUpsertWindowKeepsConcurrentRoleUpdate pins the round-14
+// load→upsert window: the install closures recompute their rows from a
+// manifest load taken WITHOUT the update lock, so a concurrent role update
+// that commits between that load and the upsert's own lock was still replaced
+// wholesale by the closure's now-stale row. The upsert must refuse a manifest
+// that moved since its row was derived, so the closure re-derives instead of
+// overwriting.
+func TestScratchUpsertWindowKeepsConcurrentRoleUpdate(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("fixture binding installation: %v", err)
+	}
+	installed, err := env.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("read the installed binding: %v", err)
+	}
+	// The competing role value a concurrent writer commits inside the
+	// window, on its own pinned binding so the row it names validates.
+	_, roleRow := mintRefreshScratchBinding(t, s, "b-role-window", sandbox.ScratchKindSandbox)
+
+	s.cfg.testOnly.scratchUpsertAfterLoad = func() {
+		// The concurrent role update lands between the closure's row
+		// derivation and its upsert taking the manifest lock.
+		fresh, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Fatalf("concurrent writer's load: %v", err)
+		}
+		published, ok := findScratchBinding(fresh, installed.BindingID)
+		if !ok {
+			t.Fatalf("binding %q vanished inside the window", installed.BindingID)
+		}
+		concurrent := sandbox.ScratchConsumerBinding{
+			SessionID:                s.id,
+			CurrentBindingID:         published.BindingID,
+			WorktreeRestoreBindingID: roleRow.BindingID,
+		}
+		if err := sandbox.UpsertScratchBinding(owner, published, concurrent); err != nil {
+			t.Fatalf("concurrent role update: %v", err)
+		}
+		// One shot: the retry the refusal provokes must re-derive cleanly.
+		s.cfg.testOnly.scratchUpsertAfterLoad = nil
+	}
+	// The second, idempotent installation takes the existing-binding branch —
+	// the closure under test.
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("idempotent installation lost to the load→upsert window: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := scratchConsumerFor(t, manifest, s.id)
+	if row.WorktreeRestoreBindingID != roleRow.BindingID {
+		t.Fatalf("the upsert overwrote a concurrent role update committed after its snapshot: worktree-restore role = %q, want the concurrently committed %q", row.WorktreeRestoreBindingID, roleRow.BindingID)
+	}
+}
+
+// TestScratchAdoptionAbsorbsContendedOwnClaim pins the round-14 stale-claim
+// hazard: the refresh's stale-claim probe stamps contention but deliberately
+// leaves the adopted record in place, and claimRetainedScratchSlot reports any
+// adopted key as uncontended — so an adoption that owns no live allocation of
+// the kind hit "already transferred" against its own stale claim instead of
+// running on fresh scratch and leaving the row for the next refresh to
+// re-probe.
+func TestScratchAdoptionAbsorbsContendedOwnClaim(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CONTENDEDOWN1"
+	const bindingID = "b-contended-own"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	// The post-refresh state the reviewer described: the probe could not
+	// reacquire (the lease is held elsewhere in this process) and stamped
+	// contention, while the adopted record stayed — it is also what lets a
+	// distinct consumer borrow the directory.
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{canonicalScratchDir(retainedDir): consumerID},
+	})
+
+	// An environment with no live allocation of the kind — the shape whose
+	// existingKinds guard cannot absorb the stale claim.
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, false); err != nil {
+		t.Fatalf("adoption failed against its own contended stale claim: %v", err)
+	}
+	pending := env.RetentionPendingKinds()
+	if len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the contended own-claim must mark the kind pending for the next refresh to re-probe, got %v", pending)
+	}
+}
+
+// TestScratchRefreshOpenDeclinesOnReleasedManifest pins the round-14
+// terminal-close race: when the terminal release seals the manifest between a
+// refresh pass's snapshot and its reacquire, the open reports the released
+// manifest and the refresh must hand back every lease it already reacquired
+// and decline — the same clean exit the install's seal path takes — instead of
+// failing the restore.
+func TestScratchRefreshOpenDeclinesOnReleasedManifest(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHSEAL1"
+	const bindingID = "b-refresh-seal"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	// Both leases settle so the pass's first reacquire succeeds for real;
+	// the second open returns the release race's sentinel.
+	for _, handle := range slots {
+		if err := handle.Retain(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.cfg.testOnly.scratchRefreshOpenOverride = func(ref sandbox.ScratchReference, call int) error {
+		if call >= 2 {
+			return sandbox.ErrScratchRetentionReleased
+		}
+		return nil
+	}
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("the refresh treated a sealed manifest as fatal: %v", err)
+	}
+	// The pass must have handed back the lease its first open reacquired, or
+	// the declined refresh pins the allocation against every later writer.
+	for kind, handle := range slots {
+		reopened, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: handle.Dir, Kind: kind})
+		if err != nil {
+			t.Fatalf("re-open %s after the declined pass: %v", kind, err)
+		}
+		if err := reopened.Retain(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestScratchNewBindingRetryKeepsConcurrentRoleUpdate is the new-binding twin of
 // TestScratchUpsertRetryKeepsConcurrentRoleUpdate: the first-ever publication's
 // retry closure must recompute its rows too, or a role update committed while a
