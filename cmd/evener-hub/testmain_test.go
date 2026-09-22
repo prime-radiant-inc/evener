@@ -213,3 +213,30 @@ func TestEvenerEnvScrubHelper(t *testing.T) {
 		}
 	}
 }
+
+// chdirTemp is testing.T.Chdir minus the os.Open(".") the standard
+// implementation performs first: the test log records it as a relative "open
+// .", cmd/go resolves that against this package's directory and hashes the
+// whole directory into the test cache key, so churn there -- frontend/dist is
+// rebuilt unconditionally and is go:embed-pinned -- re-ran every test in this
+// package. Changing directory with a saved path keeps the same isolation
+// without that enumeration. It lives in this file so the next test that wants
+// a different working directory finds it rather than reaching for t.Chdir.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Keep PWD consistent with the new working directory, as testing.T.Chdir
+	// does, so os.Getwd and anything reading PWD agree.
+	t.Setenv("PWD", dir)
+	t.Cleanup(func() {
+		if err := os.Chdir(old); err != nil {
+			t.Fatalf("restore working directory to %s: %v", old, err)
+		}
+	})
+}
