@@ -855,3 +855,112 @@ func TestAuthorizationCommandRunsOncePerResolution(t *testing.T) {
 		t.Fatalf("the Authorization command ran %d time(s) in one resolution; want 1", runs)
 	}
 }
+
+// Header names are case-insensitive on the wire, so an Authorization header
+// written in any case is still the Authorization: the credential and the
+// header map must read the same entry, and the one shared expansion must
+// reach both.
+func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "minted-token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"authorization\" = '''$(mint-auth)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "credential_headers" || res.Credential.Value != "minted-token" {
+		t.Fatalf("credential = %+v; want the minted value from the lowercase Authorization header", res.Credential)
+	}
+	if got := res.CredentialHeaders["authorization"]; got != "minted-token" {
+		t.Fatalf("credential header map carries %q; want the minted value under the author's case", got)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (one shared expansion)", runs)
+	}
+}
+
+// A default that fills in a bare scheme word carries no credential: the
+// authoring boundary admits a scheme word only standing ahead of material,
+// so an expansion that rounds to the word alone resolves as no credential
+// with a warning, never as a present one whose value is just "Bearer".
+func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''${MISSING:-Bearer}''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v; want none: the default is only a scheme word", res.Credential)
+	}
+	if _, ok := res.CredentialHeaders["Authorization"]; ok {
+		t.Fatal("the header map carries the scheme-word-only expansion; want it dropped")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "nothing but an auth scheme word") {
+		t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
+	}
+}
+
+// The listing resolves every instance's credential, so it must not expand
+// an Authorization header the credential will never use: a provider whose
+// api_key outranks the header must not mint (or stall on) its command
+// until a resolution actually reads the header for the wire.
+func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	flakyRuns := 0
+	valueexpr.RunCommand = func(cmd string) (string, error) {
+		if cmd == "flaky" {
+			flakyRuns++
+			return "", errors.New("command timed out")
+		}
+		return "stable-token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(stable-mint)'''\n" +
+		"credential_headers = { \"Authorization\" = '''$(flaky)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	for _, inst := range r.Instances() {
+		if inst.Name == "gw" && inst.CredentialSource != "api_key" {
+			t.Fatalf("listing credential source = %q; want api_key", inst.CredentialSource)
+		}
+	}
+	if flakyRuns != 0 {
+		t.Fatalf("the listing ran the unused Authorization command %d time(s); want 0", flakyRuns)
+	}
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "api_key" || res.Credential.Value != "stable-token" {
+		t.Fatalf("credential = %+v; want the api_key mint", res.Credential)
+	}
+	if flakyRuns != 1 {
+		t.Fatalf("the Authorization command ran %d time(s) across listing+resolution; want 1 (the resolution reads it for the wire)", flakyRuns)
+	}
+}

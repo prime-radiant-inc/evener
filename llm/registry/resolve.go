@@ -908,33 +908,37 @@ func templatePlaceholders(tpl string) []string {
 // and the header map, so a failing command runs once (a second run could
 // also race the first and split the outcome between credential and header).
 func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]string, []string) {
-	auth, authOK, unresolved := r.authorization(rec)
+	authKey, auth, authOK, unresolved := r.authorization(rec)
 	cred, cw := r.credentialWithAuth(rec, auth, authOK, unresolved)
-	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth, authOK, unresolved)
+	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, authKey, auth, authOK, unresolved)
 	return cred, credHeaders, append(cw, hw...)
 }
 
 // expandCredentialHeaders builds the resolved credential-header map. The
-// Authorization header arrives pre-expanded from resolveCredentials, so its
+// key authHeaderKey resolved — the Authorization header, whatever case its
+// author wrote — arrives pre-expanded from resolveCredentials, so its
 // command expressions run once per resolution; every other header expands
-// here. A header that expands to empty is not present — it drops with a
-// warning naming it — while a raw-empty value is spec §10's removal of an
-// inherited header and stays silent.
-func (r *Registry) expandCredentialHeaders(headers map[string]string, auth string, authOK bool, authUnresolved []valueexpr.Unresolved) (map[string]string, []string) {
+// here. A header that expands to no credential material (an empty value or
+// a bare auth scheme word) is not present — it drops with a warning naming
+// it — while a raw-empty value is spec §10's removal of an inherited header
+// and stays silent.
+func (r *Registry) expandCredentialHeaders(headers map[string]string, authKey, auth string, authOK bool, authUnresolved []valueexpr.Unresolved) (map[string]string, []string) {
 	credHeaders := map[string]string{}
 	var warnings []string
 	for k, v := range headers {
 		if v == "" {
 			continue
 		}
-		if authOK && k == "Authorization" {
+		if authOK && k == authKey {
 			switch {
 			case len(authUnresolved) > 0:
 				warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(authUnresolved)))
-			case auth != "":
-				credHeaders[k] = auth
-			default:
+			case auth == "":
 				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
+			case schemeOnly(auth):
+				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to nothing but an auth scheme word", k))
+			default:
+				credHeaders[k] = auth
 			}
 			continue
 		}

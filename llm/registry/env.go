@@ -106,8 +106,10 @@ func ScanConfigValue(value string) (refs []string, literal string, err error) {
 // pieces: a literal run behind credential material (a key smuggled behind a
 // reference), a second literal word (an alphabetic key beside one, which a
 // bare "contains a $" check accepts), a non-scheme literal (a key glued to a
-// reference, "Bearer sk-live-abc$X"), and a scheme word glued to the
-// material with no separating whitespace ("Bearer$X") are all refused.
+// reference, "Bearer sk-live-abc$X"), a scheme word glued to the material
+// with no separating whitespace ("Bearer$X"), and a scheme word separated
+// only by a control character (which cannot travel in a header value) are
+// all refused.
 //
 // The rule is deliberately stricter than providers.toml's own grammar, which
 // takes any syntactically valid value: a key typed into a form or an argv is
@@ -118,7 +120,7 @@ func CheckCredentialHeaderValue(value string) error {
 	if err != nil {
 		return err
 	}
-	seenMaterial, schemeWord, schemeGlued := false, false, false
+	seenMaterial, schemeWord, schemeGlued, schemeControl := false, false, false, false
 	for _, p := range pieces {
 		switch p.Kind {
 		case valueexpr.PieceLit:
@@ -128,11 +130,26 @@ func CheckCredentialHeaderValue(value string) error {
 				}
 				schemeWord = true
 			}
-			// The scheme word must be separated from the credential material
-			// by whitespace: "Bearer$TOKEN" would glue scheme and material
-			// into one malformed value.
-			schemeGlued = schemeWord && len(p.Lit) > 0 && !isSpaceByte(p.Lit[len(p.Lit)-1])
+			// The scheme word must be separated from the credential
+			// material by a space or a tab: "Bearer$TOKEN" would glue
+			// scheme and material into one malformed value, and a control
+			// character that also splits tokens cannot travel in a header
+			// value at all, so it gets its own refusal instead of one
+			// demanding whitespace the value already has.
+			schemeGlued, schemeControl = false, false
+			if schemeWord && len(p.Lit) > 0 {
+				switch p.Lit[len(p.Lit)-1] {
+				case ' ', '\t':
+				case '\n', '\r', '\v', '\f':
+					schemeControl = true
+				default:
+					schemeGlued = true
+				}
+			}
 		case valueexpr.PieceRef:
+			if schemeControl {
+				return errors.New("an auth scheme word must be separated from the credential material by a space or tab, not a control character: a header value cannot carry one")
+			}
 			if schemeGlued {
 				return errors.New("an auth scheme word must be separated from the credential material by whitespace, as in \"Bearer $TOKEN\"")
 			}
@@ -141,6 +158,9 @@ func CheckCredentialHeaderValue(value string) error {
 			}
 			seenMaterial = true
 		case valueexpr.PieceCommand:
+			if schemeControl {
+				return errors.New("an auth scheme word must be separated from the credential material by a space or tab, not a control character: a header value cannot carry one")
+			}
 			if schemeGlued {
 				return errors.New("an auth scheme word must be separated from the credential material by whitespace, as in \"Bearer $TOKEN\"")
 			}
@@ -151,12 +171,6 @@ func CheckCredentialHeaderValue(value string) error {
 		return errors.New("the value must reference a $VARIABLE or run a $(command), never a literal secret")
 	}
 	return nil
-}
-
-// isSpaceByte reports whether the byte can separate the auth scheme word from
-// the credential material.
-func isSpaceByte(c byte) bool {
-	return c == ' ' || c == '\t'
 }
 
 // CheckCredentialHeaderName holds the same boundary for the NAME half of a
