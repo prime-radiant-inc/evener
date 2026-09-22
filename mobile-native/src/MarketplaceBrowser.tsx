@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -14,16 +14,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
-  AnyNotification,
   ConnectionState,
   MarketplaceAddParams,
   MarketplaceEntry,
-  MethodName,
-  MethodTypes,
   PluginRefParams,
 } from "@evener/appwire-client";
 import {
-  createMarketplacesStore,
+  type MarketplacesStore,
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -58,6 +55,9 @@ export function MarketplaceBrowser({
   connectionState,
   hubName,
   installed,
+  marketplaces,
+  lastAddMarketplaces,
+  authoritativeFrom,
   gate,
   ready,
   canUseConnection,
@@ -72,6 +72,24 @@ export function MarketplaceBrowser({
   connectionState: ConnectionState;
   hubName: string;
   installed: PluginsStore;
+  /** The screen's own marketplaces store, which outlives this view: a write
+   * that outlives a tab switch keeps publishing into it, and the remount
+   * that follows reads what it retained. The screen drives the store's
+   * connection transitions and its start/dispose lifetime, the way it
+   * drives the plugins store it hands down beside it. */
+  marketplaces: MarketplacesStore;
+  /** The screen's capture of the latest marketplace-add answer, read off the
+   * client the store itself is built on: the add flow below names blank
+   * registrations from it because a newer list read can hold the store's
+   * publication of the add. */
+  lastAddMarketplaces: { current: readonly MarketplaceEntry[] | null };
+  /** The publication watermark of the latest applied outcome recorded
+   * against the store this browser reads - the screen's, shared by every
+   * browser over that store's life, so a remount never mistakes a
+   * publication the outcome already predates for an authoritative read.
+   * The reporting effect below reads it; the removal path below raises it.
+   * See PluginsScreen's wiring for the watermark's full semantics. */
+  authoritativeFrom: { current: number };
   // The screen's plugin-mutation gate, shared with the installed list: a
   // write started here keeps running after this view is gone, so the lock
   // it takes has to outlive the view - and living at the screen means the
@@ -110,8 +128,8 @@ export function MarketplaceBrowser({
    * fence clears for it. A submitted name is reported as-is; a blank one is
    * one the hub assigned, so the browser names it off the hub's own list -
    * read directly through the client, never off the store, whose
-   * publication of the add a newer read can hold and an unmounted
-   * browser's store drops. Naming is publication-only: a blank
+   * publication of the add a newer read can hold. Naming is
+   * publication-only: a blank
    * re-registration no list can tell from the stale row it replaced - the
    * same name, source, and whole-second stamp - is not named here at all.
    * Its fence still retires under the fallback ruling
@@ -129,39 +147,7 @@ export function MarketplaceBrowser({
   onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
-  // The hub's add answer is the one place that names what the write
-  // registered, and the store cannot be trusted to hand it over: a newer
-  // list read holds its publication, and this browser's unmount drops it.
-  // Capture the answer as it passes through the client this browser's own
-  // store is built on, so the add flow below reads it independent of every
-  // store.
-  const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
-  const storeClient = useMemo(() => {
-    const request = <M extends MethodName>(
-      method: M,
-      params: MethodTypes[M]["params"],
-      opts?: { timeoutMs?: number },
-    ): Promise<MethodTypes[M]["result"]> => {
-      const pending = client.request(method, params, opts);
-      if (method === "evener/marketplace/add") {
-        lastAddMarketplaces.current = null;
-        void (pending as Promise<MethodTypes["evener/marketplace/add"]["result"]>).then(
-          (answer) => {
-            lastAddMarketplaces.current = answer.marketplaces;
-          },
-          () => {},
-        );
-      }
-      return pending;
-    };
-    return {
-      request,
-      onNotification: (callback: (notification: AnyNotification) => void) =>
-        client.onNotification(callback),
-    };
-  }, [client]);
-  const model = useMemo(() => createMarketplacesStore(storeClient), [storeClient]);
-  const state = useSyncExternalStore(model.subscribe, model.getState);
+  const state = useSyncExternalStore(marketplaces.subscribe, marketplaces.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
   // Marketplace writes take the same gate an install does; see
   // pluginMutationGate.ts for why the gate exists.
@@ -171,27 +157,6 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
-  // Lowered by this browser's own unmount: a write it started must not then
-  // refetch through its store, which died with it and drops everything that
-  // read publishes - the mounted browser's own read is the reconciliation.
-  const alive = useRef(true);
-  useEffect(
-    () => () => {
-      alive.current = false;
-    },
-    [],
-  );
-  // The publication watermark of the latest applied outcome this browser
-  // recorded. Everything the store published at or below it predates the
-  // fence that outcome raised - including a stale read's answer the
-  // outcome's own rejection passed ownership to, one beat before the
-  // recording - so only a publication NEWER than this counts as an
-  // authoritative read for retiring the fence. Reads issued after the
-  // outcome (its own reconciliation refetch, a reconnect re-read, a
-  // remount's mount read) always publish newer: the wire answers one
-  // connection's requests in order, and the store's revision fence drops
-  // anything a newer read outruns.
-  const authoritativeFrom = useRef(0);
   useEffect(() => {
     if (
       state.marketplaces !== null &&
@@ -204,23 +169,12 @@ export function MarketplaceBrowser({
     state.marketplaces,
     state.marketplacesPublicationVersion,
   ]);
-  // Wired the way PluginsScreen wires its plugins store: the marketplaces
-  // store hears every connection transition through connectionChanged, so a
-  // reconnection re-reads a list this view has already asked for and retires
-  // the catalogs a change away may have invalidated (storeLifecycle.ts). A
-  // layout effect, so the store knows its connection before the mount
-  // effect's first read issues.
-  useLayoutEffect(() => {
-    model.connectionChanged(client, connectionState);
-  }, [model, client, connectionState]);
   useEffect(() => {
-    model.start();
-    void model.getState().fetchMarketplaces();
+    void marketplaces.getState().fetchMarketplaces();
     return () => {
       revision.current += 1;
-      model.dispose();
     };
-  }, [model]);
+  }, [marketplaces]);
   // A new selection starts clean: the filter and the last action's error
   // belong to the marketplace they were typed against.
   function select(name: string | null) {
@@ -339,11 +293,15 @@ export function MarketplaceBrowser({
               if (!onAppliedRemoval(name, notice, client)) return;
               // The watermark everything this fence predates: publications at
               // or below it - including a stale read's answer the rejection
-              // just passed ownership to - never retire it (the effect's
-              // doc above).
+              // just passed ownership to - never retire it (the prop's doc).
+              // The store is the screen's and survives this view, so the
+              // reconciliation read still publishes somewhere a mounted
+              // browser reads: this view's own unmount must not stop it -
+              // the remount whose first read fails is exactly the case the
+              // retained model exists for.
               authoritativeFrom.current =
-                model.getState().marketplacesPublicationVersion;
-              if (alive.current && refetchAfterRemoval(model, name))
+                marketplaces.getState().marketplacesPublicationVersion;
+              if (refetchAfterRemoval(marketplaces, name))
                 void state.fetchMarketplaces();
               return;
             }
@@ -507,7 +465,10 @@ export function MarketplaceBrowser({
         />
       ) : (
         <FlatList
-          data={state.marketplaces ?? []}
+          // A failed read keeps the last list in the store; rows a failed
+          // read cannot vouch for stay hidden until a fresh read lands, and
+          // the error copy and Retry above speak instead.
+          data={state.marketplacesError === null ? state.marketplaces ?? [] : []}
           keyExtractor={(item) => item.name}
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
           ListHeaderComponent={header}
@@ -558,7 +519,7 @@ export function MarketplaceBrowser({
             // no read has ever landed, in which case nothing here can tell
             // new from old and the fence waits for the next authoritative
             // read instead.
-            const before = model.getState().marketplaces;
+            const before = marketplaces.getState().marketplaces;
             await state.addMarketplace(params);
             if (params.name) {
               onMarketplaceAdded(params.name, client);
@@ -566,10 +527,9 @@ export function MarketplaceBrowser({
             }
             // A blank submitted name is one the hub assigns from the
             // source's own catalog, and the store's publication of the add
-            // cannot be trusted to name it: a newer list read holds it, and
-            // an unmounted browser's store drops it. Name the registration
-            // off the add's own answer, captured above as it passed through
-            // the client - independent of every store.
+            // cannot be trusted to name it: a newer list read holds it. Name
+            // the registration off the add's own answer, captured as it
+            // passed through the client - independent of every store.
             const after = lastAddMarketplaces.current;
             if (after === null || before === null) return;
             for (const name of addedMarketplaceNames(before, after))
@@ -583,9 +543,9 @@ export function MarketplaceBrowser({
             // fallback ruling - the add's own answer publishes as a trusted
             // whole-list write, and its report, like any read that follows,
             // retires the fence whatever it carries. A publication the
-            // answer itself cannot make - held behind a newer read, dropped
-            // with an unmounted store - leaves the fence to the next one:
-            // the read that holds it, or the remount's own.
+            // answer itself cannot make - held behind a newer read -
+            // leaves the fence to the next one: the read that holds it, or
+            // the remount's own.
           }}
         />
       )}

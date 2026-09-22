@@ -22,11 +22,17 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
+  AnyNotification,
   ConnectionState,
   MarketplaceEntry,
+  MethodName,
+  MethodTypes,
   PluginRefParams,
 } from "@evener/appwire-client";
-import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+  createMarketplacesStore,
+  createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -329,6 +335,57 @@ function Plugins({
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
+  // The hub's add answer is the one place that names what the write
+  // registered, and the store cannot be trusted to hand it over: a newer
+  // list read holds its publication. Capture the answer as it passes
+  // through the client the marketplaces store is built on, so the
+  // browser's add flow reads it independent of every store.
+  const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
+  // The marketplaces store is this screen's, not the browser's: a write
+  // that outlives a tab switch keeps publishing into it, and the browser a
+  // remount replaces reads what it retained instead of starting cold.
+  const marketplaceStoreClient = useMemo(() => {
+    const request = <M extends MethodName>(
+      method: M,
+      params: MethodTypes[M]["params"],
+      opts?: { timeoutMs?: number },
+    ): Promise<MethodTypes[M]["result"]> => {
+      const pending = client.request(method, params, opts);
+      if (method === "evener/marketplace/add") {
+        lastAddMarketplaces.current = null;
+        void (pending as Promise<MethodTypes["evener/marketplace/add"]["result"]>).then(
+          (answer) => {
+            lastAddMarketplaces.current = answer.marketplaces;
+          },
+          () => {},
+        );
+      }
+      return pending;
+    };
+    return {
+      request,
+      onNotification: (callback: (notification: AnyNotification) => void) =>
+        client.onNotification(callback),
+    };
+  }, [client]);
+  const marketplaces = useMemo(
+    () => createMarketplacesStore(marketplaceStoreClient),
+    [marketplaceStoreClient],
+  );
+  // The publication watermark of the latest applied outcome recorded against
+  // the marketplaces store. Everything the store published at or below it
+  // predates the fence that outcome raised - including a stale read's answer
+  // the outcome's own rejection passed ownership to, one beat before the
+  // recording - so only a publication NEWER than this counts as an
+  // authoritative read for retiring the fence. Reads issued after the outcome
+  // (its own reconciliation refetch, a reconnect re-read, a remount's mount
+  // read) always publish newer: the wire answers one connection's requests in
+  // order, and the store's revision fence drops anything a newer read outruns.
+  // Held here, at the store's own lifetime, so every browser over that store
+  // shares one watermark: a remount carries it forward instead of resetting
+  // it, and the retained pre-outcome snapshot a fresh browser would otherwise
+  // report never retires a standing fence.
+  const authoritativeFrom = useRef(0);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
@@ -350,6 +407,16 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  // The browser's first list read is a passive effect. Bind this screen-owned
+  // store before child effects run so that first read is not mistaken for a
+  // reconnect and issued twice by the lifecycle's wanted-list recovery.
+  useLayoutEffect(() => {
+    marketplaces.connectionChanged(client, connectionState);
+  }, [marketplaces, client, connectionState]);
+  useLayoutEffect(() => {
+    marketplaces.start();
+    return () => marketplaces.dispose();
+  }, [marketplaces]);
   // The store's own reconnect recovery is what a banner over a live screen
   // needs: the hub broadcasts a change only to clients connected when it
   // happens, so everything that moved while this one was away arrives as
@@ -445,6 +512,9 @@ function Plugins({
           connectionState={connectionState}
           hubName={hubName}
           installed={model}
+          marketplaces={marketplaces}
+          lastAddMarketplaces={lastAddMarketplaces}
+          authoritativeFrom={authoritativeFrom}
           gate={gate}
           ready={ready}
           canUseConnection={canUseConnection}
