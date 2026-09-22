@@ -1011,6 +1011,26 @@ describe("job rows", () => {
     expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
   });
 
+  // A command that exited nonzero or died on a signal must keep the failure
+  // signal it carried as `failed` before the status split (RoboRev round 2).
+  // The classification is the shared activity danger set (isActivityFailure),
+  // so the rail and the activity tree can never disagree about which job
+  // statuses read as failures.
+  test.each(["command_exited_nonzero", "command_killed", "failed", "exhausted"] as const)(
+    "a %s job row renders the failure signal",
+    (status) => {
+      render(<RailRow node={{ ...jobRailNode({ status }), active: false }} info={info()} actions={actions()} />);
+      expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    },
+  );
+
+  test("a cleanly finished job row stays quiet (no signal dot)", () => {
+    render(
+      <RailRow node={{ ...jobRailNode({ status: "completed" }), active: false }} info={info()} actions={actions()} />,
+    );
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+  });
+
   test("renders a separate completed-jobs disclosure", () => {
     const toggle = vi.fn();
     render(

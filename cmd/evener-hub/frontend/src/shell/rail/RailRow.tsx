@@ -41,6 +41,7 @@
 import {
   canReadSharedNotes,
   humanizeState,
+  isActivityFailure,
   watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
@@ -890,7 +891,7 @@ function JobRow({ node }: { node: JobRailNode }) {
     <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
+          <Signal wireState={active ? "active" : isActivityFailure(undefined, status) ? "errored" : "ended"} />
           <span className={CLASS.label} title={jobTitle(node.job, status)}>
             {jobLabel(node.job)}
           </span>
