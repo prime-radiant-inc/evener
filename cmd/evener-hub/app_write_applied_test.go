@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -165,6 +166,23 @@ func TestHubRPCInstanceRemoveBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 	if !strings.Contains(err.Error(), "the removal stands in the config") {
 		t.Fatalf("evener/instance/remove = %v, want the double failure this test is about", err)
 	}
+	// The removal stood, so the client is told so through the wire data rather
+	// than left to retry a failed remove against an instance that is gone.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode remove-applied error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRemoveApplied {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRemoveApplied)
+	}
 	waitForAuthUpdatedBroadcast(t, client, "a removal whose rollback could not be written")
 }
 
@@ -194,6 +212,13 @@ func TestInstances_RemoveMarksAppliedWhenTheDeletedCredentialCannotBeRestored(t 
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted", err, err)
+	}
+	// supplyAny here: the authored entry never moved, so the instance is still
+	// configured (a Codex OAuth record carries it). The applied marker is owed
+	// for the broadcast, but the standing-removal discriminator is not - the
+	// removal did not stand.
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want a plain applied write: [providers.work] never moved", err, err)
 	}
 }
 
@@ -231,6 +256,179 @@ func TestInstances_RemoveMarksAppliedWhenTheConfigWriteFailsAndTheCredentialCann
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the credentials stayed deleted", err, err)
+	}
+	// The config write failed, so the authored entry is still there and the
+	// instance still resolves: a plain applied write, not a standing removal.
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want a plain applied write: [providers.work] never moved", err, err)
+	}
+	if !strings.Contains(err.Error(), "the instance is still configured") {
+		t.Fatalf("Remove = %v, want the configured frame: [providers.work] never moved", err)
+	}
+	if strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want no standing frame: the authored entry never moved", err)
+	}
+}
+
+// The implicit sibling of the case above: an instance with no authored entry,
+// named only by `default`, is kept alive by its stored key alone. The config
+// write that would have dropped the pointer never landed, so the strict
+// supplyAny question is the wrong one to ask - the instance does not resolve
+// from a file that never changed, it resolves from the key this call deleted.
+// When the key cannot be put back the removal stands, and the caller must be
+// told so: the standing frame and the removeApplied discriminator are what
+// instanceRemoveError maps to ErrorInstanceRemoveApplied, which is what makes
+// the client reconcile a removal that already applied instead of presenting a
+// failed remove and retrying it against an instance that is gone. The
+// writeApplied mark stays, because the deleted key is what every other
+// client's credential status for this name is stale against.
+func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheStoredKeyCannotBeRestored(t *testing.T) {
+	f := newFlakyReloadFixture(t, "groq", func(int) bool { return false })
+	if before := entry(t, f.ctl.List(), "groq"); !before.Implicit || before.ActiveSource != "store" {
+		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
+	}
+	// The `default` pointer is the only thing in the file naming this instance,
+	// and it is what makes the removal write at all: with no [providers.groq]
+	// to delete, dropping it is the change the failing write would have made.
+	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	l, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+	if l.Default != "groq" || len(l.Providers) != 0 {
+		t.Fatalf("fixture: providers.toml = %+v, want a default pointer and no authored entry", l)
+	}
+	blockProvidersWrites(t, f.tomlPath)
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err = f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure reported")
+	}
+	if strings.Contains(err.Error(), "the instance is still configured") {
+		t.Fatalf("Remove = %v, want no configured frame: the key that carried the instance stayed deleted", err)
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the standing removal named", err)
+	}
+	if !strings.Contains(err.Error(), "stored key could not be restored") {
+		t.Fatalf("Remove = %v, want the unrestored layer named", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted", err, err)
+	}
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying key stayed deleted", err, err)
+	}
+	// The report is honest only if the key really is gone: this is a removal no
+	// retry can complete.
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("the stored key = %q, want it gone with the standing removal", v)
+	}
+}
+
+// The OAuth-carrying variant of the case above: the implicit instance resolves
+// from its Codex record instead of a stored key, and that record - the layer
+// that carries it - cannot be put back. Same standing removal, same frame and
+// discriminator, because supplyOAuth names the layer that is gone.
+func TestInstances_RemoveStandsWhenTheImplicitConfigWriteFailsAndTheOAuthRecordCannotBeRestored(t *testing.T) {
+	f := newFlakyReloadFixture(t, "", func(int) bool { return false })
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	if before := entry(t, f.ctl.List(), "openai-codex"); !before.Implicit || before.ActiveSource != "oauth" {
+		t.Fatalf("fixture: openai-codex = %+v, want an implicit instance resolving the OAuth record", before)
+	}
+	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "openai-codex"}); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	blockProvidersWrites(t, f.tomlPath)
+	authPath := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		removed, err := originalDelete(dir, name)
+		if err == nil && removed {
+			// Occupy the record's path so the atomic restore cannot land: the
+			// layer that carried the instance stays deleted.
+			if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil {
+				t.Errorf("Mkdir(%s): %v", authPath, mkErr)
+			}
+		}
+		return removed, err
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed restore reported")
+	}
+	if strings.Contains(err.Error(), "the instance is still configured") {
+		t.Fatalf("Remove = %v, want no configured frame: the record that carried the instance stayed deleted", err)
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the standing removal named", err)
+	}
+	if !strings.Contains(err.Error(), "OAuth record could not be restored") {
+		t.Fatalf("Remove = %v, want the unrestored layer named", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the carrying record stayed deleted", err, err)
+	}
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying record stayed deleted", err, err)
+	}
+	if info, statErr := os.Stat(authPath); statErr != nil || !info.IsDir() {
+		t.Fatalf("auth path = %v (err %v), want the record still not restored", info, statErr)
+	}
+}
+
+// The other half of the implicit classification: when the layer that carries
+// the instance is back, the removal did not stand, so neither the standing
+// frame nor the discriminator may appear. A stray second credential that stays
+// deleted is still an applied change - every other client's credential status
+// for the name is stale against it - so the write failure and the writeApplied
+// mark have to come back around the leftovers, exactly as the reload-rollback
+// path folds them.
+func TestInstances_RemoveRollsBackWhenTheImplicitConfigWriteFailsAndTheCarryingRecordIsRestored(t *testing.T) {
+	f := newFlakyReloadFixture(t, "", func(int) bool { return false })
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	// The stray key beside the carrying record: it cannot be restored, while
+	// the record can.
+	if err := f.store.Set("openai-codex", "sk-stray"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	if inst, ok := f.ctl.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("openai-codex = %+v ok=%v, want an OAuth-backed instance", inst, ok)
+	}
+	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "openai-codex"}); err != nil {
+		t.Fatalf("SetDefault: %v", err)
+	}
+	blockProvidersWrites(t, f.tomlPath)
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure reported")
+	}
+	if strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want a rollback: the carrying record is back", err)
+	}
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want no standing-removal discriminator: the carrying record is back", err, err)
+	}
+	if !strings.Contains(err.Error(), "some credentials were not put back") {
+		t.Fatalf("Remove = %v, want the leftover stray key reported", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the stray key stayed deleted", err, err)
+	}
+	if _, statErr := os.Stat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); statErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", statErr)
+	}
+	if v, _ := f.store.Get("openai-codex"); v != "" {
+		t.Fatalf("stored key = %q, want the stray key still deleted", v)
 	}
 }
 
@@ -290,6 +488,213 @@ func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCann
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted despite the config rollback", err, err)
 	}
+	// The config rolled back, so the instance is configured again: the removal
+	// did not stand, and the client must not be steered off a live instance.
+	if _, applied := errors.AsType[removeAppliedError](err); applied {
+		t.Fatalf("Remove = %v (%T), want a plain applied write: the config rollback left it configured", err, err)
+	}
+}
+
+// An implicit instance carried by its Codex OAuth record can carry a stray
+// stored key beside it. The removal's reload fails, and only the stray key
+// cannot be put back while the record - the layer the instance actually
+// resolves from - is restored. The instance is configured again, so the
+// caller must hear a rollback, not "the removal stands", and the row must be
+// republished by the recovery reload. The stray key is still gone, though, so
+// the error also answers writeApplied: every other client's credential status
+// for the name is stale against that deletion, and the marker is what makes
+// the RPC layer broadcast it.
+func TestInstances_RemoveRollsBackWhenTheCarryingRecordIsRestored(t *testing.T) {
+	// Load 1 is the fixture's own, load 2 this test's priming reload, load 3
+	// the removal's, and load 4 the rollback's recovery reload.
+	f := newFlakyReloadFixture(t, "openai-codex", func(load int) bool { return load == 3 })
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	if inst, ok := f.ctl.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("openai-codex = %+v ok=%v, want an OAuth-backed instance", inst, ok)
+	}
+	// The stray stored key cannot be restored; the carrying record can.
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed reload reported")
+	}
+	if strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want a rollback: the carrying record is back", err)
+	}
+	if !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the rollback reported", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the stray key stayed deleted", err, err)
+	}
+	if _, statErr := os.Stat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); statErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", statErr)
+	}
+	if inst, ok := f.ctl.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("after rollback openai-codex = %+v ok=%v, want it resolving again", inst, ok)
+	}
+}
+
+// The inverse of the case above: the OAuth record is the layer that carries
+// the instance and it cannot be restored (only the stray key can). The
+// instance no longer resolves, so the removal stands and the caller is told
+// the write applied.
+func TestInstances_RemoveStandsWhenTheCarryingRecordCannotBeRestored(t *testing.T) {
+	f := newFlakyReloadFixture(t, "openai-codex", func(load int) bool { return load == 3 })
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	authPath := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		removed, err := originalDelete(dir, name)
+		if err == nil && removed {
+			// Occupy the record's path so the atomic restore cannot land: the
+			// stray key restores fine, the carrying record does not.
+			if mkErr := os.Mkdir(authPath, 0o700); mkErr != nil {
+				t.Errorf("Mkdir(%s): %v", authPath, mkErr)
+			}
+		}
+		return removed, err
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the failed restore reported")
+	}
+	if !strings.Contains(err.Error(), "the removal stands") {
+		t.Fatalf("Remove = %v, want the removal to stand: the carrying record is gone", err)
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the carrying record stayed deleted", err, err)
+	}
+	// The layer that carried the instance is gone, so the removal stands: this
+	// is one of the two supplies that must carry the discriminator.
+	if _, applied := errors.AsType[removeAppliedError](err); !applied {
+		t.Fatalf("Remove = %v (%T), want the standing-removal discriminator: the carrying record is gone", err, err)
+	}
+	if info, statErr := os.Stat(authPath); statErr != nil || !info.IsDir() {
+		t.Fatalf("auth path = %v (err %v), want the record still not restored", info, statErr)
+	}
+}
+
+// partialRollbackFixture serves an RPC hub whose implicit Codex instance can
+// be given both an OAuth record and a stray stored key. failNext makes the
+// next registry load fail and, in the same step, blocks the credentials file:
+// the carrying OAuth record lives under the state root and restores, while the
+// stray key cannot.
+type partialRollbackFixture struct {
+	hub       *httptest.Server
+	reg       *hubcore.ProviderRegistry
+	stateDir  string
+	credsPath string
+	store     *credentials.Store
+	failNext  *atomic.Bool
+}
+
+func newPartialRollbackFixture(t *testing.T) *partialRollbackFixture {
+	t.Helper()
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	load := testRegistryLoader(stateDir, tomlPath, credsStore, nil)
+	failNext := &atomic.Bool{}
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if failNext.CompareAndSwap(true, false) {
+			// The store writes through <path>.tmp and renames, so a directory
+			// occupying that name refuses the open. The mkdir result is
+			// asserted from the test goroutine, not here.
+			_ = os.Mkdir(credsStore.Path()+".tmp", 0o700)
+			return nil, nil, errors.New("the registry refused to load")
+		}
+		return load(extra...)
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            reg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	t.Cleanup(hub.Close)
+	return &partialRollbackFixture{
+		hub:       hub,
+		reg:       reg,
+		stateDir:  stateDir,
+		credsPath: credsStore.Path(),
+		store:     credsStore,
+		failNext:  failNext,
+	}
+}
+
+// A credential-only removal whose reload fails can restore the layer that
+// carries the instance while a stray credential stays deleted. The instance is
+// configured again - the caller is told the removal was rolled back, not that
+// it stands - but a credential is gone, so the hub still owes every other
+// client evener/auth/updated. This is the RPC-level proof that the applied
+// marker rides the rollback error into instanceWrite's broadcast.
+func TestHubRPCInstanceRemoveBroadcastsWhenAPartialRollbackLeavesACredentialDeleted(t *testing.T) {
+	f := newPartialRollbackFixture(t)
+	if err := f.store.Set("openai-codex", "sk-stray"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.reg.Reload(); err != nil {
+		t.Fatalf("priming reload: %v", err)
+	}
+	if inst, ok := f.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("openai-codex = %+v ok=%v, want an OAuth-backed instance", inst, ok)
+	}
+
+	client := dialHubRPC(t, f.hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	f.failNext.Store(true)
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceRemove,
+		appwire.InstanceRemoveParams{Name: "openai-codex"}, &resp)
+	if err == nil {
+		t.Fatal("evener/instance/remove = nil, want the partial rollback reported")
+	}
+	if strings.Contains(err.Error(), "the removal stands") || !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("evener/instance/remove = %v, want a rollback: the carrying record is back", err)
+	}
+	if !strings.Contains(err.Error(), "some credentials were not put back") {
+		t.Fatalf("evener/instance/remove = %v, want the leftover stray key reported", err)
+	}
+	if st, statErr := os.Stat(f.credsPath + ".tmp"); statErr != nil || !st.IsDir() {
+		t.Fatalf("credentials temp path = %v (err %v), want the blocking directory this case needs", st, statErr)
+	}
+	if v, _ := f.store.Get("openai-codex"); v != "" {
+		t.Fatalf("stored key = %q, want the stray key still deleted", v)
+	}
+	if _, statErr := os.Stat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); statErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", statErr)
+	}
+	if inst, ok := f.reg.Get().Instance("openai-codex"); !ok || inst.CredentialSource != "oauth" {
+		t.Fatalf("after the recovery reload openai-codex = %+v ok=%v, want it resolving again", inst, ok)
+	}
+	waitForAuthUpdatedBroadcast(t, client, "a partial rollback that left the stray key deleted")
 }
 
 // SetLayer persists the layer and then resolves the effective view. The file is
@@ -403,6 +808,42 @@ func TestInstances_SetDefaultWhoseReloadFailsIsStillApplied(t *testing.T) {
 	}
 	if after.Default != "work" {
 		t.Fatalf("providers.toml default = %q, want the write this call made to stand", after.Default)
+	}
+}
+
+// The applied record belongs to the call that made the write, not to the
+// controller: a mutation that lands a write and then fails reports the marker
+// on its own error and leaves the controller's record clear, so a later call
+// that writes nothing cannot read or inherit it. A record left on the
+// controller for the RPC layer to read after the lock is released is exactly
+// what let a concurrent call reset or steal the mark (roborev on PR #2042);
+// this pins the per-call property that folding the mark onto the mutation's
+// own error while its lock is held gives.
+func TestInstances_AppliedMarkerBelongsToTheCallThatWrote(t *testing.T) {
+	// Load 1 is the fixture's own, load 2 Create's reload, load 3 this
+	// SetDefault's: SetDefault's write lands and the reload after it fails.
+	f := newFlakyReloadFixture(t, "", func(load int) bool { return load == 3 })
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
+	if err == nil {
+		t.Fatal("SetDefault = nil, want the failed reload reported")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("SetDefault = %v (%T), want the applied marker on the call's own error", err, err)
+	}
+	if f.ctl.applied.peekApplied() {
+		t.Fatal("SetDefault left its applied record on the controller: a later call could read or steal it")
+	}
+	// A call that writes nothing carries no marker and cannot inherit one.
+	err = f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "missing"})
+	if err == nil {
+		t.Fatal("SetDefault(missing) = nil, want the refusal")
+	}
+	if writeDidApply(err) {
+		t.Fatalf("SetDefault(missing) = %v (%T), want a plain refusal with no applied marker", err, err)
 	}
 }
 

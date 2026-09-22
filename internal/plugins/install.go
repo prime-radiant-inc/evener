@@ -39,7 +39,11 @@ func (m *Manager) loadRegistry() (Registry, error) {
 	if err != nil {
 		return Registry{}, err
 	}
-	return installLoadRegistry(path)
+	reg, err := installLoadRegistry(path)
+	if err != nil {
+		return Registry{}, m.storeFileFailed(err, "reading %s", registryFileName)
+	}
+	return reg, nil
 }
 
 // saveRegistry is the shared boundary every mutation (Install, Upgrade,

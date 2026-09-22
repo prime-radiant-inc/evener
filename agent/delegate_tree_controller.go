@@ -51,41 +51,44 @@ type delegateTreeController struct {
 	live        map[string]*delegateLiveState
 	rootRuntime *Session
 
-	rootSessionID       string
-	stateDir            string
-	worktreeRoot        string
-	now                 func() time.Time
-	newDelegateID       func() string
-	turnLimit           int
-	driveLimit          int
-	maxRetainedTerminal int
-	turnsInUse          int
-	drivesInUse         int
-	nextToken           uint64
-	reservations        map[uint64]*delegateStartRecord
-	inputClaims         map[uint64]delegateLease
-	steeringClaims      map[uint64]*delegateSteeringClaim
-	modelClaims         map[uint64]*delegateModelRequestClaim
-	settlementClaims    map[uint64]*delegateSettlementClaim
-	work                map[uint64]*delegateShellWork
-	deliveries          map[uint64]*delegateDeliveryAdmission
-	deliveryClaims      map[string]*delegateDeliveryClaim
-	quietClaims         map[uint64]*delegateQuietAttentionClaim
-	attentionWakeIDs    map[string]map[string]struct{}
-	watchEnqueues       map[uint64]*delegateWatchReceipt
-	watchDeliveries     map[uint64]*delegateWatchReceipt
-	reclamations        map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming          map[string]uint64
-	stop                *delegateStopState
-	stopDriver          *delegateStopDriver
-	evidenceVersion     uint64
-	retirementClaim     *RetirementClaim
-	closing             bool
-	reconcileOrder      []delegateLease
-	runStarts           map[delegateLease]delegatestore.RunTrigger
-	owedAdmission       bool
-	emitUpdate          func(delegateUpdatePlan)
-	attentionOpen       delegateAttentionWriterOpener
+	rootSessionID         string
+	stateDir              string
+	worktreeRoot          string
+	now                   func() time.Time
+	newDelegateID         func() string
+	turnLimit             int
+	driveLimit            int
+	maxRetainedTerminal   int
+	turnsInUse            int
+	drivesInUse           int
+	nextToken             uint64
+	reservations          map[uint64]*delegateStartRecord
+	inputClaims           map[uint64]delegateLease
+	steeringClaims        map[uint64]*delegateSteeringClaim
+	modelClaims           map[uint64]*delegateModelRequestClaim
+	settlementClaims      map[uint64]*delegateSettlementClaim
+	work                  map[uint64]*delegateShellWork
+	deliveries            map[uint64]*delegateDeliveryAdmission
+	deliveryClaims        map[string]*delegateDeliveryClaim
+	quietClaims           map[uint64]*delegateQuietAttentionClaim
+	attentionWakeIDs      map[string]map[string]struct{}
+	attentionRestoreHolds map[string]int
+	idleReleaseTimers     map[string]idleReleaseTimerHandle
+	idleReleaseArmSeq     uint64
+	watchEnqueues         map[uint64]*delegateWatchReceipt
+	watchDeliveries       map[uint64]*delegateWatchReceipt
+	reclamations          map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming            map[string]uint64
+	stop                  *delegateStopState
+	stopDriver            *delegateStopDriver
+	evidenceVersion       uint64
+	retirementClaim       *RetirementClaim
+	closing               bool
+	reconcileOrder        []delegateLease
+	runStarts             map[delegateLease]delegatestore.RunTrigger
+	owedAdmission         bool
+	emitUpdate            func(delegateUpdatePlan)
+	attentionOpen         delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -289,6 +292,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attentionWakeIDs:    make(map[string]map[string]struct{}),
+		idleReleaseTimers:   make(map[string]idleReleaseTimerHandle),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),

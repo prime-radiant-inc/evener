@@ -6,10 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
 	"time"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 )
 
 func TestPersistentRecoverySurvivesRecreationAndClearsOnlyItsGroup(t *testing.T) {
@@ -22,7 +23,7 @@ func TestPersistentRecoverySurvivesRecreationAndClearsOnlyItsGroup(t *testing.T)
 	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 		t.Fatal(err)
 	}
-	finish(false) // Committed intent survives a failed signal.
+	finish.Finish(false) // Committed intent survives a failed signal.
 	locks, err = NewPersistentResumeLocks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +37,7 @@ func TestPersistentRecoverySurvivesRecreationAndClearsOnlyItsGroup(t *testing.T)
 	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	locks, err = NewPersistentResumeLocks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +98,7 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 					if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 						t.Fatal(err)
 					}
-					finish(true)
+					finish.Finish(true)
 				}
 				boom := errors.New("disk failure")
 				fail := func() error { return boom }
@@ -110,7 +111,7 @@ func TestPersistentRecoveryWriteFailurePolicy(t *testing.T) {
 					err = locks.ExplicitResumeCompleted("A", locks.RecoveryState("A").Epoch)
 				} else {
 					err = locks.PersistForceStop([]string{"A", "B"}, "B")
-					finish(false)
+					finish.Finish(false)
 				}
 				if !errors.Is(err, boom) {
 					t.Fatalf("lost write error: %v", err)
@@ -156,22 +157,22 @@ func TestRecoveryAdmissionRemainsResponsiveDuringDurableClear(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	entered, release := make(chan struct{}), make(chan struct{})
 	locks.store.faults.BeforeRename = func() error { close(entered); <-release; return nil }
 	done := make(chan error, 1)
 	go func() { done <- locks.ExplicitResumeCompleted("A", locks.RecoveryState("A").Epoch) }()
 	<-entered
-	admission := make(chan func(bool), 1)
+	admission := make(chan *ForceStopFence, 1)
 	go func() {
 		next := locks.BeginForceStop([]string{"B", "C"})
 		_ = locks.RecoverySequence()
 		_ = locks.RecoveryState("B")
 		admission <- next
 	}()
-	var finishNew func(bool)
+	var fenceNew *ForceStopFence
 	select {
-	case finishNew = <-admission:
+	case fenceNew = <-admission:
 	case <-time.After(time.Second):
 		close(release)
 		t.Fatal("disk clear blocked admission")
@@ -187,7 +188,7 @@ func TestRecoveryAdmissionRemainsResponsiveDuringDurableClear(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finishNew(true)
+	fenceNew.Finish(true)
 	reopened, err := NewPersistentResumeLocks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +262,7 @@ func TestRecoveryIntentRequiresFileAndDirectoryDurability(t *testing.T) {
 			if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
 				t.Fatal(err)
 			}
-			finish(false)
+			finish.Finish(false)
 			if observed["/"] == 0 || observed["/state"] < 2 || observed["/state/recovery"] == 0 {
 				t.Fatalf("missing first-use or retry directory syncs: %v", observed)
 			}
@@ -282,13 +283,13 @@ func TestExplicitResumeDoesNotClearChangedEpoch(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := locks.RecoveryState("A").Epoch
 	finish = locks.BeginForceStop([]string{"A"})
 	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	if err := locks.ExplicitResumeCompleted("A", epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +314,7 @@ func TestRecoveryIntentNormalizesAliasesAndPreservesMemorySemantics(t *testing.T
 	if err := locks.PersistForceStop([]string{"B", "A", "B"}, "B"); err != nil {
 		t.Fatal(err)
 	}
-	finish(false)
+	finish.Finish(false)
 	if !locks.RecoveryState("A").ResumeRequired || !locks.RecoveryState("B").ResumeRequired {
 		t.Fatal("failed signal discarded committed memory intent")
 	}
@@ -352,7 +353,7 @@ func TestRecoveryPersistenceUnderTraversalOnlyAncestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish := locks.BeginForceStop([]string{"A"})
-	defer finish(false)
+	defer finish.Finish(false)
 	if err := locks.PersistForceStop([]string{"A"}, "A"); err != nil {
 		t.Fatal(err)
 	}
@@ -384,12 +385,12 @@ func TestRecoveryTargetSurvivesPartialGroupOverlap(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"A", "B"}, "A"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	finish = locks.BeginForceStop([]string{"A", "C"})
 	if err := locks.PersistForceStop([]string{"A", "C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	locks, err = NewPersistentResumeLocks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +424,7 @@ func TestFailedOverlappingStopPreservesCommittedGroup(t *testing.T) {
 			if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			oldEpoch := locks.RecoveryState("B").Epoch
 			finish = locks.BeginForceStop([]string{"B", "C"})
 			boom := errors.New("disk failure")
@@ -435,7 +436,7 @@ func TestFailedOverlappingStopPreservesCommittedGroup(t *testing.T) {
 			if err := locks.PersistForceStop([]string{"B", "C"}, "C"); !errors.Is(err, boom) {
 				t.Fatalf("write error=%v", err)
 			}
-			finish(false)
+			finish.Finish(false)
 			wantTarget := "B"
 			if renamed {
 				wantTarget = "C"
@@ -505,5 +506,32 @@ func TestConfirmedExitPersistenceFailureRetainsAdmissionFence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// OwnerStartedAt marshals with its zone offset, and each record's time.Parse
+// builds a fresh FixedZone for non-UTC offsets, so struct equality misjudges
+// two identical records of one group as conflicting. The group-consistency
+// check must compare times with Equal.
+func TestRecoveryStoreLoadsGroupWithNonUTCOwnerTime(t *testing.T) {
+	root := t.TempDir()
+	locks, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := daemonprocess.Target{
+		PID: 4242, SessionID: "B", StateDir: t.TempDir(),
+		StartedAt: time.Date(2026, 9, 19, 12, 0, 0, 0, time.FixedZone("fixture", 3600)),
+	}
+	if _, err := locks.PersistForceStopWithOwner([]string{"A", "B"}, "B", owner); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatalf("identical group records misjudged as conflicting: %v", err)
+	}
+	got, ok := reopened.RecoveryOwner("A")
+	if !ok || got.PID != owner.PID || !got.StartedAt.Equal(owner.StartedAt) {
+		t.Fatalf("owner identity did not round-trip: %+v ok=%v", got, ok)
 	}
 }

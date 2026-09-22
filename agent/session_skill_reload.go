@@ -617,7 +617,7 @@ func (s *Session) skillContentInLiveHistory(identity schema.SkillContentIdentity
 // through the durable transcript door and its write failure is returned, so a
 // caller never consumes a receipt whose explanation the model never received.
 func (s *Session) recordSkillReloadNotification(message string, outcome schema.SkillActivationOutcome, obligation *schema.SkillDeliveryObligation) error {
-	turn := schema.NewTurn(schema.TurnSystem, llm.User(message))
+	turn := schema.NewTurn(schema.TurnSystem, llm.UserMachinery(message))
 	state := &schema.SkillTurnState{Outcomes: []schema.SkillActivationOutcome{outcome}}
 	if obligation != nil {
 		state.Obligations = []schema.SkillDeliveryObligation{*obligation}

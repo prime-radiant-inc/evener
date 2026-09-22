@@ -69,7 +69,10 @@ test.each(["running", "completed"])(
       </TranscriptRenderProvider>,
     );
 
-    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    // Expanded at settle, the card's merged status line carries the word; the
+    // standalone lifecycle div is suppressed while the card is mounted.
+    expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
+    expect(screen.getByTestId("subagent-stats").textContent).toContain("Status unavailable");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
@@ -97,6 +100,27 @@ test("renders the resolved descriptor's summary", () => {
   registerToolRenderer({ match: "tci_tool_a", summary: () => "did a thing" });
   render(<ToolCallItem item={item({ toolName: "tci_tool_a" })} turn={turn} live={false} />);
   expect(screen.getByText("did a thing")).toBeTruthy();
+});
+
+// The descriptor's statusLine hook mounts in the row's status slot on BOTH
+// render paths - the summary-only branch (no body) and the expandable one.
+// The descriptor owns WHETHER it renders; the row owns where. (The expanded
+// prop's live flow is proven by the delegate tests, which collapse real rows.)
+test("mounts a descriptor statusLine on both row render paths", () => {
+  const StatusLine = ({ item }: { item: ItemModel }) => <div data-testid="tt-status-line" data-id={item.id} />;
+  registerToolRenderer({ match: "tci_statusline", summary: () => "statusline tool", statusLine: StatusLine });
+  const summaryOnly = render(<ToolCallItem item={item({ toolName: "tci_statusline" })} turn={turn} live={false} />);
+  expect(summaryOnly.getByTestId("tt-status-line").dataset.id).toBe("item_1");
+  summaryOnly.unmount();
+
+  registerToolRenderer({
+    match: "tci_statusline_body",
+    summary: () => "statusline tool with body",
+    body: () => <div data-testid="tt-body" />,
+    statusLine: StatusLine,
+  });
+  const expandable = render(<ToolCallItem item={item({ toolName: "tci_statusline_body" })} turn={turn} live={false} />);
+  expect(expandable.getByTestId("tt-status-line").dataset.id).toBe("item_1");
 });
 
 test("settled intent-bearing commandExecution rows stack intent over the demoted summary", () => {
@@ -614,10 +638,10 @@ test("a descriptor's own failed() predicate marks the row even with no wire erro
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
 });
 
-test("a descriptor's detail() becomes the row's hover title, never its headline text", () => {
-  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false", detail: () => "exit 1" });
+test("a descriptor's summary stays the row's only hover-visible text - no row-level native title", () => {
+  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false" });
   render(<ToolCallItem item={item({ toolName: "tci_detail" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe("exit 1");
+  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe(null);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
 });
 
@@ -1116,6 +1140,80 @@ test("the same read_file row at tools level still shows Open beside on its summa
   expect(screen.getByTestId("tool-row-summary").textContent).toContain("Read /home/proj/src/a.ts");
   const trailing = screen.getByTestId("tool-row-trailing");
   expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
+});
+
+// --- The intent-only density hook (toolcallitem.module.css's
+// [data-intent-only] override): the row sits at the tight half-step rhythm
+// exactly while it shows its stated rationale line and nothing else. Any
+// state that adds a line - the summary line, an expanded body, a status
+// line below the row - drops the hook, so opening a row restores the full
+// item rhythm. ---------------------------------
+
+registerToolRenderer({
+  match: "tci_density",
+  summary: () => "Ran npm test",
+  body: () => <div data-testid="tci-density-body" />,
+});
+registerToolRenderer({ match: "tci_bodyless", summary: () => "did a thing" });
+
+const densityRow = item({
+  toolName: "tci_density",
+  description: "Running the density tests",
+  output: "done",
+});
+
+test("a collapsed intent row at intent level carries the density hook; opening either disclosure drops it", () => {
+  renderIntentLevel(<ToolCallItem item={densityRow} turn={turn} live={false} />);
+  // Collapsed: one rationale line, so the row takes the half-step rhythm.
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBe("true");
+  // Opening the summary line (the intent trigger's disclosure at this
+  // level) gives the row its second line: the full rhythm returns.
+  toggleRow();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+  // Opening the body adds the body: still the full rhythm.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("the same row at tools level never carries the hook - its summary line is open by default", () => {
+  renderTools(<ToolCallItem item={densityRow} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("an intent-less row never carries the hook: its summary line cannot collapse behind an intent", () => {
+  renderIntentLevel(<ToolCallItem item={item({ toolName: "tci_density", output: "done" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("a body-less row showing intent over its summary never carries the hook", () => {
+  renderIntentLevel(
+    <ToolCallItem
+      item={item({ toolName: "tci_bodyless", description: "Why it ran", output: "done" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("a delegate card never carries the hook: its lifecycle line or open card always adds a second line", () => {
+  resetThreadsStoreForTests();
+  const card = item({
+    toolName: "delegate",
+    description: "Inspect the independent child",
+    output: JSON.stringify({ delegate_id: "dlg_abc123", status: "running", transcript_ref: "local:child1" }),
+  });
+  // Settled: the card auto-expands at settle, so the row shows more than
+  // its intent.
+  renderIntentLevel(<ToolCallItem item={card} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+  // Collapsed by hand: the standalone lifecycle line below the intent is
+  // the row's second line, so the tight rhythm still does not apply.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.getByTestId("delegate-lifecycle")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
 });
 
 // A delegate card is intent-only by design - its descriptor deliberately puts

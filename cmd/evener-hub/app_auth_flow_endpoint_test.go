@@ -258,10 +258,11 @@ func assertFlowEndpointRefusal(t *testing.T, err error) {
 	if err == nil {
 		t.Fatal("want the endpoint refusal, got nil")
 	}
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
-		t.Fatalf("err = %v, want an appwire Conflict", err)
-	}
+	// The discriminant, not only the code: EndpointConflict shares CodeConflict
+	// with genuine conflicts (a name collision, an expired flow), and every
+	// client keys on the discriminant - so asserting the code here would let a
+	// guard regress to a plain Conflict with the whole suite still green.
+	assertEndpointConflict(t, err)
 	if msg := err.Error(); !strings.Contains(msg, "endpoint") || !strings.Contains(msg, "fingerprint") {
 		t.Fatalf("err = %q, want it to name the endpoint/fingerprint refusal", msg)
 	}

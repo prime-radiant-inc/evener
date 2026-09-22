@@ -4,7 +4,7 @@ import {
   type DraftImageData,
   parseImages,
 } from "./draftImages";
-import type { DraftDatabase } from "./draftRepository";
+import { type SqliteSync, withSavepoint } from "./sqliteSync";
 
 export interface CreationDraft {
   cwd: string;
@@ -52,7 +52,7 @@ export function creationDraftMetadata(draft: CreationDraft): string {
 /** One atomic form checkpoint per hub; image bytes are not rewritten on typing. */
 export class CreationDraftRepository {
   private savedImages = new Map<string, DraftImageData[]>();
-  constructor(private db: DraftDatabase) {
+  constructor(private db: SqliteSync) {
     db.execSync(
       "CREATE TABLE IF NOT EXISTS creation_drafts (hub_id TEXT PRIMARY KEY, draft TEXT NOT NULL)",
     );
@@ -83,8 +83,7 @@ export class CreationDraftRepository {
   write(hubId: string, draft: CreationDraft): void {
     const raw = creationDraftMetadata(draft);
     const saved = decode(raw);
-    this.db.execSync("SAVEPOINT creation_draft_write");
-    try {
+    withSavepoint(this.db, "creation_draft_write", () => {
       for (const image of draft.images) {
         const known = this.savedImages
           .get(hubId)
@@ -126,30 +125,17 @@ export class CreationDraftRepository {
         hubId,
         ...ids,
       );
-      this.db.execSync("RELEASE creation_draft_write");
-      this.savedImages.set(hubId, draft.images);
-    } catch (error) {
-      this.db.execSync(
-        "ROLLBACK TO creation_draft_write; RELEASE creation_draft_write",
-      );
-      throw error;
-    }
+    });
+    this.savedImages.set(hubId, draft.images);
   }
   clear(hubId: string): void {
-    this.db.execSync("SAVEPOINT creation_draft_clear");
-    try {
+    withSavepoint(this.db, "creation_draft_clear", () => {
       this.db.runSync("DELETE FROM creation_drafts WHERE hub_id = ?", hubId);
       this.db.runSync(
         "DELETE FROM creation_draft_images WHERE hub_id = ?",
         hubId,
       );
-      this.db.execSync("RELEASE creation_draft_clear");
-      this.savedImages.delete(hubId);
-    } catch (error) {
-      this.db.execSync(
-        "ROLLBACK TO creation_draft_clear; RELEASE creation_draft_clear",
-      );
-      throw error;
-    }
+    });
+    this.savedImages.delete(hubId);
   }
 }

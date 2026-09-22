@@ -176,11 +176,12 @@ test("list body renders one row per watch with a status chip and the watch id", 
   expect(rows).toHaveLength(3);
   const text = screen.getByTestId("job-watch-body").textContent ?? "";
   // Ids no longer clip: the row prints the full id (a clipped id is not even
-  // detectable as an entity, so the card could never attach), and the hover
-  // title still carries it verbatim.
+  // detectable as an entity, so the card could never attach). The id's hover
+  // card carries it, so the row carries no native title alongside it - the
+  // entity trigger is the one floating surface on it.
   expect(text).toContain("watch_034KEfjYFbfoUaPeHJcLXY");
   expect(text).not.toContain("…");
-  expect(screen.getByTitle("watch_034KEfjYFbfoUaPeHJcLXY")).toBeTruthy();
+  expect(screen.getByTestId("job-watch-body").querySelector("[title]")).toBeNull();
   expect(text).toContain("watch_09QmWzRtNvxK");
   expect(text).toContain("watching");
   expect(text).toContain("ended");

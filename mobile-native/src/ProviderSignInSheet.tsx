@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { ProviderSignIn } from "./providerSignIn";
+import { ConnectionStatus } from "./ConnectionStatus";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function ProviderSignInSheet({
@@ -86,6 +87,11 @@ export function ProviderSignInSheet({
             {state.phase === "authorized" ? "Done" : "Cancel"}
           </Action>
         </View>
+        {/* The native sheet covers the banner the screen shows behind it,
+         * and a sign-in opened from behind that banner may sit entirely in
+         * the time the connection is away: the status and the manual
+         * reconnect live here too. */}
+        {!connected && <ConnectionStatus />}
         <ScrollView
           automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
           keyboardShouldPersistTaps="handled"

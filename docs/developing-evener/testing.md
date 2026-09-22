@@ -167,7 +167,7 @@ family, and [building.md](building.md), [linting.md](linting.md),
 tables are generated from the `##` annotations above each rule in `make/*.mk`,
 and `make lint` fails if a committed table has drifted from them.
 
-Five gates are written out here anyway. Three have no make target at all: they
+Six gates are written out here anyway. Four have no make target at all: they
 are environment opt-ins, or work this repository does not own. The other two do
 run through make. `scripts/web/web-preflight.sh` has both a target and a
 generated row in building.md, and is named here because it is a setup
@@ -176,7 +176,7 @@ among the gates is told where its row lives. `ROOT_FULL=1 make test` is the
 `test` target under an environment override, which no generated row can
 carry.
 
-All five follow the same rules as the rest: test assertions stay deterministic
+All six follow the same rules as the rest: test assertions stay deterministic
 when the live opt-ins are unset, and dependency installation, disk capacity,
 browser availability, and CI tool setup are explicit prerequisites rather than
 assumptions.
@@ -235,6 +235,79 @@ skip or a limitation, never as a pass. What each suite covers is described in
 [MCP Server E2E](#mcp-server-e2e), [OpenAI Codex Backend
 E2E](#openai-codex-backend-e2e), and [Anthropic Messages API
 E2E](#anthropic-messages-api-e2e) below.
+
+### `EVENER_TMPDIR_PRIVDROP_E2E=1` — a host privilege-drop check
+
+Not a provider suite. It proves that a child which becomes another uid can create
+temp files in the session temp container `TMPDIR` names, the field failure
+behind #495: a private `0700` scratch exported as `TMPDIR` is unwritable for such
+a child. It needs a real world-usable host temp, the external `mktemp`, and a
+`sudo` that may drop to `nobody`, so it is an explicit opt-in and never runs in
+default CI. Without the opt-in the property is still covered deterministically —
+the container and leaf mode assertions in `agent/sandbox` and `agent/execenv` are
+the mechanism the kernel uses for a foreign user.
+
+~~~sh
+EVENER_TMPDIR_PRIVDROP_E2E=1 go test ./agent/sandbox -run TestSessionTmpPrivilegeDropE2E -count=1 -v
+~~~
+
+### `EVENER_SSH_E2E=1` — the live multi-host attach check
+
+Component 08 slice 2's final criterion
+(`docs/superpowers/specs/2026-09-20-multi-host-host-edit-slice.md`): adding a
+host, attaching it, and making a spawn-form discovery call on it must go through
+`evener/host/request`, answerable only by the attached remote hub. The check
+drives the hub's own AppWire client over a throwaway hub's loopback endpoint:
+`evener/host/add`, `evener/host/attach`, then `evener/host/request` with
+`evener/harnesses/list`. It is the browser-path companion to `cmd/evener-hub`'s
+`internal/sshconn` live test, which pins the attach channel itself.
+
+It never runs in default CI: it is gated by **both** `EVENER_SSH_E2E=1` and
+`EVENER_SSH_E2E_HOST`, and skips under `-short`. `EVENER_SSH_E2E_HOST` is the
+host's ssh destination — an `ssh_config` alias or `user@host`;
+`EVENER_SSH_E2E_USER` optionally sets the entry's ssh user (omit it when the
+destination already names one), and `EVENER_SSH_E2E_EVENER_PATH` overrides the
+host's evener path (default `~/.local/bin/evener`).
+
+`EVENER_SSH_E2E_REMOTE_DIR` is required as well: a directory that exists on the
+host and not on this controller, holding at least one visible child entry (a
+file or a subdirectory). The check forwards `evener/paths/complete` for that
+prefix through `evener/host/request` with `IncludeFiles` set, so files count as
+entries too, and requires the host's own entries back; then it asks this hub the
+same prefix directly and requires none. Only the host can see that directory, so
+the pair pins the answer's origin where the forwarded call alone could still have
+been served locally. Without it the test skips.
+
+The host must be disposable and reachable over non-interactive ssh
+(`ssh -T -o BatchMode=yes`), and it must already carry a matching evener build
+at that path. The test hub is built with no `BuildSource`, so the version-match
+ladder cannot deploy: it refuses an on-disk version other than the controller's,
+and it restarts a hub already running on the host when that hub reports another
+version. Match the two by building the host binary the way the test's own
+harness builds its controller — a plain `go build` of `./cmd/evener/`, reporting
+`dev` — or by stamping both with the same `-ldflags`. The supported host targets
+are `linux/amd64` and `darwin/arm64`.
+
+~~~sh
+# Install the lane's build on the host (macOS needs an ad-hoc re-signature
+# after scp, or the loader kills the unsigned-arm64 copy). ~/.local/bin may not
+# exist on a fresh host, so create it before the copy.
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o /tmp/evener-host ./cmd/evener/
+ssh -T -o BatchMode=yes paradise-park 'mkdir -p ~/.local/bin'
+scp /tmp/evener-host paradise-park:~/.local/bin/evener
+ssh paradise-park 'chmod +x ~/.local/bin/evener && codesign --force --sign - ~/.local/bin/evener'
+
+# EVENER_SSH_E2E_REMOTE_DIR must name a directory that exists on the host and NOT
+# on the machine running the test, holding at least one visible child entry. A
+# path both machines share (like /opt/homebrew when the controller is also a Mac)
+# answers the direct half of the provenance check too, so the test then fails
+# with "entries here would mean the forwarded answer above was served locally
+# too" even though the forwarding is fine. On a macOS host its own home
+# directory is the natural choice.
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
+  EVENER_SSH_E2E_REMOTE_DIR=/Users/jesse \
+  go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
+~~~
 
 ### Live service coverage and host sandbox parity
 
@@ -913,10 +986,22 @@ overridable (kata av1j): the lock, the run dir, the state root, and the auth
 token all derive from `cmdutil.DefaultStateRoot()` (XDG_STATE_HOME, else
 `os.UserHomeDir()`), so they only stay coherent when they move **together**.
 The blessed way to run a second, disposable hub — an e2e harness, a scratch
-verification hub — is a fresh HOME:
+verification hub — is a fresh HOME **plus** clearing every variable that can
+redirect evener away from it. Both halves matter: `HOME=$(mktemp -d)` alone
+moves nothing when `XDG_STATE_HOME` is exported (`DefaultStateRoot` prefers it
+over `$HOME`), so the "disposable" hub silently claims the real
+`$XDG_STATE_HOME/evener`; and `EVENER_PROVIDERS_CONFIG`/`EVENER_CREDENTIALS_CONFIG`
+outrank `$HOME/.config/evener`, so a stub `providers.toml` in the throwaway
+HOME is overridden and the daemon calls the real provider. The recipe below
+routes through `e2e_isolate_home` — the same helper the e2e harnesses use — so
+it cannot drift from that list:
 
-```sh
-HOME=$(mktemp -d) ./evener hub -addr 127.0.0.1:0 -evener ./evener
+```bash
+set -euo pipefail
+run_dir=$(mktemp -d "${TMPDIR:-/tmp}/evener-disposable-hub.XXXXXX")
+. scripts/lib/e2e-lib.sh
+e2e_isolate_home "$run_dir"
+./evener hub -addr 127.0.0.1:0 -evener ./evener
 ```
 
 Never point a test hub at the real HOME "just for a quick check": if the

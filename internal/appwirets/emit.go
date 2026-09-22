@@ -380,32 +380,78 @@ func emitInterface(name string, t reflect.Type) string {
 // registry accumulates named TS interfaces discovered while walking the
 // catalog, keyed by name, so each is emitted exactly once regardless of how
 // many methods/notifications/fields reference it.
+//
+// A TS interface has one bare name, but two Go types in different packages can
+// share one. reflect.Type identity is package-qualified (two same-named structs
+// in different packages are distinct reflect.Types), so a second claimant of an
+// already-registered name is detected here rather than silently dropped: if the
+// two render byte-identically the dedup is invisible and safe, but if they
+// differ, emitting either would quietly mistype the other, so the generator
+// panics. A same-named pair that diverges is exactly the #1016 trap — before
+// this, the first claimant won and the second type was never emitted at all.
 type registry struct {
 	order []string
 	types map[string]reflect.Type
+	// walked records every reflect.Type whose fields have been visited, so the
+	// emission-equal dedup path still surfaces a divergent same-named *nested*
+	// type instead of skipping the second claimant's subtree, and so a type
+	// reachable through two paths cannot recurse forever.
+	walked map[reflect.Type]bool
 }
 
 func newRegistry() *registry {
-	return &registry{types: map[string]reflect.Type{}}
-}
-
-func (r *registry) has(name string) bool {
-	_, ok := r.types[name]
-	return ok
+	return &registry{
+		types:  map[string]reflect.Type{},
+		walked: map[reflect.Type]bool{},
+	}
 }
 
 // addNamed registers t under name if not already present, then walks its
 // fields to discover further nested named types transitively. t is nil for
 // a notification payload with no dedicated Go type.
 func (r *registry) addNamed(name string, t reflect.Type) {
-	if r.has(name) {
+	if prev, ok := r.types[name]; ok {
+		if prev == t {
+			return
+		}
+		// Distinct types claiming one TS name. When both render the same
+		// interface the generated file cannot tell them apart, so dropping one
+		// is safe; otherwise there is no correct single interface to emit.
+		if emitInterface(name, prev) != emitInterface(name, t) {
+			panic(fmt.Sprintf(
+				"appwirets: type name %q collides between %s and %s; give one a distinct Go type name so the generated TypeScript has a single, correct interface",
+				name, typeIdentity(prev), typeIdentity(t)))
+		}
+		r.walkFields(t)
 		return
 	}
 	r.types[name] = t
 	r.order = append(r.order, name)
+	r.walkFields(t)
+}
+
+// walkFields discovers the named types nested in t's fields, once per
+// reflect.Type. A nil t (a notification payload with no dedicated Go type) has
+// no fields to walk.
+func (r *registry) walkFields(t reflect.Type) {
+	if t == nil || r.walked[t] {
+		return
+	}
+	r.walked[t] = true
 	for _, f := range rawFieldsOf(t) {
 		r.discover(f.elemType)
 	}
+}
+
+// typeIdentity renders t package-qualified for a collision diagnostic.
+func typeIdentity(t reflect.Type) string {
+	if t == nil {
+		return "<nil>"
+	}
+	if pkg := t.PkgPath(); pkg != "" {
+		return pkg + "." + t.Name()
+	}
+	return t.String()
 }
 
 // discover finds named struct types reachable from t (through slice/map

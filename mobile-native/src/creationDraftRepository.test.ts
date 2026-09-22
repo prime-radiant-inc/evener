@@ -1,16 +1,10 @@
-import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { CreationDraftRepository } from "./creationDraftRepository";
-import { type DraftDatabase, DraftRepository } from "./draftRepository";
+import { DraftRepository } from "./draftRepository";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 function fixture() {
-  const db = new DatabaseSync(":memory:");
-  const adapter: DraftDatabase = {
-    execSync: (sql) => db.exec(sql),
-    runSync: (sql, ...args) => db.prepare(sql).run(...args),
-    getFirstSync: <T>(sql: string, ...args: string[]) =>
-      (db.prepare(sql).get(...args) as T | undefined) ?? null,
-  };
+  const { database: db, port: adapter } = openSqliteSyncDouble();
   return {
     db,
     adapter,
@@ -311,6 +305,37 @@ it("removes creation metadata and images only for the removed hub", () => {
         )
         .get()?.count,
     ).toBe(0);
+  } finally {
+    db.close();
+  }
+});
+
+it("records bytes as saved only once the savepoint has released", () => {
+  const { database: db, port } = openSqliteSyncDouble();
+  // The release of the write savepoint fails once, so withSavepoint rolls the
+  // whole write back. The affected-row cache must not then claim the bytes are
+  // durable: a retry has to reinsert them, or the metadata ends up pointing at
+  // images the database never kept.
+  let failRelease = true;
+  const releaseFails = {
+    ...port,
+    execSync: (sql: string) => {
+      if (sql === "RELEASE creation_draft_write" && failRelease) {
+        failRelease = false;
+        throw new Error("release failed");
+      }
+      port.execSync(sql);
+    },
+  };
+  const repository = new CreationDraftRepository(releaseFails);
+  try {
+    expect(() => repository.write("a", draft)).toThrow("release failed");
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM creation_draft_images").get()
+        ?.count,
+    ).toBe(0);
+    repository.write("a", draft);
+    expect(repository.read("a")).toEqual(draft);
   } finally {
     db.close();
   }

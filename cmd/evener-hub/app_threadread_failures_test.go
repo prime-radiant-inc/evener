@@ -279,7 +279,7 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 	liveDiagnostics := &appwire.EvenerDiagnostics{Tools: []appwire.EvenerToolInfo{{Name: "live-tool"}}}
 	got, err := mergePastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID, Evener: appwire.EvenerThread{Diagnostics: liveDiagnostics},
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestMergePastThreadForReadUsesPastDiagnosticsWhenLiveAbsent(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
 	got, err := mergePastThreadForRead(context.Background(), cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID,
-	})
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

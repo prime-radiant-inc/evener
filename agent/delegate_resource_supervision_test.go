@@ -3168,6 +3168,11 @@ func restoreSupervisionRoot(t *testing.T, fixture coldStableDelegateFixture, clo
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			sandboxProber:       bwrapCapableProber(fixture.workspace),
+			// The supervision suite's subject is the warm attention-drive
+			// machinery itself — a deliberately retained runtime under an
+			// explicit in-process mode — not the idle retention policy the
+			// default exercises.
+			disableDelegateIdleRelease: true,
 		},
 	}
 	if clock != nil {

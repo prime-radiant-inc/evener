@@ -20,7 +20,7 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chevron, Chip, Markdown } from "../../../../widgets";
+import { Card, Chevron, Chip, Markdown, ToolIcon, type ToolIconKind } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
@@ -56,6 +56,7 @@ const CLASS = {
   raw: requireClass(styles.raw, "notificationcard.module.css", "raw"),
   summary: requireClass(styles.summary, "notificationcard.module.css", "summary"),
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
+  statusIcon: requireClass(styles.statusIcon, "notificationcard.module.css", "statusIcon"),
 };
 
 const EXCERPT_PREVIEW = 500;
@@ -68,6 +69,17 @@ function toneChip(tone: NotificationTone): { chipTone: "attention" | "danger"; l
   if (tone === "warning") return { chipTone: "attention", label: "warning" };
   return null;
 }
+
+// The head's status glyph, one line-art shape per parsed tone. Shape carries
+// the status; colour stays where the card's color-is-attention law already
+// spends it (the Chip on warning/error) - success and neutral recede in
+// neutral ink, at the rail's ambient 50% opacity like every other row icon.
+const STATUS_ICON_KIND: Record<NotificationTone, ToolIconKind> = {
+  success: "check",
+  error: "cross",
+  warning: "alert",
+  neutral: "info",
+};
 
 function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
   if (!ansi) return text;
@@ -231,7 +243,18 @@ export function NotificationCard({
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   const chip = toneChip(notification.tone);
-  const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
+  // The head's open affordance is the SUBAGENT control, so only a delegate
+  // notification earns it: its transcript_ref, when a frame carries one,
+  // names a child session's thread. A job notification is not a subagent
+  // report - its transcript_ref is the read_transcript ref for retained
+  // output ("job:<id>", agent/job_notify.go's jobTranscriptRef), which opens
+  // the job-log surface rather than a subagent transcript - so job
+  // notifications of any type never show the control. The job log stays
+  // reachable through the card's job-id trigger and the activity tree.
+  const transcriptRef =
+    notification.type === "delegate" && isValidTranscriptRef(notification.transcriptRef)
+      ? notification.transcriptRef
+      : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   // The title-only branch (no secondary) splits the title the same way, so
   // its chevron rides the title's final word atomically. Computed eagerly: the
@@ -255,6 +278,17 @@ export function NotificationCard({
       <Chevron />
     </span>
   );
+  // Seated first in the summary, before the chip and title: the glyph rides
+  // the transcript's icon rail (see notificationcard.module.css's
+  // .statusIcon). Decorative - the title's own words ("Job completed", "Job
+  // failed") already name the status for assistive tech, so exposing the
+  // glyph would announce the same fact twice (the same ruling as every
+  // other rail icon and ThinkBlock's bulb).
+  const statusIcon = (
+    <span className={CLASS.statusIcon} data-testid="notification-status-icon" aria-hidden="true">
+      <ToolIcon kind={STATUS_ICON_KIND[notification.tone]} />
+    </span>
+  );
   return (
     <details className={CLASS.disclosure} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
@@ -269,6 +303,7 @@ export function NotificationCard({
           toggleDisclosure(disclosureKey, disclosureFallback);
         }}
       >
+        {statusIcon}
         {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
         <span className={CLASS.headingText}>
           {secondaryParts || !transcriptRef ? (

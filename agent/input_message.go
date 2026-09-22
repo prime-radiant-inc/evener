@@ -14,6 +14,14 @@ type ImageAttachment struct {
 	MediaType string `json:"media_type"`     // MIME type, e.g. "image/png"
 	Data      []byte `json:"data"`           // raw image bytes (base64 in JSON)
 	Name      string `json:"name,omitempty"` // original filename, when known
+	// Path is the on-disk location the session persisted these bytes to
+	// (agent/image_persist.go), set only when the session has a state
+	// directory. In-session-only metadata: clients never send it, the
+	// user-input event projection does not carry it, and json:"-" keeps it
+	// out of the durable queue snapshots, whose restored entries must stay
+	// wire-shaped so a later build re-derives the path for the machine it
+	// runs on.
+	Path string `json:"-"`
 }
 
 // inputHasContent reports whether a durable input's typed parts carry
@@ -43,7 +51,11 @@ func userInputImagesFromAttachments(images []ImageAttachment) []events.UserInput
 
 // buildUserInputMessage constructs the multi-part user message that begins a
 // turn. Text becomes a ContentText part (omitted only if empty and at least
-// one image is supplied); each image becomes a ContentImage part.
+// one image is supplied); each image becomes a ContentImage part. Images the
+// session persisted to disk add one trailing ContentText part — a
+// <system-notification> block naming their stored paths — so the model can
+// re-read them later (read_file routes image bytes back into context) even
+// after context folding drops the inline parts.
 func buildUserInputMessage(input string, images []ImageAttachment) llm.Message {
 	if len(images) == 0 {
 		return llm.User(input)
@@ -61,7 +73,26 @@ func buildUserInputMessage(input string, images []ImageAttachment) llm.Message {
 			},
 		})
 	}
+	if note := persistedAttachmentNote(images); note != "" {
+		parts = append(parts, llm.MachineryText(note))
+	}
 	return llm.Message{Role: llm.RoleUser, Content: parts}
+}
+
+// persistedAttachmentNote renders the system-notification block naming the
+// on-disk paths of the input's persisted attachments. Empty when nothing
+// was persisted, so stateless sessions keep today's message shape exactly.
+func persistedAttachmentNote(images []ImageAttachment) string {
+	var paths []string
+	for _, img := range images {
+		if img.Path != "" {
+			paths = append(paths, img.Path)
+		}
+	}
+	if len(paths) == 0 {
+		return ""
+	}
+	return systemNotificationf("The images attached to this message were saved to disk and can be read again later with the read_file tool:\n%s", strings.Join(paths, "\n"))
 }
 
 // skillSelectionMarker is the text part a selection-only input carries on its

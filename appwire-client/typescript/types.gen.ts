@@ -309,6 +309,15 @@ export interface DaemonIdentity {
   generation: string;
 }
 
+export interface DaemonIdleTimeoutSetParams {
+  identity: DaemonIdentity;
+  timeoutMillis: number;
+}
+
+export interface DaemonIdleTimeoutSetResponse {
+  lifecycle: DaemonLifecycle;
+}
+
 export interface DaemonLifecycle {
   phase: string;
   timeoutMillis: number;
@@ -931,6 +940,10 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HostAddParams {
+  entry: HostEntry;
+}
+
 export interface HostAttachParams {
   host: string;
 }
@@ -947,7 +960,22 @@ export interface HostAttachResponse {
   features?: FeatureSet;
 }
 
+export interface HostEntry {
+  name?: string;
+  address: string;
+  user?: string;
+  keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
+}
+
 export interface HostForwardedResult {
+}
+
+export interface HostListResponse {
+  hosts: HostRow[];
 }
 
 export interface HostNotificationParams {
@@ -956,10 +984,56 @@ export interface HostNotificationParams {
   params?: unknown;
 }
 
+export interface HostRemoveParams {
+  name: string;
+}
+
+export interface HostRemoveResponse {
+  host: HostRow;
+}
+
 export interface HostRequestParams {
   host: string;
   method: string;
   params?: unknown;
+}
+
+export interface HostRow {
+  name: string;
+  address?: string;
+  user?: string;
+  keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
+  origin: string;
+  attached: boolean;
+  serverName?: string;
+  serverVersion?: string;
+  hubVersion?: string;
+  os?: string;
+  arch?: string;
+  lastAttachError?: string;
+  midAttach: boolean;
+  removed: boolean;
+}
+
+export interface HostStatusParams {
+  name: string;
+}
+
+export interface HostStatusResponse {
+  host: HostRow;
+}
+
+export interface HostUpdateParams {
+  name: string;
+  entry: HostEntry;
+}
+
+export interface HostUpdateResponse {
+  host: HostRow;
 }
 
 export interface InitializeParams {
@@ -1021,6 +1095,15 @@ export interface InstanceEditParams {
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
   /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Name (InstanceEntry.endpointFingerprint), checked the way
+   * InstanceRemoveParams's is. The edit is applied to the row the client
+   * listed, so a name another client has re-pointed since - or replaced with a
+   * different instance - must not have its replacement edited or renamed.
+   * Empty asserts nothing.
+   */
+  expectedEndpointFingerprint?: string;
+  /**
    * OriginClientId is the client identity the hub echoes into the
    * evener/auth/updated broadcast this edit triggers, so the originator
    * recognizes its own echo by id instead of refetching as if another client
@@ -1063,8 +1146,14 @@ export interface InstanceEntry {
   apiKeyEnv?: string;
   credentialHeader?: string;
   /**
-   * Implicit is true for an instance that exists from the environment
-   * alone: it has no entry in providers.toml, so it cannot be removed.
+   * Implicit is true for an instance with no authored entry in
+   * providers.toml: a curated provider that exists because the environment
+   * supplies it (an API-key variable, the ADC file) or because the user
+   * filed a credential for it through the UI (a stored key, a signed-in
+   * Codex record). It says nothing by itself about removal: an instance the
+   * environment supplies comes back with it, while one holding the user's
+   * credential is taken away by deleting that credential
+   * (cmd/evener-hub/app_instances.go's environmentBacked).
    */
   implicit: boolean;
   /**
@@ -1085,6 +1174,17 @@ export interface InstanceEntry {
    * an env source is itself what resolves.
    */
   shadowedEnvVar?: string;
+  /**
+   * RenameLeavesRow is true when renaming this instance leaves an instance
+   * resolving under its old name, because the environment re-supplies what
+   * the rename moves: the row is environment-backed as the removal refusal
+   * computes it, or the old name is a curated provider id that re-derives
+   * without the user's moved credential (a set variable, the ADC file, or a
+   * keyless scheme). The hub computes it (renameLeavesRow) because a client
+   * cannot see ADC availability or the curated set; the rename note keys on
+   * it.
+   */
+  renameLeavesRow?: boolean;
   storedEmail?: string;
   /**
    * CredentialRequired is false when this instance has no credential to
@@ -2566,9 +2666,12 @@ export interface ThreadCapabilities {
   rename: boolean;
   /**
    * SkillInput advertises support for canonical {type:"skill", name} input
-   * items on the input-bearing turn mutations. False everywhere until
-   * runtime consumption is wired per endpoint; ValidateSkillInputSupport
-   * keeps skill items rejected wherever this capability is false.
+   * items on the input-bearing turn mutations. A live daemon advertises it
+   * when all of those endpoints are wired; the hub's cold projections
+   * (past reads, close and gave-up frames, and list rows) advertise the same
+   * current-daemon floor, since each input-bearing mutation re-verifies
+   * against the live daemon. ValidateSkillInputSupport keeps skill items
+   * rejected wherever this capability is false.
    */
   skillInput?: boolean;
 }
@@ -3317,6 +3420,7 @@ export const METHOD_NAMES = [
   "evener/daemon/list",
   "evener/daemon/retire",
   "evener/daemon/status",
+  "evener/daemon/idle-timeout/set",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -3390,6 +3494,11 @@ export const METHOD_NAMES = [
   "evener/sandbox/escalation/resolve",
   "evener/host/request",
   "evener/host/attach",
+  "evener/host/add",
+  "evener/host/list",
+  "evener/host/status",
+  "evener/host/remove",
+  "evener/host/update",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3441,6 +3550,7 @@ export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
 export const STEERING_KINDS = [
   "interrupted",
+  "interrupted-salvage",
   "agent-message",
   "hook-context",
   "precompact-hook",
@@ -3520,6 +3630,7 @@ export interface MethodTypes {
   "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
   "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
+  "evener/daemon/idle-timeout/set": { params: DaemonIdleTimeoutSetParams; result: DaemonIdleTimeoutSetResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
@@ -3593,6 +3704,11 @@ export interface MethodTypes {
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
+  "evener/host/add": { params: HostAddParams; result: HostRow };
+  "evener/host/list": { params: EmptyParams; result: HostListResponse };
+  "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
+  "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
+  "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
 }
 
 export interface NotificationTypes {

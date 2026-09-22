@@ -7,6 +7,7 @@
 // helpers work from text and JSON arguments because their current callers do
 // not share a stable structured state shape; a body that has a useful producer
 // state parses item.raw at its own domain boundary.
+import { formatDurationMs } from "./displayFormat";
 import { isPlainObject } from "./plainObject";
 
 // clip is a head-truncation: text at or under `max` passes through
@@ -49,18 +50,15 @@ export function tailFold(text: string, max: number): string {
   return `earlier output not retained — showing the last ${max.toLocaleString("en-US")} chars\n${tailSlice(text, max)}`;
 }
 
-// formatToolDuration mirrors renderer-format.js's formatToolDuration: a
-// sub-1000ms duration floors at 1ms (rounding, never "0ms"); 1s-10s shows
-// one decimal with a trailing ".0" stripped; 10s and up rounds to whole
-// seconds.
-export function formatToolDuration(ms: number): string {
-  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
-  if (ms < 10000) {
-    const seconds = (ms / 1000).toFixed(1);
-    return `${seconds.endsWith(".0") ? seconds.slice(0, -2) : seconds}s`;
-  }
-  return `${Math.round(ms / 1000)}s`;
-}
+// formatToolDuration and displayFormat.ts's formatDurationMs are the SAME
+// duration rule: a sub-1000ms duration floors at 1ms (rounding, never "0ms");
+// 1s-10s shows one decimal with a trailing ".0" stripped; 10s and up rounds to
+// whole seconds - the rule renderer-format.js's formatToolDuration encodes.
+// They were written as two independent implementations that disagreed for
+// fractional milliseconds (this one rounded the seconds tier from the raw ms;
+// formatDurationMs rounds to whole ms first), so this name now delegates to
+// the single implementation instead of duplicating the rule (#1228).
+export const formatToolDuration = formatDurationMs;
 
 // formatByteCount never unit-scales (no KB/MB) - renderer-format.js's
 // formatBytes is documented as deliberately literal; singular only for

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
 import {
 	classifyDraftRead,
+	draftUnreadableAfterDiscard,
 	isStoredNullRecord,
 	isUnparseableDraftBytes,
 	matchesStoredBytes,
@@ -9,6 +10,9 @@ import {
 	nativeTranscriptDrafts,
 	parseDraftBytes,
 	readDraftOutcome,
+	readDraftOutcomeWithValue,
+	type RawStringStorage,
+	rawStringDraftBackend,
 } from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
@@ -20,42 +24,18 @@ import {
 // reporting a refusal as if it had written the record (or vice versa).
 const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: false };
 
-// Mirrors the real backend's own get() (NativePreferencesProvider.tsx), which
+// The real backend's own get/deleteIf/replaceIf (NativePreferencesProvider.tsx)
 // is Storage-backed and cannot be reached directly from this package's tests
-// - a Map of raw bytes plus parseDraftBytes stands in for it, the same
-// round-trip the real backend runs on stringified values. Shared by both
-// drafts' describe blocks: keybindings and transcript drafts go through the
-// SAME backend.get() in production.
+// - a Map of raw bytes stands in for Storage, and rawStringDraftBackend is the
+// same function production calls over it, not a parallel reimplementation.
 function rawBytesBackend() {
 	const raw = new Map<string, string>();
-	const b = {
-		createId: () => "draft-1",
-		get: (key: string) => {
-			const value = raw.get(key);
-			return value === undefined ? null : parseDraftBytes(value);
-		},
-		set: (key: string, value: unknown) => {
-			raw.set(key, JSON.stringify(value));
-		},
-		insertIfAbsent: (key: string, value: unknown): boolean => {
-			if (raw.has(key)) return false;
-			raw.set(key, JSON.stringify(value));
-			return true;
-		},
-		delete: (key: string) => {
-			raw.delete(key);
-		},
-		deleteIf: (key: string, value: unknown): boolean => {
-			if (!matchesStoredBytes(raw.get(key) ?? null, value)) return false;
-			raw.delete(key);
-			return true;
-		},
-		replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
-			if (!matchesStoredBytes(raw.get(key) ?? null, expected)) return false;
-			raw.set(key, JSON.stringify(next));
-			return true;
-		},
+	const storage: RawStringStorage = {
+		getItemSync: (key) => raw.get(key) ?? null,
+		setItemSync: (key, value) => raw.set(key, value),
+		removeItemSync: (key) => raw.delete(key),
 	};
+	const b = rawStringDraftBackend(storage, () => "draft-1");
 	return { raw, b };
 }
 
@@ -167,6 +147,124 @@ describe("nativeKeybindingDrafts", () => {
 		expect(storage.replaceIf(checkpoint, next)).toBe(true);
 		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(next);
 	});
+
+	it("removes a stored record through the shared backend with a different key order", () => {
+		const { raw, b } = rawBytesBackend();
+		const storage = nativeKeybindingDrafts("hub", b);
+		raw.set(
+			"evener.native.keybinding-draft.hub",
+			JSON.stringify({ writeUncertain: false, rules: [], baseRevision: 3, id: "draft-1" }),
+		);
+
+		expect(storage.removeIf(checkpoint)).toBe(true);
+		expect(raw.has("evener.native.keybinding-draft.hub")).toBe(false);
+	});
+});
+
+// The valid replaceIf/insertIfAbsent cases above run through the in-memory
+// fake (draftBackend.testkit.ts). These exercise the SAME contracts directly
+// through rawStringDraftBackend - the function production wraps Storage in -
+// over a Map-backed fake string port, so the real backend's own compare-and-
+// swap behavior (byte parsing, marker identity, canonical key-order compare,
+// and what it leaves on disk) is pinned, not just the fake that stands in
+// for it. Each assertion names both the returned verdict and the persisted
+// bytes, so a CAS that reports success without writing - or writes without
+// reporting - cannot pass.
+describe("rawStringDraftBackend compare-and-swap", () => {
+	const key = "evener.native.keybinding-draft.hub";
+	// Observably distinct from `checkpoint` in a field the writer must persist
+	// (not merely a different key order), so a replaceIf that reports success
+	// WITHOUT writing cannot satisfy the persisted-bytes assertion below.
+	const next = { ...checkpoint, baseRevision: 4 };
+
+	it("insertIfAbsent writes the new record and reports true when the key is empty", () => {
+		const { raw, b } = rawBytesBackend();
+
+		expect(b.insertIfAbsent(key, checkpoint)).toBe(true);
+		expect(raw.get(key)).toBe(JSON.stringify(checkpoint));
+	});
+
+	it("insertIfAbsent refuses an occupied key, leaving the stored bytes untouched", () => {
+		const { raw, b } = rawBytesBackend();
+		const someoneElse = { ...checkpoint, id: "someone-else" };
+		raw.set(key, JSON.stringify(someoneElse));
+
+		expect(b.insertIfAbsent(key, checkpoint)).toBe(false);
+		expect(raw.get(key)).toBe(JSON.stringify(someoneElse));
+	});
+
+	it("insertIfAbsent refuses bytes it cannot parse - a present record is occupied, not absent", () => {
+		const { raw, b } = rawBytesBackend();
+		raw.set(key, "{not json");
+
+		expect(b.insertIfAbsent(key, checkpoint)).toBe(false);
+		expect(raw.get(key)).toBe("{not json");
+	});
+
+	it("insertIfAbsent refuses a stored JSON null - present, distinct from no record", () => {
+		const { raw, b } = rawBytesBackend();
+		raw.set(key, "null");
+
+		expect(b.insertIfAbsent(key, checkpoint)).toBe(false);
+		expect(raw.get(key)).toBe("null");
+	});
+
+	it("replaceIf writes the next record and reports true when expected still names the stored one", () => {
+		const { raw, b } = rawBytesBackend();
+		raw.set(key, JSON.stringify(checkpoint));
+
+		expect(b.replaceIf(key, checkpoint, next)).toBe(true);
+		expect(raw.get(key)).toBe(JSON.stringify(next));
+	});
+
+	it("replaceIf matches identity across key order, not byte order", () => {
+		const { raw, b } = rawBytesBackend();
+		raw.set(key, JSON.stringify({ writeUncertain: false, rules: [], baseRevision: 3, id: "draft-1" }));
+		const reordered = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: false };
+
+		expect(b.replaceIf(key, reordered, next)).toBe(true);
+		expect(raw.get(key)).toBe(JSON.stringify(next));
+	});
+
+	it("replaceIf refuses a stale identity, leaving the newer record untouched", () => {
+		const { raw, b } = rawBytesBackend();
+		const newer = { ...checkpoint, id: "someone-else" };
+		raw.set(key, JSON.stringify(newer));
+
+		expect(b.replaceIf(key, checkpoint, next)).toBe(false);
+		expect(raw.get(key)).toBe(JSON.stringify(newer));
+	});
+
+	it("replaceIf refuses when nothing is stored rather than creating a record", () => {
+		const { raw, b } = rawBytesBackend();
+
+		expect(b.replaceIf(key, checkpoint, next)).toBe(false);
+		expect(raw.has(key)).toBe(false);
+	});
+
+	it("replaceIf replaces unparseable bytes only when named by their own parsed identity", () => {
+		const { raw, b } = rawBytesBackend();
+		raw.set(key, "{not json");
+
+		expect(b.replaceIf(key, parseDraftBytes("{different"), next)).toBe(false);
+		expect(raw.get(key)).toBe("{not json");
+
+		expect(b.replaceIf(key, parseDraftBytes("{not json"), next)).toBe(true);
+		expect(raw.get(key)).toBe(JSON.stringify(next));
+	});
+
+	it("replaceIf replaces a stored JSON null only by its StoredNullRecord identity, never a bare null", () => {
+		const { raw, b } = rawBytesBackend();
+		raw.set(key, "null");
+
+		// A bare null names "no record" and must not collide with the present
+		// stored-null marker (the collision parseDraftBytes's brand closes).
+		expect(b.replaceIf(key, null, next)).toBe(false);
+		expect(raw.get(key)).toBe("null");
+
+		expect(b.replaceIf(key, b.get(key), next)).toBe(true);
+		expect(raw.get(key)).toBe(JSON.stringify(next));
+	});
 });
 
 describe("nativeTranscriptDrafts", () => {
@@ -249,6 +347,45 @@ describe("readDraftOutcome", () => {
 	});
 });
 
+describe("readDraftOutcomeWithValue", () => {
+	const isReadable = (value: unknown) =>
+		typeof value === "object" && value !== null && "id" in value;
+
+	it("returns the classification and the exact value from one read", () => {
+		const record = { id: "d1" };
+		expect(readDraftOutcomeWithValue({ load: () => record }, isReadable)).toEqual({
+			outcome: "readable",
+			value: record,
+		});
+		expect(readDraftOutcomeWithValue({ load: () => null }, isReadable)).toEqual({
+			outcome: "absent",
+			value: null,
+		});
+	});
+
+	it("calls load once and degrades a throwing port", () => {
+		let calls = 0;
+		const storage = {
+			load: () => {
+				calls++;
+				return { id: "d1" };
+			},
+		};
+		expect(readDraftOutcomeWithValue(storage, isReadable).outcome).toBe("readable");
+		expect(calls).toBe(1);
+		expect(
+		readDraftOutcomeWithValue(
+			{
+				load: () => {
+					throw new Error("disk unavailable");
+				},
+			},
+			isReadable,
+		),
+	).toEqual({ outcome: "storageUnavailable", value: undefined });
+	});
+});
+
 describe("matchesStoredBytes", () => {
 	it("is false when nothing is stored", () => {
 		expect(matchesStoredBytes(null, "{not json")).toBe(false);
@@ -294,6 +431,16 @@ describe("matchesStoredBytes", () => {
 
 	it("does not match a genuinely different value", () => {
 		expect(matchesStoredBytes(JSON.stringify({ id: "d1" }), { id: "d2" })).toBe(false);
+	});
+
+	it("does not collide with valid JSON shaped like the unreadable marker", () => {
+		const identity = parseDraftBytes("{not json");
+		expect(matchesStoredBytes(JSON.stringify(identity), identity)).toBe(false);
+	});
+
+	it("does not collide with valid JSON shaped like the stored-null marker", () => {
+		const identity = parseDraftBytes("null");
+		expect(matchesStoredBytes(JSON.stringify(identity), identity)).toBe(false);
 	});
 });
 
@@ -361,5 +508,16 @@ describe("fakeDraftBackend", () => {
 
 		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
 		expect(b.store.has("k")).toBe(false);
+	});
+});
+
+describe("draftUnreadableAfterDiscard", () => {
+	it("keeps the notice when the current record is still unreadable", () => {
+		expect(draftUnreadableAfterDiscard("unreadable")).toBe(true);
+	});
+
+	it("clears the notice when the current record is readable or absent", () => {
+		expect(draftUnreadableAfterDiscard("readable")).toBe(false);
+		expect(draftUnreadableAfterDiscard("absent")).toBe(false);
 	});
 });

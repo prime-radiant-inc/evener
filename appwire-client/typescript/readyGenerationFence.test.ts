@@ -91,4 +91,21 @@ describe("the ready generation fence", () => {
     expect(fence.begin()).toBe(-1);
     expect(fence.generation).toBe(-1);
   });
+
+  test("awaitingFirstPayload starts true for a fresh generation and clears once firstPayloadApplied runs", () => {
+    const { fence } = fenceOver();
+    fence.begin();
+    expect(fence.awaitingFirstPayload).toBe(true);
+    fence.firstPayloadApplied();
+    expect(fence.awaitingFirstPayload).toBe(false);
+  });
+
+  test("a new generation resets awaitingFirstPayload, even if the previous one applied a payload", () => {
+    const { fence } = fenceOver();
+    fence.begin();
+    fence.firstPayloadApplied();
+    fence.end();
+    fence.begin();
+    expect(fence.awaitingFirstPayload).toBe(true);
+  });
 });

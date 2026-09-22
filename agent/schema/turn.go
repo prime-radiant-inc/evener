@@ -159,13 +159,10 @@ type TurnFailureInfo struct {
 	// human-note carrier's entry clear is skipped, so its own failure
 	// (either shape) leaves this false and askPending stays live-pending.
 	//
-	// This field is persisted here but not yet read anywhere: the restore
-	// scan (#1806 piece 2, deriveRestoredAskPending/deriveRestoredState via
-	// turnResolvesAskBoundary) that treats it as a resolution boundary on
-	// restore lands in the very next change stacked on this one. Until that
-	// change merges, a restart still re-derives askPending exactly as it did
-	// before this field existed — no worse than main today, since nothing
-	// reads the flag yet.
+	// turnResolvesAskBoundary (agent/session_tools_ask.go) reads this flag as
+	// a resolution boundary for deriveRestoredAskPending/deriveRestoredState,
+	// so a restore agrees with the live session on whether this failure left
+	// askPending live-pending.
 	SteeringCarrier bool `json:"steering_carrier,omitempty"`
 }
 

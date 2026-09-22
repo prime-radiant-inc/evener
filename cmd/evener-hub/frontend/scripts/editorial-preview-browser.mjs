@@ -84,8 +84,8 @@ try {
   // Truthful nested navigation retains the child's secondary session on rail
   // return. Close it through real dock controls before the parent-only sample.
   await closeAuxiliaryPanes();
-  await until("document.querySelectorAll('[data-testid=delegate-lifecycle]').length === 3");
-  assert.deepEqual(await evalJS("Array.from(document.querySelectorAll('[data-testid=delegate-lifecycle]')).map(e=>e.innerText)"), ["Idle · reported", "Running", "Status unavailable"]);
+  await until("document.querySelectorAll('[data-testid=delegate-status-word]').length === 3");
+  assert.deepEqual(await evalJS("Array.from(document.querySelectorAll('[data-testid=delegate-status-word]')).map(e=>e.innerText)"), ["Idle · reported", "Running", "Status unavailable"]);
   observations.tasks.push("Owner projections override historical running/completed receipts; unknown remains unavailable");
   await evalJS("document.querySelector('[aria-label=Message]').focus()");
   await send("Input.insertText", {text: "Browser fixture message"});
@@ -135,7 +135,7 @@ try {
   try {
   await applyViewport(send,{width:390,height:844,mobile:true,touch:true});
   await navigateFixture(`${origin}/s/local%3Aeditorial-parent`);
-  await until("!!document.querySelector('[data-testid=delegate-lifecycle]')");
+  await until("!!document.querySelector('[data-testid=delegate-status-word]')");
   await evalJS("(async()=>{const {workspaceStore}=await import('/src/shell/workspace.ts');window.editorialTrace=[];workspaceStore.subscribe(s=>window.editorialTrace.push({focused:s.focusedPaneId,panes:s.panes.map(p=>({id:p.id,type:p.type,params:p.params}))}));})()");
   await evalJS("(async()=>{const e=Array.from(document.querySelectorAll('[data-tool-name=delegate]')).find(e=>e.innerText.includes('Inspect the independent child')).querySelector('[aria-label=\"Open transcript\"]');e.scrollIntoView({block:'center'});await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);})()");
   const openBox=await evalJS("(() => {const e=Array.from(document.querySelectorAll('[data-tool-name=delegate]')).find(e=>e.innerText.includes('Inspect the independent child')).querySelector('[aria-label=\"Open transcript\"]');const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()");
@@ -288,7 +288,7 @@ try {
       await until("!!document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]')");
       await evalJS("document.querySelector('[data-tool-name=read_file] [data-testid=tool-row-body-trigger]').click()");
       await evalJS("const list=document.querySelector('[data-testid=transcript-virtual-list]').firstElementChild;list.scrollTop=list.scrollHeight");
-      await until("document.querySelectorAll('[data-testid=delegate-lifecycle]').length===3");
+      await until("document.querySelectorAll('[data-testid=delegate-status-word]').length===3");
       // Desktop collapse/layout can leave mounted rows offscreen for a frame.
       // Require inspectability in the SAME task as the geometry measurement.
       // Phone rows need not all fit at once; their existing F1 checks stay separate.

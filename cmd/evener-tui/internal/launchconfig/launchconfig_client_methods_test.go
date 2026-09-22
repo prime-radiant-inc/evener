@@ -74,7 +74,7 @@ func TestLaunchConfigCommandsCallTheirWireMethodAndCarryFailureIntoTheirMessage(
 			func(c *appwire.Client) any { return CmdInstanceEdit(c, appwire.InstanceEditParams{})() },
 			func(m any) error { return m.(InstanceMutateResultMsg).Err }},
 		{"instance remove", appwire.MethodEvenerInstanceRemove,
-			func(c *appwire.Client) any { return CmdInstanceRemove(c, "inst")() },
+			func(c *appwire.Client) any { return CmdInstanceRemove(c, "inst", "fp")() },
 			func(m any) error { return m.(InstanceMutateResultMsg).Err }},
 		{"instance set default", appwire.MethodEvenerInstanceSetDefault,
 			func(c *appwire.Client) any { return CmdInstanceSetDefault(c, "inst")() },

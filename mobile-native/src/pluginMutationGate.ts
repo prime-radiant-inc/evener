@@ -66,19 +66,27 @@ export function createPluginMutationGate(): PluginMutationGate {
   };
 }
 
-/** What a gated mutation did, in the three shapes a caller's copy needs: it
- * ran, the gate refused it while another write held it, or it failed. */
-export type GatedMutationOutcome = "ran" | "refused" | "failed";
+/** What a gated mutation did, in the four shapes a caller's copy needs: it
+ * ran, the gate refused it while another write held it, it was blocked by an
+ * unavailable connection, or it failed. */
+export type GatedMutationOutcome = "ran" | "refused" | "not-ready" | "failed";
 
-/** Runs `action` under `gate` and reduces it to the three outcomes a screen
+/** Runs `action` under `gate` and reduces it to the four outcomes a screen
  * tells apart: a refusal stays distinct from a failure, and a failure's error
- * is swallowed because the caller owns the copy it shows. Every screen that
+ * is swallowed because the caller owns the copy it shows. A not-ready request
+ * stays distinct from busy so the caller does not claim another change is
+ * running when the connection is the reason nothing ran. Every screen that
  * writes through the gate goes through here, so all of them agree on which
- * outcome reads as busy and which as "this one may not have landed". */
+ * outcome reads as busy and which as "this one may not have landed" - and,
+ * with the live `ready` predicate, on refusing a write AppWire would reject anyway: the predicate is
+ * checked before the gate itself, so a request issued while disconnected
+ * never reaches `action` and never takes the gate's lock. */
 export async function runGatedMutation(
   gate: PluginMutationGate,
+  ready: () => boolean,
   action: () => Promise<void>,
 ): Promise<GatedMutationOutcome> {
+  if (!ready()) return "not-ready";
   try {
     return (await gate.run(action)) ? "ran" : "refused";
   } catch {
