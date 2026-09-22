@@ -185,6 +185,15 @@ provable identity, and the operator is told so by the terminal refusal's
 message. The amendment states that, instead of claiming an immutability the tag
 does not have.
 
+**Re-examined, and held.** After this ruling was recorded, the master design
+doc's tracked-follow-up ledger turned out to carry the *opposite* decision as
+unimplemented work: "[04] installer fallback is release-only (round 22)", which
+would have `installerRefFor` lose its `snapshot` arm (`design.md:635`). That was
+put back to Jesse, since the earlier question had not mentioned it, and he held
+the ruling. The ledger entry now records the reversal and keeps its superseded
+reasoning as the record (`5ddf8efd94`), so the code, component 04, and the master
+doc all state the same rule.
+
 ### D5 — the snapshot push path's identity check
 
 If D4 goes my way, the push path becomes the *only* deploy path for a snapshot
@@ -198,6 +207,12 @@ tell two snapshot builds sharing a `version` apart.
 spec describes. It is small, it closes a tracked follow-up (`04:1064-1094`
 calls it out as "not a present fact"), and this slice is what makes snapshot
 deploys reachable, so leaving it out would ship the wiring that needs it.
+
+**Decided and landed** (`320de73215`): the check is in, the hub really does
+publish the field (`web_api.go:87`), the three restart call sites pass the pin,
+and the cold-bootstrap start path deliberately passes none — nothing was running
+to confuse the started hub with, and the binary it starts is the one already
+verified on disk. `snapshot_pin_test.go` pins all four cases.
 
 ## Contract
 
@@ -244,9 +259,36 @@ deploys reachable, so leaving it out would ship the wiring that needs it.
 - Restart deferral while clients are attached (`04` §Open questions):
   unchanged, and this slice must not pick a default silently.
 - The host-list RPC and multi-hop cycle detection (design §2, §6).
-- `installerDirs`' acceptance of an `evener-dev` basename (`deploy.go:663`):
-  tracked, not here (it is about *where* the installer writes, and no wiring
-  decision depends on it).
+
+## D6 — the master doc's other decided deploy items (found late, landed here)
+
+While implementing, the master design doc's tracked-follow-up ledger turned out
+to carry two further **decided but unimplemented** items in this same deploy
+half. Both were done here rather than left as "tracked", because this is the
+slice that owns them and both are small.
+
+- **Run target must be `evener`** (`design.md:622`, round 22).
+  `installableEvenerBasename` accepted `evener-dev`, the development/test tooling
+  binary — no `hub` subcommand and no `launch-check` — so a host configured with
+  it *installed and then failed* preflight, health and restart, after the
+  controller had written to it. It is now narrowed to `evener`, and anything
+  else is refused by `checkRunTarget` (`deploy.go:377`) **before any probe,
+  push or install** (`84eb525e70`); the ordering is pinned by a test whose
+  runner fails the test if any remote command runs at all.
+- **That refusal is terminal, not retryable** (`1371f0957a`). The first cut
+  returned `ErrDeploy`, which this manager retries by design — the same mistake
+  the dirty-controller refusal's own comment records from round thirteen ("the
+  supervisor retried it forever and the cause was discarded"). It now has its
+  own sentinel, `errRunTargetUnservable`, classified terminal by `isTerminal`,
+  exported as `ErrRunTargetUnservable` and surfaced by the attach handler as the
+  same typed launch error the dirty-controller refusal produces. The master
+  doc's entry was corrected to name it and say why terminal is right, since its
+  letter had said `ErrDeploy`.
+
+One item stays out: `installerDirs` knowingly accepts an `evener-dev` basename
+because `install.sh` ships one, and that is about *where the installer writes*,
+not what a host may run. The run-target rule above is what keeps such a file
+from becoming the hub's run target.
 
 ## Testing
 
@@ -267,6 +309,14 @@ deploys reachable, so leaving it out would ship the wiring that needs it.
   carries a matching build" to "is disposable and may be written to", and the
   test must cover the case that made this slice necessary: a host with **no**
   `evener` on it ends up running the controller's exact build and attaches.
+- **The deploy check is gated separately, because it writes.** As shipped
+  (`75e8fe934f`), `app_host_deploy_e2e_test.go` needs `EVENER_SSH_E2E_DEPLOY=1`
+  in addition to the existing variables, skips with a message that says the host
+  will be written to, and writes only inside a directory it creates on the host
+  for the purpose — proving, in a deferred check, that whatever `evener` the
+  host already had is byte-identical afterwards. It runs both flags: the
+  cross-compile path (`-build-source`) and the operator-artifact path
+  (`-deploy-binary`).
 
 ## Acceptance criteria
 
