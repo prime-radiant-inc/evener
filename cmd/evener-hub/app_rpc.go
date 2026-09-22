@@ -370,6 +370,46 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	}
 }
 
+// errorNamesClientMutation reports whether err already carries the
+// clientMutationId of the mutation it refused.
+//
+// Every client judges a failed mutation by that id alone: the web outbox's
+// dispatcher refuses to correlate a failure that names none and a different id
+// (appwire-client/typescript/state/mutation/dispatcher.ts), so the record stays
+// "submitting" -- the prompt is neither delivered nor surfaced as failed, and
+// the user has to retype it. A refusal the daemon minted for the caller's own
+// mutation (rejectClientMutation sets the id) needs no help; one that carries
+// none has to be wrapped before it leaves the hub.
+//
+// The wire client decodes ErrorData as a map on some paths and as the typed
+// struct on others, so both shapes are read -- the same convention
+// app_retirement_resume.go's isLifecycleRetiringError follows.
+func errorNamesClientMutation(err error) bool {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return strings.TrimSpace(data.ClientMutationID) != ""
+	case map[string]any:
+		id, _ := data["clientMutationId"].(string)
+		return strings.TrimSpace(id) != ""
+	}
+	return false
+}
+
+// isShapeRefusal reports whether err refuses the request's shape: appwire's
+// invalid-params and invalid-request codes, decided before anything executes.
+// Such a refusal is deterministic -- resending the identical payload can never
+// answer differently -- and the web outbox already recovers from an
+// uncorrelated one, so wrapping it as an unknown mutation outcome would tell
+// the caller less than the refusal itself does.
+func isShapeRefusal(err error) bool {
+	wire, ok := errors.AsType[appwire.WireError](err)
+	return ok && (wire.Code == appwire.CodeInvalidParams || wire.Code == appwire.CodeInvalidRequest)
+}
+
 // allowsPastFallbackAfterLiveReadFailure preserves atomic rejoin once a live
 // relay is available. A subscribed local read with no rendezvous entry never
 // acquired a relay, so it may still hydrate the persisted transcript.
@@ -1014,6 +1054,27 @@ func registerThreadHandlers(
 			resolved = true
 			return relays.startTurn(ctx, source, params)
 		}
+		// retryAfterResume runs the attempt a resume this request performed made
+		// possible. A failure there that gives the caller no way to judge its own
+		// mutation is wrapped in the resume path's own blocked-unknown envelope
+		// (see blockedUnknownMutationError), so the prompt is retained for a
+		// retry rather than left submitting forever.
+		//
+		// "No way to judge it" is exactly the failures every client's mutation
+		// dispatcher cannot classify: one that names no clientMutationId (the web
+		// outbox correlates by that id alone) and is not a shape refusal, which it
+		// already recovers from deterministically
+		// (appwire-client/typescript/state/mutation/dispatcher.ts). A refusal the
+		// daemon minted for the caller's own mutation, a deletion of the target,
+		// and an invalid-params/request refusal all keep their own meaning.
+		retryAfterResume := func() (appwire.TurnStartResponse, error) {
+			resolved = false
+			resp, err := attemptStart()
+			if err == nil || errorNamesClientMutation(err) || isTargetDeletedError(err) || isShapeRefusal(err) {
+				return resp, err
+			}
+			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, err)
+		}
 		resp, err := attemptStart()
 		if err == nil {
 			return resp, nil
@@ -1028,8 +1089,7 @@ func registerThreadHandlers(
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
 			}
-			resolved = false
-			return attemptStart()
+			return retryAfterResume()
 		}
 		if isLifecycleRetiringError(err) {
 			// The owning daemon refused the mutation because it is retiring and
@@ -1039,8 +1099,7 @@ func registerThreadHandlers(
 			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
 				return appwire.TurnStartResponse{}, resumeErr
 			}
-			resolved = false
-			return attemptStart()
+			return retryAfterResume()
 		}
 		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
@@ -1051,8 +1110,7 @@ func registerThreadHandlers(
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
 		}
-		resolved = false
-		return attemptStart()
+		return retryAfterResume()
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
