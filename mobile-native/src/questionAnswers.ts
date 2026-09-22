@@ -77,17 +77,22 @@ function questionHash(text: string): string {
 // sheet persisted that bounded copy itself as a draft's definition, and a
 // stored truncated copy can never hash to the canonical digest — so the
 // comparison (sameQuestion below) accepts either, without putting the
-// bounded prose itself back into the signature.
+// bounded prose itself back into the signature. The bounded copy hashes
+// through the same canonicalQuestion rebuild as every other digest input,
+// so a stored bounded element matches whatever field order its era's
+// builder wrote — while the package-built copy bounded here serializes
+// identically either way.
 const questionsIdentityMemo = new WeakMap<AskQuestionRef[], string>();
 
 // The comparable form of one persisted question definition: its {key, digest}
 // pair. A signature's elements have carried that pair since questionsIdentity
-// signed them, but a draft saved by an older build holds the full question —
-// canonical, or the display bound's truncated copy — as its definition: same
-// question, an earlier era's shape. All normalize to the same pair: an
-// element that already carries its digest keeps it, and a legacy full
-// question hashes to the digest the identity computes for that same
-// canonical question, so a pre-identity draft still compares equal
+// signed them, but a draft saved by an older build holds the question object
+// its era's builder serialized — canonical, display-wrapped, or the display
+// bound's truncated copy — as its definition: same question, an earlier
+// era's shape. All normalize to the same pair: an element that already
+// carries its digest keeps it, and a legacy question hashes (through
+// canonicalQuestion below) to the digest the identity computes for that
+// same canonical question, so a pre-identity draft still compares equal
 // (draftRepository.ts's questionDefinitions) and an app update never
 // silently drops a reader's saved answers.
 export interface QuestionDefinition {
@@ -100,17 +105,69 @@ export interface QuestionDefinition {
   boundDigest?: string;
 }
 
-export function questionDefinition(question: {
+// Any element the persisted signature has ever held. The identity's own
+// elements carry their digest (and bound digest) as strings; a legacy era's
+// element is the question object its builder serialized — the canonical
+// fields in that era's own order, the display era's nested twin beside
+// them. Every field but key is unknown-typed: the repository's parse has
+// validated only the key (draftRepository.ts's questionDefinitions), and
+// the normalizer below — not the type — decides what each field
+// contributes to a digest.
+type PersistedQuestionElement = {
   key: string;
   digest?: unknown;
   boundDigest?: unknown;
-}): QuestionDefinition {
+  display?: unknown;
+  callId?: unknown;
+  header?: unknown;
+  question?: unknown;
+  options?: unknown;
+  multiSelect?: unknown;
+  why?: unknown;
+  ifUnanswered?: unknown;
+};
+
+// The one form every era's element is rebuilt into before hashing: the
+// wire's AskQuestionRef fields, in the exact order the package's
+// liveAskQuestions builds them — the same literal the identity hashes — so
+// a digest depends only on WHICH question an element names, never on which
+// era's builder serialized it. History's builders each wrote a different
+// order or wrapper: #1096's projection put key first and left callId to
+// pendingQuestions' trailing spread, #1488's shim appended key and callId
+// after the parsed wire fields, and the display era (d0f40080cb's
+// withQuestionDisplay) wrapped the canonical ref inside a nested `display`
+// twin whose bounded prose is not the question the identity signs — hashing
+// any of those as-persisted yields a digest the identity never computes for
+// the same question, silently dropping a saved answer on upgrade. The twin
+// is stripped and the fields rebuilt here; for a ref the package itself
+// built the rebuild is byte-identical to the ref's own serialization, so
+// the identity's digests never change and no stored digest that matches
+// today stops matching.
+function canonicalQuestion(element: PersistedQuestionElement) {
+  const { display, ...fields } = element;
+  return {
+    key: fields.key,
+    callId: fields.callId,
+    header: fields.header,
+    question: fields.question,
+    options: fields.options,
+    multiSelect: fields.multiSelect,
+    ...(fields.why === undefined ? {} : { why: fields.why }),
+    ...(fields.ifUnanswered === undefined
+      ? {}
+      : { ifUnanswered: fields.ifUnanswered }),
+  };
+}
+
+export function questionDefinition(
+  question: PersistedQuestionElement,
+): QuestionDefinition {
   const definition: QuestionDefinition = {
     key: question.key,
     digest:
       typeof question.digest === "string"
         ? question.digest
-        : questionHash(JSON.stringify(question)),
+        : questionHash(JSON.stringify(canonicalQuestion(question))),
   };
   if (typeof question.boundDigest === "string")
     definition.boundDigest = question.boundDigest;
@@ -154,7 +211,9 @@ export function questionsIdentity(questions: AskQuestionRef[]): string {
     questions.map((question) => ({
       ...questionDefinition(question),
       boundDigest: questionHash(
-        JSON.stringify(boundQuestion(question, boundQuestionText)),
+        JSON.stringify(
+          canonicalQuestion(boundQuestion(question, boundQuestionText)),
+        ),
       ),
     })),
   );

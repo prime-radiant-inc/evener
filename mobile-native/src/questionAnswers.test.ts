@@ -22,6 +22,7 @@ import {
   composeQuestionAnswers,
   pendingQuestions,
   questionAdvanceTarget,
+  questionDefinition,
   questionsIdentity,
   seedQuestionAnswers,
 } from "./questionAnswers";
@@ -491,6 +492,53 @@ it("signs each question with its canonical digest and the digest of its bounded 
   // canonical digests still tell the two questions apart.
   expect(a.boundDigest).toBe(b.boundDigest);
   expect(a.digest).not.toBe(b.digest);
+});
+
+// Every persisted era's element normalizes to the one digest the identity
+// computes for the same canonical question, whatever order its era's builder
+// wrote the fields in — or what it wrapped them in. History's producers each
+// serialized the same question differently: the display era's rows wrapped
+// the canonical ref inside a nested bounded twin (d0f40080cb), the landed
+// checkpoint's builder wrote key-first with callId spread on last (#1096),
+// and #1488's shim appended key and callId after the parsed wire fields.
+// questionDefinition rebuilds each into the package's own field order before
+// hashing, so the digest names the question, never the era that persisted it.
+it("normalizes every persisted era's element to the canonical question's digest", () => {
+  const canonical = questionDefinition(question);
+  const eras = [
+    // d0f40080cb's withQuestionDisplay: the canonical ref beside the
+    // store-bounded display twin.
+    {
+      ...question,
+      display: {
+        header: question.header,
+        question: question.question,
+        options: question.options.map((option) => ({
+          label: option.label,
+          detail: option.detail,
+        })),
+      },
+    },
+    // 96dc079d06's projection question, callId spread on last.
+    {
+      key: question.key,
+      header: question.header,
+      question: question.question,
+      options: question.options,
+      multiSelect: question.multiSelect,
+      callId: question.callId,
+    },
+    // 66727cbe6c's shim question: parsed fields first, key and callId last.
+    {
+      header: question.header,
+      question: question.question,
+      options: question.options,
+      multiSelect: question.multiSelect,
+      key: question.key,
+      callId: question.callId,
+    },
+  ];
+  for (const era of eras) expect(questionDefinition(era)).toEqual(canonical);
 });
 
 // Recomputing a hash over the full canonical payload on every render/keystroke
