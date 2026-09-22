@@ -11,6 +11,8 @@ import {
 import {
 	decodeKeybindingDraftFields,
 	discardStoredKeybindingDraft,
+	DRAFT_RESTORE_FAILED_MESSAGE,
+	errorText,
 	isReadableKeybindingDraft,
 } from "@evener/appwire-client";
 import type {
@@ -72,9 +74,6 @@ const Context = createContext<Preferences | null>(null);
 const backend = rawStringDraftBackend(Storage, () => Crypto.randomUUID());
 
 type DraftReadWithValue = ReturnType<typeof readDraftOutcomeWithValue>;
-
-const DRAFT_RESTORE_FAILED_MESSAGE =
-	"Could not restore the saved shortcut draft. Check current shortcuts to retry.";
 
 function reconcileRetainedDraftProjection(
 	snapshot: NativePreferencesSnapshot,
@@ -151,6 +150,36 @@ function reconcileRetainedDraftProjection(
 	};
 }
 
+/** The live-model nudge's own rejection, projected onto the retained
+ * snapshot: only the error seam changes. A refusal (the live store's discard
+ * gate - say, a write the lost connection parked `writeUncertain`) or its
+ * own port failure is not a storage observation, so every record-derived
+ * field keeps what the last read classified; what the rejection adds is that
+ * the live model was not told about the storage change and still disagrees
+ * with the projection on screen. The message is the store's own fixed copy -
+ * both the gate and the draft-port wrapper throw fixed words, never a raw
+ * storage error - routed through the same keybindingsErrorMessage seam a
+ * failed read surfaces through. */
+function retainedNudgeRejectionProjection(
+	snapshot: NativePreferencesSnapshot,
+	message: string,
+): NativePreferencesSnapshot {
+	const keybindings = snapshot.keybindings;
+	if (keybindings.draftError === message) return snapshot;
+	return {
+		...snapshot,
+		keybindings: {
+			...keybindings,
+			draftError: message,
+			error: keybindingsErrorMessage(
+				message,
+				keybindings.hubError,
+				keybindings.loadError,
+			),
+		},
+	};
+}
+
 export function NativePreferencesProvider({
 	children,
 }: {
@@ -207,9 +236,13 @@ export function NativePreferencesProvider({
 		setOfflineStorageUnavailable(false);
 		setOfflineDraftUnreadable(outcome === "unreadable");
 	}, [hubId, state]);
-	const reconcileRetainedDraft = (
+	// The one retained-snapshot patch seam: a projection lands only while
+	// that snapshot is not owned by a live, connected model of the current
+	// client (whose own publishes own the display), and only for the
+	// connection it was computed against.
+	const patchRetainedSnapshot = (
 		expectedClient: AppwireClient | undefined,
-		result: DraftReadWithValue,
+		project: (snapshot: NativePreferencesSnapshot) => NativePreferencesSnapshot,
 	) => {
 		if (!hubId) return;
 		setBound((previous) => {
@@ -220,10 +253,17 @@ export function NativePreferencesProvider({
 				(previous.client === client && state === "ready")
 			)
 				return previous;
-			const snapshot = reconcileRetainedDraftProjection(previous.snapshot, result);
+			const snapshot = project(previous.snapshot);
 			return snapshot === previous.snapshot ? previous : { ...previous, snapshot };
 		});
 	};
+	const reconcileRetainedDraft = (
+		expectedClient: AppwireClient | undefined,
+		result: DraftReadWithValue,
+	) =>
+		patchRetainedSnapshot(expectedClient, (snapshot) =>
+			reconcileRetainedDraftProjection(snapshot, result),
+		);
 	useEffect(() => {
 		if (!hubId || !bound || (bound.client === client && state === "ready")) return;
 		const expectedClient = bound.client;
@@ -299,8 +339,22 @@ export function NativePreferencesProvider({
 			// through the store's own recovery path rather than a duplicate of
 			// it. Fire-and-forget: discardKeybindingsDraft is synchronous work
 			// wrapped in a promise, and this path's own return value already
-			// reflects what discardStoredKeybindingDraft found.
-			bound.model.discardKeybindingsDraft().catch(() => {});
+			// reflects what discardStoredKeybindingDraft found - but the
+			// NUDGE's own rejection is a fact that return value does not
+			// carry. The store's discard can refuse (its gate: a write the
+			// lost connection parked writeUncertain, a genuine port failure
+			// its own gate safely refuses) or fail (its port, a failure the
+			// store publishes itself), and either way the record-derived
+			// projection just published above would otherwise read as
+			// all-clear while the live model still disagrees with it. So the
+			// rejection surfaces through the same retained error path a
+			// failed read does - the store's own fixed words, via errorText,
+			// never a raw storage error.
+			bound.model.discardKeybindingsDraft().catch((error: unknown) => {
+				patchRetainedSnapshot(expectedClient, (snapshot) =>
+					retainedNudgeRejectionProjection(snapshot, errorText(error)),
+				);
+			});
 		}
 		return outcome;
 	};
