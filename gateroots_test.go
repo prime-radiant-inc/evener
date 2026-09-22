@@ -182,6 +182,34 @@ func TestClaimGateRootRefusesBeforeSideEffects(t *testing.T) {
 	}
 }
 
+// TestClaimGateRootReclaimHasOneWinner pins the reclaim path's atomicity: with
+// a stale lock in place, several runs racing to reclaim it must not end up
+// sharing the root. The window a fix closes is narrow, so this asserts the
+// outcome — exactly one winner — with real concurrent processes rather than
+// trying to hit the interleaving.
+func TestClaimGateRootReclaimHasOneWinner(t *testing.T) {
+	t.Parallel()
+	root := gateRootUnder(t.TempDir(), "agent")
+	if err := os.MkdirAll(filepath.Dir(root), 0o700); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	// A pid no process on this host has, so the lock reads as stale.
+	if err := os.WriteFile(root+".lock", []byte("2147483646\n"), 0o600); err != nil {
+		t.Fatalf("write stale lock: %v", err)
+	}
+
+	script := ". " + gateRootsLib + "\n" +
+		"for i in 1 2 3 4 5 6; do ( evener_claim_gate_root \"$1\" && echo win ) & done\n" +
+		"wait\n"
+	out, code := runShSource(t, script, nil, root)
+	if code != 0 {
+		t.Fatalf("racer script exited %d:\n%s", code, out)
+	}
+	if got := strings.Count(out, "win"); got != 1 {
+		t.Errorf("%d of 6 racing claims won; exactly one must hold the root:\n%s", got, out)
+	}
+}
+
 // TestClaimGateRootReportsLiveContention drops one claim onto a root a second,
 // live shell already holds. That is the case the runner must fall back for: the
 // held run must be left untouched, and the second claim must refuse rather than

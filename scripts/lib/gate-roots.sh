@@ -124,7 +124,13 @@ evener_claim_gate_root() {
 	evener_gate_root_attempt=0
 	while :; do
 		if evener_take_gate_root_lock "$evener_gate_root_lock"; then
-			evener_reset_gate_root "$evener_gate_root_dir" || return 1
+			# On a failed reset the lock must go: this shell's pid is alive, so
+			# leaving it would make every other gate run in this worktree fall
+			# back to uncached per-run roots until this process exits.
+			if ! evener_reset_gate_root "$evener_gate_root_dir"; then
+				rm -f "$evener_gate_root_lock" || :
+				return 1
+			fi
 			return 0
 		fi
 		# One retry: the lock may belong to a run that was killed outright. A
@@ -135,8 +141,32 @@ evener_claim_gate_root() {
 		if [ -n "$evener_gate_root_owner" ] && kill -0 "$evener_gate_root_owner" 2>/dev/null; then
 			return 1
 		fi
-		rm -f "$evener_gate_root_lock" || return 1
+		evener_reclaim_gate_root_lock "$evener_gate_root_lock" || return 1
 	done
+}
+
+# evener_reclaim_gate_root_lock LOCK — remove a lock whose owner is gone, for the
+# claim above; nonzero means the caller must treat the root as contended.
+#
+# Reclaiming is itself a claim (on LOCK.reclaim) and only removes the lock after
+# re-reading the owner it observed, because an unconditional `rm -f` can delete
+# a lock a competing run created in between — which would hand two runs the same
+# root and let one run's scratch vanish mid-test. A crash while holding the
+# reclaim lock leaves that root unreclaimed until the file is removed by hand,
+# which costs cache reuse for one worktree rather than correctness.
+evener_reclaim_gate_root_lock() {
+	evener_reclaim_seen=$evener_gate_root_owner
+	if ! evener_take_gate_root_lock "$1.reclaim"; then
+		return 1
+	fi
+	evener_reclaim_now=$(cat "$1" 2>/dev/null || :)
+	if [ -n "$evener_reclaim_now" ] && [ "$evener_reclaim_now" != "$evener_reclaim_seen" ]; then
+		rm -f "$1.reclaim" || :
+		return 1
+	fi
+	rm -f "$1" || :
+	rm -f "$1.reclaim" || :
+	return 0
 }
 
 # evener_release_gate_root ROOT KEEP_DIR — give ROOT back.
