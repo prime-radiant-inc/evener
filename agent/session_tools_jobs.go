@@ -560,7 +560,7 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		// name pairing guard below, create, describe — sees one shape; a
 		// padded value must not refuse at exactly one of them.
 		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
-		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
+		Sandbox:   stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
 	if raw, exists := args["fork_context"]; exists {
 		var ok bool
