@@ -1593,7 +1593,20 @@ func (s *Session) SteeringQueueSnapshot() []SteeringEntry {
 // renders the bracketed selection marker so the steering turn is never
 // an empty user message.
 func steeringMessageToLLM(entry steeringMessage) llm.Message {
-	return buildSelectedUserInputMessage(entry.Text, entry.Images, entry.SkillNames)
+	msg := buildSelectedUserInputMessage(entry.Text, entry.Images, entry.SkillNames)
+	if entry.Kind != events.SteeringKindNotification {
+		return msg
+	}
+	// Notification-kind steering (e.g. the cancelled-callback-watches
+	// restart notice) is session machinery: every text part is
+	// session-authored, so flag them at construction for the display-side
+	// filter.
+	for i := range msg.Content {
+		if msg.Content[i].Kind == llm.ContentText {
+			msg.Content[i].Machinery = true
+		}
+	}
+	return msg
 }
 
 func (s *Session) popFollowUp() string {

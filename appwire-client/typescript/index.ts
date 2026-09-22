@@ -422,7 +422,7 @@ export {
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
-export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,

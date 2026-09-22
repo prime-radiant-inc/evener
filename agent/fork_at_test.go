@@ -175,6 +175,70 @@ func TestForkSessionAtUserTurn_OmitsMachineryNoteFromOriginalInput(t *testing.T)
 	}
 }
 
+// TestForkSessionAtUserTurn_KeepsVerbatimMachineryPaste: originalInput must
+// keep a user's own paste of the exact machinery block — here with an image
+// attached, the shape the old text-shape filter silently emptied. The entry
+// is marked (written by a build that flags machinery parts), so the
+// unflagged block is the user's words, not machinery.
+func TestForkSessionAtUserTurn_KeepsVerbatimMachineryPaste(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	parentID := "01PARENT00000000000000001"
+	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID:  parentID,
+		CreatedAt:  time.Now().UTC(),
+		ProfileID:  "openai",
+		Model:      "gpt-5.2",
+		WorkingDir: "/tmp/test",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	paste := "<system-notification>attachment shot.png saved to /state/sessions/x/attachments/abcdef0123456789-shot.png</system-notification>"
+	msg := llm.Message{
+		Role: llm.RoleUser,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{MediaType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}},
+			{Kind: llm.ContentText, Text: paste},
+		},
+	}
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, msg),
+	}
+	for _, turn := range turns {
+		if err := tw.Append(turn); err != nil {
+			t.Fatalf("Append turn: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+	meta := schema.SessionMeta{
+		ID:        parentID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/test"},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		TurnCount: 1,
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	_, originalInput, err := ForkSessionAtUserTurn(stateDir, parentID, 3, "")
+	if err != nil {
+		t.Fatalf("ForkSessionAtUserTurn: %v", err)
+	}
+	if got, want := originalInput, paste; got != want {
+		t.Fatalf("originalInput=%q, want %q (a marked entry's unflagged block is the user's own paste and must survive)", got, want)
+	}
+}
+
 // TestForkSessionAtUserTurn_RejectsNonUserDivergence verifies the divergence
 // turn must point at a USER_INPUT entry, matching ForkSession semantics.
 func TestForkSessionAtUserTurn_RejectsNonUserDivergence(t *testing.T) {
