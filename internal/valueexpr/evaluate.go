@@ -209,6 +209,10 @@ func realRunCommand(command string) (string, error) {
 	// still names our child then.
 	cmd.SysProcAttr = procgroup.SysProcAttr()
 	cmd.Cancel = func() error { procgroup.Kill(cmd.Process.Pid); return nil }
+	// WaitDelay makes the timeout a hard bound: a descendant that escaped
+	// the process group and still holds the captured pipes cannot keep Wait
+	// — and with it a request or a session start — blocked past the budget.
+	cmd.WaitDelay = commandTimeout
 	var stdout cappedBuffer
 	var stderr cappedBuffer
 	stdout.max = maxOutput

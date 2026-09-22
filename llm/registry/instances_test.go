@@ -726,6 +726,52 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 	}
 }
 
+// An api_key or Authorization value that expands to empty (an empty
+// ${VAR:-} default) is not a present credential: it resolves as none with a
+// warning, never as a credential whose value is the empty string.
+func TestCredentialEmptyExpansionIsNoCredential(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "api_key",
+			config: "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"bearer\"\n" +
+				"api_key = '''${MISSING:-}'''\n" +
+				"[providers.gw.models.\"house-model\"]\n",
+		},
+		{
+			name: "authorization",
+			config: "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"Authorization\"\n" +
+				"credential_headers = { \"Authorization\" = '''${MISSING:-}''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, nil, tt.config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "none" || res.Credential.Value != "" {
+				t.Fatalf("credential = %+v; want none with no value", res.Credential)
+			}
+			if !strings.Contains(strings.Join(res.Warnings, ";"), "expands to an empty value") {
+				t.Fatalf("warnings = %v; want the empty-expansion warning", res.Warnings)
+			}
+		})
+	}
+}
+
 // A command expression in a credential header behaves like an unset
 // reference: the header drops out of the resolution with a warning naming it,
 // so an auth failure has a local explanation.

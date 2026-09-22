@@ -20,6 +20,19 @@ func checkEnvRefs(value, what string) error {
 	return nil
 }
 
+// checkNoCommands holds the other half of the command-expression rule: a
+// command's output is credential material, so only the credential fields
+// (api_key, credential_headers) may run one. A display header or a transport
+// var minted through a command would flow into URLs, logs, and surfaces that
+// treat it as ordinary text, so those fields refuse a command outright. It
+// never echoes the value, which may hold a secret.
+func checkNoCommands(value, what string) error {
+	if scan, err := valueexpr.Scan(value); err == nil && len(scan.Commands) > 0 {
+		return fmt.Errorf("%s: command expressions are reserved for credential fields (api_key, credential_headers); this field's value is not treated as a secret", what)
+	}
+	return nil
+}
+
 // expandEnv substitutes a value's $ expressions — references, defaults, and
 // command expressions, whose minted results come from the shared evaluator
 // cache — through lookup. It returns the unresolved pieces as valueexpr
@@ -81,15 +94,16 @@ func ScanConfigValue(value string) (refs []string, literal string, err error) {
 // (the hub's forms and `evener providers add`) accept it. Everything else is
 // held to the boundary: at most ONE literal word, an HTTP auth scheme by
 // convention (any scheme name works, custom ones included), and it must stand
-// AHEAD of the credential material. A reference's default is literal text
-// standing in the file, so only an auth scheme word may fill one — anything
-// else is a key at rest.
+// AHEAD of the credential material, separated from it by whitespace. A
+// reference's default is literal text standing in the file, so only an auth
+// scheme word may fill one — anything else is a key at rest.
 //
 // The placement rules read order, so the boundary walks the scanner's ordered
 // pieces: a literal run behind credential material (a key smuggled behind a
 // reference), a second literal word (an alphabetic key beside one, which a
-// bare "contains a $" check accepts), and a non-scheme literal (a key glued
-// to a reference, "Bearer sk-live-abc$X") are all refused.
+// bare "contains a $" check accepts), a non-scheme literal (a key glued to a
+// reference, "Bearer sk-live-abc$X"), and a scheme word glued to the
+// material with no separating whitespace ("Bearer$X") are all refused.
 //
 // The rule is deliberately stricter than providers.toml's own grammar, which
 // takes any syntactically valid value: a key typed into a form or an argv is
@@ -100,7 +114,7 @@ func CheckCredentialHeaderValue(value string) error {
 	if err != nil {
 		return err
 	}
-	seenMaterial, schemeWord := false, false
+	seenMaterial, schemeWord, schemeGlued := false, false, false
 	for _, p := range pieces {
 		switch p.Kind {
 		case valueexpr.PieceLit:
@@ -110,12 +124,22 @@ func CheckCredentialHeaderValue(value string) error {
 				}
 				schemeWord = true
 			}
+			// The scheme word must be separated from the credential material
+			// by whitespace: "Bearer$TOKEN" would glue scheme and material
+			// into one malformed value.
+			schemeGlued = schemeWord && len(p.Lit) > 0 && !isSpaceByte(p.Lit[len(p.Lit)-1])
 		case valueexpr.PieceRef:
+			if schemeGlued {
+				return errors.New("an auth scheme word must be separated from the credential material by whitespace, as in \"Bearer $TOKEN\"")
+			}
 			if p.Ref.HasDefault && p.Ref.Default != "" && !isAuthSchemeWord(p.Ref.Default) {
 				return errors.New("only an auth scheme word may stand as a reference's default; the value itself must be a $VARIABLE reference, never a literal secret")
 			}
 			seenMaterial = true
 		case valueexpr.PieceCommand:
+			if schemeGlued {
+				return errors.New("an auth scheme word must be separated from the credential material by whitespace, as in \"Bearer $TOKEN\"")
+			}
 			seenMaterial = true
 		}
 	}
@@ -123,6 +147,12 @@ func CheckCredentialHeaderValue(value string) error {
 		return errors.New("the value must reference a $VARIABLE or run a $(command), never a literal secret")
 	}
 	return nil
+}
+
+// isSpaceByte reports whether the byte can separate the auth scheme word from
+// the credential material.
+func isSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t'
 }
 
 // CheckCredentialHeaderName holds the same boundary for the NAME half of a

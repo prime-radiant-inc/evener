@@ -51,6 +51,18 @@ type mcpServerJSON struct {
 // LoadFile parses one .mcp.json file and returns server configs
 // with env vars expanded.
 func LoadFile(path string) ([]ServerConfig, error) {
+	return loadFile(path, expandEnvVars)
+}
+
+// LoadFileUntrusted is LoadFile for a config layer evener does not author —
+// the project's .evener/mcp.json or a plugin's .mcp.json. A $(command)
+// expression here would run on the host the moment the config loads, so it
+// is refused at parse time instead of executed.
+func LoadFileUntrusted(path string) ([]ServerConfig, error) {
+	return loadFile(path, expandEnvVarsUntrusted)
+}
+
+func loadFile(path string, expand func(string) (string, error)) ([]ServerConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading MCP config %s: %w", path, err)
@@ -61,13 +73,23 @@ func LoadFile(path string) ([]ServerConfig, error) {
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
-	return ParseServerMap(cf.MCPServers, path)
+	return parseServerMap(cf.MCPServers, path, expand)
 }
 
 // ParseServerMap converts a map of server names to raw JSON server entries into
 // ServerConfigs, expanding ${VAR} references in each entry. The source string
 // is used only for error context (e.g. the file path or "inline").
 func ParseServerMap(servers map[string]json.RawMessage, source string) ([]ServerConfig, error) {
+	return parseServerMap(servers, source, expandEnvVars)
+}
+
+// ParseServerMapUntrusted is ParseServerMap for a config layer evener does not
+// author; a $(command) expression is refused rather than run on the host.
+func ParseServerMapUntrusted(servers map[string]json.RawMessage, source string) ([]ServerConfig, error) {
+	return parseServerMap(servers, source, expandEnvVarsUntrusted)
+}
+
+func parseServerMap(servers map[string]json.RawMessage, source string, expand func(string) (string, error)) ([]ServerConfig, error) {
 	var configs []ServerConfig
 	for name, raw := range servers {
 		if strings.TrimSpace(name) == "" {
@@ -78,7 +100,7 @@ func ParseServerMap(servers map[string]json.RawMessage, source string) ([]Server
 			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, source, err)
 		}
 
-		cfg, err := serverJSONToConfig(name, sj)
+		cfg, err := serverJSONToConfig(name, sj, expand)
 		if err != nil {
 			return nil, fmt.Errorf("MCP server %q in %s: %w", name, source, err)
 		}
@@ -87,20 +109,20 @@ func ParseServerMap(servers map[string]json.RawMessage, source string) ([]Server
 	return configs, nil
 }
 
-func serverJSONToConfig(name string, sj mcpServerJSON) (ServerConfig, error) {
+func serverJSONToConfig(name string, sj mcpServerJSON, expand func(string) (string, error)) (ServerConfig, error) {
 	typ := strings.TrimSpace(sj.Type)
 	if typ == "" {
 		typ = "stdio"
 	}
 
-	command, err := expandEnvVars(sj.Command)
+	command, err := expand(sj.Command)
 	if err != nil {
 		return ServerConfig{}, fmt.Errorf("expanding command: %w", err)
 	}
 
 	args := make([]string, len(sj.Args))
 	for i, a := range sj.Args {
-		args[i], err = expandEnvVars(a)
+		args[i], err = expand(a)
 		if err != nil {
 			return ServerConfig{}, fmt.Errorf("expanding arg[%d]: %w", i, err)
 		}
@@ -111,7 +133,7 @@ func serverJSONToConfig(name string, sj mcpServerJSON) (ServerConfig, error) {
 
 	env := make(map[string]string, len(sj.Env))
 	for k, v := range sj.Env {
-		env[k], err = expandEnvVars(v)
+		env[k], err = expand(v)
 		if err != nil {
 			return ServerConfig{}, fmt.Errorf("expanding env %q: %w", k, err)
 		}
@@ -120,14 +142,14 @@ func serverJSONToConfig(name string, sj mcpServerJSON) (ServerConfig, error) {
 		env = nil
 	}
 
-	url, err := expandEnvVars(sj.URL)
+	url, err := expand(sj.URL)
 	if err != nil {
 		return ServerConfig{}, fmt.Errorf("expanding url: %w", err)
 	}
 
 	headers := make(map[string]string, len(sj.Headers))
 	for k, v := range sj.Headers {
-		headers[k], err = expandEnvVars(v)
+		headers[k], err = expand(v)
 		if err != nil {
 			return ServerConfig{}, fmt.Errorf("expanding header %q: %w", k, err)
 		}
@@ -171,6 +193,18 @@ func expandEnvVars(s string) (string, error) {
 		return "", fmt.Errorf("environment variable %q is not set (use ${%s:-default} to provide a default)", u.Name, u.Name)
 	}
 	return expanded, nil
+}
+
+// expandEnvVarsUntrusted is expandEnvVars for a config layer evener does not
+// author: the project's .evener/mcp.json, which the model can write
+// mid-session, and plugins' configs, which are third-party content. Expansion
+// runs commands on the host, so a $(command) expression there is refused at
+// load rather than executed.
+func expandEnvVarsUntrusted(s string) (string, error) {
+	if scan, err := valueexpr.Scan(s); err == nil && len(scan.Commands) > 0 {
+		return "", errors.New("command expressions $(...) are allowed only in config you author yourself (the global mcp.json or --mcp-config files)")
+	}
+	return expandEnvVars(s)
 }
 
 // ParseInline parses a "name:command args..." inline spec into an ServerConfig.
@@ -253,13 +287,16 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 		}
 	}
 
-	// Layer 2: Per-project config (.evener/mcp.json at git root).
+	// Layer 2: Per-project config (.evener/mcp.json at git root), loaded
+	// untrusted: that layer is model-writable, and expansion runs commands on
+	// the host, so its $(command) expressions are refused at load — the same
+	// skip-with-warning as any other project-layer parse failure.
 	if env != nil {
 		cwd := env.WorkingDirectory()
 		root := execenv.GitRootOrEmpty(env, cwd)
 		if root != "" {
 			projPath := filepath.Join(root, ".evener", "mcp.json")
-			if configs, err := LoadFile(projPath); err != nil {
+			if configs, err := LoadFileUntrusted(projPath); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
 				}

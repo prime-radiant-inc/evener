@@ -2,6 +2,8 @@ package registry
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -121,6 +123,7 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		"${PORTKEY_KEY:-Bearer}",
 		"${PORTKEY_KEY:-}",
 		"Bearer ${A:-Basic}${B}",
+		"${A:-Bearer} $B",
 		// Command expressions are authored config, not secrets, so both
 		// authoring surfaces accept them — alone, with the scheme word, and
 		// beside references.
@@ -166,6 +169,10 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		{"a literal behind a command expression", "$(cat /tmp/planted-secret) Bearer", "$VARIABLE", "/tmp/planted-secret"},
 		{"a second word beside a command expression", "Bearer Basic $(cat /tmp/planted-secret)", "$VARIABLE", "/tmp/planted-secret"},
 		{"an escaped command with no material", "$$(cat /tmp/planted-secret)", "$VARIABLE", "/tmp/planted-secret"},
+		// The scheme word separates from the material by whitespace: glued
+		// forms would produce one malformed value.
+		{"a scheme word glued to the reference", "Bearer$PORTKEY_KEY", "separated from the credential material by whitespace", ""},
+		{"a scheme word glued to a command expression", "Bearer$(cat /tmp/planted-secret)", "separated from the credential material by whitespace", "/tmp/planted-secret"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckCredentialHeaderValue(tt.value)
@@ -231,6 +238,50 @@ func TestCheckEnvRefs(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "sk-test-PLANTEDSECRET1234") {
 		t.Fatalf("checkEnvRefs error echoed the value: %v", err)
+	}
+}
+
+// A command expression's output is credential material, so only the
+// credential fields may run one: a display header or a transport var minted
+// through a command would put the value into URLs and logs that treat it as
+// ordinary text. Load-time validation refuses the command outright, naming
+// the field.
+func TestLoadRefusesCommandExpressionsOutsideCredentialFields(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{
+			name: "provider headers",
+			config: "[providers.gw]\nbase = \"openai\"\n" +
+				"headers = { \"X-Gateway-Key\" = '''$(get-gateway-token)''' }\n",
+			want: `headers."X-Gateway-Key"`,
+		},
+		{
+			name: "model headers",
+			config: "[providers.gw]\nbase = \"openai\"\n" +
+				"[providers.gw.models.\"m\"]\nheaders = { \"X-Gateway-Key\" = '''$(get-gateway-token)''' }\n",
+			want: `headers."X-Gateway-Key"`,
+		},
+		{
+			name: "transport vars",
+			config: "[providers.gw]\nbase = \"openai\"\n" +
+				"vars = { \"REGION\" = '''$(region-printer)''' }\n",
+			want: "vars.REGION",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := os.ReadFile("testdata/models.dev.sample.json")
+			path := filepath.Join(t.TempDir(), "providers.toml")
+			if err := os.WriteFile(path, []byte(tt.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()))
+			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "command expressions") {
+				t.Fatalf("err = %v; want a command-expression refusal naming %s", err, tt.want)
+			}
+		})
 	}
 }
 

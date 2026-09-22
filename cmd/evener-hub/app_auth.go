@@ -756,8 +756,11 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	// A stored key is a literal secret the transports send verbatim: the store
 	// never expands $(command) expressions, so one stored here would be sent
 	// as the literal text and fail at the server with no local hint. Point at
-	// the field that authors expressions instead.
-	if scan, err := valueexpr.Scan(params.Value); err != nil || len(scan.Commands) > 0 {
+	// the field that authors expressions instead. Only a well-formed command
+	// expression refuses: a literal key whose odd $ bytes merely look like a
+	// mistyped expression is text the store may hold, and refusing it would
+	// reject a legitimate secret with a message about expressions.
+	if scan, _ := valueexpr.Scan(params.Value); len(scan.Commands) > 0 {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("a stored key is a literal secret and is never expanded: put a $(command) expression on the instance's credential header instead, as in Authorization=Bearer $(get-gateway-token)")
 	}
 	// The fingerprint key is resolved once, before the credential lock is taken:

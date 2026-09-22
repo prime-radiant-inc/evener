@@ -179,6 +179,32 @@ func TestAuth_InstanceApiKeySet_RefusesCommandExpression(t *testing.T) {
 	}
 }
 
+// A literal key whose odd $ bytes merely look like a mistyped expression is
+// still a literal key: the store holds it verbatim. The guard refuses only a
+// well-formed command expression, never a secret on the strength of odd bytes.
+func TestAuth_InstanceApiKeySet_StoresLiteralKeyWithOddDollarBytes(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	const odd = "sk-live-${oops"
+	got, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: odd})
+	if err != nil {
+		t.Fatalf("ApiKeySet(work-ant): %v", err)
+	}
+	if !got.SignedIn || !got.HasStoredFile {
+		t.Errorf("status = %+v, want the odd-$ key stored", got)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if v, ok := store.Get("work-ant"); !ok || v != odd {
+		t.Errorf("credentials.toml[work-ant] = %q/%v, want the literal odd-$ key", v, ok)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. OAuth ops on a named Codex instance target auth/<name>.json
 // ─────────────────────────────────────────────────────────────────────────────

@@ -131,6 +131,9 @@ func discoverPluginSkills(pluginDir, pluginName string) map[string]skill.SkillMe
 // discoverPluginMCPConfigs reads MCP server configs from a plugin's .mcp.json
 // file and/or inline manifest mcpServers field. Server names are prefixed with
 // "plugin_<pluginName>_" and ${CLAUDE_PLUGIN_ROOT} is expanded to pluginDir.
+// Both layers parse untrusted — plugin content is third-party, and expansion
+// runs commands on the host — so a $(command) expression is refused at load
+// like any other config-parse failure.
 //
 // Config-layer problems — an unreadable/malformed .mcp.json file, malformed
 // inline mcpServers JSON, or an inline entry that fails ParseServerMap
@@ -161,7 +164,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 		if err := json.Unmarshal([]byte(expanded), &servers); err != nil {
 			warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
 		} else if len(servers) > 0 {
-			inlineConfigs, err := mcpconfig.ParseServerMap(servers, "inline")
+			inlineConfigs, err := mcpconfig.ParseServerMapUntrusted(servers, "inline")
 			if err != nil {
 				warnings = append(warnings, fmt.Sprintf("plugin %q: MCP config failed: %v", pluginName, err))
 			} else {
@@ -202,7 +205,7 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
-	return mcpconfig.ParseServerMap(cf.MCPServers, path)
+	return mcpconfig.ParseServerMapUntrusted(cf.MCPServers, path)
 }
 
 // Load reads a plugin manifest from <dir>/.claude-plugin/plugin.json, falling

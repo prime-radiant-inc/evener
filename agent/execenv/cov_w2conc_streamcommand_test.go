@@ -18,7 +18,6 @@ import (
 // SIGTERM, so it can only be reaped by the SIGKILL escalation that fires after
 // terminateGrace (shrunk to 200ms for tests). Wait returning therefore proves
 // the escalation arm (the group-wide SIGKILL after timer.C) executed.
-// the escalation arm (killProcessGroup after timer.C) executed.
 func TestW2Conc_StreamCommandSignalEscalatesToSIGKILL(t *testing.T) {
 	env := &LocalExecutionEnvironment{RootDir: t.TempDir()}
 	if err := env.Initialize(); err != nil {

@@ -1865,7 +1865,10 @@ The forms:
   parser — the shell owns its syntax at run time — and the command's
   whitespace-trimmed stdout is the value, verbatim: extracting the exact
   value is the command's job, which is why a gateway's "run this to get a
-  token" recipe pipes through what it needs.
+  token" recipe pipes through what it needs. The expression ends at the
+  first `)` that brings the paren depth back to zero; quotes are not
+  parsed, so a literal `)` inside a quoted argument ends the expression
+  early — restructure the command or wrap it in a helper script.
 - `$$` — a literal `$`.
 
 Evaluation. References and commands expand when the value's other
@@ -1888,12 +1891,21 @@ carries the exit status and the command's own stderr — never its stdout,
 and never the command text. Commands run with the evener process's
 environment and privileges, not under a session sandbox: the config file
 is trusted input, the same trust as an `api_key` line, and that includes
-a sandboxed session's token command running unsandboxed.
+a sandboxed session's token command running unsandboxed. Trusted input is
+the whole of the rule (amended 2026-09-22): in providers.toml only the
+credential fields — `api_key` and `credential_headers` — accept a
+`$(command)`, because only their values are treated as secrets; display
+`headers` and transport `vars` refuse one at load, since their values
+reach URLs and logs as ordinary text. In MCP config only the layers the
+user authors directly — the global `mcp.json` and `--mcp-config` files —
+accept one: the project's `.evener/mcp.json` is model-writable and plugin
+configs are third-party content, so both refuse a command at load rather
+than run it on the host.
 
 Authoring. The hub's authoring surfaces accept `$VARIABLE` references and
 `$(command)` expressions alike, plus a single auth-scheme word ahead of
-the credential material and an auth-scheme word as a reference's
-default; a command is authored config, not a secret. The placement rules
+the credential material, separated from it by whitespace, and an
+auth-scheme word as a reference's default; a command is authored config, not a secret. The placement rules
 read order through the scanner's pieces, so a literal word behind
 credential material and a second literal word stay refused. The
 stored-key form is the one surface that refuses command expressions:

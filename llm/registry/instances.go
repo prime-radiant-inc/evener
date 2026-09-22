@@ -526,6 +526,11 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 			cred.AuthoredLayer = "api_key"
 			return cred, warns
 		}
+		if v == "" {
+			// An empty ${VAR:-} default resolved to nothing: an empty
+			// credential never resolves as a present one.
+			return none("no credential (api_key expands to an empty value)")
+		}
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
 	if auth, ok := h.CredentialHeaders["Authorization"]; ok && auth != "" {
@@ -534,6 +539,9 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(missing)))
 			cred.AuthoredLayer = "credential_headers"
 			return cred, warns
+		}
+		if v == "" {
+			return none("no credential (the Authorization credential header expands to an empty value)")
 		}
 		return Credential{Value: v, Source: "credential_headers"}, nil
 	}

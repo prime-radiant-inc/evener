@@ -102,12 +102,15 @@ documents. The store never sees a separate lookup table for it.
 
 ## Command expressions in credential values
 
-Wherever a provider value accepts an environment-variable reference —
-`api_key`, `credential_headers`, `headers`, and `vars` — it also accepts a
-command expression, `$(...)`: the command runs through your shell and its
+Wherever a credential value accepts an environment-variable reference —
+`api_key` and `credential_headers` — it also accepts a command
+expression, `$(...)`: the command runs through your shell and its
 whitespace-trimmed stdout becomes the value. This is how a gateway whose
 credentials live outside evener gets used: the key stays in your password
-manager, or a short-lived token gets minted per request.
+manager, or a short-lived token gets minted per request. Display `headers`
+and transport `vars` do not run commands: a command's output is a
+credential, and those fields' values reach URLs and logs as ordinary
+text, so a `$(...)` there is refused when the file loads.
 
 ```toml
 # An API key stored in Apple Passwords (Keychain), not in the file:
@@ -134,6 +137,10 @@ The rules that matter in practice:
   30-second timeout; results are cached per command (until a token's JWT
   `exp` is a minute away, else five minutes), so an agent loop mints once
   and reuses.
+- A `$(...)` ends at the first `)` that brings the paren depth back to
+  zero; quotes are not parsed, so a literal `)` inside a quoted argument
+  ends the expression early — restructure the command or wrap it in a
+  helper script.
 - A failed command behaves like an unset variable: the credential resolves
   to nothing, the warning carries the command's own stderr, and the next
   request retries it.

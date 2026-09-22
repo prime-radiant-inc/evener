@@ -332,6 +332,9 @@ func validateProvider(ps providerSchema, where string) error {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
 			return err
 		}
+		if err := checkNoCommands(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
+			return err
+		}
 	}
 	if err := validateTransport(ps.transportSchema, where); err != nil {
 		return err
@@ -350,6 +353,9 @@ func validateModel(ms modelSchema, where string) error {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
 			return err
 		}
+		if err := checkNoCommands(v, fmt.Sprintf("%s.headers.%q", where, k)); err != nil {
+			return err
+		}
 	}
 	if err := validateTransport(ms.transportSchema, where); err != nil {
 		return err
@@ -366,6 +372,9 @@ func validateTransport(ts transportSchema, where string) error {
 	}
 	for k, v := range ts.Vars {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.vars.%s", where, k)); err != nil {
+			return err
+		}
+		if err := checkNoCommands(v, fmt.Sprintf("%s.vars.%s", where, k)); err != nil {
 			return err
 		}
 	}
