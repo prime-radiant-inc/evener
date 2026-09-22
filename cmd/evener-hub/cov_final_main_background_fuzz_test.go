@@ -87,8 +87,11 @@ func runFinalBackgroundLoops(t *testing.T, root string, past *hubcore.PastIndex,
 	ctx, cancel = context.WithCancel(context.Background())
 	done = make(chan struct{})
 	cache := &hubcore.RemoteThreadCache{}
+	// The refresher captures and publishes through the web server's own
+	// RemoteThreadCache, so the cache is wired into the server it refreshes.
+	refreshWeb := NewWebServer(hubcore.WebConfig{RemoteThreadCache: cache})
 	go func() {
-		refreshHubRemoteThreads(ctx, poke, cache, web)
+		refreshHubRemoteThreads(ctx, poke, refreshWeb)
 		close(done)
 	}()
 	ticks <- time.Time{}

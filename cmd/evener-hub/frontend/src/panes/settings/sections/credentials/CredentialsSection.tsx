@@ -30,8 +30,10 @@ import {
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
+  fromEnvironment,
   groupByProvider,
   isEndpointConflict,
+  isInstanceRemoveApplied,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -89,6 +91,16 @@ type PendingConfirm = {
   expectedEndpointFingerprint?: string;
 } | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
+
+// What a confirm-gated action (Remove, Clear, Clear stored key) says when the
+// hub refuses the destination the confirmation asserted: the name moved since
+// the row was read, so nothing was sent. The credential test's own sentence
+// ends "and test again" and the sheet's save wording ends "so the change was
+// not saved" - neither fits a confirmed removal or clear, so this is the
+// actions' own wording, kept here beside them rather than in the client package
+// where only cross-client messages live.
+const ENDPOINT_CHANGED_CONFIRM_ERROR =
+  "This instance changed to a different endpoint since this confirmation was opened, so nothing was changed. The provider list was refreshed; review its destination and try again.";
 
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
 // stray OAuth record notices, and registry warnings (InstanceListResponse.
@@ -372,13 +384,17 @@ export function CredentialsSection({
         // the race, so it can be checked directly; only a superseded removal
         // has to be re-read. Either way the row must be gone from the listing
         // before the removal is reported, or the guided owner's reset fires on
-        // a listing that never lost it. What must be gone is the *authored*
-        // row: a name the environment also supplies comes back as an implicit
-        // instance the moment the authored entry is removed, and requiring the
-        // name itself to vanish would report a removal that happened as
-        // unconfirmed.
+        // a listing that never lost it. What must be gone is the row the USER
+        // owns: a name the environment also supplies comes back as a row the
+        // host derives (env:<VAR>, ADC, a keyless local default), and
+        // requiring it to vanish would report a removal that happened as
+        // unconfirmed. `implicit` alone is not that test - a stored key and a
+        // signed-in Codex record are implicit rows the removal does delete, so
+        // a stale listing still holding one must not be confirmed (and a
+        // surviving one is not "environment access"). fromEnvironment answers
+        // it by source.
         const removed = (instances: InstanceEntry[]) =>
-          !instances.some((instance) => instance.name === name && !instance.implicit);
+          !instances.some((instance) => instance.name === name && !fromEnvironment(instance));
         const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
         if (!confirmed) {
           // Close the confirm dialog with the failure: the row is gone on the
@@ -397,13 +413,13 @@ export function CredentialsSection({
           if (!applied) onInstanceRemoved?.(name);
           return;
         }
-        // The authored entry is gone, but the environment can still supply
-        // access under this name, and the row that remains in the listing says
-        // so. "Removed instance X" alone would read as "no access under this
-        // name any more", which is not what the hub's own listing reports.
+        // The user's row is gone, but the environment can still supply access
+        // under this name, and the row that remains in the listing says so.
+        // "Removed instance X" alone would read as "no access under this name
+        // any more", which is not what the hub's own listing reports.
         const stillSupplied = credentialsStore
           .getState()
-          .instances.some((instance) => instance.name === name && instance.implicit);
+          .instances.some((instance) => instance.name === name && fromEnvironment(instance));
         // The name can survive the removal as an environment-supplied implicit
         // row, and a sheet left open on it would keep the removed instance's
         // dirty draft attached to a row the user never edited - a save from it
@@ -420,12 +436,46 @@ export function CredentialsSection({
       }
       setPendingConfirm(null);
     } catch (err) {
+      // The removal applied before it failed: the hub deleted the instance's
+      // credential (or its config entry) and could not put it back, so the
+      // removal stands. Reconcile it - close the confirmation and the sheet,
+      // re-read the listing, tell the owning editor the instance is gone -
+      // rather than report a failed Remove whose retry targets a missing
+      // instance. The discriminator is authoritative, so this does not wait on
+      // the listing to confirm it, and the selection is cleared the way the
+      // success path clears it: a sheet left open on the name keeps the removed
+      // instance's dirty draft attached to a row the user never edited, and a
+      // save from it would author a new override out of that draft.
+      if (kind === "remove" && isInstanceRemoveApplied(err)) {
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", friendlyErrorMessage(err));
+        onInstanceRemoved?.(name);
+        return;
+      }
       if (recoverStaleListing(err)) {
         // The confirmation holds the destination fingerprint the row showed when
         // it was opened, which is the connection that is gone: a retry against
         // the listing that lands next has to capture it again, so the dialog
         // closes rather than carrying a stale assertion into the retry.
         setPendingConfirm(null);
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since this
+        // row was read, so nothing was sent. The confirmation holds that stale
+        // fingerprint, so leave the user able to retry - close the dialog, clear
+        // the selection the way the action's own success path does (a sheet left
+        // open would keep operating on the destination that moved), re-read the
+        // listing, and warn in this client's own words. The next confirmation
+        // captures the fingerprint now on screen; reported as a failed action,
+        // the open dialog would re-send the same refused assertion. Mirrors the
+        // mobile and TUI confirm paths.
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", ENDPOINT_CHANGED_CONFIRM_ERROR);
         return;
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";

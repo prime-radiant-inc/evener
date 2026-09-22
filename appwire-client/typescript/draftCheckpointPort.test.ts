@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDraftRepository, discardStoredDraft } from "./draftCheckpointPort";
+import { createDraftRepository, type DraftPort, discardStoredDraft } from "./draftCheckpointPort";
 import { memoryDraftStorage } from "./testing/draftStorage";
 
 interface Checkpoint {
@@ -17,6 +17,33 @@ function decode(value: unknown): Checkpoint {
 }
 
 describe("createDraftRepository", () => {
+  it("reports whether reload saw the same classified identity, not just the same decoded content", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d1", value: "a" }, sameIdentity: true });
+
+    // Equal decoded fields do not prove that the same record survived: a new
+    // writer's identity must take the ordinary replacement path.
+    drafts.storage.save({ id: "d2", value: "a" });
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d2", value: "a" }, sameIdentity: false });
+  });
+
+  it("reports a changed identity when a replacement decodes identically but has different raw bytes", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    // The replacement decodes to the SAME checkpoint, { id: "d1", value: "a" }
+    // - only its canonical raw bytes differ, by the extra field `decode`
+    // drops. Equal decoded fields do not make it the classified record: an
+    // identity compare over decoded values would carry the previous
+    // classification forward across a record that was actually replaced.
+    drafts.storage.save({ id: "d1", value: "a" });
+    expect(repo.reload()).toEqual({ checkpoint: { id: "d1", value: "a" }, sameIdentity: false });
+  });
+
   it("removeIf on a checkpoint load() returned removes the exact stored bytes, extra fields included", () => {
     const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a", futureField: 1 });
     const repo = createDraftRepository(drafts.storage, decode);
@@ -180,7 +207,7 @@ describe("discardStoredDraft", () => {
     const drafts = memoryDraftStorage<Checkpoint>();
     drafts.corrupt();
 
-    discardStoredDraft(drafts.storage);
+    expect(discardStoredDraft(drafts.storage)).toBe("removed");
 
     expect(drafts.stored()).toBeNull();
   });
@@ -188,8 +215,168 @@ describe("discardStoredDraft", () => {
   it("does nothing when nothing is stored", () => {
     const drafts = memoryDraftStorage<Checkpoint>();
 
-    discardStoredDraft(drafts.storage);
+    expect(discardStoredDraft(drafts.storage)).toBe("absent");
 
+    expect(drafts.stored()).toBeNull();
+  });
+
+  // A discard call with no live repository has no identity from when the
+  // caller was originally shown the unreadable record - only what is
+  // stored NOW. Without isReadable, that gap would let it delete a record a
+  // concurrent writer replaced with something this build can read since.
+  it("refuses to remove a record that now decodes as valid, given an isReadable check", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const isReadable = (value: unknown) => {
+      try {
+        decode(value);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(discardStoredDraft(drafts.storage, isReadable)).toBe("refused");
+
+    expect(drafts.stored()).toEqual({ id: "d1", value: "a" });
+  });
+
+  it("still removes a record isReadable reports as unreadable", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+    drafts.corrupt();
+    const isReadable = (value: unknown) => {
+      try {
+        decode(value);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(discardStoredDraft(drafts.storage, isReadable)).toBe("removed");
+
+    expect(drafts.stored()).toBeNull();
+  });
+
+  // removeIf's compare-and-swap can fail for a reason isReadable never sees:
+  // a concurrent writer replaced the unreadable record with a DIFFERENT
+  // unreadable one between load() and removeIf(). That record is still
+  // present - "absent" would tell a caller (the offline discard button)
+  // there was nothing there to clear, when there is.
+  it("reports 'refused', not 'absent', when removeIf fails but a replacement record is still present", () => {
+    let loadCount = 0;
+    const first = { corrupt: true, marker: 1 };
+    const second = { corrupt: true, marker: 2 };
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => (loadCount++ === 0 ? first : second),
+      save: () => {},
+      insertIfAbsent: () => true,
+      // Simulates the race: the identity this call names no longer matches
+      // what is stored (a concurrent writer already replaced it).
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("refused");
+  });
+
+  it("reports 'absent' when removeIf fails and a re-read finds the record genuinely gone", () => {
+    let loadCount = 0;
+    const first = { corrupt: true, marker: 1 };
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => (loadCount++ === 0 ? first : null),
+      save: () => {},
+      insertIfAbsent: () => true,
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("absent");
+  });
+
+  // Every DraftPort method may throw a genuine storage failure (see the
+  // port's own docs) - unlike a live repository's discardDraft, there is no
+  // caller-supplied catch upstream of this call, so a throw here must
+  // degrade to an outcome, the same posture readDraftOutcome takes on load(),
+  // rather than escape a store-free caller's event handler uncaught.
+  it("degrades to 'storageUnavailable' when load() throws", () => {
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => {
+        throw new Error("disk unavailable");
+      },
+      save: () => {},
+      insertIfAbsent: () => true,
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("storageUnavailable");
+  });
+
+  it("degrades to 'storageUnavailable' when removeIf() throws", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const storage: DraftPort<Checkpoint> = {
+      ...drafts.storage,
+      removeIf: () => {
+        throw new Error("disk unavailable");
+      },
+    };
+
+    expect(discardStoredDraft(storage)).toBe("storageUnavailable");
+  });
+
+  it("degrades to 'storageUnavailable' when the re-read after a failed removeIf throws", () => {
+    let loadCount = 0;
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => {
+        loadCount++;
+        if (loadCount === 1) return { corrupt: true, marker: 1 };
+        throw new Error("disk unavailable");
+      },
+      save: () => {},
+      insertIfAbsent: () => true,
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("storageUnavailable");
+  });
+});
+
+// memoryDraftStorage's own removeIf/replaceIf compare by JSON.stringify -
+// JSON.stringify(null) and JSON.stringify(undefined) both stringify to
+// values that must never accidentally equal each other or an absent
+// record's own comparison, or a caller checking "is anything stored" via a
+// null/undefined identity would see a false compare-and-swap success.
+describe("memoryDraftStorage", () => {
+  it("removeIf(null) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.removeIf(null)).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+
+  it("removeIf(undefined) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.removeIf(undefined)).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+
+  it("replaceIf(null, ...) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.replaceIf(null, { id: "d1", value: "a" })).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+
+  it("replaceIf(undefined, ...) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.replaceIf(undefined, { id: "d1", value: "a" })).toBe(false);
     expect(drafts.stored()).toBeNull();
   });
 });

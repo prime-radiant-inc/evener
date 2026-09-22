@@ -709,7 +709,7 @@ func (s *Session) settleInterruptedRound() {
 	if !s.persistAndEmitSalvage(salvaged, model, provider) {
 		return
 	}
-	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterrupted)
+	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterruptedSalvage)
 }
 
 // persistSalvagedTurn records the round's best partial as a normal assistant

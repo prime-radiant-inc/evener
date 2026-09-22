@@ -101,6 +101,11 @@ type hubOptions struct {
 	addr         string
 	evenerBinary string
 	appwireTrace string
+	// deployBinary and buildSource describe how a missed host gets the
+	// controller's build pushed to it. They are empty for a local-only
+	// controller, which needs no deploy path at all.
+	deployBinary string
+	buildSource  string
 }
 
 type mainDeps struct {
@@ -111,6 +116,11 @@ type mainDeps struct {
 	loadAuthToken   func(string) (string, error)
 	loadCredentials func(string) (*credentials.Store, error)
 	loadRegistry    hubcore.RegistryLoader
+	// newSSHManager builds the SSH connection manager. It is a seam so a test can
+	// capture the sshconn.Options the hub hands it — in particular DeployHelp,
+	// which is what makes the terminal version refusal name the hub's flags
+	// instead of sshconn's internal field name. nil uses sshconn.New.
+	newSSHManager func(*hostreg.Registry, sshconn.Options) *sshconn.Manager
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
 	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
@@ -420,38 +430,71 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// the WebServer below, after the SSH manager, and it is only ever invoked
 	// once the background loops start attaching hosts.
 	var hostAttachedWakeup func(host string)
-	sshManager := sshconn.New(hostRegistry, sshconn.Options{
-		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		OnEvent: hubSSHStateInvalidation(
-			func() {
-				if sshStateInvalidatedNavigation != nil {
-					sshStateInvalidatedNavigation()
-				}
-			},
-			// An attach is not only a liveness change: a host that was dormant
-			// contributes no fresh rows to the snapshot walk (it is skipped
-			// attached-only), so its threads stay absent from the navigation tree
-			// until the next ~30s tick. Poke the remote-thread refresher on the
-			// same transition so an explicit evener/host/attach populates the tree
-			// immediately. remotePoke is buffered 1 and this send is non-blocking,
-			// so the sshconn event loop never blocks on a refresh already pending.
-			func(host string) {
-				select {
-				case remotePoke <- struct{}{}:
-				default:
-				}
-				// The same transition wakes the host-notification fan-out: a
-				// fan-out sleeping in backoff would otherwise wait up to 30s
-				// before subscribing while the new client's notification buffer
-				// fills undrained. The wakeup carries no client — the fan-out
-				// still resolves the fresh client through ClientIfAttached —
-				// and the send below is non-blocking for the same reason the
-				// poke above is: the sshconn event loop must never block.
-				if hostAttachedWakeup != nil {
-					hostAttachedWakeup(host)
-				}
-			},
-		),
+	// hostManageEvents is late-bound the same way: the host-management
+	// controller is constructed with the WebServer below, after the SSH
+	// manager, and its event recorder is only ever invoked once the
+	// background loops start attaching hosts.
+	var hostManageEvents func(sshconn.Event)
+	// The deploy wiring is a pure function of the flags: -deploy-binary wins over
+	// -build-source, matching the manager's own BuildBinary-first dispatch. When
+	// both are set, say which one is used rather than silently ignoring the other.
+	deploy := opts.deployWiring()
+	switch {
+	case opts.deployBinary != "" && opts.buildSource != "":
+		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s takes precedence over -build-source %s\n", opts.deployBinary, opts.buildSource)
+	case opts.deployBinary != "":
+		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s\n", opts.deployBinary)
+	case opts.buildSource != "":
+		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -build-source %s\n", opts.buildSource)
+	}
+	newSSHManager := deps.newSSHManager
+	if newSSHManager == nil {
+		newSSHManager = sshconn.New
+	}
+	sshManager := newSSHManager(hostRegistry, sshconn.Options{
+		Logger:      func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+		BuildBinary: deploy.buildBinary,
+		BuildSource: deploy.buildSource,
+		DeployHelp:  deploy.help,
+		OnEvent: func(ev sshconn.Event) {
+			hubSSHStateInvalidation(
+				func() {
+					if sshStateInvalidatedNavigation != nil {
+						sshStateInvalidatedNavigation()
+					}
+				},
+				// An attach is not only a liveness change: a host that was dormant
+				// contributes no fresh rows to the snapshot walk (it is skipped
+				// attached-only), so its threads stay absent from the navigation tree
+				// until the next ~30s tick. Poke the remote-thread refresher on the
+				// same transition so an explicit evener/host/attach populates the tree
+				// immediately. remotePoke is buffered 1 and this send is non-blocking,
+				// so the sshconn event loop never blocks on a refresh already pending.
+				func(host string) {
+					select {
+					case remotePoke <- struct{}{}:
+					default:
+					}
+					// The same transition wakes the host-notification fan-out: a
+					// fan-out sleeping in backoff would otherwise wait up to 30s
+					// before subscribing while the new client's notification buffer
+					// fills undrained. The wakeup carries no client — the fan-out
+					// still resolves the fresh client through ClientIfAttached —
+					// and the send below is non-blocking for the same reason the
+					// poke above is: the sshconn event loop must never block.
+					if hostAttachedWakeup != nil {
+						hostAttachedWakeup(host)
+					}
+				},
+			)(ev)
+			// The host-management surface records per-host attach state from
+			// the same lifecycle events (midAttach, lastAttachError). The
+			// recorder only writes its own map: OnEvent runs with the
+			// per-host lock held, so it must never call back into the manager.
+			if hostManageEvents != nil {
+				hostManageEvents(ev)
+			}
+		},
 	})
 	// The manager owns every live SSH channel; tie their lifetime to this
 	// process so they die with the hub.
@@ -491,6 +534,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
 		RemoteHosts:               hostEntries,
+		// The one live registry the SSH manager dials through, shared with the
+		// attach handler and the host-management surface, and the selected
+		// hub.toml path the UI's host sidecar persists beside.
+		RemoteHostRegistry:   hostRegistry,
+		RemoteHostSSHManager: sshManager,
+		RemoteHostConfigPath: opts.configPath,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -532,14 +581,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if web.hostAdmin != nil {
 		hostAttachedWakeup = web.hostAdmin.hostAttached
 	}
-	// Drain the AppWire RPC server on every exit path, tracing or not (round
-	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
-	// and Shutdown is what cancels it, so a hub that only stopped its HTTP
-	// server left one fan-out goroutine per remote host subscribed to the
-	// previous server's sources — a leak, and duplicate host notifications once
-	// a replacement server subscribed too. This drain used to be registered
-	// only with --appwire-trace, where it existed to close the trace's
-	// connections.
+	// Bind the host-management event recorder the same way: the sshconn
+	// manager fires lifecycle events, and the host rows retain attach state
+	// from them.
+	if web.hostManage != nil {
+		hostManageEvents = web.hostManage.observeEvent
+	}
+	// Drain the AppWire RPC server on every exit path, tracing or not: the
+	// remote-admin fan-out is bound to appserver.Server.Lifetime(), and
+	// Shutdown is what cancels it, so a hub that only stopped its HTTP server
+	// would leave one fan-out goroutine per remote host subscribed to the
+	// previous server's sources — a leak, and duplicate host notifications
+	// once a replacement server subscribed too.
 	//
 	// It is registered after the SSH manager's teardown, so it runs first: the
 	// fan-outs stop while the transports they read from are still open, rather
@@ -649,7 +702,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
-	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
+	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, web) })
 	// Live-model prefetch: fetch every instance's /models listing into the
 	// held registry once at startup and every livePrefetchInterval after,
 	// so the Providers sheet reads cached inventory instead of fetching on
@@ -748,6 +801,8 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.evenerBinary, "evener", "", "path to evener binary (default: 'evener' on PATH)")
 	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
+	fs.StringVar(&opts.deployBinary, "deploy-binary", "", "path to a pre-built evener for the host's target, pushed as-is (no build source or Go toolchain needed)")
+	fs.StringVar(&opts.buildSource, "build-source", "", "path to an evener checkout's module root to cross-compile the host's target from")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
@@ -759,6 +814,13 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	err := fs.Parse(args)
 	if err == nil && fs.NArg() != 0 {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	// Validate the deploy flags where they are read: a bad path fails startup
+	// naming the flag rather than surfacing at the first attach as a deploy
+	// failure. A flag left unset needs no validation, so a local-only controller
+	// still starts.
+	if err == nil {
+		err = opts.validateDeployFlags()
 	}
 	return opts, err
 }

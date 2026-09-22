@@ -7,8 +7,12 @@ import {
 } from "./draftImages";
 import {
 	decodeQuestionSelections,
+	questionDefinition,
+  sameQuestion,
+  type QuestionDefinition,
 	type QuestionSelections,
 } from "./questionAnswers";
+import { type SqliteSync, withSavepoint } from "./sqliteSync";
 export interface DraftRecord {
 	draft: string;
 	unconfirmed: string | null;
@@ -21,15 +25,9 @@ export interface DraftDestination {
 	sessionRef: string;
 }
 
-export interface DraftDatabase {
-	execSync(sql: string): void;
-	runSync(sql: string, ...params: (string | null)[]): unknown;
-	getFirstSync<T>(sql: string, ...params: string[]): T | null;
-}
-
 export class DraftRepository {
 	readonly creation: CreationDraftRepository;
-	constructor(private readonly db: DraftDatabase) {
+	constructor(private readonly db: SqliteSync) {
 		this.creation = new CreationDraftRepository(db);
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
@@ -93,9 +91,12 @@ export class DraftRepository {
 		const definitions = questionDefinitions(row.signature);
 		const selections = decodeQuestionSelections(row.selections);
 		const result: QuestionSelections = {};
-		for (const [key, definition] of questionDefinitions(signature)) {
-			if (definitions.get(key) === definition && selections[key])
-				result[key] = selections[key];
+		for (const current of questionDefinitions(signature).values()) {
+			if (
+				sameQuestion(definitions.get(current.key), current) &&
+				selections[current.key]
+			)
+				result[current.key] = selections[current.key];
 		}
 		return result;
 	}
@@ -107,12 +108,12 @@ export class DraftRepository {
 		const row = this.questionRow(destination);
 		const definitions = row
 			? questionDefinitions(row.signature)
-			: new Map<string, string>();
+			: new Map<string, QuestionDefinition>();
 		const merged = row ? decodeQuestionSelections(row.selections) : {};
-		for (const [key, definition] of questionDefinitions(signature)) {
-			definitions.set(key, definition);
-			if (selections[key]) merged[key] = selections[key];
-			else delete merged[key];
+		for (const current of questionDefinitions(signature).values()) {
+			definitions.set(current.key, current);
+			if (selections[current.key]) merged[current.key] = selections[current.key];
+			else delete merged[current.key];
 		}
 		this.db.runSync(
 			`INSERT INTO question_drafts (hub_id, session_ref, signature, selections)
@@ -120,7 +121,7 @@ export class DraftRepository {
        signature = excluded.signature, selections = excluded.selections`,
 			destination.hubId,
 			destination.sessionRef,
-			`[${[...definitions.values()].join(",")}]`,
+			`[${[...definitions.values()].map((definition) => JSON.stringify(definition)).join(",")}]`,
 			JSON.stringify(merged),
 		);
 	}
@@ -186,8 +187,7 @@ export class DraftRepository {
 			JSON.stringify(record.unconfirmedImages ?? []),
 		);
 		const referenced = [...images, ...unconfirmedImages];
-		this.db.execSync("SAVEPOINT draft_write");
-		try {
+		withSavepoint(this.db, "draft_write", () => {
 			for (const image of additions) {
 				if (
 					!referenced.some(
@@ -246,11 +246,7 @@ export class DraftRepository {
 				destination.sessionRef,
 				...ids,
 			);
-			this.db.execSync("RELEASE draft_write");
-		} catch (error) {
-			this.db.execSync("ROLLBACK TO draft_write; RELEASE draft_write");
-			throw error;
-		}
+		});
 	}
 
 	private writeText(destination: DraftDestination, record: DraftRecord): void {
@@ -284,11 +280,18 @@ export class DraftRepository {
 	}
 }
 
-/** Definitions are compared per question so another batch cannot erase edits. */
-function questionDefinitions(signature: string): Map<string, string> {
+/** Definitions are compared per question so another batch cannot erase edits.
+ * Each definition normalizes through questionAnswers.ts's questionDefinition,
+ * so a row saved under the pre-identity signature — the full canonical
+ * question, or the display bound's truncated copy — compares equal to the
+ * identity's signature of the same question (questionAnswers.ts's
+ * sameQuestion). */
+function questionDefinitions(
+	signature: string,
+): Map<string, QuestionDefinition> {
 	const value: unknown = JSON.parse(signature);
 	if (!Array.isArray(value)) throw new Error("Invalid question definitions");
-	const definitions = new Map<string, string>();
+	const definitions = new Map<string, QuestionDefinition>();
 	for (const question of value) {
 		if (
 			!question ||
@@ -297,7 +300,7 @@ function questionDefinitions(signature: string): Map<string, string> {
 			definitions.has(question.key)
 		)
 			throw new Error("Invalid question definitions");
-		definitions.set(question.key, JSON.stringify(question));
+		definitions.set(question.key, questionDefinition(question));
 	}
 	return definitions;
 }

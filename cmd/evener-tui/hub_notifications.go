@@ -45,6 +45,29 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySandboxEscalation(params, notificationPendingRef(notification))
 		}
 		return nil
+	case appwire.NotifyThreadNameChanged:
+		// Handled ABOVE the mode/session filters so a rename that arrives while
+		// the dashboard is showing still refreshes the cached row and tree node
+		// (the dashboard has no periodic refresh — only `r` or a reconnect
+		// re-fetches). The viewed session's detail follows when the frame is for
+		// it; the Update wrapper emits the new terminal title from that. The name
+		// is untrusted wire text, sanitized before it is stored or rendered, and
+		// an absent, blank, or all-control name is not a name.
+		var params appwire.ThreadNameChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if name := sanitizeDisplayName(params.Name); strings.TrimSpace(name) != "" {
+				m.updateDashboardRowTitle(params.Ref, name)
+				// notificationMatchesCurrentSession treats an empty ref/threadId
+				// as "matches" (correct for frames that carry no routing), so
+				// require a real identity here: an unidentified rename must not
+				// relabel whichever session happens to be open.
+				identified := strings.TrimSpace(params.Ref) != "" || strings.TrimSpace(params.ThreadID) != ""
+				if identified && m.notificationMatchesCurrentSession(notification) {
+					m.detail.Title = name
+				}
+			}
+		}
+		return nil
 	}
 
 	// Streaming deltas dominate the hot path (one frame per chunk); fold each
@@ -323,7 +346,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 // reality when the Installed list is current, and an auto-upgrade daemon pass
 // or another client's mutation can change either at any time).
 func (m *hubModel) refreshPluginsPanel() tea.Cmd {
-	cmds := []tea.Cmd{launchconfig.CmdMarketplaceList(m.client), launchconfig.CmdPluginList(m.client)}
+	cmds := []tea.Cmd{m.marketplaceListRead(), launchconfig.CmdPluginList(m.client)}
 	if name := m.pluginsPanel.BrowseMarketplace(); name != "" {
 		cmds = append(cmds, launchconfig.CmdMarketplaceBrowse(m.client, name))
 	}
@@ -474,6 +497,36 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 			m.rows[i].model = model
 			return
 		}
+	}
+}
+
+// updateDashboardRowTitle keeps the dashboard's session-row title live after an
+// evener/thread/name/changed push, the same way updateDashboardRowModel keeps
+// the Model column live. The rows (and the cached tree they were built from)
+// are otherwise rebuilt only by a fresh tree fetch, so without this the
+// dashboard would show the old name until the next refresh.
+func (m *hubModel) updateDashboardRowTitle(ref, title string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || title == "" {
+		return
+	}
+	for i := range m.rows {
+		if m.rows[i].ref.String() == ref {
+			m.rows[i].title = title
+		}
+	}
+	updateTreeNodeTitles(m.tree.Live, ref, title)
+	for i := range m.tree.Projects {
+		updateTreeNodeTitles(m.tree.Projects[i].Sessions, ref, title)
+	}
+}
+
+func updateTreeNodeTitles(nodes []hubTreeNode, ref, title string) {
+	for i := range nodes {
+		if nodes[i].Ref == ref {
+			nodes[i].Title = title
+		}
+		updateTreeNodeTitles(nodes[i].Children, ref, title)
 	}
 }
 

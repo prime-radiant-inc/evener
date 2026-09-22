@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -103,8 +105,62 @@ func defaultMainDepsWithStdin(stdin *os.File) mainDeps {
 		},
 		exit: os.Exit, dispatch: dispatchCLICommand,
 		startCPU: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
-		notify: signal.NotifyContext, run: runWithScratchReclaim,
+		notify: notifyRunContext, run: runWithScratchReclaim,
 	}
+}
+
+// notifyRunContext installs the one-shot run's signal handling on a SINGLE
+// channel and derives both behaviors from the delivery count: the first
+// SIGINT/SIGTERM cancels ctx so the run closes gracefully — flushing the
+// transcript and writing --export-atif — and a repeat exits with 128+signal so
+// a close wedged on a provider or lock stays endable by the signal harnesses
+// send, not only by SIGKILL. The returned cancel stops the handler and ends the
+// goroutine, so a caller that finishes normally leaves no global signal handler
+// behind.
+//
+// One channel, not two, is load-bearing. signal.NotifyContext keeps its
+// registration in place until its cancel runs, so a second channel for the
+// escalation races it for each delivery: whichever was armed first consumes it,
+// and the other either loses the cancellation (no graceful close) or starts its
+// own count at one (the repeat is swallowed). Counting deliveries on one
+// channel has no such window: a signal is always both the cancellation and the
+// escalation's first delivery.
+func notifyRunContext(parent context.Context, signals ...os.Signal) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	ch := make(chan os.Signal, len(signals))
+	signal.Notify(ch, signals...)
+	stop := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		select {
+		case <-stop:
+			return
+		case <-ch:
+			cancel()
+		}
+		select {
+		case <-stop:
+		case sig := <-ch:
+			os.Exit(exitCodeForSignal(sig))
+		}
+	}()
+	return ctx, func() {
+		cancel()
+		stopOnce.Do(func() {
+			signal.Stop(ch)
+			close(stop)
+		})
+	}
+}
+
+// exitCodeForSignal mirrors the shell convention for a process ended by a
+// signal (128 + number), so an escalated exit is distinguishable from the
+// generic failure code.
+func exitCodeForSignal(sig os.Signal) int {
+	if s, ok := sig.(syscall.Signal); ok {
+		return 128 + int(s)
+	}
+	return 1
 }
 
 func mainWithDeps(deps mainDeps) {
@@ -198,7 +254,13 @@ func mainWithDeps(deps mainDeps) {
 		return
 	}
 
-	ctx, cancel := deps.notify(context.Background(), os.Interrupt)
+	// SIGTERM is registered alongside SIGINT: a campaign harness that kills a
+	// run at its wall deadline sends SIGTERM, and the default disposition would
+	// terminate the process before the deferred sess.Close() ran. That close is
+	// where the transcript is flushed and --export-atif writes the trajectory,
+	// so ignoring SIGTERM loses exactly the record a timed-out run needs. Every
+	// other entry point (serve, evener-hub, attach) already listens for both.
+	ctx, cancel := deps.notify(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	err := deps.run(ctx, runConfig{
@@ -325,6 +387,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the evener HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
+	_, _ = fmt.Fprintf(tw, "  install\tInstall Evener on a remote macOS or Linux host over SSH\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
@@ -411,7 +474,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		upgrade: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 			return runUpgrade(args, stdout, stderr)
 		},
-		plugin: runPlugin,
+		install: runInstall,
+		plugin:  runPlugin,
 		hub: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// The hub's attach subcommand bridges AppWire over this process's
 			// stdin/stdout, so they must be threaded through rather than dropped:
@@ -450,6 +514,7 @@ type cliCommandRunners struct {
 	launchCheck func([]string, io.Reader, io.Writer, io.Writer) error
 	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
 	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
+	install     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
 	hub         func([]string, io.Reader, io.Writer, io.Writer) error
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
@@ -473,6 +538,8 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener openai", runners.openAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
+	case "install":
+		return true, "evener install", runners.install(args[1:], stdin, stdout, stderr)
 	case "plugin":
 		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	case "hub":

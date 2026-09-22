@@ -44,6 +44,11 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	}
 	pe, ok := s.cfg.Past.Find(threadID)
 	if !ok {
+		// A canceled request must fail before it can scrub decisions for a
+		// session it never decided to delete.
+		if err := ctx.Err(); err != nil {
+			return appwire.SessionDeleteResponse{}, err
+		}
 		if decisionErrors := s.scrubSessionDecisions(threadID); len(decisionErrors) > 0 {
 			return appwire.SessionDeleteResponse{}, appwire.InternalError(strings.Join(decisionErrors, "; "))
 		}
@@ -55,6 +60,12 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	stateDirs := map[string]string{threadID: pe.StateDir}
 	release, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, stateDirs)
 	if ownerErr != nil {
+		// A canceled or expired request must fail, as the fresh project-delete
+		// path does, rather than answer success-with-skip for a request that was
+		// abandoned before it could decide.
+		if err := ctx.Err(); err != nil {
+			return appwire.SessionDeleteResponse{}, err
+		}
 		var skipped []projectDeleteSkip
 		if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
 			skipped = appendProjectDeleteLiveSkip(nil, threadID)
@@ -68,6 +79,11 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 			release()
 		}
 	}()
+	// Ownership is held but the request may have been abandoned while it waited;
+	// fail before the destructive cleanup, as the fresh project-delete path does.
+	if err := ctx.Err(); err != nil {
+		return appwire.SessionDeleteResponse{}, err
+	}
 
 	deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(pe.StateDir, threadID)
 	if !deleted {

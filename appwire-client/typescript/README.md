@@ -187,7 +187,7 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `createSecureUUID` documents its own fallback for a source with neither
   method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
   layer also carries `MutationOutbox`, the discovery half of an outbox: a class
-  that enqueues through a `MutationOutboxStorage` port (the 13 calls this layer
+  that enqueues through a `MutationOutboxStorage` port (the 14 calls this layer
   and the dispatcher make; the web's IndexedDB adapter implements it and stays
   in the app), announces a commit to sibling clients, and re-scans when a host
   says a scan is worth doing. Every host-shaped capability is an option - the

@@ -1,11 +1,11 @@
-import type { MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
+import { type MarketplaceEntry, type PluginEntry, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
-import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
-import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
+import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { MarketplacesPluginsSection } from "./index";
 
 const LINTER: PluginEntry = {
@@ -25,6 +25,13 @@ const ACME: MarketplaceEntry = {
   source: { kind: "github", repo: "acme/plugins" },
   lastUpdated: 1,
 };
+
+function cloneLitterError(data: unknown): WireError {
+  return new WireError("marketplace unregistered, but its clone could not be removed", -32603, {
+    evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+    ...(data === undefined ? {} : { applied: data }),
+  });
+}
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -164,6 +171,172 @@ test("switching segments while the marketplace sheet is open closes it", async (
   expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "Browse" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "acme-plugins" })).toBeNull());
+});
+
+test("keeps an applied removal guard across failed reconciliation and sheet remount", async () => {
+  const fake = connectFakeClient();
+  let listCalls = 0;
+  fake.on("evener/marketplace/list", () => {
+    listCalls += 1;
+    if (listCalls === 1) return { marketplaces: [ACME] };
+    throw new Error("reconcile unavailable");
+  });
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
+  fake.on("evener/marketplace/remove", () => {
+    throw cloneLitterError(null);
+  });
+  render(<MarketplacesPluginsSection />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+
+  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+  act(() => extensionsStore.setState({ marketplacesError: null }));
+  expect(await screen.findByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("a later accepted notification publication clears a same-name applied removal guard", async () => {
+  const fake = connectFakeClient();
+  let listCalls = 0;
+  fake.on("evener/marketplace/list", () => {
+    listCalls += 1;
+    if (listCalls === 2) throw new Error("reconcile unavailable");
+    return { marketplaces: [ACME] };
+  });
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
+  fake.on("evener/marketplace/remove", () => {
+    throw cloneLitterError(null);
+  });
+  render(<MarketplacesPluginsSection />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+
+  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+  fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
+  await waitFor(() => expect(listCalls).toBe(3), { timeout: 1000 });
+  await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a delayed applied outcome after authoritative absence cannot leave a removal guard", async () => {
+  const fake = connectFakeClient();
+  let listCalls = 0;
+  fake.on("evener/marketplace/list", () => {
+    listCalls += 1;
+    return { marketplaces: listCalls === 1 ? [ACME] : [] };
+  });
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
+  let rejectRemoval: ((reason: unknown) => void) | undefined;
+  fake.on(
+    "evener/marketplace/remove",
+    () =>
+      new Promise<never>((_resolve, reject) => {
+        rejectRemoval = reject;
+      }),
+  );
+  render(<MarketplacesPluginsSection />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+  await Promise.resolve();
+
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "acme-plugins" })).toBeNull());
+  await act(async () => {
+    rejectRemoval?.(cloneLitterError([ACME]));
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(getToasts().some((toast) => toast.kind === "warning")).toBe(true));
+
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("clears an applied removal guard when the connection client changes", async () => {
+  const first = connectFakeClient();
+  let listCalls = 0;
+  first.on("evener/marketplace/list", () => {
+    listCalls += 1;
+    if (listCalls === 2) throw new Error("reconcile unavailable");
+    return { marketplaces: [ACME] };
+  });
+  first.on("evener/plugin/list", () => ({ plugins: [] }));
+  first.on("evener/marketplace/remove", () => {
+    throw cloneLitterError(null);
+  });
+  render(<MarketplacesPluginsSection />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+  await waitFor(() => expect(screen.getByText("Failed to load")).toBeTruthy());
+
+  const second = new FakeClient("ready");
+  second.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  second.on("evener/plugin/list", () => ({ plugins: [] }));
+  act(() => connectionStore.getState().connect(second));
+  await waitFor(() => expect(second.calls.some((call) => call.method === "evener/marketplace/list")).toBe(true));
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a fenced outcome from the replaced client cannot leave a removal guard", async () => {
+  const first = connectFakeClient();
+  first.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  first.on("evener/plugin/list", () => ({ plugins: [] }));
+  let rejectRemoval: ((reason: unknown) => void) | undefined;
+  first.on(
+    "evener/marketplace/remove",
+    () =>
+      new Promise<never>((_resolve, reject) => {
+        rejectRemoval = reject;
+      }),
+  );
+  render(<MarketplacesPluginsSection />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+  await Promise.resolve();
+
+  const second = new FakeClient("ready");
+  second.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  second.on("evener/plugin/list", () => ({ plugins: [] }));
+  act(() => connectionStore.getState().connect(second));
+  await waitFor(() => expect(second.calls.some((call) => call.method === "evener/marketplace/list")).toBe(true));
+  const secondListCallsBeforeOutcome = second.calls.filter((call) => call.method === "evener/marketplace/list").length;
+  rejectRemoval?.(cloneLitterError(null));
+  await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
+  expect(second.calls.filter((call) => call.method === "evener/marketplace/list")).toHaveLength(
+    secondListCallsBeforeOutcome,
+  );
+  expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("a rename carries the Browse expansion to the new name", async () => {

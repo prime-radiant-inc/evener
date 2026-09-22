@@ -68,6 +68,9 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
+	// laneBranch is the git branch the lane was cut on. Rollback deletes this
+	// branch, never the id by assumption.
+	laneBranch string
 	// laneAdmission is the spawn's close-fence admission, carried here so a
 	// rollback can rename it as it begins.
 	laneAdmission envWorkID
@@ -1101,15 +1104,24 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 		return false
 	}
 	escalated := s.escalateUnreachableDelegateAttention()
-	delegateID, _, pending := s.delegateController.nextIdleDelegateAttention()
+	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
 	if !pending {
 		return escalated
 	}
+	// The selection already took this pass's hold under the controller lock,
+	// closing the selection-to-hold gap a release claim could slip through.
+	// The defer releases it on every pass exit — reservation committed or
+	// drive declined — so it can never pin the runtime warm, and overlapping
+	// passes each keep their own reference.
+	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("restore delegate attention", err))
 		s.scheduleStableDelegateAttentionRetry()
 		return true
+	}
+	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
+		hook(delegateID, sub)
 	}
 	owner.driveStableDelegateAttention(sub)
 	if s.delegateController.hasPendingDelegateAttention() {
@@ -1817,6 +1829,11 @@ func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModel
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
+	// The pairing decode enforces for the tool surface, re-asserted so a
+	// direct caller cannot build a descriptor that silently drops the name.
+	if args.Name != "" && isolationName != "worktree" {
+		return delegatestore.Descriptor{}, identifier.Project{}, errors.New(`invalid_request: name is only valid with isolation:"worktree"`)
+	}
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1913,6 +1930,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
+		WorktreeBranch:                args.Name,
 		Sandbox:                       sandboxSnapshot,
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
@@ -2023,10 +2041,14 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
 		}
 		defer s.endEnvWork(laneAdmission)
-		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID)
+		// createDelegateWorktree owns the empty-means-id default and returns
+		// the branch it actually cut, so the isolation record never resolves
+		// the rule itself.
+		path, laneBranch, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID, reservation.descriptor.WorktreeBranch)
 		if err != nil {
 			return isolation, err
 		}
+		isolation.laneBranch = laneBranch
 		isolation.worktreePath = path
 		isolation.worktreeProject = createdProject
 		if filepath.Clean(path) != filepath.Clean(workingDir) {
@@ -2099,7 +2121,7 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		}
 	}
 	if isolation.worktreePath != "" {
-		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
+		s.rollbackFreshDelegateWorktree(delegateID, isolation.laneBranch, isolation.worktreePath, isolation.worktreeProject)
 	}
 }
 

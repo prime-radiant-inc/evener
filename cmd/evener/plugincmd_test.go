@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -95,6 +96,86 @@ func TestPluginMarketplaceRemove(t *testing.T) {
 	}
 	if _, ok := mk["test-marketplace"]; ok {
 		t.Fatal("marketplace should be removed")
+	}
+}
+
+// TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter
+// verifies the CLI's applied-with-litter outcome: RemoveMarketplace's
+// unregister save has already landed
+// (plugins.ErrMarketplaceUnregisteredCloneRemains) by the time its
+// clone-removal cleanup fails, so the CLI must describe the removed registry
+// entry and remaining clone files while still exiting non-zero.
+func TestPluginMarketplaceRemove_CloneRemovalFailureReportsRemovedWithLitter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix directory permission to force a real removal failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permission this test relies on")
+	}
+	root := t.TempDir()
+	mgr := plugins.NewManager(root)
+	oldManager := newPluginManager
+	newPluginManager = func() pluginManager { return mgr }
+	t.Cleanup(func() { newPluginManager = oldManager })
+
+	clone := filepath.Join(root, "marketplaces", "acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Write permission on the clone directory itself is what lets RemoveAll
+	// unlink the file inside it; without it, the removal fails partway and
+	// the clone is left as litter.
+	if err := os.Chmod(clone, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(clone, 0o755) })
+	body, err := json.Marshal(map[string]any{"acme": map[string]any{
+		"source":          map[string]any{"source": "url", "url": "https://example.invalid/acme.git"},
+		"installLocation": clone,
+		"lastUpdated":     "2031-04-01T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "known_marketplaces.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	err = runPlugin([]string{"marketplace", "remove", "acme"}, nil, &out, &errb)
+	if err == nil {
+		t.Fatal("runPlugin marketplace remove = nil, want an error reporting the leftover clone")
+	}
+	if !errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
+		t.Fatalf("err = %v, want errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains)", err)
+	}
+	if !strings.Contains(err.Error(), "removed marketplace") {
+		t.Fatalf("err = %v, want it to say the registry removal landed", err)
+	}
+	if strings.Contains(err.Error(), clone) {
+		t.Fatalf("err = %v, want no absolute path in the CLI-facing error", err)
+	}
+
+	// The warning/error result is only half the outcome's account: the
+	// applied-with-litter marker also promises the clone itself still sits on
+	// disk, so the registry removal must leave the directory behind as litter.
+	info, statErr := os.Stat(clone)
+	if statErr != nil {
+		t.Fatalf("stat clone: %v, want the clone still on disk as litter", statErr)
+	}
+	if !info.IsDir() {
+		t.Fatalf("clone mode = %v, want a directory left behind as litter", info.Mode())
+	}
+
+	mk, listErr := mgr.ListMarketplaces(context.Background())
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	if _, ok := mk["acme"]; ok {
+		t.Fatal("marketplace still registered despite the reported removal")
 	}
 }
 

@@ -82,6 +82,67 @@ func adcAvailable(env func(string) (string, bool)) bool {
 	return fileExists(filepath.Join(home, ".config", "gcloud", "application_default_credentials.json"))
 }
 
+// ProviderRenameLeavesInstance reports whether a rename that frees the curated
+// provider id would leave an instance resolving under that id. A rename moves
+// the user's own layers - the authored providers.toml entry, the stored
+// credential and the OAuth record - away from the old name; what it cannot
+// move is the curated definition and the host environment. So the id re-derives
+// an instance exactly when the curated provider actually derives one - the
+// same condition computeInstances uses: it is marked implicit and not hidden -
+// and needs no credential the rename moves: a keyless scheme (auth none or
+// optional-bearer), a set api_key_env variable, or the ADC file under gcp-adc.
+// The vocabulary is the ownership predicate's (environmentBacked): only
+// env:<VAR> and adc count as the environment's, so an inline api_key or
+// credential_headers expression is never a re-derivation here. No curated
+// record carries either (the catalog conversion sets only api_key_env), and a
+// present higher-priority expression is terminal in credential() anyway, so it
+// never falls through to the candidates below. A non-implicit or hidden
+// curated provider resolves no instance of its own, and the OAuth scheme's
+// only credential is the record the rename moves, so all answer false. False
+// for an id that is not curated.
+//
+// This is the rule the hub's instance listing computes once (renameLeavesRow)
+// so the rename note does not have to infer it from InstanceEntry, which
+// cannot see ADC availability or the curated set.
+func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
+	rec, ok := r.curated[id]
+	if !ok || rec.head.Hidden {
+		return false
+	}
+	// computeInstances derives a row only for a curated record marked
+	// implicit; a non-implicit provider id resolves no instance on its own, so
+	// freeing the name leaves nothing to re-derive.
+	if rec.head.Implicit == nil || !*rec.head.Implicit {
+		return false
+	}
+	switch rec.head.Transport.Auth {
+	case AuthNone, AuthOptionalBearer:
+		return true
+	case AuthOAuthOpenAICodex:
+		// The record is the only credential this scheme reads, and the rename
+		// moves it.
+		return false
+	case AuthGCPADC:
+		return adcAvailable(r.env)
+	}
+	// A present inline credential expression is terminal in credential():
+	// whether it resolves or its variables are unset, it is the row's
+	// credential and never the environment's (the ownership predicate allow-lists
+	// only env:<VAR> and adc), so it is not a rename re-derivation and it does
+	// not fall through to the api_key_env candidates below. A present
+	// expression whose variables are unset means the row resolves nothing at
+	// all, which is also false.
+	if rec.head.APIKey != "" || rec.head.CredentialHeaders["Authorization"] != "" {
+		return false
+	}
+	for _, name := range r.effectiveAPIKeyEnv(rec) {
+		if v, ok := r.env(name); ok && v != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // effectiveAPIKeyEnv applies the endpoint stop (spec §10): an explicit
 // instance whose literal base_url names a different endpoint from its base
 // does not inherit the base's api_key_env; its own api_key_env always

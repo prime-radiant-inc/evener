@@ -625,27 +625,49 @@ exact scope. None is a present fact.
   (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`; a host
   configured with an `evener-dev` run target installs and then fails preflight,
   health, and restart. Narrow the acceptance to `evener` and refuse an
-  `evener-dev` (or otherwise unshipped) run-target basename with `ErrDeploy`
-  before any install, push, or write. Scope:
+  `evener-dev` (or otherwise unshipped) run-target basename **terminally** —
+  the distinct `errRunTargetUnservable` sentinel `isTerminal` recognises, not
+  the retryable `ErrDeploy` — before any install, push, or write. Terminal is
+  the right shape because the refusal names an operator configuration defect a
+  host cannot recover from: retrying the same misconfigured path can never
+  install a hub-servable binary, so a supervisor would re-refuse it forever and
+  discard the cause, the same reason the dirty-controller refusal
+  (`errControllerDirty`) is terminal. Scope:
   `cmd/evener-hub/internal/sshconn/version.go`,
   `cmd/evener-hub/internal/sshconn/deploy.go` (+ its tests). No stamped,
   hub-capable development artifact is defined by this series. Mirrors
   component-04 §"The installer install path must equal the run target" and
   acceptance criterion 17.
-- **[04] installer fallback is release-only (round 22)** — the fallback must be
-  admitted only for an **immutable, checksum-verified-before-unpacking**
-  artifact reference, i.e. `Channel == "release"` (immutable tag +
-  `install.sh:88-130`'s sha256 check against that release's `checksums.txt`);
-  a `snapshot` controller must now be refused with `ErrDeploy` (its tag is
-  force-moved and its `checksums.txt` re-uploaded with `--clobber`, so the
-  checksum pins nothing about the commit) instead of installing first and
-  failing the identity probe afterwards. `installerRefFor`
-  (`sshconn/deploy.go`) loses its `snapshot` arm; `deployInstaller`'s
-  post-install `probeLaunchCheck`/terminal `ErrVersionMismatch` stays as the
-  last verification, never as the pin. Scope:
-  `cmd/evener-hub/internal/sshconn/deploy.go` (`installerRefFor`,
-  `deployInstaller`), `install.sh` only if a per-commit reference is added
-  later, and the deploy tests. Mirrors component-04 §"No deploy path may
+- **[04] installer fallback's reference (round 22; reconsidered and reversed
+  2026-09-22)** — this entry previously required the fallback to be admitted
+  only for an immutable, checksum-verified-before-unpacking artifact reference
+  (`Channel == "release"`), refusing a `snapshot` controller with `ErrDeploy`
+  and removing `installerRefFor`'s `snapshot` arm. **That decision was reversed:**
+  the shipped rule keeps the arm. `installerRefFor` passes the mutable
+  `snapshot` tag as a **best-effort pin**, the install is confirmed afterwards
+  by the same on-host identity check (`deployInstaller`'s `probeLaunchCheck`),
+  and once the tag has moved past this controller's commit that check refuses
+  **terminally** rather than re-fetching the same artifact forever.
+  The trade the earlier decision rejected is real and is now stated where the
+  rule lives (component-04 §4): for a snapshot controller the installer writes a
+  binary whose commit the artifact reference does not prove, and the proof
+  arrives after the write, so a moved tag leaves the host holding a snapshot
+  build from an unknown, possibly newer commit while the deploy reports failure.
+  What makes it acceptable is that the path with a provable identity is now
+  reachable from a production hub: the atomic push path cross-compiles and
+  stamps the build in-process (`-deploy-binary`/`-build-source`), and the
+  terminal refusal names it. The worked-example prose of this entry is kept
+  below only as the record of what was considered.
+  *Superseded reasoning (kept for the record):* the fallback must be admitted
+  only for an **immutable, checksum-verified-before-unpacking** artifact
+  reference, i.e. `Channel == "release"` (immutable tag + `install.sh:88-130`'s
+  sha256 check against that release's `checksums.txt`); a `snapshot` controller
+  refused with `ErrDeploy` (its tag is force-moved and its `checksums.txt`
+  re-uploaded with `--clobber`, so the checksum pins nothing about the commit)
+  instead of installing first and failing the identity probe afterwards, with
+  `installerRefFor` losing its `snapshot` arm and `deployInstaller`'s
+  post-install `probeLaunchCheck`/terminal `ErrVersionMismatch` staying as the
+  last verification, never as the pin. Mirrors component-04 §"No deploy path may
   replace the installed binary before the artifact's identity is pinned" and
   acceptance criterion 16.
 - **[05] `evener/session/image` AppWire method (round 22, extends the round-21

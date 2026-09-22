@@ -396,6 +396,7 @@
         "activeSource": "env:OPENAI_API_KEY",
         "hasStoredOAuth": false,
         "envVar": "OPENAI_API_KEY",
+        "renameLeavesRow": true,
         "credentialRequired": true,
         "models": [
           {
@@ -554,6 +555,7 @@
         ],
         "activeSource": "none",
         "hasStoredOAuth": false,
+        "renameLeavesRow": true,
         "credentialRequired": false
       },
       {

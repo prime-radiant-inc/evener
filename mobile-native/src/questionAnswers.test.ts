@@ -1,18 +1,28 @@
 import { expect, it, vi } from "vitest";
-import type { AskQuestionRef } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
-import type { Thread } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type {
+  AskQuestionRef,
+  EvenerThread,
+  QueueState,
+  Thread,
+  ThreadCapabilities,
+  ThreadItem,
+  Turn,
+} from "@evener/appwire-client";
 import {
   boundQuestion,
   MAX_ITEM_BYTES,
   projectConversation,
+  type MobileConversation,
+  type MobileTimelineItem,
   truncateText,
 } from "../../mobile/src/conversation/project";
+import { truncateItem as storeTruncateItem } from "../../mobile/src/state/conversation";
 import {
   composeQuestionAnswers,
   pendingQuestions,
   questionAdvanceTarget,
+  questionDefinition,
   questionsIdentity,
   seedQuestionAnswers,
 } from "./questionAnswers";
@@ -459,15 +469,88 @@ it("distinguishes two oversized questions that share a prefix past the display b
   expect(a).not.toBe(b);
 });
 
+// The identity signs each question twice over: the canonical digest that
+// distinguishes questions (above), and the digest of the display-bound copy
+// an older build persisted as a draft's definition (the pre-identity sheet
+// serialized the bounded timeline rows, so draftRepository.ts's comparison
+// needs that digest to recognize a stored truncated copy). The two digests
+// agree exactly where the bounded copies do — and never on an oversized
+// question, whose cut copy differs from its canonical form.
+it("signs each question with its canonical digest and the digest of its bounded copy", () => {
+  const huge = "x".repeat(MAX_ITEM_BYTES + 10);
+  const [element] = JSON.parse(questionsIdentity([{ ...question, header: huge }]));
+  expect(element.key).toBe(question.key);
+  expect(element.digest).not.toBe(element.boundDigest);
+  const prefix = "x".repeat(MAX_ITEM_BYTES * 4);
+  const [a] = JSON.parse(
+    questionsIdentity([{ ...question, header: `${prefix}-first-tail` }]),
+  );
+  const [b] = JSON.parse(
+    questionsIdentity([{ ...question, header: `${prefix}-second-tail` }]),
+  );
+  // The bounded digests agree where the bounded copies do — and the
+  // canonical digests still tell the two questions apart.
+  expect(a.boundDigest).toBe(b.boundDigest);
+  expect(a.digest).not.toBe(b.digest);
+});
+
+// Every persisted era's element normalizes to the one digest the identity
+// computes for the same canonical question, whatever order its era's builder
+// wrote the fields in — or what it wrapped them in. History's producers each
+// serialized the same question differently: the display era's rows wrapped
+// the canonical ref inside a nested bounded twin (d0f40080cb), the landed
+// checkpoint's builder wrote key-first with callId spread on last (#1096),
+// and #1488's shim appended key and callId after the parsed wire fields.
+// questionDefinition rebuilds each into the package's own field order before
+// hashing, so the digest names the question, never the era that persisted it.
+it("normalizes every persisted era's element to the canonical question's digest", () => {
+  const canonical = questionDefinition(question);
+  const eras = [
+    // d0f40080cb's withQuestionDisplay: the canonical ref beside the
+    // store-bounded display twin.
+    {
+      ...question,
+      display: {
+        header: question.header,
+        question: question.question,
+        options: question.options.map((option) => ({
+          label: option.label,
+          detail: option.detail,
+        })),
+      },
+    },
+    // 96dc079d06's projection question, callId spread on last.
+    {
+      key: question.key,
+      header: question.header,
+      question: question.question,
+      options: question.options,
+      multiSelect: question.multiSelect,
+      callId: question.callId,
+    },
+    // 66727cbe6c's shim question: parsed fields first, key and callId last.
+    {
+      header: question.header,
+      question: question.question,
+      options: question.options,
+      multiSelect: question.multiSelect,
+      key: question.key,
+      callId: question.callId,
+    },
+  ];
+  for (const era of eras) expect(questionDefinition(era)).toEqual(canonical);
+});
+
 // Recomputing a hash over the full canonical payload on every render/keystroke
 // is exactly the O(payload)-per-render cost this identity exists to avoid
 // paying twice: the SAME question array (the reference reconcileBatches.ts
 // hands back unchanged, per its own "same array when nothing changed" rule)
 // must answer from a memo, not rehash. Counted, not timed (a wall-clock
 // delta flakes under scheduler pauses or a loaded CI runner): questionHash's
-// digest input is built with one JSON.stringify(question) per question, so a
-// spy on the global counts exactly one fresh-computation pass per distinct
-// array reference, and zero for every memoized read of the same one.
+// digest inputs are built with JSON.stringify — once over the canonical
+// question and once over its bounded copy — so a spy on the global counts
+// exactly one fresh-computation pass per distinct array reference, and zero
+// for every memoized read of the same one.
 it("memoizes by question-array reference instead of rehashing on every call", () => {
   const many: AskQuestionRef[] = Array.from({ length: 20 }, (_, i) => ({
     ...question,
@@ -498,4 +581,117 @@ it("offers nothing when nothing is answerable, whatever the wire's flag says", (
   } as unknown as MobileConversation;
   expect(pendingQuestions(conversation)).toEqual([]);
   expect(pendingQuestions(null)).toEqual([]);
+});
+
+// --- answers compose from canonical refs, never a display-bound copy ------
+
+// The store's live publish path bounds every retained row (state/conversation.ts's
+// truncateAndRecord: items.map(truncateItem)), so the question rows a reader
+// scrolls carry cut copies of an ask's prose. The answer path must not compose
+// from those copies: an option label longer than the display bound would
+// submit as its truncated remnant — a label the agent never offered — and two
+// options whose labels share a prefix longer than the bound cut to the same
+// string, making the pair indistinguishable to the composer's label
+// validation. These fixtures reproduce the store's publish exactly: hydrate a
+// wire thread, project it, and bound the rows the way the store does.
+
+const ALL_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  changeVisionModel: true,
+  sharedNotes: false,
+  queue: true,
+  goal: true,
+  rename: true,
+};
+
+function askConversation(
+  optionLabels: string[],
+  multiSelect: boolean,
+): MobileConversation {
+  const argumentsJson = JSON.stringify({
+    questions: [
+      {
+        header: "Choose",
+        question: "Pick one",
+        options: optionLabels.map((label) => ({ label, detail: "" })),
+        multi_select: multiSelect,
+      },
+    ],
+  });
+  const evener: EvenerThread = {
+    ref: "ref-1",
+    capabilities: ALL_CAPABILITIES,
+    queue: { revision: 0 } as QueueState,
+    askPending: true,
+  };
+  const askItem = {
+    id: "ask-1",
+    turnId: "t1",
+    type: "commandExecution",
+    toolName: "ask_user",
+    status: "completed",
+    argumentsJson,
+  } as ThreadItem;
+  const askTurn: Turn = {
+    id: "t1",
+    items: [askItem],
+    itemsView: "default",
+    status: "inProgress",
+  };
+  const wire: Thread = {
+    id: "thread-1",
+    sessionId: "session-1",
+    preview: "",
+    ephemeral: false,
+    modelProvider: "anthropic",
+    createdAt: 1_000_000,
+    updatedAt: 1_000_000,
+    status: { type: "ready" },
+    cwd: "/tmp",
+    cliVersion: "1.0.0",
+    source: "local",
+    turns: [askTurn],
+    evener,
+  };
+  const projected = projectConversation(hydrateThread({ thread: wire }, "ref-1", 0));
+  const bound = (row: MobileTimelineItem) => storeTruncateItem(row);
+  return { ...projected, items: projected.items.map(bound) };
+}
+
+it("an oversized option label round-trips its original full label through the answer composer", () => {
+  const label = "x".repeat(MAX_ITEM_BYTES + 100);
+  const conversation = askConversation([label], false);
+  const pending = pendingQuestions(conversation);
+  // The ref the sheet answers from must be the label the agent offered, not
+  // the display bound's cut copy.
+  expect(pending[0]?.options[0]?.label).toBe(label);
+  const answer = composeQuestionAnswers(pending, {
+    "ask-1:0": { resolution: { kind: "option", labels: [label] }, note: "" },
+  });
+  expect(answer).toContain(label);
+});
+
+it("still submits both distinct options whose labels share a prefix longer than the display bound", () => {
+  const sharedPrefix = "y".repeat(MAX_ITEM_BYTES + 50);
+  const first = `${sharedPrefix}-first`;
+  const second = `${sharedPrefix}-second`;
+  const conversation = askConversation([first, second], true);
+  const pending = pendingQuestions(conversation);
+  // The two options must stay distinguishable after the display bound: on the
+  // bounded copies both labels cut to the same string.
+  expect(new Set(pending[0]?.options.map((option) => option.label)).size).toBe(2);
+  const answer = composeQuestionAnswers(pending, {
+    "ask-1:0": {
+      resolution: { kind: "option", labels: [first, second] },
+      note: "",
+    },
+  });
+  expect(answer).toContain(`"${first}", "${second}"`);
 });

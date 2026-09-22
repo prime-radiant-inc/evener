@@ -399,6 +399,40 @@ describe("projectThread", () => {
       expect(a?.kind).toBe("assistant");
       if (a?.kind === "assistant") expect(a.streaming).toBe(false);
     });
+
+    // The streaming signal is per-item, not per-turn: an agentMessage that
+    // carries its own status decides streaming alone (isActiveItemInModel —
+    // the same field the web reads, TurnBlock.tsx's isItemLive), whatever
+    // its turn says. A revert to a turn-only check would keep every test
+    // above green — an item without its own status inherits the turn's — so
+    // these two pin the item-status side of the signal in both directions.
+    it("does not stream a completed agentMessage inside an inProgress turn", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", text: "settled", status: "completed" })],
+          { status: "inProgress" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(false);
+    });
+
+    it("streams an agentMessage that carries inProgress status itself", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", text: "in flight", status: "inProgress" })],
+          { status: "completed" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(true);
+    });
   });
 
   describe("reasoning items", () => {
@@ -1528,8 +1562,34 @@ describe("projectThread", () => {
     // A live "warning" notification is the only way an ItemModel ever carries
     // type "warning" (reducer.ts's case "warning" fold; there is no wire
     // ThreadItem.warning field, so hydrateThread alone can never produce one) -
-    // this test drives that fold directly rather than a static fixture.
-    it("surfaces a warning's title/hint even when the fold left text blank (message-less frame)", () => {
+    // these tests drive that fold directly rather than a static fixture. A
+    // warning projects to the same attention row the live applier emits (kind
+    // "failure", title as its own field, message+hint joined as detail), not
+    // the generic unknown-activity fallback: the row changed kind the moment a
+    // reread replaced the live one. Each case asserts the same contract - every
+    // non-blank part appears, as title or in the detail - for a different
+    // combination of parts present, including the generic "Warning" title when
+    // the frame carries none.
+    it.each<[string, Record<string, unknown>, string, string[]]>([
+      [
+        "a message-less frame",
+        { title: "Sandbox blocked", hint: "retry later" },
+        "Sandbox blocked",
+        ["Sandbox blocked", "retry later"],
+      ],
+      [
+        "a message with a hint, no title",
+        { message: "disk is nearly full", hint: "retry later" },
+        "Warning",
+        ["disk is nearly full", "retry later"],
+      ],
+      [
+        "a title together with a message and hint",
+        { title: "Sandbox blocked", message: "disk is nearly full", hint: "retry later" },
+        "Sandbox blocked",
+        ["Sandbox blocked", "disk is nearly full", "retry later"],
+      ],
+    ])("projects a warning as the live attention row, composing every part (%s)", (_case, warningParams, expectedTitle, expectedSubstrings) => {
       const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
         evener: evenerThread({ activeTurnId: "t1" }),
       });
@@ -1538,76 +1598,57 @@ describe("projectThread", () => {
         model,
         {
           method: "warning",
-          params: { threadId: "thread-1", ref: "ref-1", title: "Sandbox blocked", hint: "retry later" },
+          params: { threadId: "thread-1", ref: "ref-1", ...warningParams },
         } as AnyNotification,
         2000,
       );
       const c = projectConversation(model);
-      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
-      expect(a?.kind).toBe("notice");
-      if (a?.kind === "notice") {
-        expect(a.family).toBe("warning");
-        expect(a.text).toContain("Sandbox blocked");
-        expect(a.text).toContain("retry later");
+      const row = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
+      expect(row?.kind).toBe("failure");
+      if (row?.kind === "failure") {
+        expect(row.title).toBe(expectedTitle);
+        const shown = `${row.title}\n${row.detail}`;
+        for (const substring of expectedSubstrings) expect(shown).toContain(substring);
       }
     });
 
-    // joinWarningParts (the package's own composition, also used by the web
-    // renderer and the live warning row) joins every non-blank part rather
-    // than picking one, so a message and a hint both show.
-    it("composes a warning's message and hint together, not just one or the other", () => {
-      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
-        evener: evenerThread({ activeTurnId: "t1" }),
-      });
-      let model = hydrateThread({ thread: t }, "ref-1", 1000);
-      model = applyNotification(
-        model,
-        {
-          method: "warning",
-          params: { threadId: "thread-1", ref: "ref-1", message: "disk is nearly full", hint: "retry later" },
-        } as AnyNotification,
-        2000,
-      );
-      const c = projectConversation(model);
-      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
-      expect(a?.kind).toBe("notice");
-      if (a?.kind === "notice") {
-        expect(a.text).toContain("disk is nearly full");
-        expect(a.text).toContain("retry later");
-      }
-    });
-
-    // This row has no separate title slot (unlike the web renderer and the
-    // live warning row, which each keep title as its own field), so title
-    // has to join the rest of the string via joinWarningParts too, never
-    // dropped just because a message is also present.
-    it("composes a warning's title, message, and hint together, not dropping the title when there's a message", () => {
-      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
-        evener: evenerThread({ activeTurnId: "t1" }),
-      });
-      let model = hydrateThread({ thread: t }, "ref-1", 1000);
-      model = applyNotification(
-        model,
-        {
-          method: "warning",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            title: "Sandbox blocked",
-            message: "disk is nearly full",
-            hint: "retry later",
+    // item.warning rides an untyped wire param map, so title can be any JSON
+    // value at runtime despite ItemModel declaring it string — WarningItem.tsx
+    // and transcriptProjector.ts's itemSummary both guard with hasWarningText
+    // before touching it. The reducer's fold normalizes a live frame's
+    // non-string title away, but a hand-built or future model can still carry
+    // one, so warningItem guards it too and must fall back to the generic
+    // "Warning" label rather than hand a non-string to a React Native <Copy>
+    // child.
+    it("falls back to the generic Warning title for a non-string title on the canonical path", () => {
+      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])]);
+      const base = hydrateThread({ thread: t }, "ref-1", 0);
+      const turnModel = base.turns[0]!;
+      const model = {
+        ...base,
+        turns: [
+          {
+            ...turnModel,
+            items: [
+              ...turnModel.items,
+              {
+                id: "warning-raw",
+                turnId: "t1",
+                type: "warning",
+                text: "careful",
+                status: "completed",
+                warning: { title: 42 as unknown as string, hint: "slow down" },
+              },
+            ],
           },
-        } as AnyNotification,
-        2000,
-      );
-      const c = projectConversation(model);
-      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
-      expect(a?.kind).toBe("notice");
-      if (a?.kind === "notice") {
-        expect(a.text).toContain("Sandbox blocked");
-        expect(a.text).toContain("disk is nearly full");
-        expect(a.text).toContain("retry later");
-      }
+        ],
+      };
+      const row = projectConversation(model).items.find((entry) => entry.id === "warning-raw");
+      expect(row).toMatchObject({
+        kind: "failure",
+        title: "Warning",
+        detail: "careful — slow down",
+      });
     });
   });
 
@@ -2130,10 +2171,12 @@ it("keeps failures of unknown activity types individually visible", () => {
 
 // --- what the live model carries into the rows (D23c-2b) ---------------------
 
-it("projects a warning item as a notice the phone reads as critical", () => {
+it("projects a hand-stamped warning item as the live attention row", () => {
   // A warning only ever reaches the model through the reducer's own
   // `case "warning"` fold, which stamps ItemModel.warning beside the text —
-  // warnings are not transcript-persisted, so no snapshot carries one.
+  // warnings are not transcript-persisted, so no snapshot carries one. This
+  // fixture hand-stamps the untyped warning map, exercising warningItem's
+  // direct model reading beside the live-fold fixtures in the cluster above.
   const model = hydrateThread(
     { thread: thread([turn("t", [item({ id: "item_warning_live_t_0", type: "warning", text: "Retrying the provider", status: "completed" })])]) },
     "ref-1",
@@ -2144,12 +2187,10 @@ it("projects a warning item as a notice the phone reads as critical", () => {
   warning.warning = { title: "Provider warning", hint: "attempt 2 of 3" };
   expect(projectConversation(model).items).toMatchObject([
     {
-      kind: "notice",
+      kind: "failure",
       id: "item_warning_live_t_0",
-      origin: "system",
-      family: "warning",
-      tone: "warning",
-      text: "Provider warning — Retrying the provider — attempt 2 of 3",
+      title: "Provider warning",
+      detail: "Retrying the provider — attempt 2 of 3",
     },
   ]);
 });
@@ -2193,7 +2234,7 @@ it.each([
     1000,
   );
   expect(projectConversation(model).items).toEqual([
-    expect.objectContaining({ kind: "notice", text: JSON.stringify(params) }),
+    expect.objectContaining({ kind: "failure", title: "Warning", detail: JSON.stringify(params) }),
   ]);
 });
 
@@ -2206,7 +2247,7 @@ it("carries a warning that has no title of its own", () => {
     ]),
   );
   expect(projected.items).toMatchObject([
-    { kind: "notice", family: "warning", tone: "warning", text: "something happened" },
+    { kind: "failure", title: "Warning", detail: "something happened" },
   ]);
 });
 

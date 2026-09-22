@@ -622,8 +622,11 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 // startHubStackOnProviderWithEvener is startHubStackOnProvider with the
 // evener binary left to the caller, so a test can run the hub from a
 // purpose-built binary (e.g. a snapshot-channel build of this branch)
-// instead of the repo build liveStackBinaries produces.
-func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evenerBin string) hubStack {
+// instead of the repo build liveStackBinaries produces. extraHubArgs are
+// appended to the hub command line verbatim, so a test can boot the hub with
+// the flags its behavior under test needs (the deploy live check passes
+// -build-source / -deploy-binary this way).
+func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evenerBin string, extraHubArgs ...string) hubStack {
 	t.Helper()
 
 	home := t.TempDir()
@@ -669,7 +672,9 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 		t.Fatalf("release hub port: %v", err)
 	}
 
-	hub := exec.Command(evenerBin, "hub", "--addr", hubAddr, "--evener", evenerBin)
+	hubArgs := []string{"hub", "--addr", hubAddr, "--evener", evenerBin}
+	hubArgs = append(hubArgs, extraHubArgs...)
+	hub := exec.Command(evenerBin, hubArgs...)
 	hub.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+configDir,

@@ -773,8 +773,8 @@ func (m hubModel) spawnView() string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	if m.err != nil {
-		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
+	for _, err := range m.prominentErrors() {
+		fmt.Fprintf(&b, "\nerror: %v\n", err)
 	}
 	if notices := m.renderNotices(); notices != "" {
 		b.WriteString("\n")

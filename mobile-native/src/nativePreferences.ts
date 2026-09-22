@@ -36,6 +36,11 @@ export interface PreferenceState<T> {
 	conflict: boolean;
 	writeUncertain: boolean;
 	storageUnavailable: boolean;
+	/** The port answered but what it held could not be read - see
+	 * keybindingsStore's own field of the same name. Always false for
+	 * transcriptMobile: the pre-migration transcript design has no
+	 * unreadable-record recovery path of its own. */
+	draftUnreadable: boolean;
 }
 
 /** The confirmed payload as the shared store holds it: its rule list is the
@@ -44,8 +49,14 @@ export type ConfirmedKeybindings = Omit<KeybindingsOverrides, "rules"> & {
 	rules: readonly KeybindingsRule[];
 };
 
+export type KeybindingsPreferenceState = PreferenceState<ConfirmedKeybindings> & {
+	draftError: string | null;
+	hubError: string | null;
+	loadError: string | null;
+};
+
 export interface NativePreferencesSnapshot {
-	keybindings: PreferenceState<ConfirmedKeybindings>;
+	keybindings: KeybindingsPreferenceState;
 	transcriptMobile: PreferenceState<{
 		revision: number;
 		config: TranscriptDisplayConfigV1;
@@ -62,6 +73,7 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	conflict: false,
 	writeUncertain: false,
 	storageUnavailable: false,
+	draftUnreadable: false,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -129,9 +141,14 @@ const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
 const KEYBINDINGS_LOAD_ERROR_MESSAGE =
 	"The hub could not load its saved shortcuts. Repair the hub settings file before editing.";
 
-function hubErrorMessage(state: KeybindingsStoreState): string | null {
-	if (state.loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
-	return state.hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
+export function keybindingsErrorMessage(
+	draftError: string | null,
+	hubError: string | null,
+	loadError: string | null,
+): string | null {
+	if (draftError !== null) return draftError;
+	if (loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
+	return hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
 }
 
 // The keybinding domain is a projection of the shared store's state: the
@@ -143,7 +160,7 @@ function hubErrorMessage(state: KeybindingsStoreState): string | null {
 // unconfirmed write is the `writeUncertain` fact, rendered as its own notice.
 function keybindingsDomain(
 	state: KeybindingsStoreState,
-): PreferenceState<ConfirmedKeybindings> {
+): KeybindingsPreferenceState {
 	return {
 		support: state.hubSupport,
 		loading: state.hubLoading,
@@ -156,11 +173,25 @@ function keybindingsDomain(
 					...(state.loadError === null ? {} : { loadError: state.loadError }),
 				}
 			: null,
-		draft: state.draft,
-		error: state.draftError ?? hubErrorMessage(state),
+		// state.draft carries its own `generation` staleness stamp (see
+		// readyGenerationFence.ts), which PreferenceState<ConfirmedKeybindings>
+		// has no field for - stripped here rather than forwarded structurally.
+		draft:
+			state.draft === null
+				? null
+				: { version: state.draft.version, revision: state.draft.revision, rules: state.draft.rules },
+		error: keybindingsErrorMessage(
+			state.draftError,
+			state.hubError,
+			state.loadError,
+		),
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
+		draftUnreadable: state.draftUnreadable,
+		draftError: state.draftError,
+		hubError: state.hubError,
+		loadError: state.loadError,
 	};
 }
 

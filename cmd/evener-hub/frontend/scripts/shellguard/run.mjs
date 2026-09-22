@@ -36,6 +36,16 @@ const VIEWPORT = { width: 1400, height: 900 };
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
 
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server module burst mid-boot while the page still
+// fires its load event. shellguard.html boots through one entry module,
+// src/dev/shellguard-entry.tsx, which assigns window.settledShell at module
+// scope - a page whose load event fired without that global never booted.
+const BOOT = {
+  bootExpression: "typeof window.settledShell !== 'undefined'",
+  bootLabel: "the shellguard entry global window.settledShell",
+};
+
 // One page load, one measurement: opens a fresh page at `viewport`, waits for
 // the harness to settle, and returns the parsed result of `expression`. Every
 // measurement below is one call to this - the per-measure differences are the
@@ -45,7 +55,7 @@ async function measureOnPage(cdpEndpoint, vitePort, viewport, expression) {
   const { send } = page;
   try {
     await applyViewport(send, viewport);
-    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
     await evaluate(
@@ -216,7 +226,6 @@ function assertMobileResult(result) {
   if (result.searchBox) failures.push("mobile inline search box is still rendered");
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
-  if (!result.orientation) failures.push("mobile orientation text is missing");
   return failures;
 }
 

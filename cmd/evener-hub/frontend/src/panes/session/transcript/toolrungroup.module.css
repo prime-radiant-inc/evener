@@ -1,8 +1,9 @@
 /* A folded run of settled tool calls (critique R9, toolRuns.ts). The
  * collapsed row is deliberately quieter than the tool rows it stands in for:
- * it is a count and one name, at the same UI step and the same --rhythm-item
- * padding a single tool call takes, so a turn's vertical rhythm does not
- * change when a run folds. */
+ * it is a count and one name, at the same UI step and the same half-step
+ * padding a collapsed single tool call takes (the intent-only rhythm,
+ * toolcallitem.module.css), so a turn's vertical rhythm does not change
+ * when a run folds. */
 .group {
   min-width: 0;
 }
@@ -11,7 +12,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--rhythm-item) 0;
+  padding: var(--space-1) 0;
   color: var(--ink-mid);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -19,6 +20,12 @@
   /* Suppress the UA's own disclosure triangle: this summary draws the app's
    * shared Chevron instead (widgets/chevron). */
   list-style: none;
+}
+
+/* An OPEN run is a header again - the rows it stands for render beneath it -
+ * so it keeps the full item rhythm. */
+.group[open] > .summary {
+  padding: var(--rhythm-item) 0;
 }
 
 .summary::-webkit-details-marker {

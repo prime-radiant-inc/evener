@@ -124,11 +124,13 @@ export function threadFingerprintForItem(
   }
   // The delegate tuple must cover every field the memoized delegate row reads
   // (ToolCallItem's lifecycle line, SubagentCard, JobDetailSection):
-  // attention, resumability, exhaustion evidence, reason, usage, and run
-  // timing can all change while status/terminal/outcome stay put. projectionRevision
-  // is the reducer's catch-all (reducer.ts's mergeStableDelegate replaces a
-  // stable snapshot only when it or latestActivityAt advances), so a snapshot
-  // field the row starts consuming later cannot silently go stale.
+  // exhaustion evidence, reason, usage, and run timing can all change while
+  // status/terminal/outcome stay put. projectionRevision is the reducer's
+  // catch-all (reducer.ts's mergeStableDelegate replaces a stable snapshot
+  // only when it or latestActivityAt advances), so a snapshot field the row
+  // starts consuming later cannot silently go stale. NeedsAttention and the
+  // resumability fields no longer render (see delegateLifecycleLabel), so
+  // they carry no entry.
   return JSON.stringify({
     cwd: thread.cwd,
     delegates: thread.delegates?.map((delegate) => [
@@ -138,10 +140,6 @@ export function threadFingerprintForItem(
       delegate.terminal,
       delegate.outcome,
       delegate.latestActivityAt,
-      delegate.needsAttention,
-      delegate.resumable,
-      delegate.notResumableReason,
-      delegate.exhaustionResumable,
       delegate.exhaustionBudget,
       delegate.exhaustionLimit,
       delegate.reason,

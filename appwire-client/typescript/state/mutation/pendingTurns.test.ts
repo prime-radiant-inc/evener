@@ -108,6 +108,32 @@ describe("createPendingTurnsStore", () => {
       store.recordSubmittedHere({ outbox: [own], optimistic: [] });
       expect(store.getState()).toBe(stateAfterFirst); // no new setState published
     });
+
+    test("writes the id -> createdAt map entry from the record's createdAt", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      const own = outboxRecord({ clientMutationId: "own-1", originClientId: "client-x", createdAt: 1234 });
+      store.recordSubmittedHere({ outbox: [own], optimistic: [] });
+      expect(store.getState().submittedHere.get("own-1")).toBe(1234);
+    });
+
+    test("never prunes: the map outlives the settle that deletes the durable record", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      const own = outboxRecord({ clientMutationId: "own-1", originClientId: "client-x", createdAt: 1234 });
+      store.recordSubmittedHere({ outbox: [own], optimistic: [] });
+      // The settle deletes the durable record out of the projection...
+      store.setState({ outbox: new Map(), optimistic: new Map() });
+      // ...and the carrier still holds the createdAt a reload-after-settle cannot
+      // re-discover (steering-ghost spec §4).
+      expect(store.getState().submittedHere.get("own-1")).toBe(1234);
+    });
   });
 
   describe("beginSubmission / endSubmission", () => {

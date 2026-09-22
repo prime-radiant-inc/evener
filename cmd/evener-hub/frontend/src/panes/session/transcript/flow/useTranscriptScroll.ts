@@ -88,6 +88,16 @@ export interface UseTranscriptScrollOptions {
    * already told.
    */
   askDockActivationEpoch?: number;
+  /** Whether a held-steering trailing row mounts an otherwise dormant transcript. */
+  heldVisible?: boolean;
+  /**
+   * The held-steering ghost stack's arrival counter (Session's
+   * useHeldSteerEpoch). Same role as askDockActivationEpoch: a held steer
+   * APPEARING changes no turn/item shape, so this carries the arrival edge
+   * for the pill. Removals never bump it (announced, not counted), so a
+   * departure leaves the pill alone.
+   */
+  heldEpoch?: number;
 }
 
 export interface ViewAnchorPosition {
@@ -769,6 +779,8 @@ export function useTranscriptScroll({
   sourceTurnRowIndexes,
   askDockPending = false,
   askDockActivationEpoch = 0,
+  heldVisible = false,
+  heldEpoch = 0,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -1099,10 +1111,11 @@ export function useTranscriptScroll({
   // mount effect below would silently never re-run at the one render where
   // VirtualList actually appears - initializedRef stuck false, no
   // scroll-to-bottom, no scroll listener, no stick-to-bottom, for the rest
-  // of the pane's mounted life. isDormantTranscript mirrors Session.tsx's
-  // own render condition exactly, so this flips at the SAME transition
-  // VirtualList actually mounts at.
-  const hasContent = !isDormantTranscript(model?.turns ?? []);
+  // of the pane's mounted life. isDormantTranscript plus heldVisible mirrors
+  // Session.tsx's own render condition exactly, so this flips at the SAME
+  // transition VirtualList actually mounts at. Ask-only dormant behavior is
+  // intentionally unchanged.
+  const hasContent = heldVisible || !isDormantTranscript(model?.turns ?? []);
   // Track hasContent transitions so a false->true flip (VirtualList remounts
   // after the model briefly went undefined - e.g. a store resync that clears
   // the thread, or the same ref re-hydrating) re-runs the one-time
@@ -1632,6 +1645,19 @@ export function useTranscriptScroll({
     if (!initializedRef.current || wasAtBottomRef.current) return;
     setPillCount((count) => count + 1);
   }, [askDockActivationEpoch]);
+
+  // The held-steer stack's arrival edge (see the option's doc comment):
+  // keyed on the epoch, never on stack presence, and a pane opened with a
+  // hold already in flight never fires it (initial mount scrolls to the
+  // end; the first observation baselines without a bump).
+  const prevHeldEpochRef = useRef(heldEpoch);
+  useLayoutEffect(() => {
+    const previous = prevHeldEpochRef.current;
+    prevHeldEpochRef.current = heldEpoch;
+    if (heldEpoch === previous || heldEpoch === 0) return;
+    if (!initializedRef.current || wasAtBottomRef.current) return;
+    setPillCount((count) => count + 1);
+  }, [heldEpoch]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn

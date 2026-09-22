@@ -21,6 +21,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // DefaultMaxLineBytes is the maximum transcript record payload. The trailing
@@ -121,11 +122,38 @@ type Header struct {
 	AgentTasks []task.Task `json:"agent_tasks,omitempty"`
 }
 
-// Entry is a single turn in the transcript JSONL file.
+// Entry is a single turn in the transcript JSONL file. Fields MUST stay
+// declared in alphabetical JSON-key order: the public line projection
+// (agent's publicTranscriptLine) re-marshals through string-keyed maps,
+// which sort keys alphabetically, and relies on the struct's field order
+// matching that sort so a projected line stays byte-identical to the
+// persisted one. TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn
+// pins the round trip.
+//
+// MachineryFlagged is set on EVERY entry this build writes — not only
+// entries carrying machinery parts — by deliberate decision: decode's
+// pre-flag inference must never run on a current-build entry, because an
+// unflagged block-shaped part in a new entry is most commonly a user's
+// verbatim paste, and the sharp case is a pre-flag session resumed by this
+// build, whose new turns would otherwise have their pastes inferred and
+// hidden. The cost is the wf7e one-way door (see decodeStrictJSON): an
+// older build fails to decode any entry carrying this unknown field, so
+// every post-upgrade transcript is unreadable to pre-change binaries, not
+// only the machinery-bearing ones. That trade is accepted for schema
+// evolution per kata wf7e; narrower keying — a build version in the
+// header — breaks on dev builds with empty versions and on resumed
+// old-header sessions.
 type Entry struct {
-	Kind string      `json:"kind"` // Always "entry"
-	Seq  int         `json:"seq"`  // monotonically increasing line sequence number
-	Turn schema.Turn `json:"turn"` // the recorded conversation turn
+	Kind string `json:"kind"` // Always "entry"
+	// MachineryFlagged marks an entry written by a build that flags
+	// machinery parts at construction: its parts' Machinery flags are
+	// authoritative. Entries lacking the marker predate the flag, so
+	// DecodeEntry infers machinery from exact-block text shape for them —
+	// an unflagged block-shaped part in a marked entry is a user's
+	// verbatim paste and must stay unflagged.
+	MachineryFlagged bool        `json:"machinery_flagged,omitempty"`
+	Seq              int         `json:"seq"`  // monotonically increasing line sequence number
+	Turn             schema.Turn `json:"turn"` // the recorded conversation turn
 }
 
 // ValidateHeader enforces the hard transcript-v2 boundary shared by writers
@@ -182,7 +210,24 @@ func DecodeEntry(line []byte) (Entry, error) {
 	if err := decodeStrictJSON(line, &entry); err != nil {
 		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
 	}
+	if !entry.MachineryFlagged {
+		inferPreFlagMachinery(&entry.Turn)
+	}
 	return entry, nil
+}
+
+// inferPreFlagMachinery flags block-shaped machinery parts on turns recorded
+// before part flags existed, so those transcripts keep filtering their
+// machinery notes under flag-only user-facing projection. It never runs on
+// marked entries: there an unflagged block-shaped part is a user pasting the
+// block verbatim, and the user's own words must survive.
+func inferPreFlagMachinery(turn *schema.Turn) {
+	for i := range turn.Message.Content {
+		p := &turn.Message.Content[i]
+		if p.Kind == llm.ContentText && !p.Machinery && llm.IsMachineryNotificationText(p.Text) {
+			p.Machinery = true
+		}
+	}
 }
 
 func decodeStrictJSON(line []byte, target any) error {
@@ -608,7 +653,7 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
 	for i, turn := range turns {
-		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn}); encErr != nil {
+		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn, MachineryFlagged: true}); encErr != nil {
 			return firstSeq, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
 	}
@@ -732,6 +777,50 @@ func (w *Writer) Poisoned() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.poisoned
+}
+
+// Closed reports whether this writer has been closed and its ordinary appends
+// have become silent no-ops. Nil-safe, like the append doors: a session with no
+// state directory has no writer and so nothing to refuse.
+func (w *Writer) Closed() bool {
+	if w == nil {
+		return false
+	}
+	return w.closed.Load()
+}
+
+// WhileHealthy runs f under the writer's write door when the writer still
+// accepts records, and returns nil when it ran. This is an admission decision,
+// not a sample of one: an append holds this same door across its write, and a
+// write it cannot resolve records the poison under the door, so an append that
+// poisons is either already visible here -- f does not run -- or it has not
+// started, which orders the poison after f. A caller that checks Poisoned()
+// outside the door can promise neither, and publishing work between such a check
+// and its commit leaves a window for a poisoning to land in.
+//
+// A closed writer is refused too, with its own reason rather than the poisoned
+// one: its ordinary appends are silent no-ops, so work published against it
+// would record nothing, but nothing was poisoned.
+//
+// f runs while the door is held, so it must not append to this writer and must
+// not take a lock whose holder appends: it is the announcement that the work is
+// about to be done, not the work itself. Nil-safe, like the append doors: a
+// session with no state directory has no writer and so nothing to refuse.
+func (w *Writer) WhileHealthy(f func()) error {
+	if w == nil {
+		f()
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.poisoned {
+		return ErrWriterPoisoned
+	}
+	if w.closed.Load() {
+		return ErrWriterClosed
+	}
+	f()
+	return nil
 }
 
 // DrainWarnings removes and returns every pending retained-entry diagnostic —

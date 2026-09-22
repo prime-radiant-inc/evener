@@ -26,6 +26,7 @@ import type {
 
 import {
   hasItemFailure,
+  hasWarningText,
   isActiveItem,
   joinedReasoningParagraphs,
   joinWarningParts,
@@ -503,35 +504,17 @@ function projectItem(
     };
   }
 
-  // A warning the reducer folded into the active turn (reducer.ts's `case
-  // "warning"`): its own item type, carrying the notice's title and hint
-  // beside the message text. It is a notice with a warning tone, like every
-  // other "something to know, not a failed turn" row here — the phone reads
-  // that tone as critical (timeline.ts's isCriticalNotice) and the web renders
-  // the same item as its own warning message, never as a turn failure. This
-  // row has no separate title slot (unlike the live path's failure row in
-  // state/conversation.ts), so title joins the rest of the string via the
-  // package's own joinWarningParts/hasWarningText — the same non-blank,
-  // type-safe reading the web (WarningItem.tsx) and the live path take,
-  // rather than a local `.trim()` that would throw on a malformed wire value.
+  // Warning — the same attention row the live applier emits (see warningItem).
   if (item.type === "warning") {
-    const text = joinWarningParts([item.warning?.title, item.text, item.warning?.hint]);
     // A warning carrying no title, no message and no hint has nothing to
-    // show: the web renders no row for it either (WarningItem returns null
-    // for exactly this case), and an empty notice here would be a blank
-    // bubble the reader cannot act on.
-    if (text === "") return null;
-    return {
-      kind: "final",
-      item: {
-        kind: "notice",
-        id: item.id,
-        origin: "system",
-        family: "warning",
-        tone: "warning",
-        text,
-      },
-    };
+    // show: the web renders no row for exactly this case (WarningItem.tsx
+    // returns null when every part is blank), so neither does the phone.
+    // The reducer's own fold already fills a blank message with the bounded
+    // raw frame (rawWarningFrame), so only a hand-built model can reach this.
+    if (joinWarningParts([item.warning?.title, item.text, item.warning?.hint]) === "") {
+      return null;
+    }
+    return { kind: "final", item: warningItem(item) };
   }
 
   // Unknown / forward-compatible item type — neutral collapsed activity, never
@@ -552,6 +535,32 @@ function projectItem(
         detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
+  };
+}
+
+// A warning's display row. It is an attention row, not an activity: the live
+// row applier (state/conversation.ts's case "warning") emits kind "failure"
+// with title as its own field and the message+hint joined as detail, and this
+// canonical projection must produce the same row for the same model item or
+// the row changes kind (and loses its attention treatment) the moment a reread
+// replaces the live row. The generic unknown-activity fallback used to swallow
+// warnings here (label "Activity", family "unknown", always shown in full by
+// mobile-native's activityMode) - the web (WarningItem.tsx) renders a warning
+// as its own attention banner, and the package transcript projector
+// (transcriptProjector.ts) routes type "warning" to a critical entry.
+// item.warning rides an untyped wire param map through the reducer's fold, so
+// hasWarningText guards a non-string runtime value the same way WarningItem.tsx
+// does before the title reaches a React Native <Copy> child.
+function warningItem(
+  item: ItemModel,
+): Extract<MobileTimelineItem, { kind: "failure" }> {
+  const rawTitle = item.warning?.title;
+  const title = hasWarningText(rawTitle) ? rawTitle : "Warning";
+  return {
+    kind: "failure",
+    id: item.id,
+    title,
+    detail: joinWarningParts([item.text, item.warning?.hint]),
   };
 }
 
@@ -926,14 +935,14 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 
 // One question's prose and option text, bounded like every other row's:
 // header, question, why, ifUnanswered, and every option's label and detail
-// (AskUserOption.detail is a required string, never undefined). Shared by
-// truncateItem's "question" case below and the question sheet
-// (mobile-native/src/questionAnswers.ts, mobile-native/src/QuestionSheet.tsx),
-// so a row a reader scrolls and the sheet a reader answers from are cut the
-// same way. The answer this client composes does NOT read either bounded
-// copy — it asks the model for the canonical refs (questionAnswers.ts's
-// pendingQuestions, through liveAsksFor) — so a cut label here can never
-// name a choice the agent did not offer.
+// (AskUserOption.detail is a required string, never undefined). Used only by
+// truncateItem's "question" case below: the DISPLAY rows a reader scrolls
+// carry these cut copies. Nothing that answers a question reads them —
+// mobile-native's pendingQuestions (questionAnswers.ts) asks the model for
+// the canonical refs through liveAsksFor, the same call these rows were
+// projected from — so a submitted answer always names exactly the label the
+// agent offered, never a cut remnant, and two options sharing a prefix
+// longer than the bound stay distinguishable to the answer composer.
 export function boundQuestion(
   question: AskQuestionRef,
   bound: BoundText,
@@ -992,10 +1001,21 @@ export function truncateItem(item: MobileTimelineItem, bound: BoundText): Mobile
             }
           : {}),
       };
+    case "attachments":
+      // Only the display name is bounded — it is plain display text the
+      // renderer inserts into accessibility labels and modal copy. src is a
+      // data URI or a resolved fetch URL, and cutting it yields something the
+      // renderer cannot decode, so it passes through verbatim.
+      return {
+        ...item,
+        items: item.items.map((attachment) => ({
+          ...attachment,
+          name: attachment.name ? bound(attachment.name) : attachment.name,
+        })),
+      };
     default:
-      // attachments: an attachment's src IS the image (a data: URI for composer
-      // bytes), so cutting it yields something that cannot decode; the name is a
-      // filename. The wire bounds image payloads at the source instead.
+      // A forward-compatible row kind: nothing here knows its fields, so it
+      // passes through untouched rather than guessed at.
       return item;
   }
 }

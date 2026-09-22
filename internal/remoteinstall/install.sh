@@ -16,6 +16,20 @@ fi
 
 bindir=${BINDIR:-$prefix/bin}
 share_bindir=${EVENER_SHARE_BINDIR:-$prefix/share/evener/bin}
+
+# Relative install paths resolve against the caller's working directory, and
+# the symlink created below resolves its target against the symlink's own
+# directory, so a relative value produces a broken install rather than a
+# movable one. Fail loudly before anything is downloaded or created.
+for install_path in "$prefix" "$bindir" "$share_bindir"; do
+	case "$install_path" in
+	/*) ;;
+	*)
+		echo "Install paths must be absolute (got '$install_path'); PREFIX, BINDIR, and EVENER_SHARE_BINDIR cannot be relative." >&2
+		exit 1
+		;;
+	esac
+done
 version=${EVENER_INSTALL_VERSION:-latest}
 
 case "$(uname -s)" in
@@ -122,14 +136,20 @@ if [ "$(printf '%s\n' "$checksum_line" | wc -l | tr -d ' ')" -ne 1 ]; then
 fi
 
 # Re-emit the line under the bare name so the tool finds the file next to
-# checksums.txt whatever prefix the release wrote.
-expected_sha=${checksum_line%% *}
+# checksums.txt whatever prefix the release wrote. The hash is everything up to
+# the first non-hex byte: the line-matching grep accepts any [[:space:]]
+# separator, and a checksums.txt that separates hash and name with a tab is as
+# valid as the space-separated kind sha256sum writes, so the extraction must not
+# assume a literal space.
+expected_sha=${checksum_line%%[!0-9a-fA-F]*}
 if ! (cd "$tmpdir" && printf '%s  %s\n' "$expected_sha" "$archive_name" | $sha_check); then
 	echo "Checksum verification failed for $archive_name." >&2
 	exit 1
 fi
 
-tar -xzf "$archive" -C "$tmpdir"
+# A login shell can export TAR_OPTIONS; the extraction must obey only the
+# verified archive's own layout, so the override is cleared for this tar.
+TAR_OPTIONS= tar -xzf "$archive" -C "$tmpdir"
 
 extract_dir="$tmpdir/$archive_root"
 if [ ! -d "$extract_dir" ]; then

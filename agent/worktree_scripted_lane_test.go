@@ -293,7 +293,7 @@ func (r *scriptedLaneRepo) sawGitCommand(prefix ...string) bool {
 func (r *scriptedLaneRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	path, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, _, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, delegateID)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}

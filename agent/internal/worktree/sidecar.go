@@ -28,6 +28,20 @@ type Sidecar struct {
 	CreatedAt       string `json:"created_at"`
 }
 
+// BranchOrName is the single resolution rule for a lane's git branch: the
+// recorded Branch when set, the Name otherwise. Every branch-acting consumer
+// (dispose, close-time disposal, remove, prune) resolves a lane's branch
+// through this method and never through the name, so a lane whose branch
+// differs from its directory name (a delegate lane created with an explicit
+// branch) is judged and deleted by the branch git actually holds. The fallback
+// covers a legacy sidecar that records no branch.
+func (sc Sidecar) BranchOrName() string {
+	if sc.Branch != "" {
+		return sc.Branch
+	}
+	return sc.Name
+}
+
 // ReconcileGrace is the minimum sidecar file age (spec §5 sweep 2, judged by
 // the file's mtime on the shared filesystem, never the recorded CreatedAt
 // wall-clock string) before prune's reconciliation sweep will act on a

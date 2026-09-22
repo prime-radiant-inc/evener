@@ -18,7 +18,7 @@
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
 
 export interface ParsedNotification {
-  type: string; // delegate | job | watch | watch-send | observer-callback
+  type: "delegate" | "job" | "watch" | "watch-send" | "observer-callback";
   title: string;
   tone: NotificationTone;
   secondary: string; // job_type · exit N · reason (quiet plumbing stays in raw)
@@ -583,7 +583,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   if (!m) return null;
   const attrs = parseQuotedAttrs(m[1] ?? "");
   const bodyText = (m[2] ?? "").trim();
-  let type = "job";
+  let type: ParsedNotification["type"] = "job";
   // A watch fire names its watched job (watchNotificationFromWatch always
   // sets JobID — agent/job_watch.go), so event/status "watch" wins over the
   // job_id presence check: a job-targeted condition fire is still a watch

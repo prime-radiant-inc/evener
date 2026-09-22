@@ -34,6 +34,7 @@ import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
+import * as railNodeExports from "./railNodes";
 import { projectNodes } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
 
@@ -323,6 +324,74 @@ describe("resource-backed Rail", () => {
       expect(rule).toBeDefined();
       expect(rule).not.toContain("text-transform: uppercase");
       expect(rule).not.toContain("letter-spacing:");
+    }
+  });
+
+  // The rail owns the clock its rows' relative stamps are measured against. An
+  // idle session sends no further navigation data, so without a live clock the
+  // row's "last update" label sat at its build value ("now") until a page
+  // refresh - the reported sidebar bug.
+  test("an idle live row's relative age advances with the rail's own clock", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-02-01T12:00:00Z");
+      vi.setSystemTime(start);
+      installState([
+        sectionResource("live", [
+          summary({
+            ref: "local:idle",
+            title: "Idle row",
+            state: "idle",
+            updated_at: new Date(start - 1_000).toISOString(),
+          }),
+        ]),
+      ]);
+      render(<Rail />);
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The clock's subscription boundary. activeWorkSummary runs on every
+  // SessionRow render, so counting it pins whether a tick woke the memoized row
+  // or only its stamp - the boundary the row's own comment claims, and the same
+  // one ActivityTree.watchTick.test.tsx pins for the activity tree.
+  test("a clock tick wakes only the age stamp, not the row around it", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-02-01T12:00:00Z");
+      vi.setSystemTime(start);
+      installState([
+        sectionResource("live", [
+          summary({
+            ref: "local:idle",
+            title: "Idle row",
+            state: "idle",
+            updated_at: new Date(start - 1_000).toISOString(),
+          }),
+        ]),
+      ]);
+      const rowBody = vi.spyOn(railNodeExports, "activeWorkSummary");
+      render(<Rail />);
+      const atRest = rowBody.mock.calls.length;
+      // The spy was live for the initial render (the row really did render
+      // through it), so a tick's count staying put means the row stayed asleep.
+      expect(atRest).toBeGreaterThan(0);
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      // The stamp advanced...
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+      // ...while the row it lives in never re-rendered.
+      expect(rowBody.mock.calls.length).toBe(atRest);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
     }
   });
 

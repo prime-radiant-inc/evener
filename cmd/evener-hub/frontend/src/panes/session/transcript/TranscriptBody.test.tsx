@@ -602,57 +602,55 @@ describe("TranscriptBody", () => {
     expect(firstToolExpanded()).toBe("false");
   });
 
-  test("refreshes delegate attention, resumability, and run timing without status or outcome changes", async () => {
+  test("refreshes delegate exhaustion, reason, usage, and run timing without status or outcome changes", async () => {
     const delegateItem = {
-      id: "attention_delegate",
-      turnId: "attention_turn",
+      id: "refresh_delegate",
+      turnId: "refresh_turn",
       type: "commandExecution",
       text: "",
       toolName: "delegate",
       description: "Inspect a settled child",
       argumentsJSON: '{"prompt":"inspect"}',
-      output: JSON.stringify({ delegate_id: "dlg_attention", status: "done", transcript_ref: "local:child" }),
+      output: JSON.stringify({ delegate_id: "dlg_refresh", status: "done", transcript_ref: "local:child" }),
       status: "completed",
     };
     const settledDelegate = {
-      delegateId: "dlg_attention",
+      delegateId: "dlg_refresh",
       status: "done",
       outcome: "done",
       terminal: true,
       needsAttention: false,
       projectionRevision: 1,
     };
-    const attentionBefore = {
+    const rowBefore = {
       ...ordinaryToolFixture,
       delegates: [settledDelegate],
-      turns: [{ id: "attention_turn", status: "completed", items: [delegateItem] }],
+      turns: [{ id: "refresh_turn", status: "completed", items: [delegateItem] }],
     } as unknown as ThreadModel;
     const { rerender } = render(
       <TranscriptBody
-        model={attentionBefore}
+        model={rowBefore}
         config={preset("tools")}
         surface="preview"
-        disclosureScope="ordinary:attention"
-        sessionRef="ordinary:attention"
+        disclosureScope="ordinary:refresh"
+        sessionRef="ordinary:refresh"
       />,
     );
-    const settledLifecycle = screen.getByTestId("delegate-lifecycle");
+    const settledLifecycle = screen.getByTestId("subagent-stats");
     expect(settledLifecycle.getAttribute("data-attention")).toBeNull();
     expect(settledLifecycle.textContent).not.toContain("Needs attention");
 
     // Every field the memoized delegate row renders but the old fingerprint
-    // omitted: attention, resumability, exhaustion evidence, failure reason,
-    // usage, run timing, and the reducer's own revision.
+    // omitted: exhaustion evidence, failure reason, usage, run timing, and
+    // the reducer's own revision.
     const onlyChange = (changes: Record<string, unknown>): ThreadModel =>
       ({
-        ...attentionBefore,
+        ...rowBefore,
         delegates: [{ ...settledDelegate, ...changes }],
       }) as unknown as ThreadModel;
-    const before = threadFingerprintForItem(delegateItem, attentionBefore);
+    const before = threadFingerprintForItem(delegateItem, rowBefore);
     for (const change of [
-      { needsAttention: true, projectionRevision: 2 },
-      { resumable: false, notResumableReason: "budget spent", projectionRevision: 2 },
-      { exhaustionResumable: true, exhaustionBudget: "0 of 3", exhaustionLimit: 3, projectionRevision: 2 },
+      { exhaustionBudget: "0 of 3", exhaustionLimit: 3, projectionRevision: 2 },
       { reason: "exhausted", projectionRevision: 2 },
       { usage: { inputTokens: 100, outputTokens: 20 }, projectionRevision: 2 },
       { runStartedAt: "2026-09-10T00:00:00Z", runEndedAt: "2026-09-10T00:01:00Z", projectionRevision: 2 },
@@ -660,20 +658,33 @@ describe("TranscriptBody", () => {
       expect(threadFingerprintForItem(delegateItem, onlyChange(change))).not.toBe(before);
     }
 
-    const attentionAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
+    // Pin the tuple's contents, not production timing: a snapshot change
+    // limited to the dead plumbing fields (which left the tuple with the
+    // card's attention marker) does not move the fingerprint. Production
+    // always pairs such a change with a projectionRevision bump - covered
+    // by the rerender half below - so this pins that the fields never
+    // re-enter the tuple, not that the row never re-renders.
+    for (const change of [{ needsAttention: true }, { resumable: false }]) {
+      expect(threadFingerprintForItem(delegateItem, onlyChange(change))).toBe(before);
+    }
+
+    // A needsAttention flip re-renders nothing the reader can see: the word
+    // stays the lifecycle's own.
+    const rowAfter = onlyChange({ needsAttention: true, projectionRevision: 2 });
     rerender(
       <TranscriptBody
-        model={attentionAfter}
+        model={rowAfter}
         config={preset("tools")}
         surface="preview"
-        disclosureScope="ordinary:attention"
-        sessionRef="ordinary:attention"
+        disclosureScope="ordinary:refresh"
+        sessionRef="ordinary:refresh"
       />,
     );
     await waitFor(() => {
-      const alertedLifecycle = screen.getByTestId("delegate-lifecycle");
-      expect(alertedLifecycle.getAttribute("data-attention")).toBe("true");
-      expect(alertedLifecycle.textContent).toContain("Needs attention");
+      const statsLine = screen.getByTestId("subagent-stats");
+      expect(statsLine.getAttribute("data-attention")).toBeNull();
+      expect(statsLine.textContent).toContain("Idle · reported");
+      expect(statsLine.textContent).not.toContain("Needs attention");
     });
   });
 
@@ -1064,14 +1075,14 @@ describe("trailingRow", () => {
         config={preset("tools")}
         surface="live"
         disclosureScope="live:trailing-row"
-        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
       />,
     );
 
     const rows = screen.getAllByTestId("transcript-row");
     expect(rows).toHaveLength(2);
     const last = rows.at(-1);
-    expect(last?.getAttribute("data-row-id")).toBe("ask-dock");
+    expect(last?.getAttribute("data-row-id")).toBe("live-edge");
     const sentinel = screen.getByTestId("trailing-sentinel");
     expect(last?.contains(sentinel)).toBe(true);
   });
@@ -1083,7 +1094,7 @@ describe("trailingRow", () => {
         config={preset("tools")}
         surface="live"
         disclosureScope="live:trailing-row-stable"
-        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
       />,
     );
     const before = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
@@ -1093,7 +1104,7 @@ describe("trailingRow", () => {
         config={preset("tools")}
         surface="live"
         disclosureScope="live:trailing-row-stable"
-        trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel">Answer me</div> }}
+        trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel">Answer me</div> }}
       />,
     );
     expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(before);
@@ -1126,7 +1137,7 @@ describe("trailingRow scroll coordination", () => {
           config={preset("tools")}
           surface="live"
           disclosureScope="live:trailing-count"
-          trailingRow={{ id: "ask-dock", content: <div data-testid="trailing-sentinel" /> }}
+          trailingRow={{ id: "live-edge", content: <div data-testid="trailing-sentinel" /> }}
         />,
       );
       // One turn row + the synthetic trailing row: following-bottom view

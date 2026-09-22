@@ -21,6 +21,7 @@ import type {
   MutationAttachmentRef,
   MutationOptimisticRecord,
   MutationOutboxRecord,
+  MutationOutboxState,
   MutationRecoveryRecord,
 } from "./records";
 
@@ -59,8 +60,18 @@ export function blockedEntries<A extends MutationAttachmentRef = MutationAttachm
   outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
   ref: string,
 ): MutationOutboxRecord<A>[] {
+  return outboxEntriesByState(outbox, ref, "blockedUnknown");
+}
+
+// `ref`'s outbox records in the given durable state, oldest first - the one
+// read the blocked-retry and stop-canceled lists share.
+export function outboxEntriesByState<A extends MutationAttachmentRef = MutationAttachmentRef>(
+  outbox: ReadonlyMap<string, MutationOutboxRecord<A>>,
+  ref: string,
+  state: MutationOutboxState,
+): MutationOutboxRecord<A>[] {
   return [...outbox.values()]
-    .filter((record) => record.targetRef === ref && record.state === "blockedUnknown")
+    .filter((record) => record.targetRef === ref && record.state === state)
     .sort((left, right) => left.intentSequence - right.intentSequence);
 }
 
@@ -101,13 +112,18 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   recovery: Map<string, MutationRecoveryRecord<A>>;
   submittingRefs: ReadonlySet<string>;
   // Every client mutation id this store's own durable projection has held,
-  // for as long as the store lives. The durable records themselves are the
-  // primary evidence of "this client submitted it", and they are
-  // deliberately short-lived: an authoritative read settles every identity
-  // the daemon reports back out of storage. Provenance has to outlive the
-  // record, because routing asks about it after the hydrate too - see
-  // `reconcilePendingEntries`. Ids only, never pruned.
-  submittedHere: ReadonlySet<string>;
+  // for as long as the store lives, mapped to that record's `createdAt`.
+  // The durable records themselves are the primary evidence of "this client
+  // submitted it", and they are deliberately short-lived: an authoritative
+  // read settles every identity the daemon reports back out of storage.
+  // Provenance has to outlive the record, because routing asks about it
+  // after the hydrate too - see `reconcilePendingEntries`. The carried
+  // `createdAt` is read there for steer-family entries - the one timestamp
+  // the post-settle projection cannot re-derive, since the authoritative
+  // entry carries none - and the pre-settle reload re-discovers it through
+  // the same durable-read scan. Written at the same `recordSubmittedHere`
+  // site, never pruned.
+  submittedHere: ReadonlyMap<string, number>;
 }
 
 // The submitted values `settleSubmittedDraft` compares the current draft
@@ -164,7 +180,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     optimistic: new Map(),
     recovery: new Map(),
     submittingRefs: new Set(),
-    submittedHere: new Set(),
+    submittedHere: new Map(),
   })) as PendingTurnsStore<A>;
 
   store.recordSubmittedHere = (snapshot) => {
@@ -172,13 +188,15 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     // The outbox is shared per origin: another client's records read back
     // out of it are visible here but are not this store's submissions, and
     // claiming them would reroute this store's own routing behind their
-    // sends.
+    // sends. The carried value is the record's createdAt - the one timestamp
+    // the post-settle projection cannot re-derive (the authoritative entry
+    // carries none).
     const discovered = [...snapshot.outbox, ...snapshot.optimistic]
       .filter((record) => deps.identity.isOwnMutationRecord(record))
-      .map((record) => record.clientMutationId)
-      .filter((id) => !known.has(id));
+      .map((record) => [record.clientMutationId, record.createdAt] as const)
+      .filter(([id]) => !known.has(id));
     if (discovered.length === 0) return;
-    store.setState((state) => ({ submittedHere: new Set([...state.submittedHere, ...discovered]) }));
+    store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
   };
 
   store.beginSubmission = (ref) => {

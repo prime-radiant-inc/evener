@@ -28,18 +28,50 @@ import (
 // It is a controller-LOCAL method, not a forwarded evener/host/request admin
 // call: there is no host to forward to until the attach succeeds, so it is
 // deliberately absent from remoteHostAdminMethods (see app_host_admin.go).
-func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
-	hosts, err := hostreg.New(cfg.RemoteHosts)
-	if err != nil {
-		// Config loading already validated every entry (main.go builds the same
-		// registry from the same entries), so this cannot fail in production.
-		// Fall back to an empty registry rather than a nil one, so a
-		// hypothetical duplicate refuses every host instead of panicking.
-		hosts, _ = hostreg.New(nil)
-	}
+func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry) {
+	// hosts is the one live registry the server constructor resolved — in
+	// production the same *hostreg.Registry the SSH manager dials through and
+	// the host-management surface mutates, so a host added at runtime
+	// validates here without a restart. The constructor builds the fallback
+	// from the configured entries once (tests, embedders) and hands the same
+	// instance to every host handler, so add and attach can never validate
+	// against divergent copies.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
 		return hubHostAttach(ctx, cfg, sources, hosts, params)
 	})
+}
+
+// hostRegistryFromConfig returns the cfg's live host registry when one was
+// threaded through WebConfig, else the fallback the server constructors
+// (newWebServer and newHubAppServerWithNavigationAndTrace) build ONCE and
+// share with every host-dependent handler. With a threaded SSH manager the
+// fallback is the MANAGER's registry (sshconn.Manager.Registry) — the instance
+// Ensure validates against and AddHost/RemoveHost mutate — never a fresh copy
+// from the configured entries: a fresh copy alongside a manager would split
+// the surfaces, because the host-management surface commits runtime adds and
+// removals through the manager while boot sidecar entries load into whatever
+// registry it was handed (sidecar entries would land where the manager never
+// dials, Ensure answering ErrHostNotFound, and a runtime Add would insert
+// where host/list and host/attach never read).
+// A manager with no registry keeps the fresh copy: its AddHost and RemoveHost
+// both refuse loudly, so neither an add nor a removal can silently diverge
+// from it.
+//
+// Without a manager, config loading already validated the entries (main.go
+// builds the same registry from the same entries), so the error path is the
+// impossible-duplicate fallback; an empty registry keeps the surface serving
+// refusals instead of panicking.
+func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
+	if cfg.RemoteHostSSHManager != nil {
+		if reg := cfg.RemoteHostSSHManager.Registry(); reg != nil {
+			return reg
+		}
+	}
+	hosts, err := hostreg.New(cfg.RemoteHosts)
+	if err != nil {
+		hosts, _ = hostreg.New(nil)
+	}
+	return hosts
 }
 
 // hubHostAttach attaches one configured remote host and reports its post-attach
@@ -154,29 +186,39 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 // appserver.WireError.
 //
 // The manager's deploy-family sentinels (ErrDeploy, ErrVersionMismatch,
-// ErrControllerDirty, ErrExecutableMissing) win over the source's generic
+// ErrControllerDirty, ErrRunTargetUnservable, ErrDeployArtifactUnusable,
+// ErrDeployUnstamped, ErrExecutableMissing) win over the source's generic
 // deadline mapping: a timed-out deployment still carries the deploy sentinel in
 // its chain, and it must reach the browser as the typed HubLaunchError the
 // Connect surface matches, not as SessionUnavailable. Every other error keeps
 // the source's mapping, so a genuine transport timeout (the deadline chain with
 // no deploy sentinel) still becomes SessionUnavailable.
 func classifyHostAttachError(sources *appsource.Registry, host string, err error) error {
-	mapped := err
 	// Preserve the manager's sentinel precedence before the source's
 	// transport mapping can claim the chain: a deploy-family error wrapped
 	// with a deadline still names a failed deploy, not a lost transport.
-	if wire, ok := errors.AsType[appwire.WireError](hostAttachWireError(err)); ok {
-		return wire
+	wire := hostAttachWireError(err)
+	if w, ok := errors.AsType[appwire.WireError](wire); ok {
+		return w
 	}
+	mapped := err
+	remapped := false
 	if sources != nil {
 		if source, ok := sources.Source(host); ok {
 			if classifier, ok := source.(attachErrorClassifier); ok {
 				mapped = classifier.MapAttachError(err)
+				remapped = true
 			}
 		}
 	}
 	if _, ok := errors.AsType[appwire.WireError](mapped); ok {
 		return mapped
+	}
+	if !remapped {
+		// Nothing remapped the error, and hostAttachWireError already ran for
+		// exactly this input: it carried no terminal sentinel then and passed
+		// through unchanged, so there is nothing to recompute.
+		return err
 	}
 	return hostAttachWireError(mapped)
 }
@@ -190,8 +232,11 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //     host, closed manager) → Unavailable (actionUnavailable): the host refused
 //     the controller, and no retry of this attach can change that.
 //   - deploy failures (ErrDeploy), the dirty-controller deploy refusal
-//     (ErrControllerDirty), a version mismatch a deploy would have to fix, and
-//     the missing-executable refusal a host with no deploy path produces
+//     (ErrControllerDirty), the unservable-run-target deploy refusal
+//     (ErrRunTargetUnservable), the post-deploy identity refusal
+//     (ErrDeployUnstamped), the wrong-platform-artifact refusal
+//     (ErrDeployArtifactUnusable), a version mismatch a deploy would have to fix,
+//     and the missing-executable refusal a host with no deploy path produces
 //     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
 //     not install or match its build on the host, so the host cannot be
 //     attached/launched.
@@ -211,6 +256,9 @@ func hostAttachWireError(err error) error {
 	case errors.Is(err, sshconn.ErrDeploy),
 		errors.Is(err, sshconn.ErrVersionMismatch),
 		errors.Is(err, sshconn.ErrControllerDirty),
+		errors.Is(err, sshconn.ErrRunTargetUnservable),
+		errors.Is(err, sshconn.ErrDeployArtifactUnusable),
+		errors.Is(err, sshconn.ErrDeployUnstamped),
 		errors.Is(err, sshconn.ErrExecutableMissing):
 		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
 	default:
