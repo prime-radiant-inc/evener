@@ -232,12 +232,12 @@ type Turn struct {
 	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
 	// OwningTurnID identifies the logical turn that owns an ordinary steering
 	// entry. It differs from StableTurnID, which identifies the client mutation.
-	OwningTurnID string `json:"owning_turn_id,omitempty"`
+	OwningTurnID           string `json:"owning_turn_id,omitempty"`
+	ResponseContextMarker  string `json:"response_context_marker,omitempty"`
+	ResponseEndpoint       string `json:"response_endpoint,omitempty"`
+	ResponseEndpointFamily string `json:"response_endpoint_family,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
-	ResponseContextMarker           string `json:"response_context_marker,omitempty"`
-	ResponseEndpoint                string `json:"response_endpoint,omitempty"`
-	ResponseEndpointFamily          string `json:"response_endpoint_family,omitempty"`
 	ResponseID                      string `json:"response_id,omitempty"`
 	ResponseIDHash                  string `json:"response_id_hash,omitempty"`
 	ResponseModel                   string `json:"response_model,omitempty"`
@@ -251,12 +251,12 @@ type Turn struct {
 	StableTurnID string          `json:"stable_turn_id,omitempty"`
 	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
 	// so a reloaded transcript labels a steer the same way the live path did.
+	SteeringKind string `json:"steering_kind,omitempty"`
 	// SteeringSource records the provenance of a TurnSteering entry:
 	// "user" for human-sent steering (the UI steer action or queued user
 	// input drained as steering), empty for daemon/system nudges. Persisted
 	// so replay/hydration can render user steering as user speech
 	// (issue #24). Empty on non-steering turns.
-	SteeringKind   string    `json:"steering_kind,omitempty"`
 	SteeringSource string    `json:"steering_source,omitempty"`
 	Timestamp      time.Time `json:"timestamp"` // when the turn was recorded (UTC)
 	// Usage carries the token-usage stats reported by the provider; set only on
