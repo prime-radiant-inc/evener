@@ -18,6 +18,11 @@ import (
 type isolationLane struct {
 	delegateID string
 	path       string
+	// branch is the lane's git branch, resolved from its sidecar via
+	// Sidecar.BranchOrName(): the mnemonic name when the parent sent one, the
+	// delegate id otherwise. Only the branch-acting paths populate it — a lane
+	// built for the touch+unlock tail or a relock never touches a branch.
+	branch string
 }
 
 // disposeDelegateLanesAtClose disposes the isolation delegate lanes this
@@ -122,6 +127,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	if scErr != nil {
 		return "", false
 	}
+	lane.branch = sc.BranchOrName()
 
 	locked, reason, lockErr := lockStateOf(run, lanePath)
 	if lockErr != nil {
@@ -149,7 +155,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 				ahead = fmt.Sprintf("%d ahead", count)
 			}
 		}
-		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
+		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.branch, ahead, dirty), true
 	}
 
 	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
@@ -424,7 +430,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the
 	// sidecar. Best-effort — the lane is already unrevivable.
-	if _, err := run("branch", "-D", lane.delegateID); err != nil {
+	if _, err := run("branch", "-D", lane.branch); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	}
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)
