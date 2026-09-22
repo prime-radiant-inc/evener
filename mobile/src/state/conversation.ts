@@ -888,15 +888,22 @@ export function createConversationStore() {
   // transition, same as pageOwnedIds.
   const pageOwnedTurnIds = new Set<string>();
   const pageOwnedCompactTurnIds = new Set<string>();
-  // #1919 follow-up, review round 1 (fragment identity): the package's merges
-  // match fragments by ITEM identity when turn ids differ (turnsMatch), so a
-  // trimmed turn must not lose the identities of the items it shed — a
-  // compact survivor that can no longer match would sit beside a later turn
-  // that re-issued its content under another id, and both would count their
-  // usage. The map holds only identity strings; reconcileCompactedTurns folds
-  // a compact survivor into a merged turn that carries one of its remembered
-  // identities.
-  const compactedTurnIdentities = new Map<string, Set<string>>();
+  // #1919 follow-up, review rounds 1-2 (fragment identity): the package's
+  // merges match fragments by ITEM identity when turn ids differ
+  // (turnsMatch/itemIdentityMatches — transcriptKey when both sides carry
+  // one, else id) and coalesce matching groups transitively, so a trimmed
+  // turn must not lose the identities of the items it shed. A compact
+  // survivor that can no longer match would sit beside a later turn that
+  // re-issued its content under another id, and both would count their
+  // usage. Each trimmed turn therefore remembers identity-only skeletons of
+  // its shed items here, and every page/rehydrate merge injects those
+  // skeletons back into the package's own merge whenever an incoming item
+  // collides with one — the package then folds exactly as the unbounded
+  // main would have, and the skeletons are stripped from the stored result
+  // so no payload returns. Entries union across re-trims (a partial
+  // restoration never forgets the rest) and go dormant while the turn again
+  // carries real items.
+  const compactedTurnItems = new Map<string, ItemModel[]>();
   // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
   // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
   // last accepted live notification for that item. liveOwnerRev is a global
@@ -1284,101 +1291,219 @@ export function createConversationStore() {
     let trimmed = false;
     const bounded = turns.map((turn) => {
       if (turn.items.length === 0) return turn;
-      // A turn whose payloads came back through a fold (the package unions a
-      // same-id page fragment's items into a compact turn) is back inside
-      // window accounting — forget whatever identities it shed earlier.
-      if (compactedTurnIdentities.has(turn.id)) {
-        compactedTurnIdentities.delete(turn.id);
-      }
       // Item identity is the package's own rule (itemIdentityMatches:
-      // transcriptKey when both sides carry one, else id) — the same rule
-      // mergeTurnHistory matches fragments by, so a retained row keeps the
-      // turn that could supply it alive, clustered members included.
-      const inWindow = turn.items.some((item) =>
-        retainedIdentities.has(item.transcriptKey ?? item.id),
+      // transcriptKey when both sides carry one, else id) approximated from
+      // above: a retained row keeps the turn that could supply it alive
+      // whether it matches by transcript key or by bare id — the same rule
+      // mergeTurnHistory matches fragments by, clustered members included.
+      // Testing the bare id too only ever over-keeps (a row that shares an
+      // id but conflicts on transcript key is not in the retained set under
+      // its id), and over-keeping is the safe direction for merge parity.
+      const inWindow = turn.items.some(
+        (item) =>
+          retainedIdentities.has(item.transcriptKey ?? item.id) ||
+          retainedIdentities.has(item.id),
       );
       if (inWindow) return turn;
       trimmed = true;
       if (pageOwnedTurnIds.delete(turn.id)) {
         pageOwnedCompactTurnIds.add(turn.id);
       }
-      // Remember the shed identities (the same rule the package matches by)
-      // so reconcileCompactedTurns can still fold this turn against a later
-      // re-issue under a different turn id.
-      const shedIdentities = new Set<string>();
-      for (const item of turn.items) {
-        shedIdentities.add(item.transcriptKey ?? item.id);
-      }
-      compactedTurnIdentities.set(turn.id, shedIdentities);
+      // Remember identity-only skeletons of the shed items (unioned with
+      // whatever the turn shed earlier — a partial restoration must not
+      // forget the rest) so a later re-issue under a different turn id can
+      // still fold through the package's own merge.
+      const shed = compactItemSkeletons(turn.items);
+      const remembered = compactedTurnItems.get(turn.id);
+      compactedTurnItems.set(turn.id, remembered === undefined ? shed : [...remembered, ...shed]);
       return { ...turn, items: [] };
     });
     return trimmed ? bounded : turns;
   }
 
-  // #1919 follow-up, review round 1: fold compact survivors against merged
-  // turns that re-issued their content under another turn id. The package's
-  // merges would have folded them (turnsMatch matches by item identity), so
-  // without this pass the re-issued turn and the compact survivor would both
-  // survive and sessionTokens would double-count their usage. The fold keeps
-  // the payload-bearing turn and mirrors mergePageTurn's usage rule for the
-  // site's merge direction: at loadOlder the retained (current-side) copy is
-  // the newer merge input, so the compact side's usage wins; at rehydrate the
-  // fresh read is newer, so the surviving turn's own usage wins. A dropped
-  // compact PAGE turn passes its page ownership to the turn that carries its
-  // content, so the rehydrate preservation gate (and the usage it protects)
-  // survives the fold exactly as the package's own fold would have kept it.
-  function reconcileCompactedTurns(
-    turns: TurnModel[],
-    compactUsageWins: boolean,
-  ): TurnModel[] {
-    if (compactedTurnIdentities.size === 0) return turns;
-    // Identity index over the turns that still carry payloads — bounded by
-    // the keep-window's rows plus the fragment items that just arrived.
-    const hostByIdentity = new Map<string, TurnModel>();
-    for (const turn of turns) {
-      if (turn.items.length === 0) continue;
-      for (const item of turn.items) {
-        const identity = item.transcriptKey ?? item.id;
-        if (!hostByIdentity.has(identity)) hostByIdentity.set(identity, turn);
-      }
-    }
-    const dropped = new Set<string>();
-    const usageSupplies = new Map<string, TurnModel["usage"]>();
-    for (const turn of turns) {
-      if (turn.items.length !== 0) continue;
-      const remembered = compactedTurnIdentities.get(turn.id);
-      if (remembered === undefined) continue;
-      let host: TurnModel | undefined;
-      for (const identity of remembered) {
-        const candidate = hostByIdentity.get(identity);
-        if (candidate !== undefined && candidate.id !== turn.id) {
-          host = candidate;
+  // The identity-only shape of a shed item: identity, ordering and
+  // fold-classification fields only. Every text/output/image field stays
+  // shed — this is the payload bound, not a payload cache — which is why the
+  // cast is needed: ItemModel.text is a required "settled text" field, and
+  // the skeleton's whole point is to carry identity without it. The
+  // package's merges read text off it as undefined, exactly like the sparse
+  // wire fragments itemTextPresence distinguishes.
+  function compactItemSkeletons(items: ItemModel[]): ItemModel[] {
+    return items.map(
+      (item) =>
+        ({
+          id: item.id,
+          turnId: item.turnId,
+          type: item.type,
+          ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
+          ...(item.position !== undefined ? { position: item.position } : {}),
+          ...(item.callId !== undefined ? { callId: item.callId } : {}),
+        }) as ItemModel,
+    );
+  }
+
+  // Conservative collision scan: which compact turns remember an identity
+  // the incoming side carries? The package's itemIdentityMatches rule
+  // (transcriptKey when both sides carry one, else id) is approximated from
+  // above by testing both fields — a false collision only injects skeletons
+  // the package then fails to match and the strip removes, so the common
+  // no-collision case costs one lookup per remembered identity and never
+  // over-folds.
+  function compactedTurnsCollidingWith(identities: Set<string>): Set<string> {
+    const colliding = new Set<string>();
+    if (compactedTurnItems.size === 0) return colliding;
+    for (const [turnId, skeletons] of compactedTurnItems) {
+      for (const skeleton of skeletons) {
+        if (
+          identities.has(skeleton.transcriptKey ?? skeleton.id) ||
+          identities.has(skeleton.id)
+        ) {
+          colliding.add(turnId);
           break;
         }
       }
-      if (host === undefined) continue;
-      dropped.add(turn.id);
-      const mergedUsage = compactUsageWins
-        ? (turn.usage ?? host.usage)
-        : (host.usage ?? turn.usage);
-      if (mergedUsage !== undefined || !usageSupplies.has(host.id)) {
-        usageSupplies.set(host.id, mergedUsage);
+    }
+    return colliding;
+  }
+
+  // Inject the colliding turns' remembered skeletons into their side of the
+  // merge, reporting the injected items so the result can be stripped. A
+  // turn whose payloads came back (a same-id page fragment, an earlier fold)
+  // still injects the identities it is MISSING — a partial restoration must
+  // not forget the rest, or a later re-issue of a missing identity would
+  // survive beside it and double-count usage. Identities the turn already
+  // carries as real items are skipped: the real item supersedes its
+  // skeleton, and a duplicate would only collide with it in the merge.
+  function injectCompactedSkeletons(
+    turns: TurnModel[],
+    colliding: Set<string>,
+  ): { turns: TurnModel[]; injected: ItemModel[] } {
+    if (colliding.size === 0) return { turns, injected: [] };
+    const injected: ItemModel[] = [];
+    let changed = false;
+    const replacement = turns.map((turn) => {
+      if (!colliding.has(turn.id)) return turn;
+      const skeletons = compactedTurnItems.get(turn.id);
+      if (skeletons === undefined) return turn;
+      const presentIdentities = new Set(
+        turn.items.map((item) => item.transcriptKey ?? item.id),
+      );
+      const missing = skeletons.filter(
+        (skeleton) => !presentIdentities.has(skeleton.transcriptKey ?? skeleton.id),
+      );
+      if (missing.length === 0) return turn;
+      changed = true;
+      injected.push(...missing);
+      return { ...turn, items: [...turn.items, ...missing] };
+    });
+    return changed ? { turns: replacement, injected } : { turns, injected: [] };
+  }
+
+  // Remove injected skeleton items the package kept without folding them
+  // into a real item. Skeletons the package DID fold become new objects
+  // carrying the real side's fields, so reference identity removes exactly
+  // the leftovers and nothing else.
+  function stripInjectedSkeletons(
+    turns: TurnModel[],
+    injected: ItemModel[],
+  ): TurnModel[] {
+    if (injected.length === 0) return turns;
+    const injectedRefs = new Set(injected);
+    let changed = false;
+    const stripped = turns.map((turn) => {
+      if (!turn.items.some((item) => injectedRefs.has(item))) return turn;
+      changed = true;
+      return {
+        ...turn,
+        items: turn.items.filter((item) => !injectedRefs.has(item)),
+      };
+    });
+    return changed ? stripped : turns;
+  }
+
+  // mergePageItem derives text from a presence marker (itemTextPresence)
+  // that defaults to "provided", and a hand-built skeleton cannot carry it,
+  // so a skeleton on the model side of mergeOlderItemPage (the NEWER merge
+  // input) would leave the just-arrived page item's text erased. Re-adopt
+  // the text from the page's own wire item for exactly the erased
+  // identities — text is the only field mergePageItem takes from a
+  // textSource instead of a ?? chain.
+  function adoptStrippedTextFromWireItems(
+    turns: TurnModel[],
+    wireTextByIdentity: Map<string, string>,
+  ): TurnModel[] {
+    if (wireTextByIdentity.size === 0) return turns;
+    let changed = false;
+    const adopted = turns.map((turn) => {
+      if (
+        !turn.items.some(
+          (item) =>
+            item.text === undefined &&
+            wireTextByIdentity.has(item.transcriptKey ?? item.id),
+        )
+      ) {
+        return turn;
       }
-      compactedTurnIdentities.delete(turn.id);
-      // The turn carrying a folded page turn's content now owns that page
-      // history itself.
-      if (pageOwnedCompactTurnIds.delete(turn.id)) {
-        pageOwnedTurnIds.add(host.id);
+      changed = true;
+      return {
+        ...turn,
+        items: turn.items.map((item) => {
+          const text =
+            wireTextByIdentity.get(item.transcriptKey ?? item.id) ??
+            wireTextByIdentity.get(item.id);
+          return text !== undefined && item.text === undefined
+            ? { ...item, text }
+            : item;
+        }),
+      };
+    });
+    return changed ? adopted : turns;
+  }
+
+  // After a rehydrate merge, a compact turn may have folded away entirely
+  // (its skeletons matched a fresh fragment under a different id, and the
+  // fresh side won the fold). Its remembered identities and its page
+  // ownership move to the surviving turn that carries its content, so a
+  // future re-issue still folds and the preservation gate still sees the
+  // page history. At loadOlder the compact turn is the newer merge input, so
+  // its own id always survives the fold and nothing moves.
+  function transferFoldedCompactedEntries(after: TurnModel[]): void {
+    if (compactedTurnItems.size === 0) return;
+    const afterIds = new Set(after.map((turn) => turn.id));
+    const ownerByIdentity = new Map<string, string>();
+    for (const turn of after) {
+      for (const item of turn.items) {
+        const identity = item.transcriptKey ?? item.id;
+        if (!ownerByIdentity.has(identity)) ownerByIdentity.set(identity, turn.id);
       }
     }
-    if (dropped.size === 0) return turns;
-    return turns
-      .filter((turn) => !dropped.has(turn.id))
-      .map((turn) => {
-        if (!usageSupplies.has(turn.id)) return turn;
-        const usage = usageSupplies.get(turn.id);
-        return { ...turn, ...(usage === undefined ? {} : { usage }) };
-      });
+    for (const [turnId, skeletons] of [...compactedTurnItems]) {
+      if (afterIds.has(turnId)) continue;
+      let survivor: string | undefined;
+      for (const skeleton of skeletons) {
+        const owner =
+          ownerByIdentity.get(skeleton.transcriptKey ?? skeleton.id) ??
+          ownerByIdentity.get(skeleton.id);
+        if (owner !== undefined && owner !== turnId) {
+          survivor = owner;
+          break;
+        }
+      }
+      if (survivor === undefined) {
+        // The content truly has no carrier left (a degenerate fold); the
+        // memory can no longer reach a stored turn either way — drop it.
+        compactedTurnItems.delete(turnId);
+        continue;
+      }
+      compactedTurnItems.set(survivor, [
+        ...(compactedTurnItems.get(survivor) ?? []),
+        ...skeletons,
+      ]);
+      compactedTurnItems.delete(turnId);
+      if (pageOwnedCompactTurnIds.delete(turnId)) {
+        pageOwnedTurnIds.add(survivor);
+      }
+    }
   }
 
   return create<LiveConversationState>((rawSet, get) => {
@@ -1429,7 +1554,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
-        compactedTurnIdentities.clear();
+        compactedTurnItems.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         set({
@@ -1500,7 +1625,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
-        compactedTurnIdentities.clear();
+        compactedTurnItems.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -2049,16 +2174,31 @@ export function createConversationStore() {
             // supplying omitted fields/items. Coverage is separate from the
             // value merge: local observations and bare warnings stay visible
             // without making a fresh cursor look partial.
-            const history = mergeTurnHistory(currentConvForMerge.turns, conversation.turns);
+            // Review rounds 1-2: inject identity skeletons for compact
+            // turns whose remembered identities the fresh read re-issues,
+            // so the package's own turnsMatch/coalescing does the folding
+            // exactly as the unbounded main would have.
+            const freshIdentities = new Set<string>();
+            for (const turn of conversation.turns) {
+              for (const item of turn.items) {
+                freshIdentities.add(item.transcriptKey ?? item.id);
+                freshIdentities.add(item.id);
+              }
+            }
+            const injectedFresh = injectCompactedSkeletons(
+              currentConvForMerge.turns,
+              compactedTurnsCollidingWith(freshIdentities),
+            );
+            const history = mergeTurnHistory(injectedFresh.turns, conversation.turns);
             mergedTurns = history.turns;
             if (history.olderCoverage && history.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
-            // Review round 1: fold compact survivors against fresh turns
-            // that re-issued their content under another turn id BEFORE
-            // bounding — the fresh side is the newer merge input here, so
-            // the survivor's turn keeps its own usage when defined.
-            mergedTurns = reconcileCompactedTurns(mergedTurns, false);
+            // Strip the injected skeletons the merge did not fold away,
+            // move folded compact turns' memory and page ownership to
+            // their surviving carriers, then bound the payloads.
+            mergedTurns = stripInjectedSkeletons(mergedTurns, injectedFresh.injected);
+            transferFoldedCompactedEntries(mergedTurns);
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
             // fragments supplied, and only out-of-window payloads trim. The
@@ -2070,7 +2210,7 @@ export function createConversationStore() {
             pageOwnedIds.clear();
             pageOwnedTurnIds.clear();
             pageOwnedCompactTurnIds.clear();
-            compactedTurnIdentities.clear();
+            compactedTurnItems.clear();
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
@@ -2259,23 +2399,50 @@ export function createConversationStore() {
             // (turnsMatch/mergePageTurn) reconciles that by identity instead
             // of an id-only filter, which would drop the fragment or
             // double-count it under a different id.
-            const mergedTurns = result.turnsPage
-              ? mergeOlderItemPage(currentConv, result.turnsPage).turns
-              : currentConv.turns;
             // Record page ownership by turn ID separately from pageOwnedIds
             // (item IDs) below — a turn survives here even
             // when every one of its display rows is deduped away or evicted.
             for (const turn of result.turnsPage?.data ?? []) pageOwnedTurnIds.add(turn.id);
-            // Review round 1: fold compact survivors against page fragments
-            // that re-issued their content under another turn id. The
-            // retained copy is the newer merge input in mergeOlderItemPage,
-            // so the compact side's usage wins when both carry one.
-            const reconciledTurns = reconcileCompactedTurns(mergedTurns, true);
+            // Review rounds 1-2: inject identity skeletons for compact
+            // turns whose remembered identities the page re-issues, so the
+            // package's own turnsMatch/coalescing does the folding exactly
+            // as the unbounded main would have. The retained copy stays the
+            // newer merge input, so its usage still wins the fold.
+            const pageIdentities = new Set<string>();
+            const pageTextByIdentity = new Map<string, string>();
+            for (const turn of result.turnsPage?.data ?? []) {
+              for (const item of turn.items ?? []) {
+                pageIdentities.add(item.transcriptKey ?? item.id);
+                pageIdentities.add(item.id);
+                if (
+                  item.text !== undefined &&
+                  !pageTextByIdentity.has(item.transcriptKey ?? item.id)
+                ) {
+                  pageTextByIdentity.set(item.transcriptKey ?? item.id, item.text);
+                }
+              }
+            }
+            const injectedPage = injectCompactedSkeletons(
+              currentConv.turns,
+              compactedTurnsCollidingWith(pageIdentities),
+            );
+            const mergeConv: MobileConversation =
+              injectedPage.injected.length > 0
+                ? { ...currentConv, turns: injectedPage.turns }
+                : currentConv;
+            const mergedTurns = result.turnsPage
+              ? mergeOlderItemPage(mergeConv, result.turnsPage).turns
+              : currentConv.turns;
+            const strippedPageTurns = stripInjectedSkeletons(mergedTurns, injectedPage.injected);
+            transferFoldedCompactedEntries(strippedPageTurns);
             // #1919 follow-up: bound the retained turn payloads against the
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
             // whose payloads left the keep-window to the compact set.
-            const boundedTurns = boundRetainedTurns(reconciledTurns, pageMerged);
+            const boundedTurns = adoptStrippedTextFromWireItems(
+              boundRetainedTurns(strippedPageTurns, pageMerged),
+              pageTextByIdentity,
+            );
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
               // never the capped nextCursor above.
@@ -2688,7 +2855,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
-        compactedTurnIdentities.clear();
+        compactedTurnItems.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
@@ -3586,7 +3753,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
-        compactedTurnIdentities.clear();
+        compactedTurnItems.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
