@@ -54,12 +54,12 @@ export function HubSettingsScreen(props: Props) {
 
 function HubSettingsScreenBody({ route, navigation }: Props) {
 	const { activeProfile, client, state, fatal, retry } = useConnection();
-	const display = useConnectionDisplay(state, fatal);
+	const display = useConnectionDisplay(activeProfile?.id, state, fatal);
 	const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
-	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set
-	// already; only a manual retry's own token refetch clears it briefly, and
-	// the last client this screen had covers that gap too.
-	const renderClient = useRenderClient(client);
+	// See PluginsScreen.tsx's identical comment: a manual retry's not-yet-
+	// ready replacement client never displaces the previous one. Scoped to
+	// the active hub: see useRenderClient's own doc.
+	const renderClient = useRenderClient(client, state, activeProfile?.id);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
