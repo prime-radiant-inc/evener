@@ -5,6 +5,7 @@ import {
 	createMutationProjectionFence,
 	type MutationAttachmentRef,
 	type MutationPersistencePort,
+	type MutationPersistenceSnapshot,
 } from "@evener/appwire-client/state/mutation";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import type { SqliteSync } from "./sqliteSync";
@@ -244,7 +245,7 @@ test("a failed discard write stays silent and reports the failure", async () => 
 	unsubscribe();
 });
 
-test("the runtime is a MutationPersistencePort that feeds the shared projection fence", async () => {
+test("the runtime feeds the shared projection fence through its scoped read contract", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => `mutation-${++nextId}`,
@@ -252,12 +253,15 @@ test("the runtime is a MutationPersistencePort that feeds the shared projection 
 	await runtime.submit(request("queue"));
 
 	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
-	// Compile-level conformance: no adapter - the runtime IS the shared
-	// port, so a field added to MutationPersistenceSnapshot breaks here
-	// instead of silently diverging in a parallel native copy.
-	const port: MutationPersistencePort<MutationAttachmentRef> = runtime;
+	// Compile-level conformance with no adapter: the scoped read returns
+	// the package's own MutationPersistenceSnapshot, so a field added to
+	// the shared snapshot breaks here instead of silently diverging in a
+	// parallel native copy - and a read that takes the target key as
+	// required still satisfies the fence's MutationPersistencePort
+	// parameter structurally, because a required-arg method widens to the
+	// port's optional-arg method shape.
 	const fence = createMutationProjectionFence<MutationAttachmentRef>();
-	const refresh = await fence.refresh(port, targetKey);
+	const refresh = await fence.refresh(runtime, targetKey);
 	if (!refresh) throw new Error("the scoped refresh must produce a snapshot");
 	expect([...refresh.apply()]).toEqual([targetKey]);
 	expect(refresh.snapshot.outbox).toMatchObject([
@@ -266,13 +270,24 @@ test("the runtime is a MutationPersistencePort that feeds the shared projection 
 	expect(refresh.snapshot.optimistic).toEqual([]);
 	expect(refresh.snapshot.recovery).toEqual([]);
 
-	// The native recovery projection is scoped (the storage's listRecovery
-	// requires the composite hub/conversation key), so the port's
-	// all-targets form has no native backing: read() fails loudly rather
-	// than returning a snapshot that silently drops recovery rows, and the
-	// fence degrades the rejected read to a no-op refresh.
-	await expect(runtime.read()).rejects.toThrow(/targetRef is required/);
-	expect(await fence.refresh(port)).toBe(false);
+	// The contract's own compile-level pin: the native read takes the
+	// composite target key as REQUIRED, so the all-targets form the shared
+	// port permits is not callable on the runtime's own type. The binding
+	// is type-level only and never executes.
+	// @ts-expect-error the native read contract requires the composite target key
+	const readWithoutTarget: () => Promise<MutationPersistenceSnapshot<MutationAttachmentRef>> = runtime.read;
+	expect(readWithoutTarget).toBe(runtime.read);
+
+	// The one route that remains to the all-targets form is the structural
+	// widening the port's method shape permits. The native recovery
+	// projection is scoped (the storage's listRecovery requires the exact
+	// composite key), so that form has no native backing: the widened
+	// reference fails loudly rather than returning a snapshot that
+	// silently drops recovery rows, and the fence degrades the rejected
+	// read to a no-op refresh.
+	const widened: MutationPersistencePort<MutationAttachmentRef> = runtime;
+	await expect(widened.read()).rejects.toThrow(/targetRef is required/);
+	expect(await fence.refresh(widened)).toBe(false);
 });
 
 test("an attempted non-authoritative read notifies the storage projection after blocking a record", async () => {
