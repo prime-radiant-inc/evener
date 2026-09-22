@@ -133,6 +133,13 @@ type ContentPart struct {
 	ToolResult *ToolResultData `json:"tool_result,omitempty"`
 	Thinking   *ThinkingData   `json:"thinking,omitempty"`
 	WebSearch  *WebSearchData  `json:"web_search,omitempty"`
+
+	// Machinery marks a text part as session-manufactured machinery — a
+	// notification for the model the user never typed — rather than
+	// user-facing prose. Producers set it at construction; consumers that
+	// build user-facing text (apptranscript.UserFacingText) rely on it
+	// exclusively instead of matching the part's text shape.
+	Machinery bool `json:"machinery,omitempty"`
 }
 
 // ImageData holds an image content part, supplied either by URL or inline bytes.

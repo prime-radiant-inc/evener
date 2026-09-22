@@ -37,7 +37,6 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -715,7 +714,7 @@ func TestLiveActivitySessionLabelExcludesMachineryNote(t *testing.T) {
 	}
 
 	label := liveActivitySessionLabel(sess)
-	if strings.Contains(label, apptranscript.SystemNotificationOpenTag) || strings.Contains(label, "read_file") {
+	if strings.Contains(label, llm.SystemNotificationOpenTag) || strings.Contains(label, "read_file") {
 		t.Errorf("activity label leaks the machinery note: %q", label)
 	}
 	if !strings.Contains(label, "look at this") {

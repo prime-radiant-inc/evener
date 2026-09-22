@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -54,6 +55,68 @@ func TestHubModelStopsReportingConnectedWhenHubConnectionDrops(t *testing.T) {
 func staticHubDialer(client *appwire.Client, frames *hubFrameFeed) hubDialer {
 	return func(context.Context) (*appwire.Client, *hubFrameFeed, error) {
 		return client, frames, nil
+	}
+}
+
+// A scheduled marketplace reconciliation read died with the dropped
+// connection: its response will never arrive, so with the plugins panel open
+// the reconnect itself must reissue the tagged read - the fence of an
+// unconfirmed removal cannot wait for the user to happen to reopen the panel
+// or for a notification to refresh.
+func TestHubReconnectReissuesTaggedMarketplaceReconciliation(t *testing.T) {
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, _, cleanupA := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanupA()
+	// The model sits on a connection that has dropped, feed included: a
+	// scheduled reconciliation read on it died with the drop.
+	oldClient, oldFeed, dropOldConnection := newTestHubClientWithFeed(t, nil)
+
+	m := hubModel{
+		client:                         oldClient,
+		pluginsPanel:                   marketplacePanelWithEntries(t, appwire.MarketplaceEntry{Name: "removed"}),
+		marketplaceRemovePending:       "removed",
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 2,
+		marketplaceListReadIssued:      2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+	}
+	dropOldConnection()
+
+	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: oldFeed})
+	if cmd == nil {
+		t.Fatal("reconnect should schedule its recovery reads")
+	}
+	var list launchconfig.MarketplaceListResultMsg
+	seen := false
+	for _, msg := range runBatchedCmds(t, cmd) {
+		if result, ok := msg.(launchconfig.MarketplaceListResultMsg); ok {
+			list, seen = result, true
+		}
+	}
+	if !seen {
+		t.Fatal("reconnect should reissue the tagged marketplace read for the open panel")
+	}
+	if list.Err != nil || list.ReconcileGeneration != m.marketplaceReconcileGeneration || list.ReconcileGeneration <= m.marketplaceListFloor {
+		t.Fatalf("reissued read = %+v, want a fresh tagged generation (model now at %d)", list, m.marketplaceReconcileGeneration)
+	}
+
+	// The reissued read settles the fence the dead connection stranded.
+	got, _ := m.handleMarketplaceListResult(list)
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("after the reissued read settled, pending = %q/%v, want cleared", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("settled read should leave the surviving marketplace selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after the reissued read = %q, want %q", remove.Name, kept.Name)
 	}
 }
 

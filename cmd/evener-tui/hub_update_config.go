@@ -629,6 +629,43 @@ func (m hubModel) handleLaunchSetLayerResult(msg launchconfig.LaunchSetLayerResu
 }
 
 func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListResultMsg) (tea.Model, tea.Cmd) {
+	// Once a removal has landed, a read issued before that landing - a
+	// generation at or below the floor - is stale however late it arrives:
+	// its snapshot predates the removal, so accepting it, even after the
+	// fence has settled, would resurrect the removed marketplace's row.
+	// The boundary outlives the fence, and every removal outcome advances
+	// it, so only reads issued after the latest removal can ever land.
+	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListFloor {
+		return m, nil
+	}
+	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListApplied {
+		// A read newer than this one has already been applied: this one
+		// was issued before it, and its snapshot was superseded - landing
+		// it late would overwrite the newer list with an older one.
+		return m, nil
+	}
+	// A successful read above the floor was issued after the removal
+	// landed, so it confirms the post-removal state whichever refresh
+	// issued it: an outstanding reconciliation must not be invalidated by
+	// a newer refresh merely having been issued, and discarding its
+	// success would leave the fence standing when the newer read fails.
+	if msg.Err == nil && m.marketplaceReconcilePending {
+		m.marketplaceRemovePending = ""
+		m.marketplaceReconcilePending = false
+	}
+	// While the fence is still standing, hold back failed reads older than
+	// the newest LIST READ issued - the newest read's failure is the news,
+	// and it is the panel's only way out of its loading state - while an
+	// add or refresh issuance, which shares the ordering counter, never
+	// outranks it. A successful read reaches the panel: it has already
+	// settled the fence above.
+	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceListReadIssued {
+		return m, nil
+	}
+	if msg.Err == nil {
+		m.marketplaceListApplied = msg.ReconcileGeneration
+		m.marketplaceListAppliedRows = msg.List.Marketplaces
+	}
 	if m.pluginsPanel != nil {
 		updated, cmd := m.pluginsPanel.Update(msg)
 		panel := updated.(launchconfig.PluginsPanel)
@@ -638,19 +675,197 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	return m, nil
 }
 
+// marketplaceListRead returns the marketplace-list read this model should
+// issue for a user- or notification-driven refetch. Once a removal has
+// landed it must carry the next reconciliation generation, because the
+// read boundary rejects every read issued before the latest landing and
+// an older read could then neither recover a failed reconciliation, nor
+// settle the fence, nor populate a reopened panel. Before any removal
+// lands there is nothing to order against and the ordinary read is used.
+// The duplicate-remove fence is untouched here; only a successful read
+// clears it.
+func (m *hubModel) marketplaceListRead() tea.Cmd {
+	if m.marketplaceListReadsOrdered {
+		m.marketplaceReconcileGeneration++
+		m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+		return launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+	}
+	return launchconfig.CmdMarketplaceList(m.client)
+}
+
+// batchMarketplaceCmds batches the panel command a marketplace response
+// produced with the replacement read it scheduled; either may be nil.
+func batchMarketplaceCmds(first, second tea.Cmd) tea.Cmd {
+	if first == nil {
+		return second
+	}
+	if second == nil {
+		return first
+	}
+	return tea.Batch(first, second)
+}
+
+// applyRemovalSnapshot applies a landed removal's own list snapshot,
+// ordered against the read boundary exactly like any other list-bearing
+// response, and returns the panel's command for the caller to batch. A
+// snapshot whose generation predates the latest landed removal - armed
+// and at or below the floor - is stale like an add or refresh of that
+// vintage: discard it; the caller's replacement read converges the panel.
+// One issued after that landing but at or below the newest applied
+// generation would resurrect rows the applied read already dropped, so
+// the panel keeps the applied rows minus the removed marketplace
+// instead. One fresher than everything applied - nothing applied yet
+// counts as freshest - lands wholesale and becomes the newest applied
+// state.
+func (m *hubModel) applyRemovalSnapshot(removed string, snapshot appwire.MarketplaceListResponse, generation uint64) tea.Cmd {
+	if m.pluginsPanel == nil {
+		return nil
+	}
+	list := snapshot
+	switch {
+	case m.marketplaceListReadsOrdered && generation <= m.marketplaceListFloor:
+		return nil
+	case m.marketplaceListApplied != 0 && generation <= m.marketplaceListApplied:
+		merged := make([]appwire.MarketplaceEntry, 0, len(m.marketplaceListAppliedRows))
+		for _, entry := range m.marketplaceListAppliedRows {
+			if entry.Name != removed {
+				merged = append(merged, entry)
+			}
+		}
+		m.marketplaceListAppliedRows = merged
+		list = appwire.MarketplaceListResponse{Marketplaces: merged}
+	default:
+		m.marketplaceListApplied = generation
+		m.marketplaceListAppliedRows = snapshot.Marketplaces
+	}
+	updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: list})
+	panel := updated.(launchconfig.PluginsPanel)
+	m.pluginsPanel = &panel
+	return cmd
+}
+
 func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
+		if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
+			switch state, applied := classifyMarketplaceRemovalOutcome(msg.Err); state {
+			case marketplaceRemovalApplied:
+				m.err = marketplaceCloneRemainsWarning(msg.Err, false)
+				m.marketplaceRemovePending = ""
+				m.marketplaceReconcilePending = false
+				// Order the removal's own snapshot against the read boundary
+				// exactly like any other list-bearing response - judged against
+				// the floor as it stood when this response was issued - and arm
+				// the boundary only after, so the response's own generation is
+				// never misread as stale by its own arm.
+				panelCmd := m.applyRemovalSnapshot(msg.Name, applied, msg.Generation)
+				m.marketplaceListReadsOrdered = true
+				m.marketplaceListFloor = m.marketplaceReconcileGeneration
+				// Reads issued after the hub landed this removal but
+				// before its result was handled - a notification refetch
+				// is typical - are stale to the floor this branch just
+				// set, although they can be newer than the snapshot:
+				// another client's change can have landed in between.
+				// Schedule the replacement read that settles the panel
+				// on it.
+				var replacement tea.Cmd
+				if m.client != nil {
+					m.marketplaceReconcileGeneration++
+					m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+					replacement = launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+				}
+				return m, batchMarketplaceCmds(panelCmd, replacement)
+			case marketplaceRemovalUnavailable:
+				m.err = marketplaceCloneRemainsWarning(msg.Err, true)
+				m.marketplaceListReadsOrdered = true
+				m.marketplaceListFloor = m.marketplaceReconcileGeneration
+				m.marketplaceReconcilePending = true
+				if m.client != nil {
+					m.marketplaceReconcileGeneration++
+					m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+				}
+				return m, nil
+			case marketplaceRemovalRemoved:
+				// The removal and its clone cleanup both landed; only the
+				// fresh list read failed, and the marker carries no
+				// snapshot (appwire.MarketplaceRemoveAppliedData), so
+				// reconcile from a fresh read rather than retrying, and
+				// never claim litter - nothing was left on disk.
+				m.err = marketplaceRemovedWarning(msg.Err)
+				m.marketplaceListReadsOrdered = true
+				m.marketplaceListFloor = m.marketplaceReconcileGeneration
+				m.marketplaceReconcilePending = true
+				if m.client != nil {
+					m.marketplaceReconcileGeneration++
+					m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+				}
+				return m, nil
+			}
+		}
 		m.err = msg.Err
+		if msg.Action == "remove" && msg.Name == m.marketplaceRemovePending {
+			m.marketplaceRemovePending = ""
+			m.marketplaceReconcilePending = false
+		}
+		return m, nil
+	}
+	if msg.Action == "remove" {
+		m.err = nil
+		// Every landed remove response - the success this client issued,
+		// a settled duplicate the fence no longer knows, or an out-of-band
+		// removal another client performed - converges the panel through
+		// one sequence: clear the fence if this is the pending name, order
+		// the response's own snapshot against the read boundary as that
+		// boundary stood when the removal was issued, then arm the
+		// boundary at the latest landing and schedule the replacement read
+		// that settles every read the arm just invalidated.
+		if msg.Name == m.marketplaceRemovePending {
+			m.marketplaceRemovePending = ""
+			m.marketplaceReconcilePending = false
+		}
+		panelCmd := m.applyRemovalSnapshot(msg.Name, msg.List, msg.Generation)
+		m.marketplaceListReadsOrdered = true
+		m.marketplaceListFloor = m.marketplaceReconcileGeneration
+		var replacement tea.Cmd
+		if m.client != nil {
+			// The same replacement the applied-snapshot branch schedules:
+			// the floor this branch just set invalidates reads issued
+			// after the hub landed the removal but before this response
+			// was handled, and they can be newer than the response's own
+			// snapshot.
+			m.marketplaceReconcileGeneration++
+			m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+			replacement = launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+		}
+		return m, batchMarketplaceCmds(panelCmd, replacement)
+	}
+	if m.marketplaceListReadsOrdered && (msg.Generation <= m.marketplaceListFloor || msg.Generation <= m.marketplaceListApplied) {
+		// An add or refresh issued before the latest removal landed or
+		// before the newest applied read carries a list that predates
+		// state the panel already holds, so applying it would resurrect
+		// what the settled list dropped. Discard it and schedule the
+		// replacement read that lands the mutation's own effect. A
+		// discarded response is not this model's news either: like a list
+		// read, it must not erase the prominent warning a landed removal
+		// outcome left standing - the clone-remains or removed-outcome
+		// notice the user still has to act on.
+		if m.client != nil {
+			m.marketplaceReconcileGeneration++
+			m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+			return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
+		}
 		return m, nil
 	}
 	m.err = nil
-	if m.pluginsPanel != nil {
-		updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
-		panel := updated.(launchconfig.PluginsPanel)
-		m.pluginsPanel = &panel
-		return m, cmd
-	}
-	return m, nil
+	// A fresh add or refresh snapshot is a post-removal list read like any
+	// other: route it through the list-result logic so it settles a
+	// pending reconciliation and advances the applied generation under the
+	// same guards that order every other list response.
+	return m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		List:                msg.List,
+		ReconcileGeneration: msg.Generation,
+	})
 }
 
 func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrowseResultMsg) (tea.Model, tea.Cmd) {
@@ -665,21 +880,34 @@ func (m hubModel) handleMarketplaceBrowseResult(msg launchconfig.MarketplaceBrow
 
 func (m hubModel) handleMarketplaceAddSubmit(msg launchconfig.MarketplaceAddSubmitMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params)
+		m.marketplaceReconcileGeneration++
+		return m, launchconfig.CmdMarketplaceAdd(m.client, msg.Params, m.marketplaceReconcileGeneration)
 	}
 	return m, nil
 }
 
 func (m hubModel) handleMarketplaceRemove(msg launchconfig.MarketplaceRemoveMsg) (tea.Model, tea.Cmd) {
+	if m.marketplaceRemovePending != "" {
+		if msg.Name != m.marketplaceRemovePending {
+			// A different marketplace's remove while one is still
+			// unconfirmed: surface feedback instead of silently dropping
+			// the request - the fence tracks one removal at a time.
+			m.err = fmt.Errorf("marketplace %q is still being removed; try again once that removal is confirmed", m.marketplaceRemovePending)
+		}
+		return m, nil
+	}
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name)
+		m.marketplaceReconcileGeneration++
+		m.marketplaceRemovePending = msg.Name
+		return m, launchconfig.CmdMarketplaceRemove(m.client, msg.Name, m.marketplaceReconcileGeneration)
 	}
 	return m, nil
 }
 
 func (m hubModel) handleMarketplaceRefresh(msg launchconfig.MarketplaceRefreshMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name)
+		m.marketplaceReconcileGeneration++
+		return m, launchconfig.CmdMarketplaceRefresh(m.client, msg.Name, m.marketplaceReconcileGeneration)
 	}
 	return m, nil
 }

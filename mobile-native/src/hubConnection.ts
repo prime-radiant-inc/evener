@@ -105,20 +105,18 @@ export function useHubConnection(
 						setFatal(false);
 					}
 					if (next === "closed") {
-						setError(
-							connectionFailure(currentConnection.terminalReason).message,
-						);
-						setFatal(currentConnection.terminalReason === "protocol");
+						const failure = connectionFailure(currentConnection.terminalReason);
+						setError(failure.message);
+						setFatal(failure.kind === "protocol");
 					}
 				});
 				return connection.connect();
 			})
 			.catch(() => {
 				if (!cancelled) {
-					setError(
-						connectionFailure(connection?.terminalReason ?? null).message,
-					);
-					setFatal(connection?.terminalReason === "protocol");
+					const failure = connectionFailure(connection?.terminalReason ?? null);
+					setError(failure.message);
+					setFatal(failure.kind === "protocol");
 					store.setState({ state: "closed" });
 					connection?.close();
 				}

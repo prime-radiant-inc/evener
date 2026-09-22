@@ -285,38 +285,21 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 	}
 }
 
-// Machinery notification blocks ride user-input and steering messages as
-// extra text parts the model needs (e.g. the stored-attachment path note for
-// a pasted image) but the user never typed and must not see in a bubble.
-// The producer is the agent package's systemNotification helper; agent
-// imports this package, so the helper builds its blocks from these exported
-// constants — one spelling, shared by producer and filter, so the tags
-// cannot drift apart. Skip is exact-block: a part merely mentioning the tags
-// inline is the user's own words and stays.
-const (
-	SystemNotificationOpenTag  = "<system-notification>"
-	SystemNotificationCloseTag = "</system-notification>"
-)
-
-// isMachineryNotificationPart reports whether text is exactly one machinery
-// notification block: the opening tag, the inner message, the closing tag,
-// and nothing else on either end.
-func isMachineryNotificationPart(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	return strings.HasPrefix(trimmed, SystemNotificationOpenTag) &&
-		strings.HasSuffix(trimmed, SystemNotificationCloseTag)
-}
-
 // UserFacingText concatenates a message's text parts the way Message.Text
-// does, except parts that are machinery notifications for the model are
-// omitted: the live stream keeps those out of the user bubble, and reload
-// must match. A message whose only content is machinery (a cancelled-watches
-// notice routed as steering) keeps its full text — the live stream projects
-// that text as-is, and stripping it would delete the reloaded item outright.
-// An image-bearing turn keeps its stripped text even when empty: the image is
-// the bubble. Exported because agent's fork/edit surface (ForkSessionAtUserTurn)
-// hands a stored turn's text back as editable input and must apply the same
-// rule.
+// does, except parts flagged as machinery — llm.ContentPart.Machinery, the
+// notifications the session manufactured for the model (e.g. the
+// stored-attachment path note for a pasted image), which the live stream
+// keeps out of the user bubble and reload must match. Filtering matches the
+// flag alone, never the text shape: an unflagged part is the user's own
+// words even when it is exactly a machinery block pasted verbatim. Entries
+// written before the flag existed get their block-shaped parts flagged by
+// transcript.DecodeEntry's migration before they reach here. A message whose
+// only content is machinery (a cancelled-watches notice routed as steering)
+// keeps its full text — the live stream projects that text as-is, and
+// stripping it would delete the reloaded item outright. An image-bearing
+// turn keeps its stripped text even when empty: the image is the bubble.
+// Exported because agent's fork/edit surface (ForkSessionAtUserTurn) hands a
+// stored turn's text back as editable input and must apply the same rule.
 func UserFacingText(msg llm.Message) string {
 	var b strings.Builder
 	hasImage := false
@@ -325,7 +308,7 @@ func UserFacingText(msg llm.Message) string {
 			hasImage = true
 			continue
 		}
-		if p.Kind == llm.ContentText && p.Text != "" && !isMachineryNotificationPart(p.Text) {
+		if p.Kind == llm.ContentText && p.Text != "" && !p.Machinery {
 			b.WriteString(p.Text)
 		}
 	}

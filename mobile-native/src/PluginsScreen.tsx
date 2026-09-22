@@ -21,16 +21,18 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type {
-	AppwireClient,
-	ConnectionState,
-	PluginRefParams,
-} from "@evener/appwire-client";
+import type { ConnectionState, PluginRefParams } from "@evener/appwire-client";
 import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { useConnectionDisplay } from "./connectionDisplay";
+import {
+  isReady,
+  useConnectionDisplay,
+  useLiveReadiness,
+  useRenderClient,
+  whenReady,
+} from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
@@ -72,15 +74,16 @@ function PluginsScreenBody({
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(state, fatal);
+  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
+  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   // A flap keeps `client` set (the connection layer's own generation guard -
-  // hubConnection.ts), but a manual retry briefly clears it while it opens a
-  // fresh one; the last client this screen had keeps the list mounted
-  // through that gap too, rather than dropping to the wall for a moment the
-  // banner should cover just as well as a passive reconnect does.
-  const lastClient = useRef<AppwireClient | null>(null);
-  if (client) lastClient.current = client;
-  const renderClient = client ?? lastClient.current;
+  // hubConnection.ts), but a manual retry clears it, then reports a fresh
+  // client while it is still dialing; the list keeps rendering the previous
+  // one through the whole gap, never the not-yet-ready replacement, rather
+  // than dropping to the wall for a moment the banner should cover just as
+  // well as a passive reconnect does. Scoped to the active hub: see
+  // useRenderClient's own doc.
+  const renderClient = useRenderClient(client, state, activeProfile?.id);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -99,6 +102,7 @@ function PluginsScreenBody({
         key={activeProfile.id}
         client={renderClient}
         connectionState={state}
+        canUseConnection={canUseConnection}
         hubName={activeProfile.name}
         gate={gate}
       />
@@ -111,15 +115,18 @@ function Plugins({
   connectionState,
   hubName,
   gate,
+  canUseConnection,
 }: {
   client: ConversationClientLike;
   connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
+  canUseConnection: () => boolean;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
+  const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
   const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
@@ -176,8 +183,9 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    const outcome = await runGatedMutation(gate, action);
+    const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setActionError(
@@ -186,7 +194,7 @@ function Plugins({
     else if (success) setNotice(success);
   }
   function remove() {
-    if (!selected || busy) return;
+    if (!selected || busy || !canUseConnection()) return;
     const target = selected;
     const version = editorVersion.current;
     Alert.alert(
@@ -198,7 +206,7 @@ function Plugins({
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            if (version === editorVersion.current)
+            if (version === editorVersion.current && canUseConnection())
               void act(() =>
                 state.removePlugin(target.plugin, target.marketplace),
               );
@@ -233,6 +241,8 @@ function Plugins({
           hubName={hubName}
           installed={model}
           gate={gate}
+          ready={ready}
+          canUseConnection={canUseConnection}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
@@ -248,7 +258,7 @@ function Plugins({
           keyboardShouldPersistTaps="handled"
           refreshing={state.pluginsLoading}
           onRefresh={() => {
-            void state.fetchPlugins();
+            if (canUseConnection()) void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -269,9 +279,10 @@ function Plugins({
               <ErrorMessage message={listError} />
               {listError && (
                 <Action
-                  onPress={() => {
+                  disabled={!ready}
+                  onPress={whenReady(canUseConnection, () => {
                     void state.fetchPlugins();
-                  }}
+                  })}
                 >
                   Retry
                 </Action>
@@ -361,7 +372,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(enabled) => {
                     const target = selected;
                     void act(() =>
@@ -379,7 +390,7 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Automatic plugin upgrades"
                   value={entry.autoUpgrade}
-                  disabled={busy}
+                  disabled={busy || !ready}
                   onValueChange={(value) => {
                     const target = selected;
                     void act(() =>
@@ -393,7 +404,7 @@ function Plugins({
                 />
               </View>
               <Action
-                disabled={busy}
+                disabled={busy || !ready}
                 onPress={() => {
                   const target = selected;
                   void act(
@@ -419,7 +430,7 @@ function Plugins({
                   )}
                 </>
               )}
-              <Action disabled={busy} onPress={remove}>
+              <Action disabled={busy || !ready} onPress={remove}>
                 Remove plugin
               </Action>
             </ScrollView>

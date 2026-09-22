@@ -187,6 +187,8 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			hubName="Work hub"
 			installed={createPluginsStore(client)}
 			gate={createPluginMutationGate()}
+			ready={state === "ready"}
+			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
 		/>
 	);
@@ -276,9 +278,11 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	expect(renderedText(tree)).toContain("kept");
 
 	// A manual retry opens a fresh client, and the screen sees it before it is
-	// ready: the replacement store's first read fails with the banner already
-	// over it, and only a recovery read once the connection is ready can land
-	// the list.
+	// ready: the not-yet-ready replacement never displaces the previous client
+	// (useRenderClient adopts it only once ready), so the mounted list keeps
+	// the previous connection's rows under the banner - no doomed first read,
+	// no error copy - and the replacement's own first read lands only once
+	// the connection is ready.
 	const second = new FakeClient("connecting");
 	second.on("evener/plugin/list", () => ({
 		plugins: [plugin("kept"), plugin("added-on-retry")],
@@ -287,7 +291,8 @@ it("recovers a replacement client's failed first read when it becomes ready", as
 	await act(async () => {
 		tree.update(<PluginsScreen {...props} />);
 	});
-	expect(renderedText(tree)).toContain("Could not load installed plugins");
+	expect(renderedText(tree)).toContain("kept");
+	expect(renderedText(tree)).not.toContain("Could not load installed plugins");
 
 	second.state = "ready";
 	harness.connection = connection(second, "ready");
@@ -327,6 +332,8 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 			hubName="Work hub"
 			installed={createPluginsStore(client)}
 			gate={createPluginMutationGate()}
+			ready={state === "ready"}
+			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
 		/>
 	);

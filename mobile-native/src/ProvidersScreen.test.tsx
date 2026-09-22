@@ -193,7 +193,10 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("work");
 
-	harness.connection = { ...harness.connection, client: null, state: "closed", fatal: true };
+	// `client: hub.client` deliberately kept set - a real hubConnection.ts
+	// keeps it set on "closed" too, and this test must prove the wall comes
+	// from `fatal`, not from `client` dropping to null.
+	harness.connection = { ...harness.connection, state: "closed", fatal: true };
 	await act(async () => {
 		tree.update(<ProvidersScreen {...props} />);
 	});
@@ -202,6 +205,136 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 	expect(text).toContain("Connect to");
 	expect(text).toContain("to manage providers.");
 });
+
+it("keeps the provider wall through a fatal retry until the replacement is ready", async () => {
+	const hub = scriptedClient(rows);
+	const replacement = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	harness.connection = { ...harness.connection, state: "closed", fatal: true };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+
+	harness.connection = {
+		...harness.connection,
+		client: replacement.client,
+		state: "connecting",
+		fatal: false,
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	expect(renderedText(tree)).toContain("Connect to");
+	expect(renderedText(tree)).toContain("to manage providers.");
+	expect(replacement.methods).toEqual([]);
+
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+	expect(replacement.methods.length).toBeGreaterThan(0);
+	expect(
+		replacement.methods.every((method) => method === "evener/instance/list"),
+	).toBe(true);
+});
+
+it("keeps the provider editor draft and exposes reconnect inside its modal", async () => {
+	const hub = scriptedClient(rows);
+	const retry = vi.fn();
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry,
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Add provider instance" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Instance name" }).props.onChangeText("draft-name");
+	});
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	const editorInput = tree.root.findByProps({ accessibilityLabel: "Instance name" });
+	expect(editorInput.props.value).toBe("draft-name");
+	const reconnects = tree.root.findAllByProps({ accessibilityLabel: "Reconnect" });
+	expect(reconnects).toHaveLength(2);
+	const modalReconnect = reconnects[reconnects.length - 1];
+	if (!modalReconnect) throw new Error("modal reconnect action was not rendered");
+	await act(async () => {
+		modalReconnect.props.onPress();
+	});
+	expect(retry).toHaveBeenCalledOnce();
+	expect(editorInput.props.value).toBe("draft-name");
+});
+
+it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	const row = tree.root.findAll(
+		(node) =>
+			(node.type as unknown) === "Pressable" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("work"),
+	)[0];
+	await act(async () => {
+		row.props.onPress();
+	});
+	// Named by their button text, which Action forwards as accessibilityLabel
+	// when no separate `label` is given (ui.tsx).
+	const label = (name: string) =>
+		tree.root.findByProps({ accessibilityLabel: name });
+	expect(label("Add provider instance").props.disabled).toBe(false);
+	expect(label("Test credentials").props.disabled).toBe(false);
+	expect(label("Edit instance").props.disabled).toBe(false);
+	expect(label("Clear credentials").props.disabled).toBe(false);
+	expect(label("Remove instance").props.disabled).toBe(false);
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	expect(label("Add provider instance").props.disabled).toBe(true);
+	expect(label("Test credentials").props.disabled).toBe(true);
+	expect(label("Edit instance").props.disabled).toBe(true);
+	expect(label("Clear credentials").props.disabled).toBe(true);
+	expect(label("Remove instance").props.disabled).toBe(true);
+});
+
 /** Presses the one rendered control whose accessibility label matches. */
 function press(tree: ReactTestRenderer, matches: (label: string) => boolean) {
 	const target = tree.root.find(
