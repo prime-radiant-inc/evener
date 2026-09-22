@@ -709,12 +709,12 @@ function Providers({
                         </Action>
                         {instance.authModes?.includes("oauth") && (
                           <Action
-                            disabled={surface.busy || stale || !ready}
-                            onPress={whenReady(canUseConnection, () => {
+                            disabled={surface.busy || stale}
+                            onPress={() => {
                               const name = instance.name;
                               close();
                               onSignIn(name);
-                            })}
+                            }}
                           >
                             {instance.hasStoredOAuth
                               ? "Refresh sign-in"

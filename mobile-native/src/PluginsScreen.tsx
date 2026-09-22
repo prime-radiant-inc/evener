@@ -113,14 +113,12 @@ function Plugins({
   connectionState,
   hubName,
   gate,
-  connectionState,
   canUseConnection,
 }: {
   client: ConversationClientLike;
   connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
-  connectionState: ConnectionState;
   canUseConnection: () => boolean;
 }) {
   const colors = useColors();
