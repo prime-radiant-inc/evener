@@ -889,6 +889,10 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
   const supplied = new Set<string>();
   const record = (leaf: ItemModel): void => {
     for (const [key, value] of Object.entries(leaf)) {
+      // Hydration gives every item an enumerable text property — "" under
+      // the omitted marker when the wire carried none — so key presence
+      // says nothing about text: only the presence check below counts it.
+      if (key === "text") continue;
       if (value !== undefined) supplied.add(key);
     }
     if (itemTextPresence(leaf) === "provided") supplied.add("text");

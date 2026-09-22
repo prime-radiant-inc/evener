@@ -9853,6 +9853,109 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "kt", output: "restored output" }),
       ]);
     });
+
+    // Review round 18, omitted text is not supplied text: hydration gives
+    // every item an enumerable text property — "" under the omitted
+    // marker when the wire carried none — so the fresh-supplied field set
+    // counted text as supplied for every leaf, presence check or not. A
+    // status-only fresh fragment folding an older alias therefore promoted
+    // the alias's inherited stale TEXT over a later sibling's restored
+    // text: text counts as supplied only when a fresh leaf provided it.
+    it("a status-only fresh fragment does not promote inherited stale text", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A retained turn holding a STATUS-ONLY agentMessage fragment:
+      // identity and ordering fields plus a completed status — no text of
+      // its own. The projector rows it under its transcript key.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "rt",
+              [
+                {
+                  id: "msg_7",
+                  type: "agentMessage",
+                  status: "completed",
+                  transcriptKey: "kt",
+                  position: { entry: 60, item: 0 },
+                },
+              ],
+              { inputTokens: 60, outputTokens: 6 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ id: "msg_7", transcriptKey: "kt", status: "completed" }),
+      ]);
+
+      // The next page carries the fragment's KEYLESS alias — holding the
+      // STALE text — followed by a keyed sibling holding the restored
+      // text. The status-only fragment folds into the keyless alias: the
+      // merged item is fresh through the status, but the text it carries
+      // came from the older alias, so the restored sibling's text must
+      // still win the reconciliation.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "msg_7",
+                  type: "agentMessage",
+                  text: "stale text",
+                  position: { entry: 60, item: 0 },
+                },
+                {
+                  id: "msg_8",
+                  type: "agentMessage",
+                  text: "restored text",
+                  status: "completed",
+                  transcriptKey: "kt",
+                  position: { entry: 61, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kt", text: "restored text" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
