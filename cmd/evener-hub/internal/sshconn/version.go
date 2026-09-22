@@ -630,22 +630,27 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 // completed by the next Ensure, which is what ErrRestart promises. There is no
 // hub to kill here, so it runs the recorded command directly and waits for the
 // expected build to answer.
-func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, pending pendingRestartState) error {
+func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) error {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, pending.command), nil)
 	if err != nil {
 		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
 	expected := m.opts.controllerVersion()
-	// A recorded START has no predecessor to exclude (bootstrapHub only starts a
-	// hub where nothing was serving), so the expected version alone decides. A
-	// recorded REPLACEMENT must still prove the process that answers is different
-	// from the one it recorded: for an unverifiable version an unknown start time
-	// on either side proves nothing, and the restart stays pending.
+	// Both branches wait for the build the host will actually serve, which
+	// startExpectation resolves exactly as the bootstrap that recorded the start
+	// resolves it: waiting for the controller's version would strand a host that
+	// kept its own build at the last step of its own recovery. A recorded START has
+	// no predecessor to exclude (bootstrapHub only starts a hub where nothing was
+	// serving), so that expectation alone decides. A recorded REPLACEMENT must
+	// additionally prove the process that answers is different from the one it
+	// recorded: for an unverifiable version an unknown start time on either side
+	// proves nothing, and the restart stays pending.
 	var waitErr error
+	startVersion, startPin := m.startExpectation(facts, expected)
 	if pending.start {
-		waitErr = m.waitStartedHealthy(ctx, host, expected, snapshotPinGitSHA())
+		waitErr = m.waitStartedHealthy(ctx, host, startVersion, startPin)
 	} else {
-		waitErr = m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), pending.replaced)
+		waitErr = m.waitHealthy(ctx, host, startVersion, startPin, pending.replaced)
 	}
 	if waitErr != nil {
 		return waitErr
@@ -1166,16 +1171,45 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 // process whose health body carries no started_at would satisfy it.
 //
 // expectedGitSHA is the snapshot pin described by snapshotPinGitSHA, resolved by
-// the caller exactly as waitHealthy takes it. A start passes one too: the binary
-// it launches is the one on disk, but "on disk" was accepted by the
-// version-equality rule, and a snapshot version cannot tell two builds apart —
-// so a start on a stopped host (a deploy that found no hub present, or a first
-// attach to a host already running a foreign snapshot build of the same version)
-// would otherwise attach to a commit this controller did not install. The pin is
-// the only build evidence a start can offer; an empty pin leaves a non-snapshot
+// the caller exactly as waitHealthy takes it. A start passes one when the host
+// carries this controller's build: the binary it launches is then the one a
+// deploy installed, and a snapshot version cannot tell two builds apart — so a
+// start on a stopped host (a deploy that found no hub present, or a first attach
+// to a host already running a foreign snapshot build of the same version) would
+// otherwise attach to a commit this controller did not install. The pin is the
+// only build evidence a start can offer; an empty pin leaves a non-snapshot
 // start on the version-equality rule unchanged.
+//
+// Neither argument is unconditionally the controller's own build: a host that
+// kept its own binary is started and judged against THAT build, and against no
+// pin at all. startExpectation decides which, and why.
 func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
 	return m.waitForHealthyHub(ctx, host, expectedVersion, expectedGitSHA, hubIdentity{}, false)
+}
+
+// startExpectation decides what a hub this Manager STARTS must report before the
+// bridge attaches: the version to wait for, and the snapshot pin that goes with
+// it.
+//
+// The controller's own build is the answer only when the host actually carries
+// it. A configured deploy path converges the host onto this controller's build,
+// and the deployed build's identity is judged before any start, so by the time a
+// start runs the host either already carries the controller's build or nothing
+// was ever going to install one. Waiting for the controller's version in the
+// second case could never converge — a binary cannot report a version it does not
+// carry — and would refuse a working, protocol-compatible host at the last step,
+// which is exactly the refusal the attach path no longer makes (ensureOnce). The
+// snapshot pin is dropped for the same reason: it names the controller's commit,
+// which a host that kept its own build was never given.
+//
+// A foreign build is still allowed to be foreign here only because the host
+// answered the controller's launch-check, so the protocol matches; that is the
+// attach path's rule, and this is its last step.
+func (m *Manager) startExpectation(facts Preflight, expected string) (version, gitSHA string) {
+	if facts.LaunchCheckKnown && facts.Version != expected {
+		return facts.Version, ""
+	}
+	return expected, snapshotPinGitSHA()
 }
 
 // waitForHealthyHub is the shared poll behind waitHealthy and

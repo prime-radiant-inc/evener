@@ -286,9 +286,9 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 		if errors.Is(err, errExecutableMissing) {
 			// The host has no evener at the resolved path and no deploy path is
 			// configured (the branch above defers the same error when one is), so
-			// nothing can install the binary. Call it terminally with the remedy the
-			// terminal version refusal carries: the hub's flags when it supplied
-			// Options.DeployHelp, else the library's own field.
+			// nothing can install the binary. Call it terminally with the remedy this
+			// refusal carries: the hub's flags when it supplied Options.DeployHelp,
+			// else the library's own field.
 			return pf, fmt.Errorf("%w: %s", err, m.deployHelp())
 		}
 		return pf, err

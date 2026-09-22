@@ -751,11 +751,12 @@ Two paths, chosen per host (open question: which wins when both are viable):
 
   **Dev builds must not auto-match.** `buildinfo.Version()` returns `"dev"`
   whenever `GitSHA` is empty (`buildinfo/buildinfo.go`), so an unstamped
-  controller has no identity to deploy. Rule: when the controller's own
-  `buildinfo.Version()` is `"dev"`, auto-match is *disabled* — attach only to a
-  host reporting exactly `"dev"`, and refuse a mismatch with `ErrDeploy`
-  (message: the controller build carries no identity to deploy) instead of
-  pushing a binary that cannot be distinguished from what is already there.
+  controller has no identity to deploy: pushing its own tree would produce a
+  binary that cannot be distinguished from what is already on the host. Rule:
+  when the controller's own `buildinfo.Version()` is `"dev"`, auto-match is
+  *disabled*. With a deploy path the forced deploy still runs and both sides end
+  up on the same unstamped build; with no deploy path the host keeps its own
+  build and is attached, because a build version is not an attach gate (§5).
   Operators who want auto-match on a dev controller must supply the identity
   (e.g. `-X buildinfo.GitSHA=…`, or a configured binary via `Options.BuildBinary`).
 
@@ -970,14 +971,25 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
 - **On-disk identity (deploy decision).** Compare controller
   `buildinfo.Version()` (`buildinfo.go`) with the host's `launch-check`
   `version`. `launch-check` reports the binary at `evener_path`/`PATH`, which is
-  exactly what a deploy replaces: equal → attach directly; different → the
-  controller is the version authority (design §2) and deploys the matching
-  build (§4), restarts, then re-attaches. The deploy stamps the controller's own
-  buildinfo (`-X buildinfo.GitSHA=…`, `-X buildinfo.BuildTime=…`) into the
-  pushed binary, so a deployed binary's `launch-check` version equals the
-  controller's `buildinfo.Version()`. A `"dev"` controller does not auto-match
-  (§4): an unstamped build has no identity to deploy, so a mismatching host is
-  refused rather than "matched" by pushing another `dev` binary.
+  exactly what a deploy replaces: equal → attach directly; different **and a
+  deploy path is configured** → the controller is the version authority
+  (design §2) and deploys the matching build (§4), restarts, then re-attaches.
+  The deploy stamps the controller's own buildinfo (`-X buildinfo.GitSHA=…`,
+  `-X buildinfo.BuildTime=…`) into the pushed binary, so a deployed binary's
+  `launch-check` version equals the controller's `buildinfo.Version()`.
+  A different version with **no** deploy path is not an attach gate: the host
+  answered the controller's `launch-check`, so it speaks the same protocol, and
+  it keeps its own build and is attached. The difference is reported
+  (`ensureOnce`'s skew notice) rather than refused, and no snapshot pin applies
+  to a build this controller did not install. Gating on the version label
+  instead refused working hosts — an unstamped `"dev"` host against a stamped
+  controller, a host built from another checkout — and told the operator to
+  configure a deploy path they did not need. `launch-check` itself refuses any
+  protocol but its own (`launchcheck.go:72-74`) and
+  `appwire.Client.Initialize` enforces the protocol again at the wire, so the
+  protocol is the compatibility contract and the build label is not. A `"dev"`
+  controller does not auto-match (§4): an unstamped build has no identity to
+  deploy, so a mismatching host is not "matched" by pushing another `dev` binary.
 - **Running-hub identity (the restart trigger and the verification).** The
   binary on disk is *not* proof of what the running process executes: a running
   hub keeps executing the copy it was started from until it is restarted. The
@@ -1490,11 +1502,16 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                         ├─ verified missing executable? (fresh host)
                         │     └─ deploy/install (creates the missing run target:
                         │          push, else the installer fallback) → re-run preflight
-                        ├─ protocol/version != controller?
+                        ├─ protocol != controller?    → cannot attach: no deploy
+                        │     changes the protocol a binary speaks
+                        ├─ version != controller, and a deploy path can fix it?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
                         │     └─ restart host hub (identify → supervisor, else refuse ErrRestart)
                         │          → Runner.Run on the host: curl /api/health
-                        │            → answer + running version == deployed build
+                        │            → answer + running version == the expected build
+                        ├─ version != controller with nothing to deploy?
+                        │     → attach on the host's own build: the protocol is the
+                        │       compatibility contract, so the difference is reported
                         ├─ Runner.Start: ssh <dest> <evener_path> hub attach --stdio
                         │     ├─ stdin  ← StreamTransport.Send
                         │     ├─ stdout → StreamTransport.Recv
@@ -1720,9 +1737,11 @@ with the remote hub and its daemons still running.
 2. Default `make test` performs no SSH: the live test skips unless
    `EVENER_SSH_E2E=1` is set (verify with `go test -v` output showing `SKIP`,
    and by no test importing `os/exec` reachable without the env gate).
-3. `Ensure` on a host whose `version` differs deploys the matching
-   `GOOS`/`GOARCH` build and restarts the host hub before attaching; on a
-   matching version it attaches with no deploy (`Runner.Run` argv log asserted).
+3. `Ensure` on a host whose `version` differs **and with a deploy path configured**
+   deploys the matching
+   `GOOS`/`GOARCH` build and restarts the host hub before attaching; on a matching
+   version, or with no deploy path to converge it, it attaches without deploying
+   (`Runner.Run` argv log asserted).
    The deploy argv stamps the controller's buildinfo (`-ldflags`), and a `"dev"`
    controller does not auto-match. The restart is verified **on the host** by
    `curl …/api/health` run through `Runner.Run` — the running hub must report
@@ -1758,9 +1777,11 @@ with the remote hub and its daemons still running.
     link-down, and there is no receive-inactivity deadline). Link-down is
     detected from the ssh child's exit or a `Recv` error/`EOF`, and either
     enters `reconnecting`.
-12. The restart is entered when either the on-disk or the running `version`
-    differs from the controller's build, and the post-restart verification
-    requires the running hub to report the expected `version`; no host-side
+12. The restart is entered when a deploy replaced a present hub, or when the
+    running `version` differs while the on-disk build already matches — an on-disk
+    difference with nothing to deploy attaches instead of restarting — and the
+    post-restart verification requires the running hub to report the expected
+    `version`; no host-side
     timestamp and no clock comparison is used.
 13. A wildcard-bound hub (`0.0.0.0:<port>` / `::`) is restart-eligible:
     identification normalizes the configured `addr` to loopback exactly as the
@@ -1780,8 +1801,10 @@ with the remote hub and its daemons still running.
     (`Preflight.Home`), so no relative or unexpanded-`~` path reaches install,
     launch, health, or restart.
 15. A first attach to a host whose hub is not running starts the identified
-    supervisor (or the detached ad hoc launch), waits for `/api/health`
-    `version == expected`, and attaches only after it matches; an address a hub
+    supervisor (or the detached ad hoc launch), waits for `/api/health` to report
+    the build the started binary actually carries — the controller's when a deploy
+    converged the host, the host's own otherwise (`startExpectation`) — and attaches
+    only after it matches; an address a hub
     already owns starts nothing, and a hub that never becomes healthy attaches
     nothing and fails with `ErrRestart`. An **ambiguous** unit-definition match
     starts nothing and fails with `ErrRestart` (never an ad hoc duplicate, and

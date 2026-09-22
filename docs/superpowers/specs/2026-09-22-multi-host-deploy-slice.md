@@ -33,6 +33,11 @@ every real hub, and `ensureOnce` refuses a version difference terminally at
 `manager.go:1603`. On a host with no `evener` at all, the same absence is why
 the preflight's `launch-check` cannot even answer.
 
+*(Read the last sentence as the state this slice was written against. The version
+refusal at `manager.go:1603` was withdrawn on 2026-09-22: a protocol-compatible
+host attaches whatever build it runs, so that line no longer exists. The deploy
+gap this section describes is what the slice closed, and it still stands.)*
+
 The deploy half is therefore dead code in production, and the fleet flow stops
 exactly where a user needs it most: adding a second machine.
 
@@ -74,12 +79,12 @@ observability needs to be invented.
 `canDeploy()`; `devUnverified` is `isUnverifiableVersion(expected) &&
 deployPossible && !isDevDeployed(name)`; the branch is `(deployNeeded &&
 deployPossible) || devUnverified`. Read carefully, this means a **dev**
-controller behaves in two different ways: with no deploy path it refuses (its
-`expected` is `"dev"`, so a mismatch reaches the terminal refusal at `:1603`),
-and with a deploy path it *forces* a deploy so that both sides end up running
-the same unstamped build. This is a refinement of the parent spec's "dev builds
-must not auto-match" (`04:752-760`), which was written before that path existed;
-the code's version is the one that holds today.
+controller behaves in two different ways: with no deploy path it attaches — a
+build version is not an attach gate (`04` §5), and a `"dev"` controller speaks
+the same protocol as the host — and with a deploy path it *forces* a deploy so
+that both sides end up running the same unstamped build. This is a refinement of
+the parent spec's "dev builds must not auto-match" (`04:752-760`), which was
+written before that path existed; the code's version is the one that holds today.
 
 **Two divergences this slice must settle, not paper over.**
 
@@ -248,11 +253,14 @@ pins the channel source, the wait, the restart wiring, and the start wiring.
   that cannot be confirmed is a **failed verification** and never an attach
   (`04:826-831`).
 - **Refusals** keep their existing types and gain actionable messages. The
-  terminal version refusal names `-deploy-binary` and `-build-source` when no
-  deploy path is configured. It does **not** say *why* no path is available
-  (dev/dirty/snapshot): that clause was in an earlier draft of this Contract and
-  is not in the shipped message, which says only that no build source is
-  configured to deploy the controller's build (criterion 5, Evidence). A deploy
+  refusals that name `-deploy-binary` and `-build-source` are the ones with
+  nothing to install: the missing-executable preflight refusal and the installer
+  fallbacks. None says *why* no path is available (dev/dirty/snapshot): that
+  clause was in an earlier draft of this Contract and is not in the shipped
+  messages, which say only that no build source is configured to deploy the
+  controller's build. (The terminal *version* refusal that also carried this
+  remedy was withdrawn on 2026-09-22 — a protocol-compatible host attaches
+  whatever build it runs; criterion 5, Evidence.) A deploy
   that used a configured path but left the host on another build is a separate
   terminal refusal, `ErrDeployUnstamped` (criterion 8). `sshconn` is a library
   and must not learn the CLI's flag names, so the names arrive through `Options`
@@ -353,13 +361,15 @@ default case (no `evener_path`) always resolves to the installer's own
    records, not inferred.
 4. With neither set, behavior is today's, except the refusal names
    `-deploy-binary` and `-build-source`.
-5. A dev controller with no deploy path refuses terminally, and its message names
-   `-deploy-binary`/`-build-source`; a dev controller **with** a deploy path
-   forces the deploy (the `devUnverified` rule at `manager.go:1738-1746`) and the
-   host ends up on the same unstamped build. The refusal and the forced deploy
-   are asserted. The refusal does **not** say the controller build carries no
-   identity to deploy: it says only that no build source is configured. That
-   clause is not claimed here or in the Contract (Evidence, criterion 5).
+5. A dev controller with no deploy path attaches: the host answers the
+   controller's `launch-check`, so the protocol matches, and a build version is
+   not an attach gate (`04` §5). A dev controller **with** a deploy path forces
+   the deploy (the `devUnverified` rule at `manager.go:1738-1746`) and the host
+   ends up on the same unstamped build. Both are asserted. **Superseded
+   2026-09-22:** this criterion previously required the no-deploy-path case to
+   refuse terminally. That refusal was withdrawn because it refused working,
+   protocol-compatible hosts and named a remedy the operator did not need; the
+   difference is reported instead (Evidence, criterion 5).
 6. A dirty controller refuses the push path and the installer fallback, each
    message naming the remedy.
 7. Per D4: the amended snapshot rule is the asserted one — the installer path is
@@ -399,24 +409,25 @@ coverage.
    and `TestDeployPrefersTheOperatorArtifactOverTheBuildSource` (the manager's
    dispatch, asserted on the argv the fake runner records and the bytes the push
    streams).
-4. **Pinned** — `TestVersionMismatchRefusalKeepsDefaultRemedy`,
-   `TestVersionMismatchRefusalNamesSuppliedDeployHelp`,
-   `TestHubDeployHelpNamesBothFlags`, `TestDeployWiringWithNeitherSetsHelpOnly`,
-   `TestRunMainWithoutDeployFlagsStarts`: no build seam is installed, the hub
-   still starts, and the refusal names both flags. The seam is pinned on all
-   three sides: the hub's help text, the sshconn refusal, and the line that
+4. **Pinned** — `TestHubDeployHelpNamesBothFlags`,
+   `TestDeployWiringWithNeitherSetsHelpOnly`, `TestRunMainWithoutDeployFlagsStarts`,
+   and `TestPreflightMissingExecutableCarriesTheDeployRemedy` (the one remaining
+   sshconn refusal that carries the remedy): no build seam is installed, the hub
+   still starts, and each remaining refusal names both flags. The seam is pinned
+   on all three sides: the hub's help text, the sshconn refusal, and the line that
    passes the former as `Options.DeployHelp` (`main.go`) —
    `TestRunMainPassesDeployHelpToTheSSHManager` captures the `sshconn.Options` the
    hub hands the manager through the deps seam, so removing that wiring fails.
-5. **Pinned.** The refusal:
-   `TestDevControllerWithoutADeployPathRefuses` (terminal `ErrVersionMismatch`,
-   the flags named, no attach). The forced deploy:
-   `TestDevControllerWithADeployPathForcesTheDeploy` (the decision, and the
-   build the decision produces). What those tests do **not** pin, and this spec
-   no longer claims, is an identity wording: the shipped refusal says only that
-   no build source is configured to deploy the controller's build. The Contract
-   and the criterion above were narrowed to that shipped message rather than
-   adding a why-clause to the refusal.
+5. **Pinned.** The attach: `TestDevControllerWithoutADeployPathAttaches` (a dev
+   controller with no deploy path attaches to a host running another build),
+   with `TestEnsureAttachesToAnotherBuildWhenProtocolMatches` (a stamped
+   controller against a host on another build, the skew reported) and
+   `TestFirstAttachBootstrapsStoppedHostOnAnotherBuild` (the same host stopped:
+   the bootstrap start is judged against the build the host runs). The forced
+   deploy: `TestDevControllerWithADeployPathForcesTheDeploy` (the decision, and
+   the build the decision produces). **Superseded 2026-09-22:** this row pinned
+   `TestDevControllerWithoutADeployPathRefuses` until the refusal was withdrawn
+   (criterion 5); the identity wording it noted as unclaimed stays unclaimed.
 6. **Pinned** — `TestDirtyControllerRefusalsNameTheRemedy` (both refusals and
    each remedy clause), with `TestRound13DirtyControllerDeployRefusalIsTerminal`
    pinning the push refusal's type and terminality.
@@ -444,8 +455,10 @@ coverage.
    facts match still attaches. `TestHostAttachTerminalFailuresAreTypedWireErrors`
    pins the hub-side mapping of `ErrDeployUnstamped` to `HubLaunchError`. The
    gate is the refreshed-facts version comparison in `ensureOnce`
-   (`manager.go`), which had been gated on `!canDeploy()`. The installer path
-   keeps its own post-install check (`deployInstaller`'s `probeLaunchCheck`).
+   (`manager.go`), judged only where a deploy ran. The installer path
+   keeps its own post-install check (`deployInstaller`'s `probeLaunchCheck`). A
+   pass that merely started or restarted the hub is not judged here: it launched
+   the build already on disk, which the host is allowed to keep (2026-09-22).
 9. **Pinned** — `TestHostDeployNoEvenerE2E` skips with a message naming
    `EVENER_SSH_E2E_DEPLOY=1`, `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST`, so
    the default `go test` runs no ssh and writes to no host; the deploy unit
