@@ -83,16 +83,18 @@ the code's version is the one that holds today.
 
 **Two divergences this slice must settle, not paper over.**
 
-- **The installer fallback's reference for a snapshot controller.** The parent
-  spec says the fallback is *release-only* (`04:1064` calls it "a build the
-  installer fallback can no longer produce, since it is release-only") and that
-  a snapshot controller is **refused** rather than left holding a build from a
-  commit the controller never intended (`04:783-800`, which rejects
+- **The installer fallback's reference for a snapshot controller (decided, D4).**
+  The parent spec says the fallback is *release-only* (`04:1064` calls it "a
+  build the installer fallback can no longer produce, since it is release-only")
+  and that a snapshot controller is **refused** rather than left holding a build
+  from a commit the controller never intended (`04:783-800`, which rejects
   "run the installer first and discover the mismatch afterwards" in as many
   words). The code does the opposite: `installerRefFor` (`deploy.go:615-640`)
-  returns the mutable `snapshot` tag for `channel == "snapshot"` (`:627`), and
-  its own comment defends that as a deliberate choice with a terminal refusal
-  once the tag moves past the controller's commit. Both cannot stand.
+  returns the mutable `snapshot` tag for `channel == "snapshot"` (`:627`), with
+  a terminal refusal once the tag moves past the controller's commit. Jesse
+  ruled the code's behavior correct and the parent spec wrong, so **this slice
+  corrects the parent spec** rather than the code; D4 states the amendment and
+  what it has to be honest about.
 - **The snapshot push path's identity check.** The parent spec is explicit that
   for a snapshot controller the push path is the surviving deploy path, and that
   a version-only health check cannot tell two snapshot builds apart, so
@@ -129,27 +131,21 @@ download-by-URL path in this slice: the parent spec's own analysis is that a
 snapshot controller has no immutable reference to fetch by, and inventing one
 here would relitigate §4.
 
-### D2 — what consents to a write on a host
+### D2 — what consents to a write on a host (decided: controller-level only)
 
-Today nothing does: `canDeploy()` is purely "is a path configured", and a
-configured path would deploy to every host the operator connects.
+Jesse ruled: this slice lands **controller-level behavior only**. Configuring a
+deploy path on the controller is the consent; the per-host `deploy = "auto" |
+"never"` field is deferred to its own slice.
 
-**Recommendation:** treat *configuring a deploy path on the controller* as the
-consent, and land controller-level behavior in this slice. The design doc
-already decided auto-match on attach, so a per-host opt-in would contradict it;
-a source or binary is a deliberate act by the operator who runs the controller;
-and the blast radius is that operator's own hosts, over that operator's own
-credentials.
-
-The narrow per-host escape hatch is worth having as the **next** small slice,
-not this one: a `deploy = "auto" | "never"` field on the `[[hosts]]` entry
-refuses the deploy and attaches only when the host already matches. Deferred
-because it changes the config schema, `hostreg.Host`, the `HostEntry` wire type,
-and the host edit dialog that just shipped — four surfaces that each deserve
-their own review and none of which the mechanism needs to work.
-
-**Your call:** controller-level only (recommended), or pull the per-host field
-in as well.
+The reasoning, for the record: `canDeploy()` is today purely "is a path
+configured" (`manager.go:2459`), so a configured path would deploy to every host
+the operator connects. That is acceptable because the design doc already decided
+auto-match on attach, because a source or binary is a deliberate act by the
+operator who runs the controller, and because the blast radius is that
+operator's own hosts over that operator's own credentials. The per-host field
+remains worth having — it changes the config schema, `hostreg.Host`, the
+`HostEntry` wire type, and the host edit dialog that just shipped, four surfaces
+that each deserve their own review and none of which the mechanism needs.
 
 ### D3 — what the user sees
 
@@ -159,24 +155,35 @@ in as well.
 hub should log the leg — path used, source, host, target — with no secret and no
 file contents in either place.
 
-### D4 — the installer fallback for a snapshot controller
+### D4 — the installer fallback for a snapshot controller (decided: amend the parent spec)
 
-The parent spec says release-only and refuses snapshot before the installer
-runs; the code admits the mutable tag and refuses after. **Recommendation:
-enforce the spec.** The spec's reasoning is the stronger one: the tag is
-mutable, so "the checksum matches" proves nothing about which commit was
-installed, and a post-hoc refusal has already replaced the host's binary with a
-build the controller never intended — possibly a *newer* one, which is the
-worst case for a controller that is supposed to be the version authority. The
-cost is that a snapshot controller must use the push path (now available, per
-D1) instead of the installer.
+Jesse ruled the **code's** behavior correct and the parent spec's rule wrong.
+So this slice does not change `installerRefFor`; it **corrects component 04's
+spec** to state the rule the code implements:
 
-If the code's behavior was in fact the deliberate later decision, the parent
-spec is what gets corrected instead — but then that correction is part of this
-slice, stated in the spec, and not left as a silent divergence.
+- release channel: the stamped `ReleaseTag` (a Git SHA is never a substitute),
+  and a release build carrying no stamped tag is refused (`ErrDeploy`) rather
+  than passed a SHA;
+- snapshot channel: the mutable `snapshot` tag, accepted **as a best-effort
+  pin**, verified after the install by the same on-host identity check, and
+  refused **terminally** once the tag no longer points at this controller's
+  commit — instead of re-fetching the same artifact forever;
+- dev/dirty: refused (`ErrDeploy`), as today;
+- `latest` is never passed.
 
-**Your call:** enforce release-only (recommended), or amend the parent spec to
-the code's rule.
+The amendment must be honest about the trade it accepts, because the spec's
+previous text rejected exactly this and that objection does not evaporate by
+being overruled. What the accepted trade means in practice: for a snapshot
+controller, the installer path writes a binary whose commit is **not provable
+from the artifact reference**, and the proof arrives only afterwards. So the
+failure mode the old text named is real and remains: after the tag moves past
+the controller's commit, the install has already replaced the host's binary, and
+the deploy reports failure while the host holds a snapshot build from an unknown
+(possibly newer) commit. What makes it acceptable is the remedy and its cost:
+the push path — now actually available, per D1 — is the path that carries a
+provable identity, and the operator is told so by the terminal refusal's
+message. The amendment states that, instead of claiming an immutability the tag
+does not have.
 
 ### D5 — the snapshot push path's identity check
 
@@ -185,11 +192,12 @@ controller, which makes the parent spec's `backend_git_sha` requirement
 (`04:1064-1094`) load-bearing rather than a nicety: a version-only check cannot
 tell two snapshot builds sharing a `version` apart.
 
-**Recommendation:** implement it in this slice — `waitHealthy` takes the
-expected Git SHA and treats a missing or mismatched `backend_git_sha` as not yet
-healthy for a snapshot pin, exactly as the parent spec describes. It is small,
-it closes a tracked follow-up, and without it this slice's own wiring would
-deploy snapshot builds it cannot distinguish.
+**Recommendation, included in this slice unless you strike it:** implement it —
+`waitHealthy` takes the expected Git SHA and treats a missing or mismatched
+`backend_git_sha` as not yet healthy for a snapshot pin, exactly as the parent
+spec describes. It is small, it closes a tracked follow-up (`04:1064-1094`
+calls it out as "not a present fact"), and this slice is what makes snapshot
+deploys reachable, so leaving it out would ship the wiring that needs it.
 
 ## Contract
 
@@ -216,7 +224,14 @@ deploy snapshot builds it cannot distinguish.
 - **Refusals** keep their existing types (`ErrVersionMismatch`, `ErrDeploy`,
   `ErrRestart`) and gain actionable messages: the terminal version refusal names
   `-deploy-binary` and `-build-source`, and says *why* no path is available when
-  the controller is dev, dirty, or (per D4) snapshot.
+  the controller is dev, dirty, or snapshot. `sshconn` is a library and must not
+  learn the CLI's flag names, so the names arrive through `Options` — one field
+  holding the help text the hub fills in, empty when the embedder has no flags
+  to name, with the manager's own sentence as the default. Tests assert both the
+  default and the wired form.
+- **Deliverables beyond the code**: the component 04 spec correction (D4), the
+  `docs/evener-hub.md` deploy section (what to set, what gets written where,
+  what is refused), and this slice's own spec kept true to what lands.
 - **No new state, no new wire type, no frontend change.** `StateDeploying`
   already exists; the row's `lastAttachError` already carries the reason.
 
@@ -271,11 +286,12 @@ deploy snapshot builds it cannot distinguish.
    Both halves are asserted.
 6. A dirty controller refuses the push path and the installer fallback, each
    message naming the remedy.
-7. Per D4: a snapshot controller is either refused the installer fallback (if
-   release-only is enforced) or admitted through the mutable tag (if the parent
-   spec is amended) — asserted one way, with the parent spec and the code
-   agreeing afterwards. Per D5, a snapshot controller's deploy is confirmed by
-   `backend_git_sha`, not by `version` alone.
+7. Per D4: the amended snapshot rule is the asserted one — the installer path is
+   admitted for a snapshot controller, the post-install identity check is what
+   confirms the build, and a controller whose commit the tag has moved past is
+   refused terminally with a message naming the push path. Per D5, a snapshot
+   deploy is confirmed by `backend_git_sha`, not by `version` alone. Component
+   04's spec and the code state the same rule afterwards.
 8. A pushed artifact whose on-host identity does not match is a failed
    verification and never an attach.
 9. `make test` and `go test ./...` stay free of SSH, free of any Go-toolchain
