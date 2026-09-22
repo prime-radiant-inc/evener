@@ -1278,7 +1278,7 @@ describe("promote", () => {
     });
   });
 
-  test("promote passes the row's text (or the daemon preview placeholder) into the optimistic display", async () => {
+  test("promote passes the row's text (or the row's stripped preview) into the optimistic display", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
       evener: {
@@ -1286,11 +1286,11 @@ describe("promote", () => {
         capabilities: CAPABILITIES,
         queue: {
           revision: 0,
-          depth: 2,
-          ids: ["q1", "q2"],
-          texts: ["hello", ""],
-          preview: ["hello", "[image]"],
-          skillNames: [["pkg:probe"], []],
+          depth: 3,
+          ids: ["q1", "q2", "q3"],
+          texts: ["hello", "", ""],
+          preview: ["hello", "[image]", "[skill]"],
+          skillNames: [["pkg:probe"], [], ["pkg:audit"]],
         },
       },
     });
@@ -1311,11 +1311,17 @@ describe("promote", () => {
     await act(async () => {
       fireEvent.click(within(rows[1]!).getByRole("button", { name: /steer now/i }));
     });
-    // Both presses must have committed their durable enqueues before the
+    // The skill-only row (generic "[skill]" preview, no text) must promote with
+    // a blank display text: the ghost renders the named marker alone, matching
+    // the queue row, instead of doubling it behind the raw placeholder.
+    await act(async () => {
+      fireEvent.click(within(rows[2]!).getByRole("button", { name: /steer now/i }));
+    });
+    // Every press must have committed its durable enqueue before the
     // projection read: a wire call only happens after its enqueue, so this
     // wait - not a timer - is what makes the read below race-free.
     await waitFor(() => {
-      expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(2);
+      expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(3);
     });
     await refreshPendingTurnsProjection("ref_a");
     // The display input is observable where it lands: the optimistic promote
@@ -1324,6 +1330,7 @@ describe("promote", () => {
     expect(entries).toEqual([
       expect.objectContaining({ text: "hello", skillNames: ["pkg:probe"] }),
       expect.objectContaining({ text: "[image]" }),
+      expect.objectContaining({ text: "", skillNames: ["pkg:audit"] }),
     ]);
   });
 });

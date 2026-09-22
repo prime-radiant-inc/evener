@@ -524,10 +524,14 @@ export function QueueStrip({
                   }
                   onClick={() => {
                     if (entryId !== undefined) {
-                      // The ghost's display text: the row's full text, or the daemon's own
-                      // preview placeholder when the row is image-only (its whole content).
+                      // The ghost's display text: the row's full text, or - for a
+                      // blank row - the same stripped preview the row renders
+                      // above: the image placeholder for an image-only row (its
+                      // whole content), and nothing for a skill-only row, where
+                      // the named markers carry the whole content and the raw
+                      // "[skill]" placeholder would only double it.
                       const rowText = fullText ?? "";
-                      const displayText = rowText.trim() !== "" ? rowText : (preview?.[index] ?? "");
+                      const displayText = rowText.trim() !== "" ? rowText : previewText;
                       void handlePromote(index, entryId, displayText, entrySkillNames);
                     }
                   }}
