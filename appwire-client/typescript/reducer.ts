@@ -427,7 +427,7 @@ const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResul
 // entry). Collapse them the way the live path already produces a single item:
 // the call supplies id + argumentsJSON + startedAt, the result supplies output +
 // error + exitCode + completedAt + settled status. A turn emptied by the merge is
-// dropped so its TurnSeparator does not survive. (zrzr)
+// dropped unless it was already empty or carries canonical turn metadata. (zrzr)
 // Item payloads lose page ownership during retained placement. Keep the
 // original source values beside the folded turns so inherited fields do not
 // acquire the freshness of the item that carried them. The merge tree records
@@ -554,8 +554,9 @@ type ToolFoldView = {
   fresh: Map<string, ToolCandidates>;
   older: Map<string, ToolCandidates>;
   resultCallIds: Set<string>;
-  // The fold rewrites calls and drops emptied turns only when some call id
-  // has a result to fold in; otherwise it returns the turns unchanged.
+  // The fold rewrites calls and drops emptied turns (unless they were already
+  // empty or carry canonical turn metadata) only when some call id has a
+  // result to fold in; otherwise it returns the turns unchanged.
   noOp: boolean;
 };
 
@@ -621,7 +622,9 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
       }
       items.push(item);
     }
-    if (items.length > 0) merged.push({ ...turn, items });
+    if (items.length > 0 || turn.items.length === 0 || turnCoverageFields.some((field) => turn[field] !== undefined)) {
+      merged.push({ ...turn, items });
+    }
   }
   return merged;
 }
@@ -1165,15 +1168,21 @@ function fullySupersededToolResult(older: ItemModel, view: ToolFoldView) {
 // proves its older data survives the fold, through the fold's own view of
 // the placed turns:
 // - Turn fields only ever land on the merged group turn, never on another
-//   turn, and the fold drops a turn it has emptied of items — a claim riding
-//   a dropped turn reports history the merge throws away.
+//   turn, and the fold drops a turn it has emptied of items unless it was
+//   already empty or carries canonical turn metadata — a claim riding a
+//   dropped turn reports history the merge throws away.
 // - The fold removes a tool RESULT whose call survives elsewhere, carrying
 //   only its toolResultFields onto the surviving call by fresh-first
 //   precedence. A claimed fallback field outside toolResultFields dies with
 //   the removed result; a toolResultField survives only while no fresh
 //   candidate for that call id supplies a value of its own.
 function turnSurvivesFold(turn: TurnModel, view: ToolFoldView): boolean {
-  return view.noOp || turn.items.some((item) => !isFoldedResult(item, view));
+  return (
+    view.noOp ||
+    turn.items.length === 0 ||
+    turnCoverageFields.some((field) => turn[field] !== undefined) ||
+    turn.items.some((item) => !isFoldedResult(item, view))
+  );
 }
 
 function isFoldedResult(item: ItemModel, view: ToolFoldView): boolean {
@@ -1362,8 +1371,9 @@ function olderTurnAddsCoverage(
     )
   ) {
     // The claimed turn fields ride the merged group turn, which the fold
-    // drops once it has folded every item away — usage on a turn the fold
-    // drops never reaches the returned history. The turn's items can still
+    // drops once it has folded every item away unless it was already empty
+    // or carries canonical turn metadata — usage on a turn the fold drops
+    // never reaches the returned history. The turn's items can still
     // contribute data the fold carries onto a surviving call, so keep
     // checking instead of returning.
     if (turnSurvivesFold(groupTurn, view)) return true;
