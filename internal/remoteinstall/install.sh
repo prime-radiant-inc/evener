@@ -16,6 +16,20 @@ fi
 
 bindir=${BINDIR:-$prefix/bin}
 share_bindir=${EVENER_SHARE_BINDIR:-$prefix/share/evener/bin}
+
+# Relative install paths resolve against the caller's working directory, and
+# the symlink created below resolves its target against the symlink's own
+# directory, so a relative value produces a broken install rather than a
+# movable one. Fail loudly before anything is downloaded or created.
+for install_path in "$prefix" "$bindir" "$share_bindir"; do
+	case "$install_path" in
+	/*) ;;
+	*)
+		echo "Install paths must be absolute (got '$install_path'); PREFIX, BINDIR, and EVENER_SHARE_BINDIR cannot be relative." >&2
+		exit 1
+		;;
+	esac
+done
 version=${EVENER_INSTALL_VERSION:-latest}
 
 case "$(uname -s)" in

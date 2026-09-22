@@ -53,6 +53,53 @@ func TestCommandPinsUnsetPathVariablesToEmpty(t *testing.T) {
 	}
 }
 
+// TestScriptRefusesRelativeInstallPaths pins install.sh's own contract: a
+// relative PREFIX, BINDIR, or EVENER_SHARE_BINDIR resolves against the
+// caller's working directory, and the symlink the script writes resolves its
+// target against the symlink's own directory, so a relative value yields a
+// broken install rather than a movable one. The refusal must come before
+// anything is downloaded or created — the run provides no curl at all, so a
+// guard that fires late would surface as a download error instead of the
+// contract message.
+func TestScriptRefusesRelativeInstallPaths(t *testing.T) {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "linux/amd64", "darwin/arm64":
+	default:
+		t.Skipf("install.sh ships no release archive for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	for _, kv := range [][2]string{
+		{"PREFIX", "rel"},
+		{"BINDIR", "rel/bin"},
+		{"EVENER_SHARE_BINDIR", "rel/share/evener/bin"},
+	} {
+		t.Run(kv[0], func(t *testing.T) {
+			runDir := t.TempDir()
+			home := t.TempDir()
+			scriptPath := filepath.Join(runDir, "install.sh")
+			if err := os.WriteFile(scriptPath, Script, 0o644); err != nil {
+				t.Fatalf("stage the embedded installer: %v", err)
+			}
+			cmd := exec.Command("sh", scriptPath)
+			cmd.Dir = runDir
+			cmd.Env = []string{
+				"HOME=" + home,
+				"TMPDIR=" + runDir,
+				// No tools on PATH at all: the refusal must come from the
+				// script's own guard, not from a failed download or probe.
+				"PATH=" + runDir,
+				kv[0] + "=" + kv[1],
+			}
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("install.sh accepted a relative %s:\n%s", kv[0], out)
+			}
+			if !strings.Contains(string(out), "must be absolute") {
+				t.Fatalf("install.sh does not refuse a relative %s with the contract error:\n%s", kv[0], out)
+			}
+		})
+	}
+}
+
 // TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine runs the embedded
 // installer end to end against a scripted download boundary: curl is faked
 // (the only network seam), while sh, tar, install, and the checksum tool are

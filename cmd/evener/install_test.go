@@ -114,6 +114,36 @@ func TestRunInstallRejectsTildePrefixedPaths(t *testing.T) {
 	}
 }
 
+// TestRunInstallRejectsRelativePathFlags pins the CLI half of the same
+// contract: a relative --prefix/--bin-dir/--share-bin-dir resolves against the
+// remote shell's working directory and produces a broken install, so the flags
+// require absolute remote paths — which also rejects option-like values,
+// because those do not begin with '/' either.
+func TestRunInstallRejectsRelativePathFlags(t *testing.T) {
+	old := runRemoteInstallCommand
+	t.Cleanup(func() { runRemoteInstallCommand = old })
+	called := false
+	runRemoteInstallCommand = func(context.Context, []string, io.Reader, io.Writer, io.Writer) error {
+		called = true
+		return nil
+	}
+
+	for _, args := range [][]string{
+		{"--prefix", "rel", "user@example.com"},
+		{"--bin-dir", "rel/bin", "user@example.com"},
+		{"--share-bin-dir", "rel/share", "user@example.com"},
+		{"--prefix", "-not-a-path", "user@example.com"},
+	} {
+		err := runInstall(args, strings.NewReader(""), io.Discard, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "absolute") {
+			t.Errorf("runInstall(%v) err = %v, want an absolute-path rejection", args, err)
+		}
+	}
+	if called {
+		t.Fatal("the SSH runner was called despite a relative path flag")
+	}
+}
+
 // TestRunInstallTrimsTheVersionFlag pins that a version with surrounding
 // whitespace is normalized before it reaches the remote command: the empty
 // check trims, so passing the untrimmed value on would quote the spaces into

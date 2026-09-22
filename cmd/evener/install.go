@@ -49,13 +49,13 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 		return errors.New("--version must not be empty")
 	}
 	*version = strings.TrimSpace(*version)
-	if err := rejectTildePath("--prefix", *prefix); err != nil {
+	if err := validateInstallPathFlag("--prefix", *prefix); err != nil {
 		return err
 	}
-	if err := rejectTildePath("--bin-dir", *binDir); err != nil {
+	if err := validateInstallPathFlag("--bin-dir", *binDir); err != nil {
 		return err
 	}
-	if err := rejectTildePath("--share-bin-dir", *shareBinDir); err != nil {
+	if err := validateInstallPathFlag("--share-bin-dir", *shareBinDir); err != nil {
 		return err
 	}
 
@@ -97,14 +97,23 @@ func validateInstallTarget(target string) error {
 	return nil
 }
 
-// rejectTildePath refuses a '~'-prefixed install path flag: the value travels
-// as an argument to `env` in the remote command, where POSIX shells perform no
-// tilde expansion, so '~/x' would install under a directory literally named
-// '~' on the remote host instead of the remote user's home. An absolute path
-// says what '~' cannot.
-func rejectTildePath(flagName, value string) error {
+// validateInstallPathFlag requires an absolute remote path: a relative value
+// resolves against the remote shell's working directory, and install.sh's
+// symlink resolves its target against the symlink's own directory, so a
+// relative value yields a broken install rather than a movable one. Absolute
+// is also what makes '~' fail loudly here — the value travels as an argument
+// to `env`, where POSIX shells perform no tilde expansion, so it would name a
+// literal '~' directory on the remote host — and it rejects option-like
+// values, which do not begin with '/' either.
+func validateInstallPathFlag(flagName, value string) error {
+	if value == "" {
+		return nil
+	}
 	if strings.HasPrefix(value, "~") {
 		return fmt.Errorf("%s must not begin with '~': the remote host does not expand it there; pass an absolute path instead", flagName)
+	}
+	if !strings.HasPrefix(value, "/") {
+		return fmt.Errorf("%s must be an absolute remote path: a relative value resolves against the remote shell's working directory and produces a broken install", flagName)
 	}
 	return nil
 }
