@@ -56,18 +56,22 @@ export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: n
 // retried blocked/canceled mutation re-enters holding the id it already
 // had, and its reappeared ghost is new content again for a scrolled-away
 // reader - a lifetime set would suppress that bump forever.
-export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntry[]): number {
+// `visible` carries Session's §1 live gate: a suppressed surface counts no
+// arrivals (a pill would point at ghosts that are not mounted), and a gate
+// CLEARING counts the newly visible set as arrivals - the ghosts appearing
+// IS new content for a scrolled-away reader.
+export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntry[], visible: boolean): number {
   const [epoch, setEpoch] = useState(0);
   const prevRef = useRef<{ ref: string; ids: ReadonlySet<string> } | null>(null);
   useEffect(() => {
     const prev = prevRef.current;
-    const ids = new Set(entries.map((entry) => entry.id));
+    const ids = new Set(visible ? entries.map((entry) => entry.id) : []);
     prevRef.current = { ref, ids };
     if (prev?.ref !== ref) return;
-    const added = entries.some((entry) => !prev.ids.has(entry.id));
+    const added = visible && entries.some((entry) => !prev.ids.has(entry.id));
     if (!added) return;
     setEpoch((count) => count + 1);
-  }, [ref, entries]);
+  }, [ref, entries, visible]);
   return epoch;
 }
 

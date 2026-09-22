@@ -99,7 +99,7 @@ test("heldSteerEntries keeps steer/drain/promote and excludes send/queue/blocked
 test("useHeldSteerEpoch bumps on a returning id and never on a removal", () => {
   const held = (id: string): PendingTurnEntry => ({ ...ENTRY("submitting"), id });
   const { result, rerender } = renderHook(
-    ({ entries }: { entries: readonly PendingTurnEntry[] }) => useHeldSteerEpoch("ref_a", entries),
+    ({ entries }: { entries: readonly PendingTurnEntry[] }) => useHeldSteerEpoch("ref_a", entries, true),
     { initialProps: { entries: [held("a")] as readonly PendingTurnEntry[] } },
   );
 
@@ -109,6 +109,32 @@ test("useHeldSteerEpoch bumps on a returning id and never on a removal", () => {
   expect(result.current).toBe(0); // a departure never bumps (announced, not counted)
   rerender({ entries: [held("a")] as readonly PendingTurnEntry[] });
   expect(result.current).toBe(1); // the retried id returns: new content again
+});
+
+// Spec §1's gate reaches the epoch (roborev #2140 round 5): a suppressed
+// surface counts no arrivals (a pill would point at ghosts that are not
+// mounted), and a gate CLEARING counts the newly visible set as arrivals
+// (the ghosts appearing IS new content for a scrolled-away reader).
+test("useHeldSteerEpoch counts only visible arrivals", () => {
+  const held = (id: string): PendingTurnEntry => ({ ...ENTRY("submitting"), id });
+  const { result, rerender } = renderHook(
+    ({ entries, visible }: { entries: readonly PendingTurnEntry[]; visible: boolean }) =>
+      useHeldSteerEpoch("ref_a", entries, visible),
+    { initialProps: { entries: [] as readonly PendingTurnEntry[], visible: false } },
+  );
+
+  // An arrival while the surface is gated (restart-required, fenced, or
+  // read-only): invisible, so not new content.
+  rerender({ entries: [held("a")] as readonly PendingTurnEntry[], visible: false });
+  expect(result.current).toBe(0);
+
+  // The gate clears: the previously hidden hold becomes visible content.
+  rerender({ entries: [held("a")] as readonly PendingTurnEntry[], visible: true });
+  expect(result.current).toBe(1);
+
+  // And the gate re-closing counts nothing (a removal, not an arrival).
+  rerender({ entries: [] as readonly PendingTurnEntry[], visible: false });
+  expect(result.current).toBe(1);
 });
 
 // Folded in from Task 1's review: the [queued messages] fallback below keys

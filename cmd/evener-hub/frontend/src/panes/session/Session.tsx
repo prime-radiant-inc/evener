@@ -312,23 +312,23 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // per the rules of hooks, same as askPending/askEpoch above.
   const pendingEntries = usePendingTurnEntries(ref);
   const heldSteers = useMemo(() => heldSteerEntries(pendingEntries), [pendingEntries]);
-  const heldEpoch = useHeldSteerEpoch(ref, heldSteers);
-  // One predicate decides the row and the count (spec §1): renderedRowCount
-  // derives from the trailingRow handed to the list - the same form
-  // TranscriptBody itself uses - so the count and the row cannot drift and
-  // jump-to-bottom/append-follow cannot land one row short. Live-gated per
-  // spec §1: no ghost on notLoaded or read-only surfaces.
   // Spec §1's live gate, complete: the read-only status family, plus the two
   // fence marks that can hold a session read-only while its status still
   // reads active/idle - a snapshot's resumeRequired (cleared only by an
   // explicit thread/resume) and the restart-blocking recovery obligation
   // (restartPending above, the same fence liveControls' press-time rule
-  // consults).
+  // consults). Composed ahead of the epoch so the pill signal and ghost
+  // visibility agree: the epoch counts only VISIBLE arrivals.
   const heldSurfaceLive =
     model !== undefined &&
     model.resumeRequired !== true &&
     !restartPending &&
     !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
+  const heldEpoch = useHeldSteerEpoch(ref, heldSteers, heldSurfaceLive);
+  // One predicate decides the row and the count (spec §1): renderedRowCount
+  // derives from the trailingRow handed to the list - the same form
+  // TranscriptBody itself uses - so the count and the row cannot drift and
+  // jump-to-bottom/append-follow cannot land one row short.
   const heldVisible = heldSurfaceLive && heldSteers.length > 0;
   const trailingRow =
     askPending || heldVisible
