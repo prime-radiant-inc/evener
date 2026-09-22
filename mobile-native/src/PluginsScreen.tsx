@@ -153,9 +153,11 @@ export function PluginsScreen({
   // establishes it - a list omitting the name (the removal reconciled) or
   // carrying a newer registration (a re-add) clears the fence there, and
   // only a stale row still carrying the removed registration's own identity
-  // keeps it - raises the warning (nothing, when only the list read
-  // failed), and answers whether `owner` was still current - false means
-  // the outcome came from a client this screen has replaced.
+  // keeps it - sets the warning to the outcome's own notice, a clean one
+  // clearing whatever earlier outcome raised (the warning reports the
+  // latest applied removal, never a residue an obsolete one left), and
+  // answers whether `owner` was still current - false means the outcome
+  // came from a client this screen has replaced.
   const markAppliedRemoval = useCallback(
     (
       name: string,
@@ -173,7 +175,9 @@ export function PluginsScreen({
         });
         return { client: owner, entries };
       });
-      if (notice !== null) setMarketplaceWarning({ client: owner, text: notice });
+      setMarketplaceWarning(
+        notice !== null ? { client: owner, text: notice } : null,
+      );
       return true;
     },
     [],

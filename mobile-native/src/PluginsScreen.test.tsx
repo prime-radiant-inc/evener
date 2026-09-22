@@ -2,11 +2,16 @@
 // hold on its own: the PluginsScreen-owned no-repeat guard fences a
 // marketplace the hub says it already removed across browser remounts, the
 // cleanup warning survives the browser's own revision fence and tab switches,
-// and a late outcome from a replaced client changes nothing on the new one.
+// a clean applied removal retires an obsolete cleanup warning, and a late
+// outcome from a replaced client changes nothing on the new one.
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { WireError, type MarketplaceEntry } from "@evener/appwire-client";
+import {
+  ErrorMarketplaceRemoveApplied,
+  WireError,
+  type MarketplaceEntry,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { PluginsScreen } from "./PluginsScreen";
 import {
@@ -273,6 +278,81 @@ it("clears the guard when a fresh read shows the removed name absent", async () 
   expect(remove.props.disabled).toBe(false);
   await confirmMarketplaceRemoval(tree);
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
+
+it("clears an obsolete cleanup warning when a later applied removal is clean", async () => {
+  let removals = 0;
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; the
+      // post-removal reconciliation read establishes its absence; a later
+      // pull-to-refresh answers with another client's re-registration.
+      if (listCalls === 2) return Promise.resolve({ marketplaces: [] });
+      return Promise.resolve({ marketplaces: [marketplace] });
+    },
+    remove: () => {
+      removals += 1;
+      return removals === 1
+        ? Promise.reject(cloneLitterError(null, false))
+        : Promise.reject(
+            new WireError(
+              "marketplace removed, but the updated list was unavailable",
+              -32603,
+              {
+                evenerErrorInfo: ErrorMarketplaceRemoveApplied,
+                appliedUnavailable: true,
+              },
+            ),
+          );
+    },
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await confirmMarketplaceRemoval(tree);
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+  // The reconciliation read established acme's absence, so the guard forgot
+  // it: pull the list again, find another client's re-registration, and open
+  // it - the fence no longer covers the name.
+  const refresh = tree.root
+    .findAll((node) => typeof node.props?.onRefresh === "function")
+    .at(-1);
+  if (!refresh) throw new Error("no marketplaces list to refresh");
+  await act(async () => {
+    refresh.props.onRefresh();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(false);
+
+  // Remove it again, and this removal applies CLEANLY: the hub's marker says
+  // the unregister and its clone cleanup both landed, so the outcome carries
+  // no notice. The earlier clone-cleanup warning is now about a removal this
+  // hub fully handled - an obsolete leftover the screen has to retire, or a
+  // warning about long-gone litter outlives every later successful removal.
+  await confirmMarketplaceRemoval(tree);
+  await act(async () => {});
+  expect(renderedText(tree)).not.toContain("Marketplace removed; clone cleanup failed");
+  // The clean outcome is still an applied removal - never a failed write.
+  expect(renderedText(tree)).not.toContain("Could not confirm the change");
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+  // And it still fences the name: the applied outcome recorded with the
+  // screen's guard whatever its notice said.
+  const fenced = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(fenced.props.disabled).toBe(true);
 });
 
 it("records an applied removal after selection changes while the request is pending", async () => {
