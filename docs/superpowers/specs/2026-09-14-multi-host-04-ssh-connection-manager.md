@@ -814,9 +814,12 @@ Two paths, chosen per host (open question: which wins when both are viable):
     the atomic push path (§4, "Cross-compile + push") cross-compiles the
     controller's own tree and stamps the build in-process, it is wired from a
     production hub by `-deploy-binary` / `-build-source`, and the terminal
-    refusal names it as the remedy ("use the atomic push path or
-    `Options.BuildBinary`"). The `snapshot` tag is not an immutability to lean
-    on; it is a movable default whose cost the operator is told how to avoid.
+    refusal names it as the remedy in the terms the embedder supplied
+    (`Options.DeployHelp`): a hub names its own `-deploy-binary` /
+    `-build-source` flags, while an embedder with no flags to name keeps the
+    library's sentence ("use the atomic push path or `Options.BuildBinary`").
+    The `snapshot` tag is not an immutability to lean on; it is a movable
+    default whose cost the operator is told how to avoid.
   - **dev / dirty** (`Channel == ""`/"dev", or `GitDirty == "true"`): there is
     no publishable identity to pin, so the installer fallback is **refused**
     (`ErrDeploy`, the same rule as §"Dev builds must not auto-match"); the

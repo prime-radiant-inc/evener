@@ -25,12 +25,12 @@ deploy the controller's build; set Options.BuildSource
 ```
 
 The second message is the whole story: the machinery exists and the production
-hub supplies it nothing to deploy from. `cmd/evener-hub/main.go:428` builds
+hub supplies it nothing to deploy from. `cmd/evener-hub/main.go:445` builds
 `sshconn.Options` with `Logger` and `OnEvent` only — `BuildSource`,
 `BuildBinary` and `HubAddr` are all unset — so `Manager.canBuild()`
-(`manager.go:2444`) and `Manager.canDeploy()` (`manager.go:2459`) are false for
+(`manager.go:2463`) and `Manager.canDeploy()` (`manager.go:2478`) are false for
 every real hub, and `ensureOnce` refuses a version difference terminally at
-`manager.go:1581`. On a host with no `evener` at all, the same absence is why
+`manager.go:1590`. On a host with no `evener` at all, the same absence is why
 the preflight's `launch-check` cannot even answer.
 
 The deploy half is therefore dead code in production, and the fleet flow stops
@@ -40,14 +40,14 @@ exactly where a user needs it most: adding a second machine.
 
 **The mechanism, specified.** Component 04 §4 "Deploy — `deploy.go`"
 (`2026-09-14-multi-host-04-ssh-connection-manager.md:723`) and §5 "Version
-auto-match + restart" (`:951`). The atomic push path cross-compiles the
+auto-match + restart" (`:965`). The atomic push path cross-compiles the
 controller's own tree for the host target and stamps the controller's build
 identity in-process from `buildinfo` (`GitSHA`, `GitDirty`, `BuildTime`,
 `Channel`) rather than re-deriving it from `git` and `date`, so the pushed
 binary's `launch-check version` is exactly the controller's — its identity is
 true by construction, not by a check.
 
-**The ordering rule the ladder already follows** (`04:974-984`): the attach
+**The ordering rule the ladder already follows** (`04:991-995`): the attach
 branch is entered when either the on-disk `facts.Version` or the running hub's
 `version` differs, and it **deploys only when the on-disk version differs** —
 a restart left pending by an earlier attempt has already installed the build, so
@@ -56,41 +56,44 @@ re-cross-compiling on every reconnect would be a needless build.
 **The mechanism, implemented.** `sshconn/deploy.go`: `verifyBuildSource`
 (`:128`; its message is where *"an installed hub cannot locate its own source"*
 comes from, `:130`), `localBuild` (the cross-compile, chosen from
-`Options.BuildBinary`/`Options.BuildSource` at `:327`/`:329`), the atomic push
-into a `mktemp` file with a byte-count check, `installerDirs` (`:651`) for the
+`Options.BuildBinary`/`Options.BuildSource` at `:336`/`:338`), the atomic push
+into a `mktemp` file with a byte-count check, `installerDirs` (`:707`) for the
 fallback's `BINDIR`/`EVENER_SHARE_BINDIR`, and the post-install identity check.
 
 **The seams, unset in production.** `Options.BuildBinary` (`manager.go:100`),
-`Options.BuildSource` (`:110`), `canBuild()` (`:2444`), `canDeploy()`
-(`:2459`).
+`Options.BuildSource` (`:110`), `canBuild()` (`:2463`), `canDeploy()`
+(`:2478`).
 
 **The state ladder already has the deploy leg.** `StateDisconnected`,
 `StatePreflighting`, `StateDeploying`, `StateRestarting`, `StateAttaching`,
 `StateAttached`, `StateReconnecting` (`manager.go:27-33`), and `StateDeploying`
-is emitted immediately before the deploy (`manager.go:1509`). Nothing about
+is emitted immediately before the deploy (`manager.go:1518`). Nothing about
 observability needs to be invented.
 
-**The decision ladder** (`manager.go:1698-1707`): `deployPossible` is
+**The decision ladder** (`manager.go:1707-1715`): `deployPossible` is
 `canDeploy()`; `devUnverified` is `isUnverifiableVersion(expected) &&
 deployPossible && !isDevDeployed(name)`; the branch is `(deployNeeded &&
 deployPossible) || devUnverified`. Read carefully, this means a **dev**
 controller behaves in two different ways: with no deploy path it refuses (its
-`expected` is `"dev"`, so a mismatch reaches the terminal refusal at `:1581`),
+`expected` is `"dev"`, so a mismatch reaches the terminal refusal at `:1590`),
 and with a deploy path it *forces* a deploy so that both sides end up running
 the same unstamped build. This is a refinement of the parent spec's "dev builds
-must not auto-match" (`04:764-772`), which was written before that path existed;
+must not auto-match" (`04:752-760`), which was written before that path existed;
 the code's version is the one that holds today.
 
 **Two divergences this slice must settle, not paper over.**
 
 - **The installer fallback's reference for a snapshot controller (decided, D4).**
-  The parent spec says the fallback is *release-only* (`04:1064` calls it "a
-  build the installer fallback can no longer produce, since it is release-only")
-  and that a snapshot controller is **refused** rather than left holding a build
-  from a commit the controller never intended (`04:783-800`, which rejects
-  "run the installer first and discover the mismatch afterwards" in as many
-  words). The code does the opposite: `installerRefFor` (`deploy.go:615-640`)
-  returns the mutable `snapshot` tag for `channel == "snapshot"` (`:627`), with
+  The parent spec used to say the fallback is *release-only*: it called such a
+  build "a build the installer fallback can no longer produce, since it is
+  release-only" (`04:1066` before this slice corrected the passage; the
+  corrected text is now `04:1079-1081`) and **refused** a snapshot controller
+  rather than leave it holding a build from a commit the controller never
+  intended (`04:794-803`, the snapshot arm; the pre-correction objection that
+  running the installer first and discovering the mismatch afterwards is not
+  acceptable is recorded at `04:805-819`). The code does the opposite:
+  `installerRefFor` (`deploy.go:669-685`)
+  returns the mutable `snapshot` tag for `channel == "snapshot"` (`:680`), with
   a terminal refusal once the tag moves past the controller's commit. Jesse
   ruled the code's behavior correct and the parent spec wrong, so **this slice
   corrects the parent spec** rather than the code; D4 states the amendment and
@@ -99,8 +102,8 @@ the code's version is the one that holds today.
   for a snapshot controller the push path is the surviving deploy path, and that
   a version-only health check cannot tell two snapshot builds apart, so
   `waitHealthy` must reject a missing or mismatched `backend_git_sha` — and it
-  names that as a tracked follow-up, "not a present fact" (`04:1064-1094`).
-  Today it is still not a fact.
+  names that as a tracked follow-up, "not a present fact" (`04:1096-1107`).
+  This slice settles it (D5).
 
 ## Decisions this slice needs (yours)
 
@@ -115,7 +118,7 @@ are not exclusive:
   tree, no host network. It is the one path whose identity is **not** true by
   construction, so this slice must verify it where that is possible: on the host,
   after the push, through the existing `launch-check` probe, with a mismatch a
-  **failed verification** and never an attach (`04:818-828`). A wrong artifact
+  **failed verification** and never an attach (`04:826-831`). A wrong artifact
   costs a wasted push and a refused attach.
 - **`-build-source <path>` (checkout).** The operator points the hub at an
   evener checkout; the hub cross-compiles the host's target from it with the
@@ -138,7 +141,7 @@ deploy path on the controller is the consent; the per-host `deploy = "auto" |
 "never"` field is deferred to its own slice.
 
 The reasoning, for the record: `canDeploy()` is today purely "is a path
-configured" (`manager.go:2459`), so a configured path would deploy to every host
+configured" (`manager.go:2478`), so a configured path would deploy to every host
 the operator connects. That is acceptable because the design doc already decided
 auto-match on attach, because a source or binary is a deliberate act by the
 operator who runs the controller, and because the blast radius is that
@@ -150,10 +153,12 @@ that each deserve their own review and none of which the mechanism needs.
 ### D3 — what the user sees
 
 **Recommendation:** nothing new. The leg is already visible as `StateDeploying`
-(`manager.go:1509`), a failure already lands in the row's `lastAttachError`
+(`manager.go:1518`), a failure already lands in the row's `lastAttachError`
 (which is how both refusals above reached the settings pane verbatim), and the
 hub should log the leg — path used, source, host, target — with no secret and no
-file contents in either place.
+file contents in either place. As landed there is exactly one deploy-log line:
+the startup line naming the path the hub was given (criterion 10, Evidence); the
+per-attach leg itself (host, target) is not logged.
 
 ### D4 — the installer fallback for a snapshot controller (decided: amend the parent spec)
 
@@ -188,7 +193,9 @@ does not have.
 **Re-examined, and held.** After this ruling was recorded, the master design
 doc's tracked-follow-up ledger turned out to carry the *opposite* decision as
 unimplemented work: "[04] installer fallback is release-only (round 22)", which
-would have `installerRefFor` lose its `snapshot` arm (`design.md:635`). That was
+would have `installerRefFor` lose its `snapshot` arm (`design.md:641`, whose
+entry is now titled "[04] installer fallback's reference (round 22; reconsidered
+and reversed 2026-09-22)"). That was
 put back to Jesse, since the earlier question had not mentioned it, and he held
 the ruling. The ledger entry now records the reversal and keeps its superseded
 reasoning as the record (`5ddf8efd94`), so the code, component 04, and the master
@@ -198,13 +205,13 @@ doc all state the same rule.
 
 If D4 goes my way, the push path becomes the *only* deploy path for a snapshot
 controller, which makes the parent spec's `backend_git_sha` requirement
-(`04:1064-1094`) load-bearing rather than a nicety: a version-only check cannot
+(`04:1096-1107`) load-bearing rather than a nicety: a version-only check cannot
 tell two snapshot builds sharing a `version` apart.
 
 **Recommendation, included in this slice unless you strike it:** implement it —
 `waitHealthy` takes the expected Git SHA and treats a missing or mismatched
 `backend_git_sha` as not yet healthy for a snapshot pin, exactly as the parent
-spec describes. It is small, it closes a tracked follow-up (`04:1064-1094`
+spec describes. It is small, it closes a tracked follow-up (`04:1096-1107`
 calls it out as "not a present fact"), and this slice is what makes snapshot
 deploys reachable, so leaving it out would ship the wiring that needs it.
 
@@ -218,7 +225,7 @@ verified on disk. `snapshot_pin_test.go` pins all four cases.
 
 - **Flags** (`evener hub`, alongside `-addr`, `-config`, `-evener`,
   `-appwire-trace`, defined in the `flag.NewFlagSet("evener hub", …)` at
-  `main.go:769`):
+  `main.go:789`):
   - `-deploy-binary <path>` — a pre-built `evener` for the host's target. Sets
     `Options.BuildBinary`. Validated where it is read; a bad value fails hub
     startup naming the flag, not the first attach.
@@ -228,14 +235,14 @@ verified on disk. `snapshot_pin_test.go` pins all four cases.
     checkout).
 - **Precedence** when more than one is available: `-deploy-binary`, then
   `-build-source`, then the installer fallback (D4/D5 permitting).
-- **When a deploy happens** is unchanged from `04:974-984`: on an **on-disk**
+- **When a deploy happens** is unchanged from `04:991-995`: on an **on-disk**
   version difference, not on every reconnect, and a restart is re-verified
   before attach rather than re-deployed.
 - **Identity.** The cross-compiled path's identity is true by construction. The
   operator-supplied path is verified on the host after the push, and the
   installer path keeps its existing post-install check; in every case a build
   that cannot be confirmed is a **failed verification** and never an attach
-  (`04:818-828`).
+  (`04:826-831`).
 - **Refusals** keep their existing types (`ErrVersionMismatch`, `ErrDeploy`,
   `ErrRestart`) and gain actionable messages: the terminal version refusal names
   `-deploy-binary` and `-build-source`, and says *why* no path is available when
@@ -272,7 +279,7 @@ slice that owns them and both are small.
   binary — no `hub` subcommand and no `launch-check` — so a host configured with
   it *installed and then failed* preflight, health and restart, after the
   controller had written to it. It is now narrowed to `evener`, and anything
-  else is refused by `checkRunTarget` (`deploy.go:377`) **before any probe,
+  else is refused by `checkRunTarget` (`deploy.go:390`) **before any probe,
   push or install** (`84eb525e70`); the ordering is pinned by a test whose
   runner fails the test if any remote command runs at all.
 - **That refusal is terminal, not retryable** (`1371f0957a`). The first cut
@@ -299,7 +306,9 @@ from becoming the hub's run target.
   `installerDirs` stay as they are.
 - **The operator-artifact verification** — a pushed `-deploy-binary` that
   reports the wrong version on the host is a failed verification, not an attach,
-  and the failure reaches the row.
+  and the failure reaches the row. As landed this is **unproven**: the push path
+  does not probe the host after it writes, and a mismatched push attaches
+  (Evidence, criterion 8).
 - **Flag validation** — a bad `-deploy-binary`/`-build-source` fails startup
   naming the flag; a hub with neither still starts (a local-only controller must
   not require a deploy path).
@@ -332,8 +341,10 @@ from becoming the hub's run target.
 5. A dev controller with no deploy path refuses with a message saying the
    controller build carries no identity to deploy; a dev controller **with** a
    deploy path forces the deploy (the `devUnverified` rule at
-   `manager.go:1699-1706`) and the host ends up on the same unstamped build.
-   Both halves are asserted.
+   `manager.go:1707-1715`) and the host ends up on the same unstamped build.
+   The refusal and the forced deploy are asserted; the identity wording is
+   **unproven** — the refusal fires but says only that no build source is
+   configured (Evidence, criterion 5).
 6. A dirty controller refuses the push path and the installer fallback, each
    message naming the remedy.
 7. Per D4: the amended snapshot rule is the asserted one — the installer path is
@@ -343,12 +354,81 @@ from becoming the hub's run target.
    deploy is confirmed by `backend_git_sha`, not by `version` alone. Component
    04's spec and the code state the same rule afterwards.
 8. A pushed artifact whose on-host identity does not match is a failed
-   verification and never an attach.
+   verification and never an attach. **Unproven** as landed: the push path
+   attaches anyway (Evidence, criterion 8).
 9. `make test` and `go test ./...` stay free of SSH, free of any Go-toolchain
    requirement for the deploy tests, and free of any write to a real host; the
    gated test still skips with a message naming its variables.
-10. The hub logs the deploy leg (path used, source, host, target) and never logs
-    a credential or a file's contents.
+10. The hub logs, at startup, which deploy path it was started with: the
+    `-deploy-binary` / `-build-source` value, and which one wins when both are
+    set. That line is the whole deploy-leg log — no host, no target, no file's
+    contents, no credential. Nothing else about a deploy leg is logged, and the
+    hub's unrelated startup lines are unchanged.
+
+## Evidence
+
+What pins each criterion, and what does not. A test named here is a unit test in
+`cmd/evener-hub` or `cmd/evener-hub/internal/sshconn`, unless it is called the
+gated live check. **unproven** names missing behavior, not merely missing
+coverage.
+
+1. **Pinned, gated live** — `TestHostDeployNoEvenerE2E`
+   (`cmd/evener-hub/app_host_deploy_e2e_test.go`), the `-deploy-binary` case:
+   the host ends the run on the controller's own `launch-check` version. Runs
+   only under `EVENER_SSH_E2E_DEPLOY=1`, so the default suite exercises it as a
+   skip.
+2. **Pinned, gated live** — the same test's `-build-source` case.
+3. **Pinned** — `TestDeployWiringPrefersDeployBinary` (the hub's flag precedence)
+   and `TestDeployPrefersTheOperatorArtifactOverTheBuildSource` (the manager's
+   dispatch, asserted on the argv the fake runner records and the bytes the push
+   streams).
+4. **Pinned** — `TestVersionMismatchRefusalKeepsDefaultRemedy`,
+   `TestVersionMismatchRefusalNamesSuppliedDeployHelp`,
+   `TestHubDeployHelpNamesBothFlags`, `TestDeployWiringWithNeitherSetsHelpOnly`,
+   `TestRunMainWithoutDeployFlagsStarts`: no build seam is installed, the hub
+   still starts, and the refusal names both flags. The seam is pinned on both
+   sides — the hub's help text and the sshconn refusal — but the one line that
+   passes the former as `Options.DeployHelp` (`main.go`) is not itself asserted.
+5. **Half pinned; half unproven.** The refusal:
+   `TestDevControllerWithoutADeployPathRefuses` (terminal `ErrVersionMismatch`,
+   the flags named, no attach). The forced deploy:
+   `TestDevControllerWithADeployPathForcesTheDeploy` (the decision, and the
+   build the decision produces). **Unproven:** the message does not say the
+   controller build carries no identity to deploy — it says only that no build
+   source is configured. Missing: the why-clause the Contract promises for a
+   dev/dirty/snapshot controller, which is a change to the terminal version
+   refusal, not made here.
+6. **Pinned** — `TestDirtyControllerRefusalsNameTheRemedy` (both refusals and
+   each remedy clause), with `TestRound13DirtyControllerDeployRefusalIsTerminal`
+   pinning the push refusal's type and terminality.
+7. **Pinned** — `TestRound8InstallerVersionMismatchIsTerminal` (a moved tag is
+   refused terminally, not retried) and
+   `TestInstallerMovedTagRefusalNamesThePushPath` (that refusal names the
+   remedy); `TestInstallerRefusalsNameSuppliedDeployHelp` and
+   `TestInstallerRefusalsKeepTheLibraryRemedy` pin the remedy seam;
+   `TestEnsureInstallerFallbackDeploysPinnedRelease` and
+   `TestInstallerFallbackRecordsDefaultRunTarget` pin the release/snapshot
+   admission; `TestSnapshotPinGitSHASourcesFromBuildChannel`,
+   `TestWaitHealthySnapshotPin` and `TestRestartHubPinsSnapshotBuildFromBuildChannel`
+   pin the `backend_git_sha` identity. Component 04 and the code state the same
+   rule.
+8. **Unproven.** The push path does not verify the artifact it wrote: a deploy
+   that installs a build the host then reports as a *different* version attaches
+   anyway — `Ensure` returns nil and the bridge starts. `deployPush` never
+   probes, and the refreshed launch contract is judged only on protocol and
+   launch flags, because the terminal version refusal is gated on
+   `!canDeploy()` (`manager.go:1590`). Missing: a post-push identity check for
+   the operator-artifact path — a `launch-check` probe in `deployPush`, or a
+   version gate on the refreshed facts. The installer path *is* verified after
+   the install (`deployInstaller`'s `probeLaunchCheck`; criterion 7).
+9. **Pinned** — `TestHostDeployNoEvenerE2E` skips with a message naming
+   `EVENER_SSH_E2E_DEPLOY=1`, `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST`, so
+   the default `go test` runs no ssh and writes to no host; the deploy unit
+   tests need no Go toolchain (`Options.BuildBinary` is their seam, and the
+   tests that drive the production builder put a `go` shim on `PATH`).
+10. **Pinned** — `TestRunMainLogsTheDeployPathItWasGiven`: the startup line
+    names the deploy path and, with both flags, the winner; no host, target,
+    file contents, or credential is logged.
 
 ## Open questions
 

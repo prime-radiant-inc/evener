@@ -404,8 +404,12 @@ writes the path the host runs (`evener_path` when the entry sets it, else what
 verified, then a single `mv` into place — so a failed or interrupted deploy
 never leaves a partial binary. The `-build-source` path stamps the controller's
 build identity in-process, so the installed binary's `launch-check` version is
-exactly the controller's; the `-deploy-binary` artifact instead carries the
-identity the operator built, verified on the host after the push.
+exactly the controller's; the `-deploy-binary` artifact instead carries whatever
+identity the operator built. The push path does not re-check that identity on
+the host after the push — the deploy slice spec records the operator-artifact
+verification as unproven (its Evidence, criterion 8) — so a mismatched artifact
+is not refused before attach, and neither flag is better than `-build-source`
+whose identity is true by construction.
 
 With neither flag the push path is unavailable. A release or snapshot
 controller still installs through `install.sh` on the host (the installer
