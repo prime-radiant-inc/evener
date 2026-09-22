@@ -73,6 +73,26 @@ function questionHash(text: string): string {
 // unaffected render or keystroke never rehashes at all.
 const questionsIdentityMemo = new WeakMap<AskQuestionRef[], string>();
 
+// The comparable form of one persisted question definition: its {key, digest}
+// pair. A signature's elements have carried that pair since questionsIdentity
+// signed them, but a draft saved by an older build holds the full canonical
+// question as its definition — same question, an earlier era's shape. Both
+// normalize to the same pair: an element that already carries its digest keeps
+// it, and a legacy full question hashes to the digest the identity computes
+// for that same canonical question, so a pre-identity draft still compares
+// equal (draftRepository.ts's questionDefinitions) and an app update never
+// silently drops a reader's saved answers.
+export function questionDefinition(question: {
+  key: string;
+  digest?: unknown;
+}): { key: string; digest: string } {
+  const digest =
+    typeof question.digest === "string"
+      ? question.digest
+      : questionHash(JSON.stringify(question));
+  return { key: question.key, digest };
+}
+
 // A JSON array of {key, digest}, not a bare hash string: draftRepository.ts's
 // questionDefinitions parses this signature expecting an array it can index
 // per key (JSON.parse(signature) -> question.key), the same contract a
@@ -84,10 +104,7 @@ export function questionsIdentity(questions: AskQuestionRef[]): string {
   const cached = questionsIdentityMemo.get(questions);
   if (cached !== undefined) return cached;
   const identity = JSON.stringify(
-    questions.map((question) => ({
-      key: question.key,
-      digest: questionHash(JSON.stringify(question)),
-    })),
+    questions.map((question) => questionDefinition(question)),
   );
   questionsIdentityMemo.set(questions, identity);
   return identity;

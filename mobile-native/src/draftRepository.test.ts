@@ -306,6 +306,46 @@ test("questionsIdentity's own signature round-trips through the real repository"
 	expect(repository.readQuestions(destination, changed)).toEqual({});
 });
 
+// Before questionsIdentity signed question drafts (the full-question
+// JSON.stringify signature an older build's sheet persisted), a saved answer
+// must still load once the identity's {key, digest} signature replaces it:
+// same canonical question, different era's persisted shape. The repository
+// normalizes both forms to one comparable definition, so the upgrade never
+// silently drops a reader's saved answers.
+test("a draft saved under the pre-identity full-question signature still loads through questionsIdentity", () => {
+	const question: AskQuestionRef = {
+		key: "call:0",
+		callId: "call",
+		header: "Choice",
+		question: "Choose",
+		multiSelect: false,
+		options: [{ label: "A", detail: "" }],
+	};
+	const selections = {
+		[question.key]: {
+			resolution: { kind: "option" as const, labels: ["A"] },
+			note: "",
+		},
+	};
+	repository.writeQuestions(
+		destination,
+		JSON.stringify([question]),
+		selections,
+	);
+	database.close();
+	openRepository();
+	expect(
+		repository.readQuestions(destination, questionsIdentity([question])),
+	).toEqual(selections);
+	// A genuinely different question still does not inherit the draft.
+	expect(
+		repository.readQuestions(
+			destination,
+			questionsIdentity([{ ...question, question: "Changed" }]),
+		),
+	).toEqual({});
+});
+
 test("hub removal also clears question selections without affecting another hub", () => {
 	const other = { ...destination, hubId: "other" };
 	const selections = {

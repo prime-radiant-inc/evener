@@ -7,6 +7,7 @@ import {
 } from "./draftImages";
 import {
 	decodeQuestionSelections,
+	questionDefinition,
 	type QuestionSelections,
 } from "./questionAnswers";
 import { type SqliteSync, withSavepoint } from "./sqliteSync";
@@ -274,7 +275,10 @@ export class DraftRepository {
 	}
 }
 
-/** Definitions are compared per question so another batch cannot erase edits. */
+/** Definitions are compared per question so another batch cannot erase edits.
+ * Each definition normalizes through questionAnswers.ts's questionDefinition,
+ * so a row saved under the pre-identity full-question signature compares
+ * equal to the identity's {key, digest} signature of the same question. */
 function questionDefinitions(signature: string): Map<string, string> {
 	const value: unknown = JSON.parse(signature);
 	if (!Array.isArray(value)) throw new Error("Invalid question definitions");
@@ -287,7 +291,10 @@ function questionDefinitions(signature: string): Map<string, string> {
 			definitions.has(question.key)
 		)
 			throw new Error("Invalid question definitions");
-		definitions.set(question.key, JSON.stringify(question));
+		definitions.set(
+			question.key,
+			JSON.stringify(questionDefinition(question)),
+		);
 	}
 	return definitions;
 }
