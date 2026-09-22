@@ -360,6 +360,17 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	return target, nil
 }
 
+// errRunTargetUnservable marks a deploy refused because the configured run
+// target is not the `evener` binary a host hub can serve — `evener-dev` (the
+// development tooling binary: no `hub` subcommand, no `launch-check`) or any
+// other basename. The refusal is terminal rather than ErrDeploy: a misconfigured
+// run target is an operator configuration defect the host cannot recover from,
+// so retrying can never install a binary the hub can run — the supervisor would
+// re-refuse the same path forever and discard the cause, the basename to fix
+// (the identical mistake round thirteen records for the dirty-controller
+// refusal).
+var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub")
+
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
 // run target. Only the shipped `evener` binary can serve a hub: install.sh also
 // ships `evener-dev` (install.sh:5), but that is the development/test tooling
@@ -370,19 +381,21 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 // and attaches the binary at it.
 //
 // It is checked before the target is probed, pushed, or installed, and it is
-// ErrDeploy with no write like the missing-directory refusal beside it. The
-// ordering is the point: the refusal names a configuration defect the host
-// cannot recover from, and discovering it after the write would only leave the
-// host holding a binary the controller can never run.
+// terminal (errRunTargetUnservable) with no write. The ordering and the sentinel
+// are both the point: the refusal names a configuration defect the host cannot
+// recover from, so a retry could only re-refuse it forever, and discovering it
+// after the write would only leave the host holding a binary the controller can
+// never run. The missing-directory refusal beside it stays a retryable ErrDeploy
+// because a directory can appear.
 func checkRunTarget(hostName, p string) error {
 	if installableEvenerBasename(p) {
 		return nil
 	}
 	base := path.Base(strings.TrimSpace(p))
 	if base == "evener-dev" {
-		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", ErrDeploy, hostName, p, base)
+		return fmt.Errorf("%w: host %q evener_path %q names %q, the development tooling binary (cmd/evener-dev), which does not provide the hub command and has no launch-check, so it can never serve a hub; configure the evener binary", errRunTargetUnservable, hostName, p, base)
 	}
-	return fmt.Errorf("%w: host %q evener_path %q has basename %q, which is not the evener binary that serves a hub; configure an evener-named run target", ErrDeploy, hostName, p, base)
+	return fmt.Errorf("%w: host %q evener_path %q has basename %q, which is not the evener binary that serves a hub; configure an evener-named run target", errRunTargetUnservable, hostName, p, base)
 }
 
 // deployTarget resolves the absolute remote path the binary is installed to:

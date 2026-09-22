@@ -2231,6 +2231,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, ErrPreflightDecode),
 		errors.Is(err, errExecutableMissing),
 		errors.Is(err, errControllerDirty),
+		errors.Is(err, errRunTargetUnservable),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -2246,6 +2247,15 @@ func isTerminal(err error) bool {
 // with errors.Is and surface it as a typed deploy failure
 // (appwire.HubLaunchError) rather than a generic internal error.
 var ErrControllerDirty = errControllerDirty
+
+// ErrRunTargetUnservable is the exported alias for the terminal run-target
+// deploy refusal (errRunTargetUnservable, deploy.go): the configured run target
+// is not the `evener` binary a host hub can serve, so no deploy to it can ever
+// attach and the refusal is terminal rather than a retryable ErrDeploy. It is
+// exported so a caller — the hub's attach handler — can match the refusal with
+// errors.Is and surface it as a typed deploy failure (appwire.HubLaunchError)
+// rather than a generic internal error, the same reason ErrControllerDirty is.
+var ErrRunTargetUnservable = errRunTargetUnservable
 
 // hostLockEntry is one per-host gate together with its live-user count.
 // refs counts the hostLock acquisitions that have not been released yet —

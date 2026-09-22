@@ -144,12 +144,21 @@ func refusingRunner(t *testing.T) *fakeRunner {
 	}}
 }
 
-// assertRunTargetRefusal pins the typed refusal and its message: ErrDeploy, the
-// type the neighbouring deploy refusals use, naming what the operator must fix.
+// assertRunTargetRefusal pins the typed refusal, its terminality, and its
+// message: errRunTargetUnservable, the terminal type the neighbouring refusal
+// (errControllerDirty) uses, naming what the operator must fix. It is not
+// ErrDeploy: a supervisor that retried that retryable sentinel would re-refuse
+// the same misconfigured path forever (round thirteen's loop).
 func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
 	t.Helper()
-	if !errors.Is(err, ErrDeploy) {
-		t.Fatalf("err = %v, want ErrDeploy", err)
+	if !errors.Is(err, errRunTargetUnservable) {
+		t.Fatalf("err = %v, want errRunTargetUnservable", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal (a retryable one re-refuses forever)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("err = %v still wraps ErrDeploy, so the supervisor would retry the same refusal forever", err)
 	}
 	for _, want := range wants {
 		if !strings.Contains(err.Error(), want) {
@@ -197,8 +206,8 @@ func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
 				// The ordering is the requirement. The first refusal is already
 				// the whole answer, so a supervisor's retry re-runs it with no
 				// install, push, or write to repeat.
-				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); !errors.Is(again, ErrDeploy) {
-					t.Fatalf("retry err = %v, want the same ErrDeploy refusal", again)
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); !errors.Is(again, errRunTargetUnservable) {
+					t.Fatalf("retry err = %v, want the same terminal run-target refusal", again)
 				}
 				if runs := fr.recordedRuns(); len(runs) != 0 {
 					t.Fatalf("the refused deploy reached the runner: %v", runs)
@@ -333,16 +342,18 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 
 	// Round 22: install.sh still ships evener-dev, but it is the development
 	// tooling binary and can never serve a hub, so it is not a run target the
-	// installer may be pointed at (component-04 criterion 17).
-	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, ErrDeploy) {
-		t.Fatalf("installerDirs(evener-dev) err = %v, want ErrDeploy", err)
+	// installer may be pointed at (component-04 criterion 17). The refusal is
+	// the terminal run-target sentinel the installer shares with the push path
+	// (checkRunTarget), so no retry of the install can change it.
+	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal errRunTargetUnservable", err)
 	} else if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(evener-dev) = (%q,%q,%q), want all empty", bindir, share, target)
 	}
 
 	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-hub"}, Preflight{Home: "/home/dev"})
-	if !errors.Is(err, ErrDeploy) {
-		t.Fatalf("installerDirs(unshipped basename) err = %v, want ErrDeploy", err)
+	if !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(unshipped basename) err = %v, want a terminal errRunTargetUnservable", err)
 	}
 	if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(unshipped basename) = (%q,%q,%q), want all empty", bindir, share, target)

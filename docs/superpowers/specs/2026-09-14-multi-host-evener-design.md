@@ -625,8 +625,14 @@ exact scope. None is a present fact.
   (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`; a host
   configured with an `evener-dev` run target installs and then fails preflight,
   health, and restart. Narrow the acceptance to `evener` and refuse an
-  `evener-dev` (or otherwise unshipped) run-target basename with `ErrDeploy`
-  before any install, push, or write. Scope:
+  `evener-dev` (or otherwise unshipped) run-target basename **terminally** —
+  the distinct `errRunTargetUnservable` sentinel `isTerminal` recognises, not
+  the retryable `ErrDeploy` — before any install, push, or write. Terminal is
+  the right shape because the refusal names an operator configuration defect a
+  host cannot recover from: retrying the same misconfigured path can never
+  install a hub-servable binary, so a supervisor would re-refuse it forever and
+  discard the cause, the same reason the dirty-controller refusal
+  (`errControllerDirty`) is terminal. Scope:
   `cmd/evener-hub/internal/sshconn/version.go`,
   `cmd/evener-hub/internal/sshconn/deploy.go` (+ its tests). No stamped,
   hub-capable development artifact is defined by this series. Mirrors
