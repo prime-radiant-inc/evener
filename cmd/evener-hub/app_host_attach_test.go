@@ -389,6 +389,15 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 			info:      appwire.ErrorHubLaunch,
 		},
 		{
+			// The operator's -deploy-binary targets another platform, so it can
+			// never be installed on this host and every retry re-reads the same
+			// file: the same terminal hub-launch shape as the refusals above.
+			name:      "wrong-platform deploy artifact refused",
+			attachErr: fmt.Errorf("host %q build linux/amd64: %w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64", "alpha", sshconn.ErrDeployArtifactUnusable, "/tmp/evener"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
 			// No deploy path exists and the host has no evener at the resolved
 			// path: like the dirty-controller refusal, the controller cannot
 			// install or match its build, so it is a typed hub-launch failure

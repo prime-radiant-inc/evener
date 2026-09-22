@@ -1857,6 +1857,132 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 	})
 }
 
+// TestDeployArtifactUnusableIsTerminal pins the operator-artifact sibling of the
+// run-target refusal: a -deploy-binary built for another platform (the hub's
+// copyDeployBinary wraps errDeployArtifactUnusable for exactly that) is a
+// permanent operator mistake — every retry re-reads the same file — so the
+// refusal must be terminal and must not ride the retryable ErrDeploy class. The
+// build seam fails before anything is staged or pushed, so the runner must see
+// only the prebuild probes: no push, no restart, no start.
+func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return nil, errors.New("curl: (7) Failed to connect")
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary: func(context.Context, string, string, string) error {
+			return fmt.Errorf("%w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64; supply an evener built for linux/amd64",
+				errDeployArtifactUnusable, "/tmp/evener")
+		},
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, errDeployArtifactUnusable) {
+		t.Fatalf("Ensure err = %v, want errDeployArtifactUnusable", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-reads the same artifact)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("Ensure err = %v still carries ErrDeploy, so the retryable class would win", err)
+	}
+	if !strings.Contains(err.Error(), "-deploy-binary") || !strings.Contains(err.Error(), "linux/amd64") {
+		t.Fatalf("refusal does not name the flag and the host target: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "cat >") {
+			t.Fatalf("the unusable artifact was pushed: %v", argv)
+		}
+		if strings.Contains(joined, "systemctl restart") || strings.Contains(joined, "nohup") {
+			t.Fatalf("the refused artifact restarted or started a hub: %v", argv)
+		}
+	}
+	hostGate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+}
+
+// TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart pins the ordering
+// hole a running hub opened for the operator-artifact refusal: the deploy wrote a
+// build the controller did not stamp, so the restart onto it can never report the
+// expected version, and waitHealthy failed retryably (ErrRestart) BEFORE the
+// post-deploy identity gate ran. The supervisor then re-pushed and re-restarted
+// the same artifact forever. The deployed build is now judged on the fresh on-disk
+// facts before the restart path, so the permanent cause — the unstamped artifact —
+// is what surfaces, and the runner sees no restart at all.
+func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The on-disk binary before the deploy.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			// The artifact the deploy wrote: right platform, foreign identity.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			// The running hub, and any process restarted onto the wrong artifact,
+			// report the foreign build.
+			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	requireUnstampedRefusal(t, err)
+	requireNoAttach(t, fr)
+
+	// The recorded commands are the proof the retryable restart path was never
+	// entered: one push of the wrong artifact, no restart of the hub onto it (the
+	// restart is where ErrRestart used to surface and drive the loop).
+	pushes, restarts := 0, 0
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "cat >"):
+			pushes++
+		case strings.Contains(joined, "systemctl restart"):
+			restarts++
+		}
+	}
+	if pushes != 1 {
+		t.Fatalf("push count = %d, want exactly 1 (the wrong artifact is pushed once)", pushes)
+	}
+	if restarts != 0 {
+		t.Fatalf("restart count = %d, want 0 (the permanent cause must be judged before the restart path)", restarts)
+	}
+
+	// The supervisor's own iteration stands down on the terminal refusal, so it
+	// cannot re-push and re-restart the same artifact. (A fresh manual attempt
+	// pushes again — that is the manager's per-attempt behavior, not a loop; the
+	// loop the ordering opened was deploy -> restart -> ErrRestart -> deploy.)
+	hostGate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+			t.Fatalf("the terminal refusal still restarted the hub onto the wrong artifact: %v", argv)
+		}
+	}
+}
+
 // requireUnstampedRefusal asserts the terminal refusal a deploy that did not pin
 // the controller's build must produce: the sentinel, its terminality, and the
 // message naming both the build the host reports and the one it should carry.

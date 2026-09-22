@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -98,7 +99,10 @@ func TestDeployBinarySeamCopiesMatchingArtifact(t *testing.T) {
 
 // TestDeployBinarySeamRefusesWrongTarget pins the load-bearing rule: the target
 // is read from the artifact's buildinfo, not trusted from the operator, and a
-// mismatch is refused before the push (out is never written).
+// mismatch is refused before the push (out is never written). The refusal must
+// also carry the terminal sentinel: a wrong-platform artifact is a permanent
+// operator mistake — retrying re-reads the same file — so it must not be
+// classified as the retryable ErrDeploy the deploy path otherwise uses.
 func TestDeployBinarySeamRefusesWrongTarget(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -109,6 +113,12 @@ func TestDeployBinarySeamRefusesWrongTarget(t *testing.T) {
 	err = deployBinaryBuild(exe)(t.Context(), goos, goarch, out)
 	if err == nil {
 		t.Fatalf("deployBinaryBuild accepted a %s/%s artifact for %s/%s", runtime.GOOS, runtime.GOARCH, goos, goarch)
+	}
+	if !errors.Is(err, sshconn.ErrDeployArtifactUnusable) {
+		t.Fatalf("refusal %v does not carry the terminal ErrDeployArtifactUnusable sentinel", err)
+	}
+	if !strings.Contains(err.Error(), deployBinaryFlag) || !strings.Contains(err.Error(), buildSourceFlag) {
+		t.Fatalf("refusal does not name both flags: %v", err)
 	}
 	for _, want := range []string{runtime.GOOS + "/" + runtime.GOARCH, goos + "/" + goarch} {
 		if !strings.Contains(err.Error(), want) {
@@ -134,6 +144,136 @@ func TestDeployBinarySeamRefusesNonGoArtifact(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
 		t.Fatalf("out was written for a non-Go artifact (stat err = %v)", statErr)
+	}
+}
+
+// TestParseHubOptionsRejectsNonExecutableDeployBinary pins that an artifact the
+// hub cannot exec is refused where the flag is read, naming the flag: a 0644 Go
+// binary passes every other check (it is stat-able, readable, and carries
+// buildinfo) and would otherwise land on the host unable to run.
+func TestParseHubOptionsRejectsNonExecutableDeployBinary(t *testing.T) {
+	path := copyExecutableArtifact(t, 0o644)
+	_, err := parseHubOptions([]string{"-deploy-binary", path}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("parseHubOptions accepted a non-executable -deploy-binary")
+	}
+	if !strings.Contains(err.Error(), "-deploy-binary") {
+		t.Fatalf("startup error does not name the flag: %v", err)
+	}
+	if !strings.Contains(err.Error(), "execut") {
+		t.Fatalf("startup error does not say the artifact is not executable: %v", err)
+	}
+}
+
+// TestDeployBinarySeamStagesAnExecutable pins the other half: the staged copy
+// always carries the exec bits, whatever the source artifact's mode, so the file
+// the push installs is runnable even when the source's bits would not allow it.
+func TestDeployBinarySeamStagesAnExecutable(t *testing.T) {
+	src := copyExecutableArtifact(t, 0o600)
+	out := filepath.Join(t.TempDir(), "evener")
+	if err := deployBinaryBuild(src)(t.Context(), runtime.GOOS, runtime.GOARCH, out); err != nil {
+		t.Fatalf("deployBinaryBuild(non-executable source): %v", err)
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatalf("stat staged artifact: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("staged artifact mode = %v, want the exec bits set regardless of the source's", info.Mode())
+	}
+}
+
+// copyExecutableArtifact copies this test binary — a real Go executable with
+// readable buildinfo — to a temp path with the given mode.
+func copyExecutableArtifact(t *testing.T, mode os.FileMode) string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	data, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatalf("read %q: %v", exe, err)
+	}
+	path := filepath.Join(t.TempDir(), "evener")
+	if err := os.WriteFile(path, data, 0o755); err != nil {
+		t.Fatalf("write %q: %v", path, err)
+	}
+	// Chmod explicitly: WriteFile's mode is masked by the process umask.
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %q: %v", path, err)
+	}
+	return path
+}
+
+// TestParseHubOptionsNormalizesDeployFlags pins that a whitespace-only flag is
+// no deploy path at all: it must not skip validation while still being logged and
+// wired as though a path were set. Both flags are stored as the single trimmed
+// value validation, logging, and the wiring all read.
+func TestParseHubOptionsNormalizesDeployFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "deploy-binary", args: []string{"-deploy-binary", "   "}},
+		{name: "build-source", args: []string{"-build-source", " \t\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseHubOptions(tc.args, &bytes.Buffer{})
+			if err != nil {
+				t.Fatalf("parseHubOptions(%v): %v", tc.args, err)
+			}
+			if opts.deployBinary != "" || opts.buildSource != "" {
+				t.Fatalf("whitespace-only flag stored as deployBinary=%q buildSource=%q, want both empty", opts.deployBinary, opts.buildSource)
+			}
+		})
+	}
+}
+
+// TestDeployBinaryFlagIsStoredAndLoggedCanonically pins the other half: a
+// relative path that validates at startup is stored (and logged) as the canonical
+// absolute path, so the artifact a later deploy reads is the one validation
+// approved rather than whatever the same relative spelling resolves to then.
+func TestDeployBinaryFlagIsStoredAndLoggedCanonically(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	rel, err := filepath.Rel(cwd, exe)
+	if err != nil {
+		t.Skipf("cannot spell %q relative to %q: %v", exe, cwd, err)
+	}
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatalf("canonicalize %q: %v", exe, err)
+	}
+
+	// A relative spelling validates and is stored canonically.
+	opts, err := parseHubOptions([]string{"-deploy-binary", rel}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("parseHubOptions(relative -deploy-binary): %v", err)
+	}
+	if opts.deployBinary != want {
+		t.Fatalf("stored -deploy-binary = %q, want the canonical %q", opts.deployBinary, want)
+	}
+	if !filepath.IsAbs(opts.deployBinary) {
+		t.Fatalf("stored -deploy-binary %q is not absolute", opts.deployBinary)
+	}
+
+	// The startup log carries that same canonical value, not the raw spelling.
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener", "-deploy-binary", rel}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	logged := deployPathLogLines(stderr.String())
+	wantLine := "[hub] deploy path: -deploy-binary " + want
+	if len(logged) != 1 || logged[0] != wantLine {
+		t.Fatalf("deploy path log = %v, want exactly [%q]", logged, wantLine)
 	}
 }
 
@@ -293,6 +433,12 @@ func TestRunMainLogsTheDeployPathItWasGiven(t *testing.T) {
 		},
 		{
 			name: "no deploy path logs nothing",
+		},
+		{
+			// A whitespace-only flag is not a deploy path: it must not be logged
+			// (or wired) as one just because the raw string is non-empty.
+			name: "whitespace-only deploy-binary logs nothing",
+			args: []string{"-deploy-binary", "   "},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

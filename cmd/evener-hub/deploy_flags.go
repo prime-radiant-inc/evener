@@ -5,6 +5,7 @@ import (
 	"debug/buildinfo"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -37,29 +38,42 @@ type deployWiring struct {
 // prefers BuildBinary too, so the two cannot disagree. The help text is always
 // supplied: the hub always has flags to name, including the no-flag case where
 // the refusal actually fires.
+//
+// The fields are read directly, with no second TrimSpace: validateDeployFlags has
+// already stored the one trimmed, canonical value the hub validates, logs, and
+// wires, so re-trimming here would be a second, divergent reading of the same
+// flag. Production always constructs hubOptions through parseHubOptions.
 func (o hubOptions) deployWiring() deployWiring {
 	dw := deployWiring{help: hubDeployHelp}
 	switch {
-	case strings.TrimSpace(o.deployBinary) != "":
+	case o.deployBinary != "":
 		dw.buildBinary = deployBinaryBuild(o.deployBinary)
-	case strings.TrimSpace(o.buildSource) != "":
+	case o.buildSource != "":
 		dw.buildSource = o.buildSource
 	}
 	return dw
 }
 
-// validateDeployFlags validates both deploy flags at startup. -build-source
-// reuses sshconn's checkout validation through its exported entry point so the
-// rules cannot drift; -deploy-binary is checked here because only the hub reads
-// the file. Every error names the flag the operator must fix. It normalizes
-// -build-source to its canonical absolute path in place.
+// validateDeployFlags validates both deploy flags at startup and stores the one
+// value the hub validates, logs, and wires: each flag is trimmed, and each path is
+// stored canonically. That is what makes a whitespace-only value not a deploy path
+// at all, instead of skipping validation while the raw string is still logged and
+// wired as one; and it keeps the artifact the operator named at startup identical
+// to the one a later deploy reads. -build-source reuses sshconn's checkout
+// validation through its exported entry point so the rules cannot drift;
+// -deploy-binary is checked here because only the hub reads the file. Every error
+// names the flag the operator must fix.
 func (o *hubOptions) validateDeployFlags() error {
-	if strings.TrimSpace(o.deployBinary) != "" {
-		if err := validateDeployBinary(o.deployBinary); err != nil {
+	o.deployBinary = strings.TrimSpace(o.deployBinary)
+	if o.deployBinary != "" {
+		abs, err := validateDeployBinary(o.deployBinary)
+		if err != nil {
 			return err
 		}
+		o.deployBinary = abs
 	}
-	if strings.TrimSpace(o.buildSource) != "" {
+	o.buildSource = strings.TrimSpace(o.buildSource)
+	if o.buildSource != "" {
 		abs, err := sshconn.ValidateBuildSource(o.buildSource)
 		if err != nil {
 			return fmt.Errorf("%s %q: %w", buildSourceFlag, o.buildSource, err)
@@ -70,22 +84,38 @@ func (o *hubOptions) validateDeployFlags() error {
 }
 
 // validateDeployBinary checks an operator-supplied artifact where the flag is
-// read: it must be a stat-able file the hub can read, carrying the Go buildinfo
-// the seam later reads for its target — so a missing path, a directory, an
-// unreadable file, or a stripped/non-Go file is refused now, naming the flag,
-// instead of at the first attach.
-func validateDeployBinary(path string) error {
-	info, err := os.Stat(path)
+// read and returns the canonical absolute path to store. It must be a stat-able
+// file the hub can read, carrying the Go buildinfo the seam later reads for its
+// target — so a missing path, a directory, an unreadable file, or a
+// stripped/non-Go file is refused now, naming the flag, instead of at the first
+// attach. Canonicalizing the path the way the build source is (verifyBuildSource)
+// keeps the artifact validation approved the same file a later deploy reads.
+func validateDeployBinary(path string) (string, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
+		return "", fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
+	}
+	abs, err = filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
 	}
 	if info.IsDir() {
-		return fmt.Errorf("%s %q is a directory, want a pre-built evener executable", deployBinaryFlag, path)
+		return "", fmt.Errorf("%s %q is a directory, want a pre-built evener executable", deployBinaryFlag, path)
 	}
-	if _, err := buildinfo.ReadFile(path); err != nil {
-		return fmt.Errorf("%s %q is not a readable Go executable: %w", deployBinaryFlag, path, err)
+	// The host must be able to exec the artifact. A 0644 Go binary passes every
+	// other check here and in the seam, so without this it would validate at
+	// startup and then be installed unable to run.
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("%s %q is not executable (mode %v), want a pre-built evener executable", deployBinaryFlag, path, info.Mode().Perm())
 	}
-	return nil
+	if _, err := buildinfo.ReadFile(abs); err != nil {
+		return "", fmt.Errorf("%s %q is not a readable Go executable: %w", deployBinaryFlag, path, err)
+	}
+	return abs, nil
 }
 
 // deployBinaryBuild is the Options.BuildBinary seam for an operator-supplied
@@ -113,7 +143,13 @@ func copyDeployBinary(ctx context.Context, path, goos, goarch, out string) error
 	}
 	gotOS, gotArch := buildSetting(info, "GOOS"), buildSetting(info, "GOARCH")
 	if gotOS != goos || gotArch != goarch {
-		return fmt.Errorf("%s %q targets %s/%s, but the host needs %s/%s", deployBinaryFlag, path, gotOS, gotArch, goos, goarch)
+		// Terminal, not the retryable ErrDeploy the other push failures use: the
+		// artifact is the operator's, so the mismatch is a permanent mistake that
+		// retrying only re-reads. The message names the flag to fix and both
+		// targets, so the remedy (rebuild for the host, or use -build-source) is
+		// visible without tracing the seam.
+		return fmt.Errorf("%w: %s %q targets %s/%s, but the host needs %s/%s; supply an evener built for %s/%s, or set %s instead",
+			sshconn.ErrDeployArtifactUnusable, deployBinaryFlag, path, gotOS, gotArch, goos, goarch, goos, goarch, buildSourceFlag)
 	}
 	src, err := os.Stat(path)
 	if err != nil {
@@ -123,9 +159,10 @@ func copyDeployBinary(ctx context.Context, path, goos, goarch, out string) error
 	if err != nil {
 		return fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
 	}
-	// Preserve the artifact's own permission bits: a `go build` artifact is
-	// 0755, and the host must be able to exec what it receives.
-	if err := os.WriteFile(out, data, src.Mode().Perm()); err != nil {
+	// The host must be able to exec what it receives, so the staged copy always
+	// carries the exec bits — the artifact's own read/write bits are preserved,
+	// but a source without them cannot make the staged file unrunnable.
+	if err := os.WriteFile(out, data, src.Mode().Perm()|0o111); err != nil {
 		return fmt.Errorf("%s %q: write staged binary %q: %w", deployBinaryFlag, path, out, err)
 	}
 	return nil

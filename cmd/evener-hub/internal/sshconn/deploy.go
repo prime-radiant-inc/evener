@@ -354,6 +354,14 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 		}
 	}
 	if err := build(ctx, facts.OS, facts.Arch, stage); err != nil {
+		// A terminal refusal from the build seam — an operator-supplied
+		// -deploy-binary built for another platform (errDeployArtifactUnusable) —
+		// names a permanent cause that retrying re-reads unchanged. Keep it out of
+		// the retryable ErrDeploy class so the sentinel's own classification, not
+		// ErrDeploy, is what the supervisor and the wire mapping see.
+		if isTerminal(err) {
+			return "", fmt.Errorf("host %q build %s/%s: %w", host.Name, facts.OS, facts.Arch, err)
+		}
 		return "", fmt.Errorf("%w: host %q build %s/%s: %w", ErrDeploy, host.Name, facts.OS, facts.Arch, err)
 	}
 
@@ -383,6 +391,16 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 // (the identical mistake round thirteen records for the dirty-controller
 // refusal).
 var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub")
+
+// errDeployArtifactUnusable marks a deploy refused because the operator-supplied
+// artifact (-deploy-binary) cannot be installed on the host: it was built for a
+// different GOOS/GOARCH. The operator supplies the artifact, so a wrong target is
+// a permanent mistake — the same file is re-read on every retry — and the refusal
+// is terminal for the same reason errRunTargetUnservable is: the supervisor would
+// re-refuse it forever. deployPush also keeps this sentinel out of the retryable
+// ErrDeploy wrap, so terminal is the class that reaches both the reconnect loop
+// and the hub's attach handler.
+var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
 
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
 // run target. Only the shipped `evener` binary can serve a hub: install.sh also

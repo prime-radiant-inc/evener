@@ -234,8 +234,9 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //   - deploy failures (ErrDeploy), the dirty-controller deploy refusal
 //     (ErrControllerDirty), the unservable-run-target deploy refusal
 //     (ErrRunTargetUnservable), the post-deploy identity refusal
-//     (ErrDeployUnstamped), a version mismatch a deploy would have to fix, and
-//     the missing-executable refusal a host with no deploy path produces
+//     (ErrDeployUnstamped), the wrong-platform-artifact refusal
+//     (ErrDeployArtifactUnusable), a version mismatch a deploy would have to fix,
+//     and the missing-executable refusal a host with no deploy path produces
 //     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
 //     not install or match its build on the host, so the host cannot be
 //     attached/launched.
@@ -256,6 +257,7 @@ func hostAttachWireError(err error) error {
 		errors.Is(err, sshconn.ErrVersionMismatch),
 		errors.Is(err, sshconn.ErrControllerDirty),
 		errors.Is(err, sshconn.ErrRunTargetUnservable),
+		errors.Is(err, sshconn.ErrDeployArtifactUnusable),
 		errors.Is(err, sshconn.ErrDeployUnstamped),
 		errors.Is(err, sshconn.ErrExecutableMissing):
 		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
