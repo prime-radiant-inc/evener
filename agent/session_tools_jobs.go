@@ -598,17 +598,15 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
 	}
-	// name: the mnemonic git branch of a worktree-isolated delegate's lane, so
-	// `git branch` and merges read clearly. Only meaningful with isolation
-	// "worktree" (the lane directory and every addressing surface stay keyed to
-	// the delegate id), so refuse it otherwise. Validated here with the same
-	// alphabet manage_worktree names use, before any capacity is reserved; the
-	// create core re-checks with git's own ref rules and refuses a branch that
-	// already exists.
+	// name: a short mnemonic the caller gives the delegate. With isolation
+	// "worktree" it names the lane's git branch, so `git branch` and merges
+	// read clearly; without isolation it is a display-only label. Either way
+	// the lane directory and every addressing surface stay keyed to the
+	// delegate id. Validated here with the same alphabet manage_worktree names
+	// use — a branch-safe alphabet is also a good label alphabet — before any
+	// capacity is reserved; the worktree create core re-checks with git's own
+	// ref rules and refuses a branch that already exists.
 	if name := stringArg(args, "name"); name != "" {
-		if a.Isolation != "worktree" {
-			return delegateArgs{}, errors.New(`invalid_request: name is only valid with isolation:"worktree"`)
-		}
 		if verr := worktree.ValidateName(name); verr != nil {
 			return delegateArgs{}, fmt.Errorf("invalid_request: name: %w", verr)
 		}
@@ -965,6 +963,7 @@ func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleR
 		Kind:                 "delegate",
 		Type:                 "delegate",
 		Status:               status.Status,
+		Name:                 snapshot.descriptor.Name,
 		Description:          snapshot.descriptor.Description,
 		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
 		VisibleToSessionID:   snapshot.descriptor.VisibleSessionID,
@@ -1048,6 +1047,13 @@ func formatJobList(out jobListResult) string {
 		label := j.Description
 		if label == "" && j.Command != nil {
 			label = *j.Command
+		}
+		if j.Name != "" {
+			if label != "" {
+				label = j.Name + " — " + label
+			} else {
+				label = j.Name
+			}
 		}
 		if label != "" {
 			fmt.Fprintf(&b, "  %s", label)
@@ -1310,6 +1316,7 @@ type stableDelegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
+	Name               string                 `json:"name,omitempty"`
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
 	AgentType          string                 `json:"agent_type"`
@@ -1338,6 +1345,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),
+		Name:               descriptor.Name,
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
@@ -1443,13 +1451,16 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	ID               string   `json:"id"`
-	JobID            string   `json:"job_id,omitempty"`
-	Kind             string   `json:"kind"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	Phase            string   `json:"phase,omitempty"`
-	Reason           *string  `json:"reason,omitempty"`
+	ID     string  `json:"id"`
+	JobID  string  `json:"job_id,omitempty"`
+	Kind   string  `json:"kind"`
+	Type   string  `json:"type"`
+	Status string  `json:"status"`
+	Phase  string  `json:"phase,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+	// Name is the delegate's display label (the `name` create argument);
+	// empty for shells and unnamed delegates, which render as absent.
+	Name             string   `json:"name,omitempty"`
 	Description      string   `json:"description"`
 	Task             string   `json:"task,omitempty"`
 	AgentType        string   `json:"agent_type,omitempty"`

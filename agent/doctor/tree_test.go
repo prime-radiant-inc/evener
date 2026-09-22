@@ -169,3 +169,48 @@ func TestTree_Render(t *testing.T) {
 		t.Errorf("render missing cross-bucket ref:\n%s", out)
 	}
 }
+
+// A named delegate's tree node carries the label (display-only; the node stays
+// addressed by session id), and an unnamed delegate's node has no label slot.
+func TestTree_DelegateNameLabel(t *testing.T) {
+	base := t.TempDir()
+	rootBucket := stateHomeBucket(base, hash1)
+	childBucket := stateHomeBucket(base, hash2)
+	rootSID := sidA
+	writeSession(t, rootBucket, rootSID)
+	writeSession(t, childBucket, childSID)
+	rootDelegates := filepath.Join(rootBucket, "sessions", rootSID, "delegates.jsonl")
+	writeDelegateEvents(t, rootDelegates, []delegatestore.Event{
+		{Kind: delegatestore.EventDelegateCreated, DelegateID: "del_named", Created: &delegatestore.DelegateCreated{Descriptor: delegatestore.Descriptor{
+			ChildSessionID: childSID, TranscriptRef: "proj:" + hash2 + ":" + childSID,
+			OwnerSessionID: rootSID, VisibleSessionID: rootSID, Task: "named child",
+			AgentType: "explorer", ToolNameCeiling: []string{"communicate"}, Resumable: true,
+			Name: "tree-label",
+		}}},
+		{Kind: delegatestore.EventDelegateRunStarted, DelegateID: "del_named", RunStarted: &delegatestore.RunStarted{
+			Generation: 1, Trigger: delegatestore.TriggerInitial, StartedAt: time.Unix(1, 0).UTC(),
+		}},
+	})
+
+	root, err := Tree(base, rootSID, TreeOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("root should have 1 delegate child, got %d", len(root.Children))
+	}
+	if root.Children[0].Name != "tree-label" {
+		t.Errorf("named child Name = %q, want tree-label", root.Children[0].Name)
+	}
+	if rendered := RenderTree(root); !strings.Contains(rendered, "tree-label") {
+		t.Errorf("render missing the delegate label:\n%s", rendered)
+	}
+
+	// The shared fixture's delegate has no name: its node projects the zero
+	// label, which renders as absent.
+	fixtureBase, fixtureRoot := treeFixture(t)
+	fixtureRootTree, _ := Tree(fixtureBase, fixtureRoot, TreeOpts{})
+	if len(fixtureRootTree.Children) != 1 || fixtureRootTree.Children[0].Name != "" {
+		t.Errorf("unnamed child = %#v, want an empty label", fixtureRootTree.Children)
+	}
+}

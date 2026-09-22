@@ -60,6 +60,7 @@ type delegateResult struct {
 	ChildSessionID           string
 	Type                     string
 	Status                   jobstore.Status
+	Name                     string
 	Reason                   string
 	ExhaustionBudget         string
 	ExhaustionLimit          int

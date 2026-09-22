@@ -69,6 +69,7 @@ type delegateDeliveryClaim struct {
 type delegateDeliveryPlan struct {
 	controller      *delegateTreeController
 	delegateID      string
+	name            string
 	deliveryID      string
 	ownerDelegateID string
 	waiter          *delegateInlineWaiter
@@ -553,6 +554,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	return &delegateDeliveryPlan{
 		controller:      c,
 		delegateID:      delegateID,
+		name:            aggregate.Descriptor.Name,
 		deliveryID:      head.DeliveryID,
 		ownerDelegateID: head.OwnerDelegateID,
 		waiter:          waiter,
@@ -625,6 +627,7 @@ func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDelive
 	return &delegateDeliveryPlan{
 		controller:      c,
 		delegateID:      receipt.delegateID,
+		name:            aggregate.Descriptor.Name,
 		deliveryID:      head.DeliveryID,
 		ownerDelegateID: head.OwnerDelegateID,
 		packet:          cloneDelegateTerminalPacket(head.Packet),
@@ -954,6 +957,14 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	packet, err := json.Marshal(plan.packet)
 	if err != nil {
 		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
+	}
+	// The name attribute is display-only: the frame stays addressable by
+	// delegate_id alone, and an unnamed delegate renders no name attribute.
+	if plan.name != "" {
+		return fmt.Sprintf(
+			"<delegate-notification delegate_id=%q name=%q>%s</delegate-notification>",
+			html.EscapeString(plan.delegateID), html.EscapeString(plan.name), packet,
+		), nil
 	}
 	return fmt.Sprintf(
 		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
