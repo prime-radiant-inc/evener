@@ -888,6 +888,15 @@ export function createConversationStore() {
   // transition, same as pageOwnedIds.
   const pageOwnedTurnIds = new Set<string>();
   const pageOwnedCompactTurnIds = new Set<string>();
+  // #1919 follow-up, review round 1 (fragment identity): the package's merges
+  // match fragments by ITEM identity when turn ids differ (turnsMatch), so a
+  // trimmed turn must not lose the identities of the items it shed — a
+  // compact survivor that can no longer match would sit beside a later turn
+  // that re-issued its content under another id, and both would count their
+  // usage. The map holds only identity strings; reconcileCompactedTurns folds
+  // a compact survivor into a merged turn that carries one of its remembered
+  // identities.
+  const compactedTurnIdentities = new Map<string, Set<string>>();
   // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
   // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
   // last accepted live notification for that item. liveOwnerRev is a global
@@ -1275,6 +1284,12 @@ export function createConversationStore() {
     let trimmed = false;
     const bounded = turns.map((turn) => {
       if (turn.items.length === 0) return turn;
+      // A turn whose payloads came back through a fold (the package unions a
+      // same-id page fragment's items into a compact turn) is back inside
+      // window accounting — forget whatever identities it shed earlier.
+      if (compactedTurnIdentities.has(turn.id)) {
+        compactedTurnIdentities.delete(turn.id);
+      }
       // Item identity is the package's own rule (itemIdentityMatches:
       // transcriptKey when both sides carry one, else id) — the same rule
       // mergeTurnHistory matches fragments by, so a retained row keeps the
@@ -1287,9 +1302,83 @@ export function createConversationStore() {
       if (pageOwnedTurnIds.delete(turn.id)) {
         pageOwnedCompactTurnIds.add(turn.id);
       }
+      // Remember the shed identities (the same rule the package matches by)
+      // so reconcileCompactedTurns can still fold this turn against a later
+      // re-issue under a different turn id.
+      const shedIdentities = new Set<string>();
+      for (const item of turn.items) {
+        shedIdentities.add(item.transcriptKey ?? item.id);
+      }
+      compactedTurnIdentities.set(turn.id, shedIdentities);
       return { ...turn, items: [] };
     });
     return trimmed ? bounded : turns;
+  }
+
+  // #1919 follow-up, review round 1: fold compact survivors against merged
+  // turns that re-issued their content under another turn id. The package's
+  // merges would have folded them (turnsMatch matches by item identity), so
+  // without this pass the re-issued turn and the compact survivor would both
+  // survive and sessionTokens would double-count their usage. The fold keeps
+  // the payload-bearing turn and mirrors mergePageTurn's usage rule for the
+  // site's merge direction: at loadOlder the retained (current-side) copy is
+  // the newer merge input, so the compact side's usage wins; at rehydrate the
+  // fresh read is newer, so the surviving turn's own usage wins. A dropped
+  // compact PAGE turn passes its page ownership to the turn that carries its
+  // content, so the rehydrate preservation gate (and the usage it protects)
+  // survives the fold exactly as the package's own fold would have kept it.
+  function reconcileCompactedTurns(
+    turns: TurnModel[],
+    compactUsageWins: boolean,
+  ): TurnModel[] {
+    if (compactedTurnIdentities.size === 0) return turns;
+    // Identity index over the turns that still carry payloads — bounded by
+    // the keep-window's rows plus the fragment items that just arrived.
+    const hostByIdentity = new Map<string, TurnModel>();
+    for (const turn of turns) {
+      if (turn.items.length === 0) continue;
+      for (const item of turn.items) {
+        const identity = item.transcriptKey ?? item.id;
+        if (!hostByIdentity.has(identity)) hostByIdentity.set(identity, turn);
+      }
+    }
+    const dropped = new Set<string>();
+    const usageSupplies = new Map<string, TurnModel["usage"]>();
+    for (const turn of turns) {
+      if (turn.items.length !== 0) continue;
+      const remembered = compactedTurnIdentities.get(turn.id);
+      if (remembered === undefined) continue;
+      let host: TurnModel | undefined;
+      for (const identity of remembered) {
+        const candidate = hostByIdentity.get(identity);
+        if (candidate !== undefined && candidate.id !== turn.id) {
+          host = candidate;
+          break;
+        }
+      }
+      if (host === undefined) continue;
+      dropped.add(turn.id);
+      const mergedUsage = compactUsageWins
+        ? (turn.usage ?? host.usage)
+        : (host.usage ?? turn.usage);
+      if (mergedUsage !== undefined || !usageSupplies.has(host.id)) {
+        usageSupplies.set(host.id, mergedUsage);
+      }
+      compactedTurnIdentities.delete(turn.id);
+      // The turn carrying a folded page turn's content now owns that page
+      // history itself.
+      if (pageOwnedCompactTurnIds.delete(turn.id)) {
+        pageOwnedTurnIds.add(host.id);
+      }
+    }
+    if (dropped.size === 0) return turns;
+    return turns
+      .filter((turn) => !dropped.has(turn.id))
+      .map((turn) => {
+        if (!usageSupplies.has(turn.id)) return turn;
+        const usage = usageSupplies.get(turn.id);
+        return { ...turn, ...(usage === undefined ? {} : { usage }) };
+      });
   }
 
   return create<LiveConversationState>((rawSet, get) => {
@@ -1340,6 +1429,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
+        compactedTurnIdentities.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         set({
@@ -1410,6 +1500,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
+        compactedTurnIdentities.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -1963,6 +2054,11 @@ export function createConversationStore() {
             if (history.olderCoverage && history.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
+            // Review round 1: fold compact survivors against fresh turns
+            // that re-issued their content under another turn id BEFORE
+            // bounding — the fresh side is the newer merge input here, so
+            // the survivor's turn keeps its own usage when defined.
+            mergedTurns = reconcileCompactedTurns(mergedTurns, false);
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
             // fragments supplied, and only out-of-window payloads trim. The
@@ -1974,6 +2070,7 @@ export function createConversationStore() {
             pageOwnedIds.clear();
             pageOwnedTurnIds.clear();
             pageOwnedCompactTurnIds.clear();
+            compactedTurnIdentities.clear();
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
@@ -2169,11 +2266,16 @@ export function createConversationStore() {
             // (item IDs) below — a turn survives here even
             // when every one of its display rows is deduped away or evicted.
             for (const turn of result.turnsPage?.data ?? []) pageOwnedTurnIds.add(turn.id);
+            // Review round 1: fold compact survivors against page fragments
+            // that re-issued their content under another turn id. The
+            // retained copy is the newer merge input in mergeOlderItemPage,
+            // so the compact side's usage wins when both carry one.
+            const reconciledTurns = reconcileCompactedTurns(mergedTurns, true);
             // #1919 follow-up: bound the retained turn payloads against the
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
             // whose payloads left the keep-window to the compact set.
-            const boundedTurns = boundRetainedTurns(mergedTurns, pageMerged);
+            const boundedTurns = boundRetainedTurns(reconciledTurns, pageMerged);
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
               // never the capped nextCursor above.
@@ -2586,6 +2688,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
+        compactedTurnIdentities.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
@@ -2781,7 +2884,16 @@ export function createConversationStore() {
               if (!replaced) items.push(...replacement);
               const cappedItems = capItems(items);
               pruneEvictedIds(cappedItems);
-              set({ conversation: { ...conv, items: cappedItems } });
+              // #1919 follow-up: live growth evicts rows too — bound the
+              // retained turn payloads whenever a live path caps display
+              // rows, not only at page/rehydrate publishes.
+              set({
+                conversation: {
+                  ...conv,
+                  items: cappedItems,
+                  turns: boundRetainedTurns(conv.turns, cappedItems),
+                },
+              });
             } else {
               publishModel();
               // Unsupported transitions require the canonical projection.
@@ -3042,10 +3154,13 @@ export function createConversationStore() {
             // Task 2A-Truncation residual fix round 2: prune evicted IDs
             // from ownership maps after incremental append+cap.
             pruneEvictedIds(warningCappedItems);
+            // #1919 follow-up: a warning append can cap-evict rows — bound
+            // the retained turn payloads here too.
             set({
               conversation: {
                 ...conv,
                 items: warningCappedItems,
+                turns: boundRetainedTurns(conv.turns, warningCappedItems),
               },
             });
             break;
@@ -3416,7 +3531,15 @@ export function createConversationStore() {
                 reconcileTruncationFrom(reprojectedCapped, carriedFrozen);
                 const reprojected = truncateAndRecord(reprojectedCapped);
                 pruneEvictedIds(reprojected);
-                set({ conversation: { ...conv, items: reprojected } });
+                // #1919 follow-up: a reproject that caps can evict rows —
+                // bound the retained turn payloads here too.
+                set({
+                  conversation: {
+                    ...conv,
+                    items: reprojected,
+                    turns: boundRetainedTurns(conv.turns, reprojectedCapped),
+                  },
+                });
                 break;
               }
               // askPending moved but no ask row moved either way (no
@@ -3463,6 +3586,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
+        compactedTurnIdentities.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.

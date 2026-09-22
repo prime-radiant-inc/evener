@@ -5627,6 +5627,372 @@ describe("ConversationStore", () => {
       // The display window itself stayed capped through the churn.
       expect(conv.items.length).toBeLessThanOrEqual(500);
     });
+
+    // Review round 1, finding 2: live notification paths cap display rows
+    // too, so page rows can be evicted by live growth alone. The bound must
+    // hold there as well — not only at page/rehydrate publishes — or a page
+    // turn's full payloads linger until some later refresh happens to run.
+    it("live growth that evicts a page's rows bounds its turn payloads without a rehydrate or page load", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      // 492 fresh rows + an 8-row page = exactly the 500-row cap, so the
+      // page loads without eviction and its turn keeps full payloads.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 492 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      service.olderItems = {
+        items: Array.from({ length: 8 }, (_, j) => ({
+          kind: "user" as const,
+          id: `w-${j}`,
+          text: `w-${j}`,
+        })),
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              Array.from({ length: 8 }, (_, j) => ({
+                id: `w-${j}`,
+                transcriptKey: `w-${j}`,
+                turnId: "pt",
+                type: "agentMessage",
+                text: `page item ${j}`,
+                position: { entry: 100 - j, item: 0 },
+                status: "completed",
+              })),
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      const loaded = store.getState().conversation?.turns.find((t) => t.id === "pt");
+      expect(loaded?.items).toHaveLength(8);
+
+      // Live traffic alone (no rehydrate, no further page) appends 8 rows,
+      // and each append's cap evicts one page row from the oldest end.
+      for (let j = 0; j < 8; j++) {
+        store.getState().applyNotification({
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "ft",
+            item: { type: "userMessage", id: `l-${j}`, text: `live ${j}` },
+          },
+        } as AnyNotification);
+      }
+
+      const conv = store.getState().conversation!;
+      // The page's rows are all gone...
+      expect(conv.items.some((row) => row.id.startsWith("w-"))).toBe(false);
+      // ...so its turn is the compact shape: identity + usage survive, and
+      // the payloads are bounded by the LIVE path's own bound — no
+      // rehydrate or page load needed to trim them.
+      const pageTurn = conv.turns.find((t) => t.id === "pt");
+      expect(pageTurn?.items).toEqual([]);
+      expect(pageTurn?.usage).toEqual({ inputTokens: 500, outputTokens: 20 });
+      expect(conv.items.length).toBeLessThanOrEqual(500);
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 501, outputTokens: 21, scope: "loaded" });
+    });
+
+    // Review round 1, finding 1: the package's merges match fragments by
+    // ITEM identity when turn ids differ. A compact survivor has no items to
+    // match with, so when the wire re-issues its content under another turn
+    // id the two would otherwise both survive and sessionTokens would
+    // double-count their usage. The remembered-identity fold below keeps
+    // exactly one turn with exactly one usage stamp.
+    it("a compact page fragment re-issued under a fresh turn id folds away instead of double-counting usage", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      // 496 fresh rows + an 8-row page overflows the cap by 4, evicting the
+      // page's first 4 rows — including both identities the page turn's
+      // payloads back — so the page turn is out-of-window at its own load.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 496 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      service.olderItems = {
+        items: Array.from({ length: 8 }, (_, j) => ({
+          kind: "user" as const,
+          id: `w-${j}`,
+          text: `w-${j}`,
+        })),
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "w-0",
+                  transcriptKey: "w-0",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "page item 0",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "w-1",
+                  transcriptKey: "w-1",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "page item 1",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      const compact = store.getState().conversation?.turns.find((t) => t.id === "pt");
+      expect(compact?.items).toEqual([]);
+      expect(compact?.usage).toEqual({ inputTokens: 500, outputTokens: 20 });
+
+      // A fresh read re-issues the same content under a different turn id,
+      // with its own usage and its own rows in the fresh window.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "assistant", id: "fw-0", markdown: "fresh w0", streaming: false, transcriptKey: "w-0" },
+            { kind: "assistant", id: "fw-1", markdown: "fresh w1", streaming: false, transcriptKey: "w-1" },
+          ],
+          turns: [
+            {
+              id: "pt-fresh",
+              status: "completed",
+              items: [
+                {
+                  id: "fw-0",
+                  transcriptKey: "w-0",
+                  turnId: "pt-fresh",
+                  type: "agentMessage",
+                  text: "fresh w0",
+                  position: { entry: 3, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "fw-1",
+                  transcriptKey: "w-1",
+                  turnId: "pt-fresh",
+                  type: "agentMessage",
+                  text: "fresh w1",
+                  position: { entry: 4, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 7, outputTokens: 3 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+
+      const conv = store.getState().conversation!;
+      // The compact survivor folded into the re-issued fresh fragment...
+      expect(conv.turns.some((turn) => turn.id === "pt")).toBe(false);
+      const merged = conv.turns.find((turn) => turn.id === "pt-fresh");
+      // ...which keeps its own usage (the fresh side is the newer merge
+      // input, mirroring mergePageTurn) and its items (in-window via the
+      // fresh read's own rows).
+      expect(merged?.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
+      expect(merged?.items.map((item) => item.transcriptKey)).toEqual(["w-0", "w-1"]);
+      // Exactly one usage stamp counts — not the compact survivor's
+      // {500,20} beside the re-issued turn's {7,3}.
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 8, outputTokens: 4, scope: "loaded" });
+    });
+
+    // Review round 1, finding 1 (page side): the same fold through a later
+    // PAGE that re-issues a compact turn's content under another turn id.
+    // mergeOlderItemPage makes the retained copy the newer merge input, so
+    // the compact side's usage wins there.
+    it("a compact page fragment re-issued by a later page folds away with the retained copy's usage winning", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 492 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Page 1 lands exactly at the cap; a following rehydrate with a grown
+      // fresh window evicts its rows, compacting its turn.
+      service.olderItems = {
+        items: Array.from({ length: 8 }, (_, j) => ({
+          kind: "user" as const,
+          id: `w-${j}`,
+          text: `w-${j}`,
+        })),
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "w-0",
+                  transcriptKey: "w-0",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "page item 0",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "w-1",
+                  transcriptKey: "w-1",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "page item 1",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().olderCursor).toBe("c1");
+
+      // The grown fresh window (504 rows) evicts the page's 8 rows from the
+      // oldest end, so pt compacts at the rehydrate's own bound.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 504 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      const compact = store.getState().conversation?.turns.find((t) => t.id === "pt");
+      expect(compact?.items).toEqual([]);
+
+      // A later page re-issues the same content under another turn id with
+      // its own usage — and no rows of its own.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt2",
+              [
+                {
+                  id: "rw-0",
+                  transcriptKey: "w-0",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "reissued 0",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "rw-1",
+                  transcriptKey: "w-1",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "reissued 1",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 7, outputTokens: 3 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+
+      const conv = store.getState().conversation!;
+      // The compact survivor folded into the re-issuing page turn, whose
+      // payload-less shape keeps the retained copy's usage — the newer merge
+      // input under mergeOlderItemPage — and the compact identity shape.
+      expect(conv.turns.some((turn) => turn.id === "pt")).toBe(false);
+      const merged = conv.turns.find((turn) => turn.id === "pt2");
+      expect(merged?.usage).toEqual({ inputTokens: 500, outputTokens: 20 });
+      expect(merged?.items).toEqual([]);
+      // Exactly one usage stamp counts.
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 501, outputTokens: 21, scope: "loaded" });
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
