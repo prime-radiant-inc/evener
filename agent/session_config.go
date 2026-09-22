@@ -608,6 +608,17 @@ type testConfig struct {
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.
 	scratchSwapBeforeUpdate func()
 
+	// scratchRefreshOpenOverride is consulted before each refresh pass's
+	// reacquire: a non-nil error replaces the real open for that reference,
+	// letting a test deterministically fail the Nth reacquire. Nil in
+	// production.
+	scratchRefreshOpenOverride func(ref sandbox.ScratchReference, call int) error
+
+	// scratchRefreshBeforeInstall runs after a refresh pass reacquired its
+	// handles and before it installs them — the window where a concurrent
+	// manifest update or pool publish must be observable. Nil in production.
+	scratchRefreshBeforeInstall func()
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -513,107 +514,214 @@ func findScratchConsumer(manifest sandbox.ScratchManifest, sessionID string) (sa
 }
 
 // refreshRetainedScratchConsumer converges the retained pool onto sessionID's
-// refreshRetainedScratchConsumer converges the retained pool onto sessionID's
 // CURRENT durable manifest rows before a same-process cold restore adopts.
 // The pool is an init-time snapshot — prepareRetainedScratch runs once, before
-// root/child initialization launches work — and exactly two shapes drift from
-// it: a delegate created after init never entered pool.consumers, and a
-// delegate an idle release retired holds slots behind adoption claims the pool
-// has no reason to drop. For the first, the consumer's rows are installed the
-// way init would have loaded them — free leases reacquired, held ones marked
-// contended — and for the second, each claimed slot whose lease went free is
-// re-proven: a reacquire can only succeed after the previous adopter released
-// the lease, so the handle reinstalls and the claim clears. Either way the
-// restore gets the same adoption a restart would, resuming in the original
-// scratch directory instead of a fresh mint. Nothing else moves: a slot the
-// pool deliberately holds no handle for keeps its engineered absence, and a
-// claim whose lease is still held keeps its record, so the existing refusal
-// semantics are untouched.
+// root/child initialization launches work — and three shapes drift from it: a
+// delegate created after init never entered pool.consumers; a delegate whose
+// manifest rows moved after the pool was built (a worktree move, a shared
+// binding swap) holds rows the pool still records under their old identity;
+// and a delegate an idle release retired holds slots behind adoption claims
+// the pool has no reason to drop. For the first two, the consumer's rows are
+// installed the way init would have loaded them — free leases reacquired, held
+// ones marked contended — and for the third, each claimed slot whose lease went
+// free is re-proven: a reacquire can only succeed after the previous adopter
+// released the lease, so the handle reinstalls and the claim clears. Either
+// way the restore gets the same adoption a restart would, resuming in the
+// original scratch directory instead of a fresh mint. Nothing else moves: a
+// slot the pool deliberately holds no handle for keeps its engineered absence,
+// and a claim whose lease is still held keeps its record, so the existing
+// refusal semantics are untouched.
+//
+// The rows are derived from one manifest snapshot and installed only after
+// the reacquires, so the revision is rechecked before anything lands: a
+// manifest that moved in between drops this pass's reacquired leases and is
+// re-derived from the fresh one, bounded like stageScratchSwapBinding's rebase
+// loop, and a pass that fails after reacquiring releases the leases it took so
+// they cannot strand. A poolless seed publishes through a compare-and-swap: a
+// concurrent seed that won the race is folded into, never displaced and
+// released.
 func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
 		return nil
 	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil {
-		return fmt.Errorf("retained scratch refresh: %w", err)
-	}
-	if manifest.Released {
-		return nil
-	}
-	consumer, ok := findScratchConsumer(manifest, sessionID)
-	if !ok || consumer.CurrentBindingID == "" {
-		return nil
-	}
-	binding, ok := findScratchBinding(manifest, consumer.CurrentBindingID)
-	if !ok {
-		return nil
-	}
-	owningSlots := make([]sandbox.ScratchReference, 0, len(binding.Slots))
-	for kind, slot := range binding.Slots {
-		if slot.OwnsLease {
-			owningSlots = append(owningSlots, sandbox.ScratchReference{Dir: slot.Dir, Kind: kind})
-		}
-	}
-	pool := s.retainedScratch.Load()
-	installRows := pool == nil
-	var staleClaims []sandbox.ScratchReference
-	if pool != nil {
-		pool.mu.Lock()
-		if _, hasRow := pool.consumers[sessionID]; !hasRow {
-			installRows = true
-		}
-		for _, ref := range owningSlots {
-			if _, claimed := pool.adopted[canonicalScratchDir(ref.Dir)]; claimed {
-				staleClaims = append(staleClaims, ref)
-			}
-		}
-		pool.mu.Unlock()
-	}
-	if !installRows && len(staleClaims) == 0 {
-		return nil
-	}
-	try := owningSlots
-	if !installRows {
-		try = staleClaims
-	}
-	handles := make(map[string]*sandbox.SessionScratch)
-	contended := make(map[string]struct{})
-	for _, ref := range try {
-		handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
+	for range 5 {
+		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
-			if errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
-				// A row install mirrors init's reacquire pass: a lease held
-				// elsewhere in this process stays with its holder and is marked
-				// contended so adoption borrows or skips instead of erroring. A
-				// stale-claim probe that finds the lease held proves the claim
-				// live, and the record stays untouched.
-				if installRows {
-					contended[canonicalScratchDir(ref.Dir)] = struct{}{}
-				}
-				continue
-			}
-			return fmt.Errorf("retained scratch refresh %q: %w", ref.Dir, err)
+			return fmt.Errorf("retained scratch refresh: %w", err)
 		}
-		handles[canonicalScratchDir(ref.Dir)] = handle
+		if manifest.Released {
+			return nil
+		}
+		consumer, ok := findScratchConsumer(manifest, sessionID)
+		if !ok || consumer.CurrentBindingID == "" {
+			return nil
+		}
+		binding, ok := findScratchBinding(manifest, consumer.CurrentBindingID)
+		if !ok {
+			return nil
+		}
+		owningSlots := make([]sandbox.ScratchReference, 0, len(binding.Slots))
+		for kind, slot := range binding.Slots {
+			if slot.OwnsLease {
+				owningSlots = append(owningSlots, sandbox.ScratchReference{Dir: slot.Dir, Kind: kind})
+			}
+		}
+		pool := s.retainedScratch.Load()
+		installRows := pool == nil
+		var staleClaims []sandbox.ScratchReference
+		if pool != nil {
+			pool.mu.Lock()
+			// A consumer row that merely exists is not proof the rows it names
+			// are live: the manifest can have moved the consumer or its
+			// binding after the pool was built, so the refresh installs
+			// whenever the pooled rows differ from the manifest's, not only
+			// when the consumer is missing entirely.
+			pooledConsumer, hasRow := pool.consumers[sessionID]
+			if !hasRow || !scratchConsumerRowsCurrent(pooledConsumer, consumer) {
+				installRows = true
+			} else if pooledBinding, hasBinding := pool.bindings[consumer.CurrentBindingID]; !hasBinding || !scratchBindingRowsCurrent(pooledBinding, binding) {
+				installRows = true
+			}
+			for _, ref := range owningSlots {
+				if _, claimed := pool.adopted[canonicalScratchDir(ref.Dir)]; claimed {
+					staleClaims = append(staleClaims, ref)
+				}
+			}
+			pool.mu.Unlock()
+		}
+		if !installRows && len(staleClaims) == 0 {
+			return nil
+		}
+		try := owningSlots
+		if !installRows {
+			try = staleClaims
+		}
+		handles := make(map[string]*sandbox.SessionScratch)
+		contended := make(map[string]struct{})
+		openCalls := 0
+		for _, ref := range try {
+			openCalls++
+			var handle *sandbox.SessionScratch
+			var err error
+			if override := s.cfg.testOnly.scratchRefreshOpenOverride; override != nil {
+				err = override(ref, openCalls)
+			}
+			if err == nil {
+				handle, err = sandbox.OpenRetainedSessionScratch(owner, ref)
+			}
+			if err != nil {
+				if errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
+					// A row install mirrors init's reacquire pass: a lease held
+					// elsewhere in this process stays with its holder and is marked
+					// contended so adoption borrows or skips instead of erroring. A
+					// stale-claim probe that finds the lease held proves the claim
+					// live, and the record stays untouched.
+					if installRows {
+						contended[canonicalScratchDir(ref.Dir)] = struct{}{}
+					}
+					continue
+				}
+				// The leases this pass already reacquired are going nowhere —
+				// release them with the error, or they hold their slots for the
+				// life of a process that never installed them.
+				releaseRefreshHandles(handles)
+				return fmt.Errorf("retained scratch refresh %q: %w", ref.Dir, err)
+			}
+			handles[canonicalScratchDir(ref.Dir)] = handle
+		}
+		if hook := s.cfg.testOnly.scratchRefreshBeforeInstall; hook != nil {
+			hook()
+		}
+		// Recheck the revision before installing: the rows above came from one
+		// snapshot, and a binding or consumer update that landed during the
+		// reacquire would otherwise be overwritten with rows a superseded
+		// revision produced. Drop this pass's reacquires and re-derive from the
+		// moved manifest instead.
+		fresh, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			releaseRefreshHandles(handles)
+			return fmt.Errorf("retained scratch refresh recheck: %w", err)
+		}
+		if fresh.Revision != manifest.Revision {
+			releaseRefreshHandles(handles)
+			continue
+		}
+		if pool != nil {
+			pool.installConsumerRefresh(consumer, binding, handles, contended)
+			return nil
+		}
+		// No pool was ever published — the root initialized before the manifest
+		// held a single row — so seed one from this consumer's rows the way
+		// prepareRetainedScratch would have. The publish is a compare-and-swap
+		// against nil: a concurrent restore may publish its own seed between the
+		// load above and here, and displacing that pool would release the
+		// handles it reacquired mid-restore and drop its rows — fold into it
+		// instead.
+		seeded := &retainedScratchPool{
+			owner:     owner,
+			handles:   handles,
+			bindings:  map[string]sandbox.ScratchBinding{binding.BindingID: binding},
+			consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: consumer},
+			contended: contended,
+			adopted:   make(map[string]string),
+		}
+		for {
+			if s.retainedScratch.CompareAndSwap(nil, seeded) {
+				return nil
+			}
+			if published := s.retainedScratch.Load(); published != nil {
+				published.installConsumerRefresh(consumer, binding, handles, contended)
+				return nil
+			}
+			// The pointer went back to nil — a terminal release or init
+			// cleanup swept the published pool — so retry the CAS with this
+			// pass's seed.
+		}
 	}
-	if pool != nil {
-		pool.installConsumerRefresh(consumer, binding, handles, contended)
-		return nil
+	return fmt.Errorf("retained scratch refresh: rows for %q stayed stale", sessionID)
+}
+
+// scratchConsumerRowsCurrent reports whether the pool's consumer row is the
+// live manifest's: any drift — a moved current binding, a changed parked or
+// shared role, a revised abandonment history — means the pool's rows must be
+// reinstalled, not merely a missing consumer.
+func scratchConsumerRowsCurrent(pooled, live sandbox.ScratchConsumerBinding) bool {
+	return pooled.SessionID == live.SessionID &&
+		pooled.CurrentBindingID == live.CurrentBindingID &&
+		pooled.ParentSharedBindingID == live.ParentSharedBindingID &&
+		pooled.WorktreeRestoreBindingID == live.WorktreeRestoreBindingID &&
+		slices.Equal(pooled.AbandonedBindingIDs, live.AbandonedBindingIDs)
+}
+
+// scratchBindingRowsCurrent reports whether the pool's binding row is the live
+// manifest's, slot by slot: a binding whose slots moved (a backswap, a shared
+// handover) is stale even when its id still matches the consumer's current one.
+func scratchBindingRowsCurrent(pooled, live sandbox.ScratchBinding) bool {
+	if pooled.BindingID != live.BindingID ||
+		pooled.OwnerSessionID != live.OwnerSessionID ||
+		pooled.WorkingDir != live.WorkingDir ||
+		len(pooled.Slots) != len(live.Slots) {
+		return false
 	}
-	// No pool was ever published — the root initialized before the manifest
-	// held a single row — so seed one from this consumer's rows the way
-	// prepareRetainedScratch would have.
-	seeded := &retainedScratchPool{
-		owner:     owner,
-		handles:   handles,
-		bindings:  map[string]sandbox.ScratchBinding{binding.BindingID: binding},
-		consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: consumer},
-		contended: contended,
-		adopted:   make(map[string]string),
+	for kind, slot := range pooled.Slots {
+		other, ok := live.Slots[kind]
+		if !ok || slot != other {
+			return false
+		}
 	}
-	releaseRetainedScratchPool(s.retainedScratch.Swap(seeded))
-	return nil
+	return true
+}
+
+// releaseRefreshHandles releases the leases one refresh pass reacquired: a
+// pass that ends without installing — an open failure, a superseded revision —
+// must not leave its handles holding their slots. Retain hands the lease back
+// without touching the directory, exactly how a pool teardown releases its
+// handles.
+func releaseRefreshHandles(handles map[string]*sandbox.SessionScratch) {
+	for _, handle := range handles {
+		_ = handle.Retain()
+	}
 }
 
 // installConsumerRefresh folds one consumer's refreshed manifest rows into the
