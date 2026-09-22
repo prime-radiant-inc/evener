@@ -97,11 +97,12 @@ export function MarketplaceBrowser({
    * the write replaced whatever registration the screen had fenced, so the
    * fence clears for it. A submitted name is reported as-is; a blank one is
    * one the hub assigned, so the browser reads it off the list the add's
-   * own answer published - and when even that list cannot tell a fresh
-   * same-second registration from the stale row it replaced, off the
-   * fenced row still carrying the source the add submitted - and reports
-   * it the same way, or a re-registration the wire cannot distinguish
-   * would stay fenced forever. */
+   * own answer published - through the store, or through the client when
+   * the store died with an unmounted browser and dropped the publication -
+   * and when even that list cannot tell a fresh same-second registration
+   * from the stale row it replaced, off the fenced row still carrying the
+   * source the add submitted - and reports it the same way, or a
+   * re-registration the wire cannot distinguish would stay fenced forever. */
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
@@ -437,7 +438,20 @@ export function MarketplaceBrowser({
               onMarketplaceAdded(params.name, client);
               return;
             }
-            const after = model.getState().marketplaces ?? [];
+            // A store that died with an unmounted browser drops everything
+            // the add publishes, so the registration is only in the hub:
+            // read the list through the client, which outlives browsers. A
+            // failed read reports nothing - the add itself already stood,
+            // and the fence holds until a fresh read reconciles it.
+            let after = model.getState().marketplaces ?? [];
+            if (!alive.current) {
+              try {
+                after = (await client.request("evener/marketplace/list", {}))
+                  .marketplaces;
+              } catch {
+                return;
+              }
+            }
             const added = addedMarketplaceNames(before, after);
             if (added.length > 0) {
               for (const name of added) onMarketplaceAdded(name, client);

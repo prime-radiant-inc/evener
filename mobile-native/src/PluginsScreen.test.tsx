@@ -626,6 +626,107 @@ it("clears the fence when a blank-name re-add lands in the wire-indistinguishabl
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
 });
 
+it("clears the fence for a blank-name re-add that resolves after the browser unmounts", async () => {
+  let releaseAdd!: () => void;
+  const pendingAdd = new Promise<{ marketplaces: MarketplaceEntry[] }>(
+    (resolve) => {
+      releaseAdd = () =>
+        resolve({
+          marketplaces: [
+            { ...marketplace, source: { kind: "github", repo: "acme/other" } },
+          ],
+        });
+    },
+  );
+  let removals = 0;
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: async () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; the
+      // post-removal reconciliation read fails; every later read carries
+      // the re-registration the add made - a different source, stamped
+      // within the same whole second as the removed one.
+      if (listCalls === 2) throw new Error("list unavailable");
+      return {
+        marketplaces:
+          listCalls === 1
+            ? [marketplace]
+            : [{ ...marketplace, source: { kind: "github", repo: "acme/other" } }],
+      };
+    },
+    remove: () => {
+      removals += 1;
+      return removals === 1
+        ? Promise.reject(cloneLitterError(null, false))
+        : Promise.resolve({ marketplaces: [] });
+    },
+    add: () => pendingAdd,
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await confirmMarketplaceRemoval(tree);
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+
+  // Start a BLANK-name add from a different source, then leave the browse
+  // tab before it resolves: the store that started it dies with the browser
+  // and drops the add's publication, so the registration it made is only in
+  // the hub's own list.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: "Marketplace source" })
+      .props.onChangeText("acme/other");
+  });
+  const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
+  const submit = adds.at(-1);
+  if (!submit) throw new Error("Add marketplace submit was not rendered");
+  await act(async () => {
+    submit.props.onPress();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
+  });
+  await act(async () => {
+    releaseAdd();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+
+  // The fence the stale row kept has to clear for the registration the add
+  // put back, or the re-added marketplace could never be removed.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+  });
+  await act(async () => {});
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(false);
+  await confirmMarketplaceRemoval(tree);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
+
 it("clears the fence when a same-name re-add registers while reconciliation reads keep failing", async () => {
   let releaseRemoval!: () => void;
   const firstRemoval = new Promise<never>((_resolve, reject) => {
