@@ -97,7 +97,7 @@ function ProvidersScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Providers">) {
   const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(state, fatal);
+  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
   const ready = isReady(state);
   const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   const [signIn, setSignIn] = useState<{
