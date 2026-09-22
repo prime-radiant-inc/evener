@@ -483,9 +483,13 @@ it("keeps the guard and warning across a same-client connection flap", async () 
   await act(async () => {});
 
   expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
-  // The reconnect re-read republishes the stale registration - the very row
-  // the fence guards - so Remove stays disabled in the detail the flap
-  // never unmounted.
+  // The banner kept this browser mounted through the flap (connectionDisplay:
+  // everReady already true, the SAME client throughout), so the detail it had
+  // open survives with it - the retention #1952 bought - and the reconnect
+  // re-read republishes the stale registration, the very row the fence
+  // guards.
+  expect(renderedText(tree)).toContain("All marketplaces");
+  expect(renderedText(tree)).toContain("Refresh source");
   const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
   expect(remove.props.disabled).toBe(true);
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
