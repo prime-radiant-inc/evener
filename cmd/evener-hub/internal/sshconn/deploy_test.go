@@ -1571,38 +1571,32 @@ func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
 	}
 }
 
-// TestDevControllerWithoutADeployPathRefuses pins acceptance criterion 5's first
-// half: an identity-less "dev" controller with no deploy path has nothing to
-// install, so a host reporting another build is refused terminally rather than
-// attached, and the refusal names the flags the operator must set. It does not
-// say the dev build carries no identity to deploy — the slice spec's evidence
-// table records that clause as unproven rather than claiming it here.
-func TestDevControllerWithoutADeployPathRefuses(t *testing.T) {
-	const help = "set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path>"
+// TestDevControllerWithoutADeployPathAttaches covers acceptance criterion 5's
+// first half under the rule that a build VERSION is not an attach gate: an
+// identity-less "dev" controller with no deploy path attaches to a host running
+// another build, because it speaks the same protocol. The accepted difference is
+// reported (ensureOnce's notice at the attach), so it is not silent. The
+// installer refusals still reject an artifact an unstamped controller cannot
+// identify, and the deploy-configured half of criterion 5 is unchanged
+// (TestDevControllerWithADeployPathForcesTheDeploy).
+func TestDevControllerWithoutADeployPathAttaches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
 		runFn: cannedRun(map[string][]byte{
 			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+			// A running hub matching the on-disk build, so nothing is deployed,
+			// restarted, or bootstrapped: this is the attach path.
+			"api/health": []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		controllerVersionOverride: "dev",
-		DeployHelp:                help,
-	})
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "dev"})
 
-	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, ErrVersionMismatch) {
-		t.Fatalf("Ensure err = %v, want ErrVersionMismatch (a dev controller with no deploy path cannot resolve a difference)", err)
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: a dev controller speaks the same protocol as the host", err)
 	}
-	if !isTerminal(err) {
-		t.Fatalf("Ensure err = %v, want a terminal refusal", err)
-	}
-	if !strings.Contains(err.Error(), help) {
-		t.Fatalf("refusal does not name the flags to set: %v", err)
-	}
-	if starts := fr.recordedStarts(); len(starts) != 0 {
-		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a build the dev version cannot match)", len(starts))
+	if starts := len(fr.recordedStarts()); starts != 1 {
+		t.Fatalf("bridge Start calls = %d, want 1 (attach to the host's own build)", starts)
 	}
 }
 
@@ -2012,13 +2006,14 @@ func requireNoAttach(t *testing.T, fr *fakeRunner) {
 	}
 }
 
-// TestEnsureRestartOnlyMismatchNamesTheRestart pins the message half of the
-// post-phase identity gate for the restart-only attempt. A host whose running hub
-// is merely stale (its on-disk build already matches, so no deploy runs) is
-// replaced by restartHub; if the on-disk file the restart would launch is then
-// re-read and is not the controller's build, the gate must still refuse — but the
-// message must name the restart that happened, not a deploy that never ran.
-func TestEnsureRestartOnlyMismatchNamesTheRestart(t *testing.T) {
+// TestEnsureRestartOnlyMismatchAttachesTheServingBuild covers the restart-only
+// half of the attach rule. A pass that restarts the hub launches the build already
+// on disk, and the bridge attaches to the RUNNING process, which the wait has
+// already made prove it reports the controller's build — here "newsha" after the
+// restart, while the on-disk file re-reads as "othersha" (a binary swapped under
+// the controller, or just a host that keeps its own build). Judging that file
+// refused a host whose serving hub is exactly the build this controller asked for.
+func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(call int) ([]byte, error) {
@@ -2028,7 +2023,7 @@ func TestEnsureRestartOnlyMismatchNamesTheRestart(t *testing.T) {
 				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 			}
 			// The re-read after the restart finds the on-disk file is not the
-			// controller's build.
+			// controller's build. That is the host's business: nothing was deployed.
 			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
 		},
 		func(call int) ([]byte, error) {
@@ -2036,6 +2031,8 @@ func TestEnsureRestartOnlyMismatchNamesTheRestart(t *testing.T) {
 				// The running hub is the stale process a restart replaces.
 				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			}
+			// The restarted hub is the controller's build: what the wait requires,
+			// and what the bridge then talks to.
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
@@ -2045,18 +2042,23 @@ func TestEnsureRestartOnlyMismatchNamesTheRestart(t *testing.T) {
 		BuildBinary:               writeStageBinary,
 	})
 
-	_, err := m.Ensure(context.Background(), "alpha")
-	requireUnstampedRefusal(t, err)
-	requireNoAttach(t, fr)
-	if !strings.Contains(err.Error(), "restarted onto") {
-		t.Fatalf("refusal does not name the restart that happened: %v", err)
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: the serving hub reports the controller's build", err)
 	}
-	if strings.Contains(err.Error(), "deployed its build") {
-		t.Fatalf("restart-only refusal claims a deploy that did not happen: %v", err)
+	if got := len(fr.recordedStarts()); got != 1 {
+		t.Fatalf("Start calls = %d, want 1 (attach to the verified serving process)", got)
 	}
+	restarted := false
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "cat >") {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "systemctl restart") {
+			restarted = true
+		}
+		if strings.Contains(joined, "cat >") {
 			t.Fatalf("a restart-only attempt pushed a binary: %v", argv)
 		}
+	}
+	if !restarted {
+		t.Fatal("no restart ran, so the pass under test was not the restart-only one")
 	}
 }
