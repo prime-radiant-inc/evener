@@ -448,6 +448,26 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		return this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
 	}
 
+	// Native-only recovery projection reads are always scoped to the composite
+	// hub/conversation target. The shared storage port intentionally stays
+	// unchanged; callers must provide the exact target key before seeing or
+	// deleting a recovered record.
+	async listRecovery(targetRef: string): Promise<MutationRecoveryRecord<A>[]> {
+		return this.list<MutationRecoveryRecord<A>>(TABLES.recovery, targetRef);
+	}
+
+	async discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean> {
+		return (
+			changedRows(
+				this.db.runSync(
+					`DELETE FROM ${TABLES.recovery} WHERE client_mutation_id = ? AND target_ref = ?`,
+					clientMutationId,
+					targetRef,
+				),
+			) > 0
+		);
+	}
+
 	// The lowest-sequence submitting outbox record for this target. A
 	// canceled row provably never left the client, so it cannot be reordered
 	// against the daemon and must not park what follows it - including the
