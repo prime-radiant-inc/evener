@@ -9,6 +9,7 @@
 // the announcement is the only audible trace of the swap), and each
 // non-delivery departure (spec §5). Never announces on the held-timer's
 // cadence: this component does not read the clock at all.
+import { reflectedMutationIds } from "@evener/appwire-client/state/mutation";
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
@@ -21,27 +22,6 @@ import {
   useRecoveryEntries,
 } from "../../composer/queue/pendingTurnsStore";
 import { heldSteerEntries } from "./HeldSteerStack";
-
-// Mirrors pendingEntries.ts's reflectedMutationIds, which is not exported:
-// the transcript's own record of which client mutation ids landed. The
-// queue arm is widened with null because the live model's queue is
-// QueueState | null (model.ts), not optional-only.
-function reflectedIds(
-  model:
-    | {
-        queue?: { clientMutationIds?: readonly string[] } | null;
-        turns?: ReadonlyArray<{ items: ReadonlyArray<{ clientMutationId?: string }> }>;
-      }
-    | undefined,
-): Set<string> {
-  const ids = new Set<string>(model?.queue?.clientMutationIds ?? []);
-  for (const turn of model?.turns ?? []) {
-    for (const item of turn.items) {
-      if (item.clientMutationId) ids.add(item.clientMutationId);
-    }
-  }
-  return ids;
-}
 
 export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JSX.Element {
   const held = heldSteerEntries(usePendingTurnEntries(sessionRef));
@@ -71,7 +51,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
     // the reader two other ways: the visible ghost in place and the pill's
     // heldEpoch edge.
     if (disappeared.length > 0) {
-      const reflected = reflectedIds(model);
+      const reflected = reflectedMutationIds(model);
       const why = (id: string): string => {
         if (reflected.has(id)) return "Steering message delivered.";
         if (recovery.some((record) => record.clientMutationId === id))

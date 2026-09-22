@@ -36,14 +36,12 @@ export function heldSteerEntries(entries: readonly PendingTurnEntry[]): PendingT
 // through the package's formatElapsed, and is omitted entirely when
 // createdAt is unknown - never NaN, never a false 0s.
 export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: number): string {
-  const label =
-    entry.state === "accepted"
-      ? turnActive
-        ? "Delivers when this step finishes"
-        : "Delivers with the next turn"
-      : turnActive
-        ? "Joining this turn"
-        : "Delivers with the next turn";
+  let label = "Delivers with the next turn";
+  if (turnActive) {
+    // An accepted steer waits out the running step; a submitting one
+    // joins the turn already in flight.
+    label = entry.state === "accepted" ? "Delivers when this step finishes" : "Joining this turn";
+  }
   if (entry.createdAt === undefined) return label;
   const elapsed = formatElapsed(now - entry.createdAt);
   return entry.state === "accepted" ? `${label} · held ${elapsed}` : `${label} · ${elapsed}`;

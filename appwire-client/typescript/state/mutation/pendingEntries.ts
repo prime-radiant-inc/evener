@@ -133,7 +133,12 @@ function outboxInput(record: PendingRecord): InputItem[] | undefined {
   return Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : undefined;
 }
 
-function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
+// The ONE home of the reflected-identity rule - which client mutation ids
+// have landed in the live model (queue rows or transcript items). Both the
+// pending reconciliation below and the held-steer announcements region
+// consume it, so a departure's outcome classification can never diverge
+// from reconcile's own settle rule.
+export function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   const ids = new Set(model?.queue?.clientMutationIds ?? []);
   for (const turn of model?.turns ?? []) {
     for (const item of turn.items) {

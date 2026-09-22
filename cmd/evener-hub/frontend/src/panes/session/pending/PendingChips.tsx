@@ -21,10 +21,7 @@ import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
 import { pendingEntryPreview } from "../composer/queue/queueDisplay";
 import styles from "./pendingchips.module.css";
 
-type OptimisticMethod = "send";
-type OptimisticEntry = PendingTurnEntry & { method: OptimisticMethod };
-
-function isOptimistic(entry: PendingTurnEntry): entry is OptimisticEntry {
+function isOptimistic(entry: PendingTurnEntry): boolean {
   // blockedUnknown and canceled rows are QueueStrip's durable rows, never
   // in-flight chips: a canceled row would otherwise read as still Sending
   // here while QueueStrip simultaneously reports it as canceled.
@@ -38,18 +35,12 @@ const CLASS = {
   text: requireClass(styles.text, "pendingchips.module.css", "text"),
 };
 
-// The one optimistic-submission method this strip owns - steer/drain are the
-// ghost stack's surface, "queue" is QueueStrip's. Present-tense labels convey
-// the still-in-flight state a dimmed chip already hints at.
-const METHOD_LABEL: Record<OptimisticMethod, string> = {
-  send: "Sending",
-};
-
 export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
   // Filter to the sends this strip owns - steer/drain/promote ghosts render
   // in the transcript's trailing row (steering-ghost spec) and QueueStrip
-  // owns "queue".
+  // owns "queue". The one label this strip renders is present-tense: it
+  // conveys the still-in-flight state the dimmed chip already hints at.
   // Memoized against the store-stable entries array so an unrelated re-render
   // does not rebuild the list.
   const optimistic = useMemo(() => entries.filter(isOptimistic), [entries]);
@@ -60,7 +51,7 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
     <ul className={CLASS.chips} data-testid="pending-chips">
       {optimistic.map((entry) => (
         <li key={entry.id} className={CLASS.chip}>
-          <span className={CLASS.method}>{METHOD_LABEL[entry.method]}</span>
+          <span className={CLASS.method}>Sending</span>
           <span className={CLASS.text}>{pendingEntryPreview(entry)}</span>
         </li>
       ))}

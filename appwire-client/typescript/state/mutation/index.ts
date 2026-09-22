@@ -33,6 +33,7 @@ export {
   pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
+  reflectedMutationIds,
   skillMarkers,
   truncateForDisplay,
 } from "./pendingEntries";

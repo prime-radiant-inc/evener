@@ -461,6 +461,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     );
   }
 
+  // A held ghost is mounted content even on a turnless transcript: the
+  // dormant empty surface yields to the transcript subtree so the ghost
+  // stack and its announcements mount for an idle drain (steering-ghost
+  // spec §2).
+  const showDormantSurface = isDormantTranscript(model.turns) && !heldVisible;
+  const dormantSurface = showColdStartSkeleton ? (
+    <ColdStartSkeleton />
+  ) : (
+    <EmptyTranscript
+      active={model.status.type === "active"}
+      restartRequired={model.status.type === "restartRequired"}
+    />
+  );
+
   const recoveryOwnerRef =
     !mutationStateAuthoritative &&
     model.status.type !== "notLoaded" &&
@@ -596,16 +610,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <div className={styles.contentColumn}>
         <TopNotesPanel sessionRef={ref} model={model} />
         <SandboxEscalationRail sessionRef={ref} />
-        {showColdStartSkeleton && isDormantTranscript(model.turns) && !heldVisible ? (
-          <ColdStartSkeleton />
-        ) : isDormantTranscript(model.turns) && !heldVisible ? (
-          <EmptyTranscript
-            active={model.status.type === "active"}
-            restartRequired={model.status.type === "restartRequired"}
-          />
-        ) : (
-          transcript
-        )}
+        {showDormantSurface ? dormantSurface : transcript}
       </div>
     </PaneScaffold>
   );

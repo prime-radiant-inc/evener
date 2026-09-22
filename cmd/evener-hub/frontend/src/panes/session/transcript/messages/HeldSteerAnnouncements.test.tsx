@@ -4,25 +4,23 @@
 // place, so the announcement is the swap's only audible trace), and each
 // non-delivery departure (rejected / canceled by Stop / delivery-uncertain /
 // failed) - and never anything on the held-timer's cadence: the component
-// reads no clock at all. Same harness as HeldSteerStack.test.tsx (seeds
-// through real storage + refresh + flush; hydrate for status/reflection).
-import type { ConnectionState, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+// reads no clock at all. Shared harness in ./testing/heldSteerTestUtils
+// (seeds through real storage + refresh + flush; hydrate for
+// status/reflection).
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import type { InputAttachment } from "../../../../stores/threads";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import visuallyHiddenStyles from "../../../../widgets/internal/visuallyHidden.module.css";
-import type { PendingMethod } from "../../composer/queue/pendingReconcile";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
 import { HeldSteerAnnouncements } from "./HeldSteerAnnouncements";
+import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // Two fixed clock instants for the timer-cadence test. SessionNowContext's
 // default is Date.now() frozen at module import; any fixed instant at or
@@ -31,116 +29,6 @@ import { HeldSteerAnnouncements } from "./HeldSteerAnnouncements";
 // meaning - only their inequality does: the component must read neither.
 const NOW_A = 43_000;
 const NOW_B = 97_000;
-
-const CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: `thr_${ref}`,
-    sessionId: `sess_${ref}`,
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "active" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref,
-      mutationStateAuthoritative: true,
-      capabilities: CAPABILITIES,
-      queue: { revision: 0 },
-      activeTurnId: "turn_1",
-    },
-    turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
-    ...overrides,
-  };
-}
-
-function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
-  return { thread: testThread(ref, overrides) };
-}
-
-function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
-  const fake = new FakeClient(state);
-  connectionStore.getState().connect(fake);
-  return fake;
-}
-
-async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread> = {}): Promise<void> {
-  fake.on("thread/read", () => readResponse(ref, overrides));
-  await threadsStore.getState().ensureThread(ref);
-}
-
-// seedHeld writes a real durable outbox row through the same storage every
-// submission path uses (HeldSteerStack.test.tsx's own helper) and settles the
-// shared projection so the render below observes the seeded entry, not a
-// racing refresh. Enqueueing alone never reconciles the entry
-// (pendingTurnsStore's own contract), so the row stays in its seeded
-// submitting state. Returns the clientMutationId so tests can key wire
-// fixtures and departure writes to it. The ref option seeds a ref other
-// than ref_a (the ref-change baseline below needs ref_b's hold to predate
-// its first observation); every other caller takes the default.
-async function seedHeld(
-  method: PendingMethod,
-  text: string,
-  opts: { ref?: string; skillNames?: string[]; attachments?: InputAttachment[] } = {},
-): Promise<string> {
-  const ref = opts.ref ?? "ref_a";
-  const wireMethod = {
-    send: "turn/start",
-    steer: "turn/steer",
-    queue: "turn/queue",
-    drain: "turn/drainAsSteer",
-    promote: "turn/promoteQueuedAsSteer",
-  }[method];
-  const skillNames = opts.skillNames ?? [];
-  const attachments = opts.attachments ?? [];
-  const input = [
-    ...(text ? [{ type: "text", text }] : []),
-    ...attachments.map((attachment) => ({
-      type: "image",
-      mediaType: attachment.mediaType,
-      data: attachment.data,
-      name: attachment.name,
-    })),
-    ...skillNames.map((name) => ({ type: "skill", name })),
-  ];
-  const storage = new MutationOutboxIndexedDB();
-  const outbox = await storage.enqueueIntent({
-    targetRef: ref,
-    method: wireMethod,
-    payload: { ref, input },
-    attachments: attachments.map((attachment, index) => ({
-      presentationId: `presentation_${index}`,
-      marker: attachment.marker,
-      name: attachment.name ?? "attachment",
-      mediaType: attachment.mediaType,
-      blob: new Blob(),
-    })),
-    optimisticDisplay: { method: wireMethod, input },
-  });
-  storage.close();
-  await refreshPendingTurnsProjection(ref);
-  await flushPendingTurnsProjectionForTests();
-  return outbox.clientMutationId;
-}
 
 // The REAL MutationRecoveryKind that models an acceptance rejection, looked up
 // in the type's own home (stores/mutationOutbox re-exports the package's
