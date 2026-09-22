@@ -975,7 +975,10 @@ func revalidateRetainedScratchAfterLease(owner ScratchOwner, dir, kind string) e
 		return err
 	}
 	if manifest.Released {
-		return errors.New("sandbox: scratch retention was released while acquiring the lease")
+		// Typed: the refresh's release-race decline check matches this error
+		// with errors.Is, and an untyped sentinel would slip past it and fail
+		// the exact race it exists for (round 15).
+		return fmt.Errorf("sandbox: scratch retention was released while acquiring the lease: %w", ErrScratchRetentionReleased)
 	}
 	return verifyRetainedScratchPin(owner, dir, kind)
 }

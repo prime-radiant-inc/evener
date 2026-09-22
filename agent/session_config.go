@@ -615,6 +615,12 @@ type testConfig struct {
 	// concurrent writer's commit must be observable. Nil in production.
 	scratchUpsertAfterLoad func()
 
+	// scratchAdoptionAfterClaim runs immediately after adoptRetainedScratchFor
+	// claims a pooled handle and before the environment restore installs it —
+	// the window where a terminal detach must not release the claimed lease.
+	// Nil in production.
+	scratchAdoptionAfterClaim func()
+
 	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
 	// before each UpdateScratchBindings attempt, so a test can make the first
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.

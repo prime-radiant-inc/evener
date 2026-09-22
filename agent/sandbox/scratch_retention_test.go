@@ -951,6 +951,9 @@ func TestResetReleasedReleasesLeaseWhenPinRemoveFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the read-only directory fixture cannot make os.Remove fail on windows")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("the read-only directory fixture cannot make os.Remove fail for root")
+	}
 	base, workspace := scratchRetentionBase(t)
 	owner := retentionOwner(t)
 	scratch, err := NewSessionScratch(base, workspace)
@@ -1081,5 +1084,34 @@ func TestScratchUpsertAtRevisionRefusesMovedManifest(t *testing.T) {
 	}
 	if err := UpsertScratchBindingAtRevision(owner, binding, consumer, current.Revision); err != nil {
 		t.Fatalf("upsert at the current revision: %v", err)
+	}
+}
+
+// TestScratchRevalidationReportsReleasedTyped pins the round-15 typing gap: the
+// post-lease revalidation reported the tombstone with an untyped error, so the
+// refresh's errors.Is decline check missed the exact race it was written for —
+// a release committing between the initial validation and the lease
+// acquisition — and failed the restore instead of declining to fresh scratch.
+func TestScratchRevalidationReportsReleasedTyped(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	// The scratch's own lease stays held, so the terminal release leaves the
+	// reference and pin behind on the tombstone.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	err = revalidateRetainedScratchAfterLease(owner, scratch.Dir, ScratchKindSandbox)
+	if !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("revalidation over a released manifest: %v, want the typed %v", err, ErrScratchRetentionReleased)
 	}
 }

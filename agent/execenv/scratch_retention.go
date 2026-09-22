@@ -69,6 +69,16 @@ func (e *LocalExecutionEnvironment) RetentionPendingKinds() []string {
 	return kinds
 }
 
+// ScratchRetentionOwner returns the manifest owner this environment's binding
+// was installed under, reporting whether any binding is installed at all. A
+// caller uses it to tell an identity this owner's manifest lost to a reset
+// from one installed under a different root's manifest.
+func (e *LocalExecutionEnvironment) ScratchRetentionOwner() (sandbox.ScratchOwner, bool) {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	return e.retentionOwner, e.retentionSet
+}
+
 // PinOwnedScratch publishes this environment's installed binding and pins every
 // allocation it currently owns into the owner's manifest, under the live leases
 // it holds, in ONE manifest transaction: the references and the binding that

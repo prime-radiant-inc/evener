@@ -47,10 +47,21 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	// An environment that already carries an installed binding keeps it: a
 	// shared parent environment's binding is owned by whoever published it, and
 	// must not be renamed to this consumer or republished under another root. If
-	// it belongs to this owner's manifest, register only the consumer's role.
+	// it belongs to this owner's manifest, register only the consumer's role;
+	// an identity of this owner that a manifest reset orphaned re-registers
+	// the same way (round 15).
 	if existing, err := env.ScratchRetentionBinding(); err == nil && existing.BindingID != "" {
 		if _, ok := findScratchBinding(manifest, existing.BindingID); !ok {
-			return nil
+			installedOwner, installed := env.ScratchRetentionOwner()
+			if !installed || installedOwner != owner {
+				// A binding installed under another root's manifest is not
+				// this consumer's to rename or republish under this root.
+				return nil
+			}
+			// This binding is ours and the fresh manifest does not name it:
+			// the reset above reinitialized a manifest whose terminal release
+			// orphaned the identity, so the registration below re-publishes
+			// it instead of leaving later publications without a row.
 		}
 		installRefusals := 0
 		for range 5 {
@@ -71,7 +82,13 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 			}
 			freshBinding, ok := findScratchBinding(fresh, existing.BindingID)
 			if !ok {
-				return nil
+				// The reset orphaned the old rows: republish the identity
+				// without its stale slots, exactly as an inherited identity
+				// arrives — the environment's owned handles re-pin their
+				// slots on the next publication.
+				republished := existing
+				republished.Slots = nil
+				freshBinding = republished
 			}
 			// The revision check refuses a manifest that moved since these
 			// rows were derived — the consumer merge replaces rows
@@ -1379,12 +1396,19 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				return err
 			}
 		case handle != nil:
+			if hook := s.cfg.testOnly.scratchAdoptionAfterClaim; hook != nil {
+				hook()
+			}
 			ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
 			if err := env.RestoreSessionScratch(bindingID, ref, handle); err != nil {
 				// The transfer failed, so the pool must not keep the slot
-				// claimed: drop the claim and leave the handle pooled for a
-				// later, successful adoption.
-				pool.releaseScratchSlotClaim(key, adopterID)
+				// claimed: hand the handle back and leave it pooled for a
+				// later, successful adoption. A detached pool takes nothing
+				// back — the detach had no claim on it — so its release is
+				// the restore's own.
+				if !pool.releaseScratchSlotClaim(key, adopterID, handle) {
+					_ = handle.Retain()
+				}
 				return err
 			}
 			pool.finishRetainedScratchSlot(key)
@@ -1447,7 +1471,12 @@ func (p *retainedScratchPool) claimRetainedScratchSlot(key, adopterID string) (h
 	}
 	if handle = p.handles[key]; handle != nil {
 		// Claim the transfer before the environment restore so a concurrent
-		// adopter borrows instead of doubling the lease.
+		// adopter borrows instead of doubling the lease, and TAKE the handle
+		// out of the releasable map: from the claim until the transfer
+		// settles, release responsibility is the adopter's alone — a detach
+		// must not Retain a lease out from under a claimed transfer (round
+		// 15).
+		delete(p.handles, key)
 		p.adopted[key] = adopterID
 		return handle, adopterID, false, false
 	}
@@ -1463,15 +1492,22 @@ func (p *retainedScratchPool) finishRetainedScratchSlot(key string) {
 	p.mu.Unlock()
 }
 
-// releaseScratchSlotClaim undoes an uncommitted claim after a failed transfer.
-// The handle was never removed, so the pool returns exactly to its
-// pre-transfer state.
-func (p *retainedScratchPool) releaseScratchSlotClaim(key, adopterID string) {
+// releaseScratchSlotClaim undoes an uncommitted claim after a failed transfer,
+// handing the claimed handle back to the pool's releasable map. It reports
+// false when the claim is no longer this adopter's — a concurrent detach swept
+// the pool — and then the pool did not take the handle back: the caller owns
+// releasing it.
+func (p *retainedScratchPool) releaseScratchSlotClaim(key, adopterID string, handle *sandbox.SessionScratch) bool {
 	p.mu.Lock()
-	if p.adopted[key] == adopterID {
+	ours := p.adopted[key] == adopterID
+	if ours {
 		delete(p.adopted, key)
+		if handle != nil {
+			p.handles[key] = handle
+		}
 	}
 	p.mu.Unlock()
+	return ours
 }
 
 // requeueRetainedScratchSlot puts back a handle whose transfer adopterID claimed
@@ -1676,14 +1712,20 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 		return
 	}
 	if s.retainedScratch.Load() == nil {
-		// No durable retained state exists to protect: prepareRetainedScratch
-		// built no pool, so every reference this environment holds was
-		// published by this very restore — a fresh mint the failed
-		// construction pinned under its own new binding. Keeping it would
-		// leak a directory nothing will ever reacquire; disposing is exactly
-		// the fresh-mint contract. (When the pool is nil because the
-		// manifest is released or empty, the reference set below is empty and
-		// this is the outcome the loop would reach anyway.)
+		// No pool exists to classify anything. This is the state every failed
+		// CHILD construction reaches — prepareRetainedScratch never runs for a
+		// child — and every reference this environment holds was published by
+		// this very restore: the fresh mint the failed construction pinned
+		// under its own new binding. Keeping it would leak a directory nothing
+		// will ever reacquire; disposing is exactly the fresh-mint contract.
+		// (When the manifest is released or empty the loop below reaches the
+		// same outcome anyway.) The precondition is the caller's, not the
+		// manifest's: the single production caller routes any environment
+		// that gained an adopted allocation to its retain branch before this
+		// settlement runs, and a manifest read cannot take that
+		// classification over — the round-11 mint is manifest-referenced
+		// exactly like an adopted allocation, so settling by the manifest
+		// demonstrably regresses the pinned dispose contract.
 		local.DisposeUnadoptedScratch()
 		return
 	}

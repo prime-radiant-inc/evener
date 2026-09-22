@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1726,6 +1727,150 @@ func TestScratchRefreshOpenDeclinesOnReleasedManifest(t *testing.T) {
 		if err := reopened.Retain(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestScratchReinstallRegistersAfterManifestReset pins the round-15 rebind gap:
+// after a terminal release and the reset it provokes, an environment carrying
+// its old binding identity found that binding missing from the fresh manifest
+// and the install silently returned, leaving later scratch publications without
+// a binding row or consumer role.
+func TestScratchReinstallRegistersAfterManifestReset(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("fixture binding installation: %v", err)
+	}
+	installed, err := env.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("read the installed binding: %v", err)
+	}
+
+	// The terminal release tombstones the root's manifest; the next install
+	// resets it, and the environment's own identity must re-register.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("reinstall over the reset manifest: %v", err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findScratchBinding(manifest, installed.BindingID); !ok {
+		t.Fatalf("the reset dropped the environment's binding and the reinstall did not re-register binding %q", installed.BindingID)
+	}
+	row := scratchConsumerFor(t, manifest, s.id)
+	if row.CurrentBindingID != installed.BindingID {
+		t.Fatalf("the reinstall left the consumer unregistered: current binding = %q, want the environment's %q", row.CurrentBindingID, installed.BindingID)
+	}
+}
+
+// TestScratchAdoptionKeepsClaimedHandleFromDetach pins the round-15 claim race:
+// a pooled handle stays in the releasable map between the adoption's claim and
+// its install, so a terminal detach racing the adoption Retained the claimed
+// lease out from under it and the restored environment ran on scratch nobody
+// owned. From the claim until the transfer settles, the handle must be the
+// adopter's alone.
+func TestScratchAdoptionKeepsClaimedHandleFromDetach(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CLAIMDETACH1"
+	const bindingID = "b-claim-detach"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(retainedDir): slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	claimed := make(chan struct{})
+	resume := make(chan struct{})
+	s.cfg.testOnly.scratchAdoptionAfterClaim = func() {
+		close(claimed)
+		<-resume
+	}
+	adoptErr := make(chan error, 1)
+	go func() {
+		_, err := s.adoptConsumerScratch(env, consumerID)
+		adoptErr <- err
+	}()
+	<-claimed
+	// The terminal detach sweeps the pool while the adoption holds a claimed
+	// transfer: the claimed handle must not be released out from under it.
+	s.retainedScratchSealed.Store(true)
+	s.detachRetainedScratch()
+	close(resume)
+	if err := <-adoptErr; err != nil {
+		t.Fatalf("adoption across the detach: %v", err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(retainedDir) {
+		t.Fatalf("the adopted scratch %q is not the retained %q", got, retainedDir)
+	}
+	// The adopter must still hold the lease: the detach had no claim on a
+	// handle already spoken for.
+	if _, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: retainedDir, Kind: sandbox.ScratchKindSandbox}); !errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
+		t.Fatalf("the detach released the claimed handle's lease: open got %v, want %v", err, sandbox.ErrScratchRetentionLeaseHeld)
+	}
+}
+
+// TestChildTeardownReleasesTheSeededPool pins the round-15 child-pool leak: a
+// child session never runs prepareRetainedScratch, so the pool its
+// restore-adoption refresh seeds is the only release path those handles have —
+// and no child close path ever reached it, leaving the leases held for the
+// daemon's life and pinning contended slots against every later cold restore.
+func TestChildTeardownReleasesTheSeededPool(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CHILDTDOWN1"
+	const bindingID = "b-child-teardown"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	// The child shape: the owner resolves to the root's manifest, this session
+	// is not the root, and the seeded pool is process-local to it alone.
+	s.delegateRootSessionID = "01ROOTTESTROOT1"
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(retainedDir): slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	teardownChildSession(context.Background(), s, retainChildScratch)
+
+	// The teardown must have handed the seeded pool's leases back: a leaked
+	// flock pins the slot against every later cold restore of this delegate.
+	probe, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: retainedDir, Kind: sandbox.ScratchKindSandbox})
+	if err != nil {
+		t.Fatalf("the child teardown leaked the seeded pool: %v", err)
+	}
+	if err := probe.Retain(); err != nil {
+		t.Fatal(err)
 	}
 }
 
