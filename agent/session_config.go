@@ -616,14 +616,15 @@ type testConfig struct {
 
 	// scratchRefreshBeforeInstall runs after a refresh pass reacquired its
 	// handles and before it installs them — the window where a concurrent
-	// manifest update or pool publish must be observable. Nil in production.
-	scratchRefreshBeforeInstall func()
+	// manifest update or pool publish must be observable, with the refresh's
+	// session id. Nil in production.
+	scratchRefreshBeforeInstall func(sessionID string)
 
 	// scratchRefreshAfterRecheck runs inside the refresh's install hold,
 	// after the revision recheck passes and before the rows land — the exact
-	// window a manifest update must not be able to commit inside. Nil in
-	// production.
-	scratchRefreshAfterRecheck func()
+	// window a manifest update must not be able to commit inside, with the
+	// refresh's session id. Nil in production.
+	scratchRefreshAfterRecheck func(sessionID string)
 
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a

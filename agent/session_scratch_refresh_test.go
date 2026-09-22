@@ -151,7 +151,7 @@ func TestScratchRefreshConcurrentSeedKeepsFirstPool(t *testing.T) {
 	// reacquired handles. The guard keeps the nested refresh from recursing
 	// into the seam again.
 	var hooked atomic.Bool
-	s.cfg.testOnly.scratchRefreshBeforeInstall = func() {
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func(string) {
 		if hooked.Load() {
 			return
 		}
@@ -259,7 +259,7 @@ func TestScratchRefreshRechecksRevisionBeforeInstall(t *testing.T) {
 	// Move the consumer onto a fresh binding from the before-install seam, the
 	// exact window between the refresh deriving its rows and installing them.
 	var hooked atomic.Bool
-	s.cfg.testOnly.scratchRefreshBeforeInstall = func() {
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func(string) {
 		if hooked.Load() {
 			return
 		}
@@ -378,7 +378,7 @@ func TestScratchRefreshInstallWindowBlocksManifestUpdates(t *testing.T) {
 	// the attempt either commits — the unserialized red — or is refused
 	// because the refresh's install hold owns the lock.
 	var windowErr error
-	s.cfg.testOnly.scratchRefreshAfterRecheck = func() {
+	s.cfg.testOnly.scratchRefreshAfterRecheck = func(string) {
 		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
 			t.Errorf("in-window load: %v", err)
@@ -434,7 +434,7 @@ func TestScratchRefreshFoldSkipsDetachedPool(t *testing.T) {
 	// A terminal release detaches and drops the published pool from inside
 	// the pass's window.
 	var hooked atomic.Bool
-	s.cfg.testOnly.scratchRefreshBeforeInstall = func() {
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func(string) {
 		if hooked.Load() {
 			return
 		}
@@ -457,5 +457,168 @@ func TestScratchRefreshFoldSkipsDetachedPool(t *testing.T) {
 	}
 	if !slotHeld {
 		t.Fatal("the retry did not reacquire and pool the slot after the detached fold")
+	}
+}
+
+// TestScratchRefreshRetriesOpenLockContention pins the round-3 contention
+// contract at the reacquire: an open that loses the manifest-lock race is a
+// retry, never a restore failure — the pass hands its reacquired leases back
+// and the next pass re-derives against the now-free lock.
+func TestScratchRefreshRetriesOpenLockContention(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	const consumerID = "01REFRESHOPENLOCK1"
+	const bindingID = "b-open-lock"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+
+	var injected atomic.Bool
+	s.cfg.testOnly.scratchRefreshOpenOverride = func(_ sandbox.ScratchReference, call int) error {
+		if call == 2 && injected.CompareAndSwap(false, true) {
+			return sandbox.ErrScratchRetentionLockHeld
+		}
+		return nil
+	}
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("refresh of %q failed on transient lock contention: %v", consumerID, err)
+	}
+	if !injected.Load() {
+		t.Fatal("the fixture never observed the contention it was built to inject")
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("no pool was published")
+	}
+	pool.mu.Lock()
+	row := pool.consumers[consumerID]
+	_, sandboxHeld := pool.handles[canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)]
+	_, unsandboxedHeld := pool.handles[canonicalScratchDir(slots[sandbox.ScratchKindUnsandboxed].Dir)]
+	pool.mu.Unlock()
+	if row.CurrentBindingID != bindingID || !sandboxHeld || !unsandboxedHeld {
+		t.Fatalf("retry left the consumer on %q with handles pooled sandbox=%v unsandboxed=%v", row.CurrentBindingID, sandboxHeld, unsandboxedHeld)
+	}
+}
+
+// TestScratchRefreshRetriesInstallHoldContention pins the round-3 contention
+// contract at the install hold: a concurrent refresh holding the manifest lock
+// makes the loser retry its passes rather than fail its restore outright, and
+// a contention that never clears still fails loudly after the bound instead of
+// silently swallowing the rows. The loser's first pass is synchronized to
+// reach its install before the holder acquires, so the pass-1 contention is
+// the install hold itself; the holder then never releases inside the window,
+// so the loser deterministically exhausts the bound.
+func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	const holderConsumer = "01REFRESHHOLDWIN1"
+	const holderBinding = "b-hold-window"
+	const loserConsumer = "01REFRESHLOSEWIN1"
+	const loserBinding = "b-lose-window"
+	holderSlots, _ := mintRefreshScratchBinding(t, s, holderBinding, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, holderConsumer, holderBinding)
+	loserSlots, _ := mintRefreshScratchBinding(t, s, loserBinding, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, loserConsumer, loserBinding)
+	releaseRefreshFixtureLeases(t, holderSlots)
+	releaseRefreshFixtureLeases(t, loserSlots)
+	loserDir := loserSlots[sandbox.ScratchKindSandbox].Dir
+
+	var loserAttempts atomic.Int32
+	s.cfg.testOnly.scratchRefreshOpenOverride = func(ref sandbox.ScratchReference, _ int) error {
+		if ref.Dir == loserDir {
+			loserAttempts.Add(1)
+		}
+		return nil
+	}
+	holderHeld := make(chan struct{})
+	loserPaused := make(chan struct{})
+	loserDone := make(chan struct{})
+	var loserErr error
+	// The loser pauses between its opens and its install — and only the
+	// loser: the hook carries the refresh's session id — until the holder
+	// owns the manifest lock, so the loser's first contention is its install
+	// hold itself.
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func(sessionID string) {
+		if sessionID == loserConsumer {
+			close(loserPaused)
+			<-holderHeld
+		}
+	}
+	go func() {
+		defer close(loserDone)
+		loserErr = s.refreshRetainedScratchConsumer(loserConsumer)
+	}()
+	// Only after the loser is paused does the holder take the install hold
+	// and keep it for the loser's whole remaining window.
+	<-loserPaused
+	s.cfg.testOnly.scratchRefreshAfterRecheck = func(sessionID string) {
+		if sessionID == holderConsumer {
+			close(holderHeld)
+		}
+		<-loserDone
+	}
+	if err := s.refreshRetainedScratchConsumer(holderConsumer); err != nil {
+		t.Fatalf("holder refresh of %q: %v", holderConsumer, err)
+	}
+	<-loserDone
+	if loserErr == nil {
+		t.Fatal("a refresh that never won the lock returned success; the contention path is not fail-loud after the bound")
+	}
+	if got := loserAttempts.Load(); got < 2 {
+		t.Fatalf("the loser failed its restore on pass %d of lock contention instead of retrying; contention must route through the bounded retry, not fail the send", got)
+	}
+}
+
+// TestScratchRefreshReprobesContendedSlotAfterRelease pins the round-3
+// contended re-probe: a slot the pool recorded contended — its lease was held
+// by the racing idle-release teardown at a previous refresh — is re-probed on
+// every refresh. A lease that landed back is reacquired and its contention
+// record cleared; one still held proves the contention live and stays marked.
+func TestScratchRefreshReprobesContendedSlotAfterRelease(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHCONTENDED1"
+	const bindingID = "b-contended-reprobe"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	freeKey := canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)
+	heldKey := canonicalScratchDir(slots[sandbox.ScratchKindUnsandboxed].Dir)
+	// The pool the previous refresh left: current rows, both slots recorded
+	// contended, no handle for either — the teardown raced that restore and
+	// its leases were still held then.
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{freeKey: {}, heldKey: {}},
+		adopted:   map[string]string{},
+	})
+	// The teardown has since settled for the sandbox slot only; the
+	// unsandboxed slot's lease is still held in this process.
+	if err := slots[sandbox.ScratchKindSandbox].Retain(); err != nil {
+		t.Fatalf("release the settled slot's lease: %v", err)
+	}
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("refresh of %q: %v", consumerID, err)
+	}
+	pool := s.retainedScratch.Load()
+	pool.mu.Lock()
+	_, freePooled := pool.handles[freeKey]
+	_, freeStillContended := pool.contended[freeKey]
+	_, heldStillContended := pool.contended[heldKey]
+	_, heldPooled := pool.handles[heldKey]
+	pool.mu.Unlock()
+	if !freePooled {
+		t.Fatal("a contended slot whose lease landed back was never re-probed; the restore lost its retained scratch")
+	}
+	if freeStillContended {
+		t.Fatal("the re-probed slot's contention record outlived the reacquire that cleared it")
+	}
+	if !heldStillContended || heldPooled {
+		t.Fatalf("a still-held slot must keep its contention record and gain no handle; contended=%v pooled=%v", heldStillContended, heldPooled)
 	}
 }

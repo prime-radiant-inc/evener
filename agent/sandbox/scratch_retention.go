@@ -42,6 +42,12 @@ var ErrScratchRetentionStaleRevision = errors.New("sandbox: scratch retention re
 // real crash releases the lease first; a held lease is left with its owner.
 var ErrScratchRetentionLeaseHeld = errors.New("sandbox: retained scratch lease is already held")
 
+// ErrScratchRetentionLockHeld is returned when the manifest's durable update
+// lock is contended: the caller lost a race with a concurrent writer (or a
+// reader's install hold) and must retry, exactly as two racing writers
+// already do. The lock is deliberately fail-fast — callers never block on it.
+var ErrScratchRetentionLockHeld = errors.New("sandbox: scratch retention manifest is locked by another writer")
+
 // ScratchOwner identifies the root that owns a retention manifest. It is the
 // only retention authority: every pin, reference and binding belongs to exactly
 // one owner.
@@ -205,10 +211,20 @@ func acquireScratchRetentionLock(owner ScratchOwner) (scratchLease, error) {
 	}
 	lease, contended, err := acquireScratchLease(scratchRetentionLockPath(owner))
 	if err != nil {
+		// The unix lease reports contention as a non-nil error alongside the
+		// contended flag (flock's EWOULDBLOCK), so both branches must map
+		// contention onto the same sentinel or callers cannot distinguish a
+		// lost lock race from real corruption.
+		if contended {
+			return nil, ErrScratchRetentionLockHeld
+		}
 		return nil, fmt.Errorf("sandbox: acquire scratch retention lock: %w", err)
 	}
 	if contended {
-		return nil, errors.New("sandbox: scratch retention manifest is locked by another writer")
+		if lease != nil {
+			_ = lease.Release()
+		}
+		return nil, ErrScratchRetentionLockHeld
 	}
 	return lease, nil
 }

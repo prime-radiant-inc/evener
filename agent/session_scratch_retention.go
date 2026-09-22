@@ -539,7 +539,15 @@ func findScratchConsumer(manifest sandbox.ScratchManifest, sessionID string) (sa
 // loop, and a pass that fails after reacquiring releases the leases it took so
 // they cannot strand. A poolless seed publishes through a compare-and-swap: a
 // concurrent seed that won the race is folded into, never displaced and
-// released.
+// released. Lock contention is a retry, never a failure: the reacquire opens
+// and the install hold serialize on the manifest's fail-fast lock, and a pass
+// that loses the race with another refresh or writer hands its leases back and
+// re-derives — a contention that never clears still fails loudly after the
+// bound, never silently. A slot the pool recorded contended — its lease was
+// held in-process at a previous refresh, typically the idle-release teardown
+// racing the restore it enables — is re-probed on every refresh: a reacquire
+// that now succeeds re-pools the handle and clears the record; one that still
+// finds the lease held proves the contention live and leaves it marked.
 func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -584,7 +592,18 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 				installRows = true
 			}
 			for _, ref := range owningSlots {
-				if _, claimed := pool.adopted[canonicalScratchDir(ref.Dir)]; claimed {
+				key := canonicalScratchDir(ref.Dir)
+				if _, claimed := pool.adopted[key]; claimed {
+					staleClaims = append(staleClaims, ref)
+				} else if _, held := pool.contended[key]; held {
+					// A contended slot's lease was held by another in-process
+					// owner at refresh time — often the idle-release teardown
+					// racing this very restore, whose leases land back the
+					// moment it settles. It is a claim to re-probe exactly
+					// like an adopted one: a reacquire that now succeeds
+					// re-pools the handle and clears the contention record,
+					// and one that still finds the lease held proves the
+					// contention live and leaves the record marked.
 					staleClaims = append(staleClaims, ref)
 				}
 			}
@@ -600,6 +619,7 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 		handles := make(map[string]*sandbox.SessionScratch)
 		contended := make(map[string]struct{})
 		openCalls := 0
+		lockContention := false
 		for _, ref := range try {
 			openCalls++
 			var handle *sandbox.SessionScratch
@@ -626,12 +646,26 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 				// release them with the error, or they hold their slots for the
 				// life of a process that never installed them.
 				releaseRefreshHandles(handles)
+				if errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+					// The reacquire opens serialize with terminal release on
+					// the manifest lock, and a concurrent refresh's install
+					// hold (or any manifest writer's update) may own it.
+					// Contention is transient by construction — holds last
+					// microseconds — so the pass hands its leases back and
+					// the next pass re-derives instead of failing a restore
+					// that raced another refresh by microseconds.
+					lockContention = true
+					break
+				}
 				return fmt.Errorf("retained scratch refresh %q: %w", ref.Dir, err)
 			}
 			handles[canonicalScratchDir(ref.Dir)] = handle
 		}
+		if lockContention {
+			continue
+		}
 		if hook := s.cfg.testOnly.scratchRefreshBeforeInstall; hook != nil {
-			hook()
+			hook(sessionID)
 		}
 		// Recheck the revision and install under the manifest's durable update
 		// lock, one atomic step against every writer: the rows above came from
@@ -649,7 +683,7 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 				return errScratchRefreshStaleRevision
 			}
 			if hook := s.cfg.testOnly.scratchRefreshAfterRecheck; hook != nil {
-				hook()
+				hook(sessionID)
 			}
 			if pool != nil {
 				if !s.installConsumerRefresh(pool, consumer, binding, handles, contended) {
@@ -672,7 +706,7 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 				contended: contended,
 				adopted:   make(map[string]string),
 			}
-			for {
+			for range 5 {
 				if s.retainedScratch.CompareAndSwap(nil, seeded) {
 					return nil
 				}
@@ -689,12 +723,18 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 				// The published pool was detached between the load and the
 				// fold; loop to re-load and try the fold again.
 			}
+			// The published pool kept dying between the CAS and the fold. The
+			// bound keeps the manifest lock's hold finite; the sentinel hands
+			// the unconsumed handles back and the pass re-derives against the
+			// current pointer.
+			return errScratchRefreshPoolDetached
 		})
 		switch {
 		case installErr == nil:
 			return nil
 		case errors.Is(installErr, errScratchRefreshStaleRevision),
-			errors.Is(installErr, errScratchRefreshPoolDetached):
+			errors.Is(installErr, errScratchRefreshPoolDetached),
+			errors.Is(installErr, sandbox.ErrScratchRetentionLockHeld):
 			// This pass's reacquired leases are nobody's now — hand them back
 			// before the next pass re-derives its own against the moved
 			// manifest or the current pool.
@@ -791,6 +831,7 @@ func (s *Session) installConsumerRefresh(pool *retainedScratchPool, consumer san
 	for key, handle := range handles {
 		pool.handles[key] = handle
 		delete(pool.adopted, key)
+		delete(pool.contended, key)
 	}
 	for key := range contended {
 		pool.contended[key] = struct{}{}
