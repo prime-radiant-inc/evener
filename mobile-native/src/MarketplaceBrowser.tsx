@@ -57,7 +57,6 @@ export function MarketplaceBrowser({
   installed,
   marketplaces,
   lastAddMarketplaces,
-  authoritativeFrom,
   gate,
   ready,
   canUseConnection,
@@ -83,13 +82,6 @@ export function MarketplaceBrowser({
    * registrations from it because a newer list read can hold the store's
    * publication of the add. */
   lastAddMarketplaces: { current: readonly MarketplaceEntry[] | null };
-  /** The publication watermark of the latest applied outcome recorded
-   * against the store this browser reads - the screen's, shared by every
-   * browser over that store's life, so a remount never mistakes a
-   * publication the outcome already predates for an authoritative read.
-   * The reporting effect below reads it; the removal path below raises it.
-   * See PluginsScreen's wiring for the watermark's full semantics. */
-  authoritativeFrom: { current: number };
   // The screen's plugin-mutation gate, shared with the installed list: a
   // write started here keeps running after this view is gone, so the lock
   // it takes has to outlive the view - and living at the screen means the
@@ -104,24 +96,34 @@ export function MarketplaceBrowser({
   appliedRemovalNames: ReadonlySet<string>;
   /** Records an applied removal with the screen. `notice` is
    * appliedRemovalNotice's answer - the cleanup warning, or null when only
-   * the list read failed - and becomes the screen-level warning; the name
-   * joins the guard whatever the hub's truth currently carries, for the
+   * the list read failed - and becomes the screen-level warning; the
+   * `marketplaces` snapshot and its `publicationVersion`, read off the store
+   * as the outcome landed, decide the fence: an accepted snapshot that
+   * already omits the target is the outcome's own reconciliation and leaves
+   * no fence, while a snapshot still carrying the target - or no list at
+   * all - fences the name against that version as its baseline, for the
    * window between the outcome and the first authoritative read after it;
-   * the return value says whether the entry was actually stored, false
-   * meaning a replaced client's late result is dropped whole. */
+   * the return value says whether the outcome was accepted, false meaning a
+   * replaced client's late result is dropped whole. */
   onAppliedRemoval(
     name: string,
     notice: string | null,
     owner: ConversationClientLike,
+    marketplaces: readonly MarketplaceEntry[] | null,
+    publicationVersion: number,
   ): boolean;
-  /** Reports every authoritative list read, so the screen can prune guard
-   * names the read speaks for - the first read after an outcome retires
-   * the fence whether it carries the name (the fallback ruling: a row a
-   * trusted read vouches for, once the removal stood, can only be a
-   * re-registration) or omits it (the removal reconciled). */
+  /** Reports every authoritative list read with the publication version it
+   * landed at, so the screen can prune guard names whose own baselines the
+   * read outruns - per name, so a read one later outcome's recording would
+   * have swallowed under a browser-wide watermark still reaches every
+   * earlier fence. The store's own revision fence has already vouched for
+   * the read; its contents never decide anything (the fallback ruling: a
+   * row a trusted read vouches for, once the removal stood, can only be a
+   * re-registration). */
   onAuthoritativeMarketplaces(
     marketplaces: readonly MarketplaceEntry[],
     owner: ConversationClientLike,
+    publicationVersion: number,
   ): void;
   /** Reports every name this browser's own successful add just registered:
    * the write replaced whatever registration the screen had fenced, so the
@@ -158,11 +160,12 @@ export function MarketplaceBrowser({
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
   useEffect(() => {
-    if (
-      state.marketplaces !== null &&
-      state.marketplacesPublicationVersion > authoritativeFrom.current
-    )
-      onAuthoritativeMarketplaces(state.marketplaces, client);
+    if (state.marketplaces !== null)
+      onAuthoritativeMarketplaces(
+        state.marketplaces,
+        client,
+        state.marketplacesPublicationVersion,
+      );
   }, [
     client,
     onAuthoritativeMarketplaces,
@@ -290,17 +293,28 @@ export function MarketplaceBrowser({
             // reconcile a stale list, never a retry hint.
             const notice = appliedRemovalNotice(caught);
             if (notice !== undefined) {
-              if (!onAppliedRemoval(name, notice, client)) return;
-              // The watermark everything this fence predates: publications at
-              // or below it - including a stale read's answer the rejection
-              // just passed ownership to - never retire it (the prop's doc).
-              // The store is the screen's and survives this view, so the
-              // reconciliation read still publishes somewhere a mounted
+              // The store as the outcome landed - the screen's own, which
+              // survives this view: the snapshot decides whether a fence is
+              // needed at all, and its publication version is the baseline
+              // the screen records against that name. Everything the store
+              // published at or below it predates this fence - including a
+              // stale read's answer the rejection just passed ownership to -
+              // so only a later publication retires it (the prop's doc).
+              // The reconciliation read still publishes somewhere a mounted
               // browser reads: this view's own unmount must not stop it -
               // the remount whose first read fails is exactly the case the
               // retained model exists for.
-              authoritativeFrom.current =
-                marketplaces.getState().marketplacesPublicationVersion;
+              const current = marketplaces.getState();
+              if (
+                !onAppliedRemoval(
+                  name,
+                  notice,
+                  client,
+                  current.marketplaces,
+                  current.marketplacesPublicationVersion,
+                )
+              )
+                return;
               if (refetchAfterRemoval(marketplaces, name))
                 void state.fetchMarketplaces();
               return;
