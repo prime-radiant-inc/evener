@@ -1890,11 +1890,16 @@ environment and privileges, not under a session sandbox: the config file
 is trusted input, the same trust as an `api_key` line, and that includes
 a sandboxed session's token command running unsandboxed.
 
-Authoring. The hub's authoring surfaces accept only `$VARIABLE`
-references, plus a single auth-scheme word ahead of one and an
-auth-scheme word as a reference's default; command expressions are
-hand-authored in providers.toml, never written through an authoring
-surface.
+Authoring. The hub's authoring surfaces accept `$VARIABLE` references and
+`$(command)` expressions alike, plus a single auth-scheme word ahead of
+the credential material and an auth-scheme word as a reference's
+default; a command is authored config, not a secret. The placement rules
+read order through the scanner's pieces, so a literal word behind
+credential material and a second literal word stay refused. The
+stored-key form is the one surface that refuses command expressions:
+the store never expands them, so one stored there would be sent as the
+literal text — the refusal points at the credential-header field
+(amended 2026-09-22).
 
 Compatibility (amended 2026-09-21, with the shared parser):
 

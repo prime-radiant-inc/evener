@@ -87,61 +87,54 @@ func ScanConfigValue(value string) (refs []string, literal string, err error) {
 }
 
 // CheckCredentialHeaderValue holds the secrets boundary both authoring
-// surfaces apply to a credential header before it is written (spec §11.2):
-// every whitespace-separated token is a run of $VARIABLE references, at least
-// one of them, ahead of which at most ONE literal token may stand — the auth
-// scheme, by convention, so any scheme name works, custom ones included. That
-// refuses a value with no reference at all and a key smuggled beside one,
-// whether it is glued to the reference ("Bearer sk-live-abc$X"), standing
-// behind it, or made of letters alone so that it reads as a second scheme
-// word ("Bearer supersecret $KEY") — all of which a bare "contains a $" check
-// accepts.
+// surfaces apply to a credential header before it is written (spec §11.2).
+// The value's credential material is $VARIABLE references and $(command)
+// expressions — a command is authored config, not a secret, so both surfaces
+// (the hub's forms and `evener providers add`) accept it. Everything else is
+// held to the boundary: at most ONE literal word, an HTTP auth scheme by
+// convention (any scheme name works, custom ones included), and it must stand
+// AHEAD of the credential material. A reference's default is literal text
+// standing in the file, so only an auth scheme word may fill one — anything
+// else is a key at rest.
 //
-// The same boundary applies inside a reference's default text and to command
-// expressions: only an auth scheme word may stand as a default (anything else
-// is a literal secret in the file), and command expressions are authored in
-// providers.toml, not through an authoring surface, so a value carrying one is
-// refused here rather than half-authored.
+// The placement rules read order, so the boundary walks the scanner's ordered
+// pieces: a literal run behind credential material (a key smuggled behind a
+// reference), a second literal word (an alphabetic key beside one, which a
+// bare "contains a $" check accepts), and a non-scheme literal (a key glued
+// to a reference, "Bearer sk-live-abc$X") are all refused.
 //
 // The rule is deliberately stricter than providers.toml's own grammar, which
 // takes any syntactically valid value: a key typed into a form or an argv is
 // a key that leaked, so the file may hold shapes neither surface will author.
 // No refusal echoes the value, which may hold the secret it refused.
 func CheckCredentialHeaderValue(value string) error {
-	// The whole value goes through the scanner first: a command expression
-	// carries spaces, so the token walk below would otherwise shred it into
-	// nonsense tokens, and its refusal belongs to the whole value anyway.
-	whole, err := valueexpr.Scan(value)
+	pieces, err := valueexpr.Pieces(value)
 	if err != nil {
 		return err
 	}
-	if len(whole.Commands) > 0 {
-		return errors.New("command expressions are authored in providers.toml, not through this surface; the value itself must be a $VARIABLE reference, never a literal secret")
-	}
-	for _, ref := range whole.Refs {
-		if ref.HasDefault && ref.Default != "" && !isAuthSchemeWord(ref.Default) {
-			return errors.New("only an auth scheme word may stand as a reference's default; the value itself must be a $VARIABLE reference, never a literal secret")
+	seenMaterial, schemeWord := false, false
+	for _, p := range pieces {
+		switch p.Kind {
+		case valueexpr.PieceLit:
+			for token := range strings.FieldsSeq(p.Lit) {
+				switch {
+				case seenMaterial, schemeWord, !isAuthSchemeWord(token):
+					return errors.New("only an auth scheme word may be literal, ahead of the reference; the value itself must be a $VARIABLE reference, never a literal secret")
+				default:
+					schemeWord = true
+				}
+			}
+		case valueexpr.PieceRef:
+			if p.Ref.HasDefault && p.Ref.Default != "" && !isAuthSchemeWord(p.Ref.Default) {
+				return errors.New("only an auth scheme word may stand as a reference's default; the value itself must be a $VARIABLE reference, never a literal secret")
+			}
+			seenMaterial = true
+		case valueexpr.PieceCommand:
+			seenMaterial = true
 		}
 	}
-	referenced, scheme := false, false
-	for token := range strings.FieldsSeq(value) {
-		scan, err := valueexpr.Scan(token)
-		if err != nil {
-			return err
-		}
-		switch {
-		case len(scan.Refs) == 0 && isAuthSchemeWord(token) && !scheme && !referenced:
-			// A scheme name carries no secret; a second literal word, or one
-			// standing behind the reference, is not a scheme name.
-			scheme = true
-		case len(scan.Refs) > 0 && scan.Literal == "":
-			referenced = true
-		default:
-			return errors.New("only an auth scheme word may be literal, ahead of the reference; the value itself must be a $VARIABLE reference, never a literal secret")
-		}
-	}
-	if !referenced {
-		return errors.New("the value must reference a $VARIABLE, never a literal secret")
+	if !seenMaterial {
+		return errors.New("the value must reference a $VARIABLE or run a $(command), never a literal secret")
 	}
 	return nil
 }

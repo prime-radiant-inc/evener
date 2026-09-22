@@ -156,6 +156,29 @@ func TestAuth_InstanceApiKeySet_WritesNamedKey(t *testing.T) {
 	}
 }
 
+// A command expression typed into the stored-key form is a trap, not a key:
+// the store never expands one, so it would be sent as the literal text and
+// fail at the server with no local hint. The write is refused with a pointer
+// at the credential-header field, and nothing is stored.
+func TestAuth_InstanceApiKeySet_RefusesCommandExpression(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	_, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "$(get-gateway-token)"})
+	if err == nil || !strings.Contains(err.Error(), "credential header") {
+		t.Fatalf("err = %v; want a refusal pointing at the credential header field", err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if _, ok := store.Get("work-ant"); ok {
+		t.Fatal("a refused expression must not be stored")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. OAuth ops on a named Codex instance target auth/<name>.json
 // ─────────────────────────────────────────────────────────────────────────────

@@ -139,8 +139,9 @@ The rules that matter in practice:
   request retries it.
 - The output is a credential: it is never logged. A failing command's
   error carries its exit status and stderr line, never its output.
-- Command expressions are hand-authored in `providers.toml`; the hub's
-  credential forms only write `$VARIABLE` references.
+- The hub's credential-header field authors command expressions (as in
+  `Authorization=Bearer $(...)`); the stored-key form refuses one, because a
+  stored key is a literal secret that is never expanded.
 
 ## Environment-variable reference
 

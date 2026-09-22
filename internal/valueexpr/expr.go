@@ -159,17 +159,61 @@ type Inventory struct {
 
 // Scan walks value and reports its pieces, or a syntax error.
 func Scan(value string) (Inventory, error) {
+	pieces, err := Pieces(value)
+	if err != nil {
+		return Inventory{}, err
+	}
 	var out Inventory
 	var lit strings.Builder
-	err := scan(value, sink{
-		lit: func(s string) { lit.WriteString(s) },
-		ref: func(name, def string, hasDef bool) {
-			out.Refs = append(out.Refs, Ref{Name: name, Default: def, HasDefault: hasDef})
-		},
-		cmd: func(command string) { out.Commands = append(out.Commands, command) },
-	})
+	for _, p := range pieces {
+		switch p.Kind {
+		case PieceLit:
+			lit.WriteString(p.Lit)
+		case PieceRef:
+			out.Refs = append(out.Refs, p.Ref)
+		case PieceCommand:
+			out.Commands = append(out.Commands, p.Command)
+		}
+	}
 	out.Literal = lit.String()
 	return out, err
+}
+
+// PieceKind names one piece of a scanned value.
+type PieceKind int8
+
+const (
+	PieceLit     PieceKind = iota // a literal run
+	PieceRef                      // a $NAME / ${NAME...} reference
+	PieceCommand                  // a $(command) expression
+)
+
+// Piece is one piece of a value in file order: a literal run, a reference, or
+// a command expression. The authoring boundary's placement rules read order,
+// so they consume pieces where Scan flattens it away.
+type Piece struct {
+	Kind    PieceKind
+	Lit     string // PieceLit
+	Ref     Ref    // PieceRef
+	Command string // PieceCommand
+}
+
+// Pieces splits value into its ordered pieces, or reports the syntax error.
+// It is the same single scan as Scan, reported in order instead of
+// categorized.
+func Pieces(value string) ([]Piece, error) {
+	var out []Piece
+	err := scan(value, sink{
+		lit: func(s string) { out = append(out, Piece{Kind: PieceLit, Lit: s}) },
+		ref: func(name, def string, hasDef bool) {
+			out = append(out, Piece{Kind: PieceRef, Ref: Ref{Name: name, Default: def, HasDefault: hasDef}})
+		},
+		cmd: func(command string) { out = append(out, Piece{Kind: PieceCommand, Command: command}) },
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Unresolved names why a piece of the value produced nothing: a missing or

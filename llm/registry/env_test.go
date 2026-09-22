@@ -120,6 +120,13 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		"${PORTKEY_KEY:-Bearer}",
 		"${PORTKEY_KEY:-}",
 		"Bearer ${A:-Basic}${B}",
+		// Command expressions are authored config, not secrets, so both
+		// authoring surfaces accept them — alone, with the scheme word, and
+		// beside references.
+		"$(get-gateway-token)",
+		"Bearer $(get-gateway-token)",
+		"$(cat /tmp/thing)${A}",
+		"Basic ${A} $(get-gateway-token)",
 	} {
 		if err := CheckCredentialHeaderValue(value); err != nil {
 			t.Errorf("CheckCredentialHeaderValue(%q) = %v, want accepted", value, err)
@@ -151,11 +158,13 @@ func TestCheckCredentialHeaderValue(t *testing.T) {
 		// A reference's default is literal text standing in the file, so a
 		// key there is a key at rest: only an auth scheme word may stand.
 		{"a smuggled key as a default", "Bearer ${A:-sk-live-abc}", "auth scheme word", "sk-live-abc"},
-		// Command expressions are authored in providers.toml, never through
-		// an authoring surface; the refusal must not echo the command, which
-		// may embed a secret path or argument.
-		{"a command expression", "Bearer $(cat /tmp/planted-secret)", "command expressions are authored in providers.toml", "/tmp/planted-secret"},
-		{"a command expression beside a reference", "$(cat /tmp/planted-secret)${A}", "command expressions are authored in providers.toml", "/tmp/planted-secret"},
+		// Command material holds the same placement rules: a literal word
+		// behind it is a smuggled word, and an escaped literal is a literal
+		// with no material at all. The refusals must not echo the command,
+		// which may embed a secret path or argument.
+		{"a literal behind a command expression", "$(cat /tmp/planted-secret) Bearer", "$VARIABLE", "/tmp/planted-secret"},
+		{"a second word beside a command expression", "Bearer Basic $(cat /tmp/planted-secret)", "$VARIABLE", "/tmp/planted-secret"},
+		{"an escaped command with no material", "$$(cat /tmp/planted-secret)", "$VARIABLE", "/tmp/planted-secret"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckCredentialHeaderValue(tt.value)

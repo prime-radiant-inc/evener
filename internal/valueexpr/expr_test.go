@@ -147,6 +147,31 @@ func TestExpandRefs(t *testing.T) {
 	}
 }
 
+func TestPieces(t *testing.T) {
+	pieces, err := Pieces("Bearer ${A:-x} $(cat /tmp/thing) tail")
+	if err != nil {
+		t.Fatalf("Pieces: %v", err)
+	}
+	want := []Piece{
+		{Kind: PieceLit, Lit: "Bearer "},
+		{Kind: PieceRef, Ref: Ref{Name: "A", Default: "x", HasDefault: true}},
+		{Kind: PieceLit, Lit: " "},
+		{Kind: PieceCommand, Command: "cat /tmp/thing"},
+		{Kind: PieceLit, Lit: " tail"},
+	}
+	if len(pieces) != len(want) {
+		t.Fatalf("Pieces = %+v; want %d pieces", pieces, len(want))
+	}
+	for i := range want {
+		if pieces[i] != want[i] {
+			t.Errorf("piece %d = %+v; want %+v", i, pieces[i], want[i])
+		}
+	}
+	if _, err := Pieces("${unterminated"); err == nil {
+		t.Fatal("Pieces must report the syntax error")
+	}
+}
+
 func TestExpandCommand(t *testing.T) {
 	ResetForTest()
 	calls := 0

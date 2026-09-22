@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
@@ -751,6 +752,13 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	name := normalizeAuthProvider(params.Provider)
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
+	}
+	// A stored key is a literal secret the transports send verbatim: the store
+	// never expands $(command) expressions, so one stored here would be sent
+	// as the literal text and fail at the server with no local hint. Point at
+	// the field that authors expressions instead.
+	if scan, err := valueexpr.Scan(params.Value); err == nil && len(scan.Commands) > 0 {
+		return appwire.AuthStatusResponse{}, appwire.InvalidParams("a stored key is a literal secret and is never expanded: put a $(command) expression on the instance's credential header instead, as in Authorization=Bearer $(get-gateway-token)")
 	}
 	// The fingerprint key is resolved once, before the credential lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
