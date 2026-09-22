@@ -70,11 +70,15 @@ func classifyMarketplaceRemovalOutcome(err error) (marketplaceRemovalState, appw
 // SDK's classifier performs: json.Unmarshal succeeding does not make a null
 // or empty-object member a row, and a snapshot carrying one must never look
 // authoritative - the rule a partially decoded snapshot already follows.
-// Real rows always carry a name and a source kind; an empty list is a valid
-// one, since the marketplace just removed can be the last.
+// Real rows always carry a name, a source kind, and a lastUpdated timestamp;
+// an empty list is a valid one, since the marketplace just removed can be
+// the last. A zero lastUpdated is the typed twin of the JSON member that
+// omits the field: decoding erases presence either way, and the JSON path
+// degrades that member to unavailable, so a zero must never look
+// authoritative on the typed path the wire cannot be re-checked on.
 func validMarketplaceSnapshot(snapshot appwire.MarketplaceListResponse) bool {
 	for _, entry := range snapshot.Marketplaces {
-		if entry.Name == "" || entry.Source.Kind == "" {
+		if entry.Name == "" || entry.Source.Kind == "" || entry.LastUpdated == 0 {
 			return false
 		}
 	}
@@ -85,9 +89,9 @@ func validMarketplaceSnapshot(snapshot appwire.MarketplaceListResponse) bool {
 // the marketplaceRemoveApplied discriminator, as the typed value the hub
 // builds in-process or the map a JSON-RPC client decodes. The marker alone is
 // the proof: the hub emits it from one site, always with AppliedUnavailable,
-// and #2068 deliberately stopped the strict data check there - a malformed
-// payload must not demote a standing removal back to a retryable failure. The
-// marker carries no snapshot to decode, so nothing else is read.
+// and nothing beyond the discriminator is checked - a malformed payload must
+// not demote a standing removal back to a retryable failure. The marker
+// carries no snapshot to decode, so nothing else is read.
 func marketplaceRemovalAppliedMarker(raw any) bool {
 	if data, ok := raw.(appwire.MarketplaceRemoveAppliedData); ok {
 		return data.EvenerErrorInfo == appwire.ErrorMarketplaceRemoveApplied

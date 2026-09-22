@@ -638,10 +638,17 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListFloor {
 		return m, nil
 	}
-	if m.marketplaceListReadsOrdered && msg.ReconcileGeneration <= m.marketplaceListApplied {
-		// A read newer than this one has already been applied: this one
-		// was issued before it, and its snapshot was superseded - landing
-		// it late would overwrite the newer list with an older one.
+	if m.marketplaceListApplied != 0 && msg.ReconcileGeneration <= m.marketplaceListApplied {
+		// A read at or below the applied generation was issued before the
+		// newest applied one, and its snapshot was superseded - landing it
+		// late would overwrite the newer list with an older one. The
+		// rejection is not bound to the removal boundary: before the first
+		// removal ever lands, add and refresh responses advance the
+		// applied generation the same way, so a delayed read from that
+		// window cannot clobber the marketplace a newer response just
+		// landed. A zero applied generation is nothing applied yet, not an
+		// ordering decision, so it rejects nothing - least of all the
+		// first read.
 		return m, nil
 	}
 	// A successful read above the floor was issued after the removal
@@ -650,6 +657,23 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 	// a newer refresh merely having been issued, and discarding its
 	// success would leave the fence standing when the newer read fails.
 	if msg.Err == nil && m.marketplaceReconcilePending {
+		// The confirming read also settles the account its outcome left
+		// standing: the removed outcome's "being refreshed" warning is
+		// entirely stale now that the refreshed list has landed, so it
+		// clears; the unavailable outcome's "could not be confirmed"
+		// uncertainty went with it, while the clone files that remain on
+		// disk are still the truth and keep their account without the
+		// stale suffix. Stale reads never reach here - the guards above
+		// rejected them without touching the warning, exactly like the
+		// discarded add or refresh responses below.
+		switch state, _ := classifyMarketplaceRemovalOutcome(m.err); state {
+		case marketplaceRemovalRemoved:
+			m.err = nil
+		case marketplaceRemovalUnavailable:
+			if wire, ok := errors.AsType[appwire.WireError](m.err); ok {
+				m.err = marketplaceCloneRemainsWarning(wire, false)
+			}
+		}
 		m.marketplaceRemovePending = ""
 		m.marketplaceReconcilePending = false
 	}
@@ -676,21 +700,21 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 }
 
 // marketplaceListRead returns the marketplace-list read this model should
-// issue for a user- or notification-driven refetch. Once a removal has
-// landed it must carry the next reconciliation generation, because the
-// read boundary rejects every read issued before the latest landing and
-// an older read could then neither recover a failed reconciliation, nor
-// settle the fence, nor populate a reopened panel. Before any removal
-// lands there is nothing to order against and the ordinary read is used.
-// The duplicate-remove fence is untouched here; only a successful read
-// clears it.
+// issue for a user- or notification-driven refetch. Every read carries the
+// next reconciliation generation from the start: once a removal has landed,
+// the read boundary rejects every read issued before the latest landing,
+// and an older read could then neither recover a failed reconciliation,
+// nor settle the fence, nor populate a reopened panel; and before the
+// first removal lands, the applied-generation guard still rejects a read
+// issued before the newest applied response, so a delayed pre-removal read
+// cannot clobber the marketplace a newer add or refresh just landed.
+// Tagging every read is also what keeps a fresh refetch newer than
+// everything applied, so it always lands. The duplicate-remove fence is
+// untouched here; only a successful read clears it.
 func (m *hubModel) marketplaceListRead() tea.Cmd {
-	if m.marketplaceListReadsOrdered {
-		m.marketplaceReconcileGeneration++
-		m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
-		return launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
-	}
-	return launchconfig.CmdMarketplaceList(m.client)
+	m.marketplaceReconcileGeneration++
+	m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
+	return launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 }
 
 // batchMarketplaceCmds batches the panel command a marketplace response
@@ -840,16 +864,19 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		}
 		return m, batchMarketplaceCmds(panelCmd, replacement)
 	}
-	if m.marketplaceListReadsOrdered && (msg.Generation <= m.marketplaceListFloor || msg.Generation <= m.marketplaceListApplied) {
-		// An add or refresh issued before the latest removal landed or
-		// before the newest applied read carries a list that predates
-		// state the panel already holds, so applying it would resurrect
-		// what the settled list dropped. Discard it and schedule the
-		// replacement read that lands the mutation's own effect. A
-		// discarded response is not this model's news either: like a list
-		// read, it must not erase the prominent warning a landed removal
-		// outcome left standing - the clone-remains or removed-outcome
-		// notice the user still has to act on.
+	if (m.marketplaceListReadsOrdered && msg.Generation <= m.marketplaceListFloor) || (m.marketplaceListApplied != 0 && msg.Generation <= m.marketplaceListApplied) {
+		// An add or refresh issued before the latest removal landed - the
+		// floor half, armed once any removal landed - or before the newest
+		// applied read - this half holds before the first removal too, for
+		// the same reason the read guard above gives - carries a list that
+		// predates state the panel already holds, so applying it would
+		// resurrect what the settled list dropped or clobber the
+		// marketplace a newer response just landed. Discard it and
+		// schedule the replacement read that lands the mutation's own
+		// effect. A discarded response is not this model's news either:
+		// like a list read, it must not erase the prominent warning a
+		// landed removal outcome left standing - the clone-remains or
+		// removed-outcome notice the user still has to act on.
 		if m.client != nil {
 			m.marketplaceReconcileGeneration++
 			m.marketplaceListReadIssued = m.marketplaceReconcileGeneration

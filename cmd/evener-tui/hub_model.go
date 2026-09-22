@@ -166,9 +166,11 @@ type hubModel struct {
 	credentialsPanel    *launchconfig.CredentialsPanel
 	launchSettingsPanel *launchconfig.LaunchSettingsPanel
 	pluginsPanel        *launchconfig.PluginsPanel
-	// marketplaceRemovePending fences a remove until its result is settled.
-	// An applied-with-litter result keeps this identity until a fresh list
-	// confirms the post-removal state.
+	// marketplaceRemovePending fences a remove until its outcome is settled.
+	// An applied-with-litter outcome clears the identity right away - its own
+	// snapshot is authoritative - and schedules the replacement read that
+	// confirms the post-removal state; an unavailable or removed outcome
+	// keeps the fence until that confirming read lands.
 	marketplaceRemovePending       string
 	marketplaceReconcilePending    bool
 	marketplaceReconcileGeneration uint64
