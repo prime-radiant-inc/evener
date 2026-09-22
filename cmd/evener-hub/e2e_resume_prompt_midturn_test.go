@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -85,7 +84,7 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	// state (an active-turn claim, a pending start) the restore has to
 	// reconcile, and it leaves no recovery obligation behind.
 	t.Logf("killing daemon pid=%d mid-turn", identity.PID)
-	if err := syscall.Kill(identity.PID, syscall.SIGKILL); err != nil {
+	if err := daemonRetirementKillPID(identity.PID); err != nil {
 		t.Fatalf("kill daemon pid %d: %v", identity.PID, err)
 	}
 	// Wait for the roster to drop the killed daemon: the send below is only the

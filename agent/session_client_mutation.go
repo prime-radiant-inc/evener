@@ -280,24 +280,19 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
 		}
-		if snapshot.ActiveTurnID != "" {
-			// The recovered turn is this session's own work: the durable
-			// snapshot named it active because a process died mid-turn, and the
-			// pending start restore reclaims owns it. The caller's prompt
-			// belongs behind it, not refused on the floor, so accept the start:
-			// the caller keeps its identity and the send settles with an
-			// applied receipt instead of being returned as an unaccepted
-			// mutation. Only the inherited turn is eligible -- a turn the
-			// session started in this process keeps the refusal below, because
-			// the web composer's routing contract treats "turn is already
-			// active" as the answer to a turn/start while a turn is active. The
-			// serve loop runs one turn at a time and processes a wake only
-			// after the current turn returns, so this accepted start is claimed
-			// after the recovered turn finishes.
-			if snapshot.ActiveTurnID != s.recoveredTurnID {
-				rejectClientMutation(record, appwire.Conflict("turn is already active"))
-				return nil
-			}
+		if snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != s.recoveredTurnID {
+			// Only the turn this session inherited from a dead process is
+			// eligible (see the recoveredTurnID field doc): it is the session's
+			// own work, so the caller's prompt belongs behind it and the send
+			// settles with an applied receipt instead of being returned as an
+			// unaccepted mutation. A turn this process started keeps the
+			// refusal, because the web composer's routing contract reads "turn
+			// is already active" as the answer to a turn/start while a turn is
+			// active. The serve loop runs one turn at a time and processes a
+			// wake only after the current turn returns, so this accepted start
+			// is claimed after the recovered turn finishes.
+			rejectClientMutation(record, appwire.Conflict("turn is already active"))
+			return nil
 		}
 		if s.cfg.MaxTurns > 0 && snapshot.AcceptedTurns+reservedClientMutationTurns(snapshot) >= uint64(s.cfg.MaxTurns) {
 			rejectClientMutation(record, appwire.Conflict((&budgetExhaustionError{
@@ -1549,6 +1544,15 @@ func (s *clientMutationStore) steeringHeld() bool {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	return s.state.SteeringHeld
+}
+
+// activeTurnID reads the durable active-turn name without cloning the snapshot,
+// mirroring queueHeld. restoreDurableClientMutationQueues captures the turn this
+// process inherited, and snapshot() deep-copies the whole journal.
+func (s *clientMutationStore) activeTurnID() string {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.state.ActiveTurnID
 }
 
 func (s *clientMutationStore) mutate(mutate func(*clientMutationSnapshot) error) error {

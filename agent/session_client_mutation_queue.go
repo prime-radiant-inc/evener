@@ -1293,12 +1293,10 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 // runtime queues before a restored Session becomes visible. It emits nothing:
 // reconnect projections read the already-restored fields.
 func (s *Session) restoreDurableClientMutationQueues() {
-	// The turn this process inherited from the durable snapshot, if any: an
-	// active turn whose own pending start restore reclaims and re-runs. A
-	// later turn/start is accepted behind it (see AcceptClientMutationStart);
-	// any other active turn keeps the ordinary refusal. Captured before the
-	// reconcile below, which can retire other pending work.
-	s.recoveredTurnID = s.clientMutations.snapshot().ActiveTurnID
+	// The turn this process inherited from the durable snapshot, if any: see
+	// the recoveredTurnID field doc for what it is and how a later turn/start
+	// behind it is treated.
+	s.recoveredTurnID = s.clientMutations.activeTurnID()
 	incorporated := make(map[string]string, len(s.restoredClientMutationTurns))
 	maps.Copy(incorporated, s.restoredClientMutationTurns)
 	// steeringOutcome is the terminal state the transcript's entry for a steer
