@@ -52,8 +52,12 @@ func TestRound12InstallerPinsDefaultDirsAgainstInheritedEnv(t *testing.T) {
 			t.Fatalf("installer command does not pin %s: %q", want, got)
 		}
 	}
-	if strings.Contains(got, "PREFIX") {
-		t.Fatalf("installer command still leaves the install location to the remote PREFIX: %q", got)
+	// The hub passes no PREFIX, so the variable is pinned to empty rather than
+	// left out: with BINDIR/EVENER_SHARE_BINDIR already pinned, an inherited
+	// remote PREFIX could still move install.sh's fallback layout, and empty is
+	// what makes install.sh compute the documented default.
+	if !strings.Contains(got, "PREFIX=''") {
+		t.Fatalf("installer command does not pin PREFIX to empty, so an inherited remote PREFIX could still move the fallback layout: %q", got)
 	}
 }
 

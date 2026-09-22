@@ -38,6 +38,21 @@ func TestCommandChecksTheEmbeddedScriptSize(t *testing.T) {
 	}
 }
 
+// TestCommandPinsUnsetPathVariablesToEmpty pins the property the hub earned in
+// round twelve, now shared with the CLI path: install.sh honors inherited
+// PREFIX/BINDIR/EVENER_SHARE_BINDIR, and a remote login shell can export any of
+// them, so an omitted flag must pin its variable to empty — where install.sh
+// computes the documented default — rather than leave it to whatever the
+// session environment carries.
+func TestCommandPinsUnsetPathVariablesToEmpty(t *testing.T) {
+	got := Command("snapshot", "", "", "")
+	for _, want := range []string{"PREFIX=''", "BINDIR=''", "EVENER_SHARE_BINDIR=''"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("an omitted path flag can be overridden by the remote environment (%s missing): %q", want, got)
+		}
+	}
+}
+
 // TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine runs the embedded
 // installer end to end against a scripted download boundary: curl is faked
 // (the only network seam), while sh, tar, install, and the checksum tool are

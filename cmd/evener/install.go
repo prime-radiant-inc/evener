@@ -48,6 +48,7 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 	if strings.TrimSpace(*version) == "" {
 		return errors.New("--version must not be empty")
 	}
+	*version = strings.TrimSpace(*version)
 	if err := rejectTildePath("--prefix", *prefix); err != nil {
 		return err
 	}

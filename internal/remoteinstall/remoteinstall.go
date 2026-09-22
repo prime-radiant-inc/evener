@@ -34,9 +34,11 @@ import (
 var Script []byte
 
 // Command builds the remote POSIX command that writes Script to a temp file and
-// executes it, pinned to version, installing into prefix/binDir/shareBinDir
-// when they are given (an empty string leaves the variable unset so install.sh
-// computes its own default). The script itself arrives on the command's stdin,
+// executes it, pinned to version, installing into prefix/binDir/shareBinDir.
+// An empty path argument pins that variable to an explicitly empty assignment,
+// so install.sh computes its documented default and nothing the remote login
+// shell exports can override an omitted flag — the pin the hub earned in round
+// twelve, now shared with the CLI. The script itself arrives on the command's stdin,
 // so the host fetches nothing to execute: its only network use is install.sh's
 // own archive and checksums.txt download. The installer runs with the variables
 // passed to `env` (not to sh), and every value is rendered as one shell word by
@@ -60,16 +62,15 @@ var Script []byte
 // '~' on the remote host. Callers pass absolute paths (the CLI rejects
 // tilde-prefixed flags for exactly this reason).
 func Command(version, prefix, binDir, shareBinDir string) string {
+	// Every variable is rendered unconditionally: an omitted flag becomes an
+	// explicitly empty assignment (RemoteWord("") is '' and install.sh's
+	// ${VAR:-} treats empty as unset), never a variable left to whatever the
+	// remote session environment carries — an inherited PREFIX would silently
+	// move the install the way it moved the hub's before round twelve.
 	env := "EVENER_INSTALL_VERSION=" + shellquote.RemoteWord(version)
-	if prefix != "" {
-		env += " PREFIX=" + shellquote.RemoteWord(prefix)
-	}
-	if binDir != "" {
-		env += " BINDIR=" + shellquote.RemoteWord(binDir)
-	}
-	if shareBinDir != "" {
-		env += " EVENER_SHARE_BINDIR=" + shellquote.RemoteWord(shareBinDir)
-	}
+	env += " PREFIX=" + shellquote.RemoteWord(prefix)
+	env += " BINDIR=" + shellquote.RemoteWord(binDir)
+	env += " EVENER_SHARE_BINDIR=" + shellquote.RemoteWord(shareBinDir)
 	tmp := `tmp=$(mktemp "${TMPDIR:-/tmp}/evener-install.XXXXXX") || exit 1`
 	cleanup := `trap 'rm -f "$tmp"' EXIT HUP INT TERM`
 	verify := `v=$(wc -c < "$tmp" | tr -d '[:space:]') && [ "$v" = ` + strconv.Itoa(len(Script)) + ` ]`

@@ -114,6 +114,32 @@ func TestRunInstallRejectsTildePrefixedPaths(t *testing.T) {
 	}
 }
 
+// TestRunInstallTrimsTheVersionFlag pins that a version with surrounding
+// whitespace is normalized before it reaches the remote command: the empty
+// check trims, so passing the untrimmed value on would quote the spaces into
+// EVENER_INSTALL_VERSION and fail later as an opaque download error instead of
+// a clear argument error.
+func TestRunInstallTrimsTheVersionFlag(t *testing.T) {
+	old := runRemoteInstallCommand
+	t.Cleanup(func() { runRemoteInstallCommand = old })
+	var gotArgs []string
+	runRemoteInstallCommand = func(_ context.Context, args []string, _ io.Reader, _, _ io.Writer) error {
+		gotArgs = append([]string(nil), args...)
+		return nil
+	}
+
+	err := runInstall([]string{"--version", " v1.2.3 ", "user@example.com"}, strings.NewReader(""), io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("runInstall() error = %v", err)
+	}
+	if !strings.Contains(gotArgs[6], "EVENER_INSTALL_VERSION=v1.2.3") {
+		t.Fatalf("remote command forwards the untrimmed version: %q", gotArgs[6])
+	}
+	if strings.Contains(gotArgs[6], "' v1.2.3") {
+		t.Fatalf("remote command still quotes the version's surrounding whitespace: %q", gotArgs[6])
+	}
+}
+
 func TestRunInstallPropagatesSSHFailure(t *testing.T) {
 	old := runRemoteInstallCommand
 	t.Cleanup(func() { runRemoteInstallCommand = old })

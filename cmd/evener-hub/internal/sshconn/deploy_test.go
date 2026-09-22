@@ -228,13 +228,13 @@ func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
 	if strings.Contains(got, "http") || strings.Contains(got, "curl") {
 		t.Fatalf("the installer command fetches the installer script instead of streaming the embedded copy: %q", got)
 	}
-	want := "env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
+	want := "env EVENER_INSTALL_VERSION=v1.2.3 PREFIX='' BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
 	if !strings.HasSuffix(got, want) {
 		t.Fatalf("remoteinstall.Command = %q, want suffix %q", got, want)
 	}
 	got = remoteinstall.Command("snapshot", "", "", "")
-	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || strings.Contains(got, "BINDIR") {
-		t.Fatalf("remoteinstall.Command(default) = %q, want snapshot ref and no BINDIR override", got)
+	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || !strings.Contains(got, "BINDIR=''") {
+		t.Fatalf("remoteinstall.Command(default) = %q, want snapshot ref and BINDIR pinned to empty (its default)", got)
 	}
 	if strings.Contains(got, "latest") {
 		t.Fatalf("remoteinstall.Command passed `latest`: %q", got)
