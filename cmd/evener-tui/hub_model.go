@@ -174,6 +174,16 @@ type hubModel struct {
 	marketplaceRemovePending       string
 	marketplaceReconcilePending    bool
 	marketplaceReconcileGeneration uint64
+	// marketplaceOutcomeWarning is the standing marketplace-removal outcome
+	// account — the warning a landed removal outcome raised (clone-remains
+	// applied, clone-remains unconfirmed, or removed-and-refreshing). Only a
+	// removal outcome writes it (a newer outcome replaces an older one), and
+	// only the reconciliation settle rewrites or retires it: the
+	// removed-outcome account clears at its settle, the unconfirmed suffix
+	// strips at its settle, and the clone-remains fact stands — nothing
+	// re-derives it, so no fresh response may erase it. The transient slot
+	// is separate; an ordinary failure never touches this account.
+	marketplaceOutcomeWarning error
 	// marketplaceListReadsOrdered turns on the first time a marketplace
 	// removal lands on the hub, whatever the outcome carried. Every list
 	// read is generation-tagged from the first one the model issues, so
@@ -380,6 +390,21 @@ func newSpawnDirInput() textinput.Model {
 	input.Placeholder = "working directory"
 	input.CharLimit = 0
 	return input
+}
+
+// prominentErrors returns every live account the hub model should render as
+// an error line, transient first, then the standing marketplace-removal
+// outcome warning. It is nil-safe: a model with no live account renders
+// nothing.
+func (m hubModel) prominentErrors() []error {
+	var errs []error
+	if m.err != nil {
+		errs = append(errs, m.err)
+	}
+	if m.marketplaceOutcomeWarning != nil {
+		errs = append(errs, m.marketplaceOutcomeWarning)
+	}
+	return errs
 }
 
 func (m hubModel) Init() tea.Cmd {

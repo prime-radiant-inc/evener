@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -353,11 +355,11 @@ func TestMarketplaceMutateResultAppliesTypedSnapshotAndKeepsWarning(t *testing.T
 	if cmd != nil {
 		t.Fatal("applied-with-litter result should not request another list")
 	}
-	if after.err == nil {
+	if after.marketplaceOutcomeWarning == nil {
 		t.Fatal("applied-with-litter result should leave a visible warning")
 	}
-	if _, ok := errors.AsType[appwire.WireError](after.err); !ok {
-		t.Fatalf("warning = %v, want original WireError in error chain", after.err)
+	if _, ok := errors.AsType[appwire.WireError](after.marketplaceOutcomeWarning); !ok {
+		t.Fatalf("warning = %v, want original WireError in error chain", after.marketplaceOutcomeWarning)
 	}
 	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
 		t.Fatalf("pending state = %q/%v, want cleared", after.marketplaceRemovePending, after.marketplaceReconcilePending)
@@ -439,11 +441,11 @@ func TestMarketplaceMutateResultUnavailableReconcilesBeforeRetry(t *testing.T) {
 	// confirmed must not keep claiming the list "could not be confirmed":
 	// the clone files that remain on disk are still the truth and keep
 	// standing, without the stale uncertainty.
-	if reconciled.err == nil {
+	if reconciled.marketplaceOutcomeWarning == nil {
 		t.Fatal("confirming read should keep the clone-remains account standing")
 	}
-	if strings.Contains(reconciled.err.Error(), "could not be confirmed") {
-		t.Fatalf("confirming read left the stale uncertainty in the warning: %v", reconciled.err)
+	if strings.Contains(reconciled.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("confirming read left the stale uncertainty in the warning: %v", reconciled.marketplaceOutcomeWarning)
 	}
 }
 
@@ -531,14 +533,14 @@ func TestMarketplaceMutateResultRemovedOutcomeReconcilesWithoutLitterWarning(t *
 	if after.marketplaceRemovePending != stale.Name || !after.marketplaceReconcilePending {
 		t.Fatalf("removed outcome pending state = %q/%v, want fenced until list success", after.marketplaceRemovePending, after.marketplaceReconcilePending)
 	}
-	if after.err == nil {
+	if after.marketplaceOutcomeWarning == nil {
 		t.Fatal("removed outcome should leave a visible account")
 	}
-	if strings.Contains(after.err.Error(), "clone") {
-		t.Fatalf("removed outcome warning = %q, want no clone-litter claim", after.err.Error())
+	if strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone") {
+		t.Fatalf("removed outcome warning = %q, want no clone-litter claim", after.marketplaceOutcomeWarning.Error())
 	}
-	if _, ok := errors.AsType[appwire.WireError](after.err); !ok {
-		t.Fatalf("removed outcome warning = %v, want original WireError in error chain", after.err)
+	if _, ok := errors.AsType[appwire.WireError](after.marketplaceOutcomeWarning); !ok {
+		t.Fatalf("removed outcome warning = %v, want original WireError in error chain", after.marketplaceOutcomeWarning)
 	}
 	if _, dup := after.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: stale.Name}); dup != nil {
 		t.Fatal("duplicate remove should stay blocked while the removed outcome reconciles")
@@ -563,8 +565,8 @@ func TestMarketplaceMutateResultRemovedOutcomeReconcilesWithoutLitterWarning(t *
 	// The confirming read settles the refresh the removed outcome promised:
 	// nothing was left on disk and the list is current, so no account of the
 	// refresh may keep standing.
-	if reconciled.err != nil {
-		t.Fatalf("confirming read left the removed outcome's account standing: %v", reconciled.err)
+	if reconciled.marketplaceOutcomeWarning != nil {
+		t.Fatalf("confirming read left the removed outcome's account standing: %v", reconciled.marketplaceOutcomeWarning)
 	}
 }
 
@@ -1575,7 +1577,7 @@ func TestMarketplaceStaleRefreshDuringReconciliationKeepsWarning(t *testing.T) {
 	if reconcileCmd == nil || !after.marketplaceReconcilePending {
 		t.Fatal("unavailable removal did not start reconciliation")
 	}
-	if after.err == nil {
+	if after.marketplaceOutcomeWarning == nil {
 		t.Fatal("unavailable removal did not leave its warning standing")
 	}
 
@@ -1596,8 +1598,8 @@ func TestMarketplaceStaleRefreshDuringReconciliationKeepsWarning(t *testing.T) {
 	if after.marketplaceRemovePending != stale.Name || !after.marketplaceReconcilePending {
 		t.Fatalf("stale refresh changed pending state = %q/%v, want fence preserved", after.marketplaceRemovePending, after.marketplaceReconcilePending)
 	}
-	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
-		t.Fatalf("stale refresh cleared the standing removal warning = %v", after.err)
+	if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("stale refresh cleared the standing removal warning = %v", after.marketplaceOutcomeWarning)
 	}
 	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
@@ -1646,7 +1648,7 @@ func TestMarketplaceStaleListReadDuringReconciliationKeepsWarning(t *testing.T) 
 		Generation: 2,
 	})
 	after := got.(hubModel)
-	if reconcile == nil || !after.marketplaceReconcilePending || after.err == nil {
+	if reconcile == nil || !after.marketplaceReconcilePending || after.marketplaceOutcomeWarning == nil {
 		t.Fatal("unavailable removal did not arm reconciliation with its warning")
 	}
 
@@ -1663,8 +1665,8 @@ func TestMarketplaceStaleListReadDuringReconciliationKeepsWarning(t *testing.T) 
 	if straggler.marketplaceRemovePending != stale.Name || !straggler.marketplaceReconcilePending {
 		t.Fatalf("stale read settled the fence to %q/%v, want preserved", straggler.marketplaceRemovePending, straggler.marketplaceReconcilePending)
 	}
-	if straggler.err == nil || !strings.Contains(straggler.err.Error(), "clone files remain") {
-		t.Fatalf("stale read erased the standing removal warning = %v", straggler.err)
+	if straggler.marketplaceOutcomeWarning == nil || !strings.Contains(straggler.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("stale read erased the standing removal warning = %v", straggler.marketplaceOutcomeWarning)
 	}
 
 	// The outstanding confirming read is the model's news: it settles the
@@ -1679,8 +1681,8 @@ func TestMarketplaceStaleListReadDuringReconciliationKeepsWarning(t *testing.T) 
 	if reconciled.marketplaceRemovePending != "" || reconciled.marketplaceReconcilePending {
 		t.Fatalf("confirming read left pending state = %q/%v, want cleared", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
 	}
-	if reconciled.err == nil || strings.Contains(reconciled.err.Error(), "could not be confirmed") {
-		t.Fatalf("confirming read left the warning = %v, want the clone-remains fact without the stale uncertainty", reconciled.err)
+	if reconciled.marketplaceOutcomeWarning == nil || strings.Contains(reconciled.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("confirming read left the warning = %v, want the clone-remains fact without the stale uncertainty", reconciled.marketplaceOutcomeWarning)
 	}
 }
 
@@ -1714,7 +1716,7 @@ func TestMarketplaceFreshMutationDuringReconciliationKeepsCloneRemainsWarning(t 
 		Generation: 1,
 	})
 	after := got.(hubModel)
-	if reconcile == nil || !after.marketplaceReconcilePending || after.err == nil {
+	if reconcile == nil || !after.marketplaceReconcilePending || after.marketplaceOutcomeWarning == nil {
 		t.Fatal("unavailable removal did not arm reconciliation with its warning")
 	}
 
@@ -1736,11 +1738,11 @@ func TestMarketplaceFreshMutationDuringReconciliationKeepsCloneRemainsWarning(t 
 	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
 		t.Fatalf("fresh add left the fence at %q/%v, want settled", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
 	}
-	if settled.err == nil || !strings.Contains(settled.err.Error(), "clone files remain") {
-		t.Fatalf("fresh add erased the standing clone-remains warning = %v", settled.err)
+	if settled.marketplaceOutcomeWarning == nil || !strings.Contains(settled.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("fresh add erased the standing clone-remains warning = %v", settled.marketplaceOutcomeWarning)
 	}
-	if strings.Contains(settled.err.Error(), "could not be confirmed") {
-		t.Fatalf("fresh add left the stale uncertainty in the warning: %v", settled.err)
+	if strings.Contains(settled.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("fresh add left the stale uncertainty in the warning: %v", settled.marketplaceOutcomeWarning)
 	}
 	updated, panelCmd := settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
@@ -1756,12 +1758,12 @@ func TestMarketplaceFreshMutationDuringReconciliationKeepsCloneRemainsWarning(t 
 	straggler := reconcile().(launchconfig.MarketplaceListResultMsg)
 	got, _ = settled.handleMarketplaceListResult(straggler)
 	late := got.(hubModel)
-	if late.err == nil || !strings.Contains(late.err.Error(), "clone files remain") || strings.Contains(late.err.Error(), "could not be confirmed") {
-		t.Fatalf("superseded reconcile read changed the standing warning = %v", late.err)
+	if late.marketplaceOutcomeWarning == nil || !strings.Contains(late.marketplaceOutcomeWarning.Error(), "clone files remain") || strings.Contains(late.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("superseded reconcile read changed the standing warning = %v", late.marketplaceOutcomeWarning)
 	}
 }
 
-func TestMarketplaceFreshMutationRetryClearsOrdinaryFailureDuringReconciliation(t *testing.T) {
+func TestMarketplaceFreshMutationRetryClearsOrdinaryFailureAndKeepsCloneRemainsWarning(t *testing.T) {
 	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
@@ -1794,7 +1796,9 @@ func TestMarketplaceFreshMutationRetryClearsOrdinaryFailureDuringReconciliation(
 	}
 
 	// A refresh of "kept" (generation 3) fails: the failure becomes the
-	// prominent error, and the fence must keep standing.
+	// prominent transient error, the fence must keep standing, and the
+	// standing outcome account must keep standing too - an ordinary
+	// failure is news about the refresh, never about the removal.
 	got, _ = after.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
 		Err:        errors.New("refresh failed"),
 		Action:     "refresh",
@@ -1805,13 +1809,17 @@ func TestMarketplaceFreshMutationRetryClearsOrdinaryFailureDuringReconciliation(
 	if failed.err == nil || !strings.Contains(failed.err.Error(), "refresh failed") {
 		t.Fatalf("failed refresh did not surface its failure = %v", failed.err)
 	}
+	if failed.marketplaceOutcomeWarning == nil || !strings.Contains(failed.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("failed refresh erased the standing clone-remains warning = %v", failed.marketplaceOutcomeWarning)
+	}
 	if failed.marketplaceRemovePending != removed.Name || !failed.marketplaceReconcilePending {
 		t.Fatalf("failed refresh disturbed the fence = %q/%v, want preserved", failed.marketplaceRemovePending, failed.marketplaceReconcilePending)
 	}
 
 	// The retry (generation 4) succeeds: its fresh snapshot settles the
-	// fence, and the superseded ordinary failure must clear - only a
-	// reconciliation outcome's own warning survives a settle.
+	// fence, the superseded ordinary failure clears, and the settle strips
+	// the standing account's stale uncertainty - the clone-remains fact
+	// itself is still true and keeps standing.
 	got, cmd := failed.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
 		Action:     "refresh",
 		Name:       kept.Name,
@@ -1827,6 +1835,12 @@ func TestMarketplaceFreshMutationRetryClearsOrdinaryFailureDuringReconciliation(
 	}
 	if retried.err != nil {
 		t.Fatalf("successful retry left the superseded failure standing: %v", retried.err)
+	}
+	if retried.marketplaceOutcomeWarning == nil || !strings.Contains(retried.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("successful retry erased the standing clone-remains warning = %v", retried.marketplaceOutcomeWarning)
+	}
+	if strings.Contains(retried.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("successful retry left the stale uncertainty in the warning: %v", retried.marketplaceOutcomeWarning)
 	}
 	updated, panelCmd := retried.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
@@ -1870,8 +1884,8 @@ func TestMarketplaceFreshMutationAfterAppliedSettlementKeepsWarning(t *testing.T
 	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
 		t.Fatalf("applied settlement state = %q/%v, want cleared fence", after.marketplaceRemovePending, after.marketplaceReconcilePending)
 	}
-	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
-		t.Fatalf("applied settlement did not leave its warning standing = %v", after.err)
+	if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("applied settlement did not leave its warning standing = %v", after.marketplaceOutcomeWarning)
 	}
 
 	// A later successful add is fresh news, but it does not supersede the
@@ -1890,8 +1904,8 @@ func TestMarketplaceFreshMutationAfterAppliedSettlementKeepsWarning(t *testing.T
 	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
 		t.Fatalf("fresh add disturbed the settled fence = %q/%v", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
 	}
-	if settled.err == nil || !strings.Contains(settled.err.Error(), "clone files remain") {
-		t.Fatalf("fresh add erased the standing clone-remains warning = %v", settled.err)
+	if settled.marketplaceOutcomeWarning == nil || !strings.Contains(settled.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("fresh add erased the standing clone-remains warning = %v", settled.marketplaceOutcomeWarning)
 	}
 	updated, panelCmd := settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated, panelCmd = updated.(launchconfig.PluginsPanel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
@@ -1907,8 +1921,8 @@ func TestMarketplaceFreshMutationAfterAppliedSettlementKeepsWarning(t *testing.T
 	straggler := replacement().(launchconfig.MarketplaceListResultMsg)
 	got, _ = settled.handleMarketplaceListResult(straggler)
 	late := got.(hubModel)
-	if late.err == nil || !strings.Contains(late.err.Error(), "clone files remain") {
-		t.Fatalf("superseded replacement read changed the standing warning = %v", late.err)
+	if late.marketplaceOutcomeWarning == nil || !strings.Contains(late.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("superseded replacement read changed the standing warning = %v", late.marketplaceOutcomeWarning)
 	}
 }
 
@@ -1951,8 +1965,8 @@ func TestMarketplaceFreshMutationAfterFreshReconciliationKeepsWarning(t *testing
 	if reconciled.marketplaceRemovePending != "" || reconciled.marketplaceReconcilePending {
 		t.Fatalf("confirming read left the fence at %q/%v, want settled", reconciled.marketplaceRemovePending, reconciled.marketplaceReconcilePending)
 	}
-	if reconciled.err == nil || !strings.Contains(reconciled.err.Error(), "clone files remain") || strings.Contains(reconciled.err.Error(), "could not be confirmed") {
-		t.Fatalf("confirming read left the warning = %v, want the clone-remains fact without the stale uncertainty", reconciled.err)
+	if reconciled.marketplaceOutcomeWarning == nil || !strings.Contains(reconciled.marketplaceOutcomeWarning.Error(), "clone files remain") || strings.Contains(reconciled.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("confirming read left the warning = %v, want the clone-remains fact without the stale uncertainty", reconciled.marketplaceOutcomeWarning)
 	}
 
 	// A later successful add must not erase the settled clone-remains fact
@@ -1969,11 +1983,11 @@ func TestMarketplaceFreshMutationAfterFreshReconciliationKeepsWarning(t *testing
 	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
 		t.Fatalf("fresh add disturbed the settled fence = %q/%v", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
 	}
-	if settled.err == nil || !strings.Contains(settled.err.Error(), "clone files remain") {
-		t.Fatalf("fresh add erased the settled clone-remains warning = %v", settled.err)
+	if settled.marketplaceOutcomeWarning == nil || !strings.Contains(settled.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("fresh add erased the settled clone-remains warning = %v", settled.marketplaceOutcomeWarning)
 	}
-	if strings.Contains(settled.err.Error(), "could not be confirmed") {
-		t.Fatalf("fresh add restored the stale uncertainty = %v", settled.err)
+	if strings.Contains(settled.marketplaceOutcomeWarning.Error(), "could not be confirmed") {
+		t.Fatalf("fresh add restored the stale uncertainty = %v", settled.marketplaceOutcomeWarning)
 	}
 }
 
@@ -2011,7 +2025,7 @@ func TestMarketplaceFreshMutationSettlesRemovedOutcomeNotice(t *testing.T) {
 		Generation: 1,
 	})
 	after := got.(hubModel)
-	if reconcile == nil || !after.marketplaceReconcilePending || after.err == nil {
+	if reconcile == nil || !after.marketplaceReconcilePending || after.marketplaceOutcomeWarning == nil {
 		t.Fatal("removed outcome did not arm reconciliation with its account")
 	}
 
@@ -2030,8 +2044,8 @@ func TestMarketplaceFreshMutationSettlesRemovedOutcomeNotice(t *testing.T) {
 	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
 		t.Fatalf("fresh add left the fence at %q/%v, want settled", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
 	}
-	if settled.err != nil {
-		t.Fatalf("fresh add left the removed outcome's account standing: %v", settled.err)
+	if settled.marketplaceOutcomeWarning != nil {
+		t.Fatalf("fresh add left the removed outcome's account standing: %v", settled.marketplaceOutcomeWarning)
 	}
 }
 
@@ -2075,7 +2089,7 @@ func TestMarketplaceDelayedRefreshAfterAppliedSettlementKeepsWarning(t *testing.
 	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
 		t.Fatalf("applied settlement state = %q/%v, want cleared fence", after.marketplaceRemovePending, after.marketplaceReconcilePending)
 	}
-	if after.err == nil {
+	if after.marketplaceOutcomeWarning == nil {
 		t.Fatal("applied settlement did not leave its warning standing")
 	}
 	if replacement == nil {
@@ -2093,8 +2107,8 @@ func TestMarketplaceDelayedRefreshAfterAppliedSettlementKeepsWarning(t *testing.
 	}
 	got, _ = after.handleMarketplaceMutateResult(delayed)
 	after = got.(hubModel)
-	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
-		t.Fatalf("stale refresh cleared the applied warning = %v", after.err)
+	if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("stale refresh cleared the applied warning = %v", after.marketplaceOutcomeWarning)
 	}
 	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
@@ -2145,7 +2159,7 @@ func TestMarketplaceDelayedRefreshAfterFreshReconciliationKeepsWarning(t *testin
 	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
 		t.Fatalf("fresh reconciliation state = %q/%v, want cleared fence", after.marketplaceRemovePending, after.marketplaceReconcilePending)
 	}
-	if after.err == nil {
+	if after.marketplaceOutcomeWarning == nil {
 		t.Fatal("fresh reconciliation cleared the unavailable warning")
 	}
 
@@ -2155,8 +2169,8 @@ func TestMarketplaceDelayedRefreshAfterFreshReconciliationKeepsWarning(t *testin
 	}
 	got, _ = after.handleMarketplaceMutateResult(delayed)
 	after = got.(hubModel)
-	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
-		t.Fatalf("stale refresh cleared the unavailable warning = %v", after.err)
+	if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("stale refresh cleared the unavailable warning = %v", after.marketplaceOutcomeWarning)
 	}
 	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
@@ -2164,5 +2178,238 @@ func TestMarketplaceDelayedRefreshAfterFreshReconciliationKeepsWarning(t *testin
 	}
 	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
 		t.Fatalf("stale refresh resurrected %q, want %q", remove.Name, kept.Name)
+	}
+}
+
+func TestMarketplaceOrdinaryFailureDoesNotOverwriteCloneRemainsWarning(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	kept := appwire.MarketplaceEntry{Name: "kept", LastUpdated: 1, Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed, kept),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+		Applied:         appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+	})
+
+	// The removal lands applied-with-litter: the fence clears and the
+	// clone-remains warning stands on its own account.
+	got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: removed.Name, Generation: 1})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("applied settlement state = %q/%v, want cleared fence", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("applied settlement did not leave its warning standing = %v", after.marketplaceOutcomeWarning)
+	}
+
+	// A refresh of the surviving marketplace fails: the failure is the
+	// fresh news and owns the transient account, but it is news about the
+	// refresh, never about the removal. The standing clone-remains account
+	// must survive it - both accounts are live and the panel co-renders
+	// them - or the litter goes unreported until the next removal happens
+	// to mention it.
+	got, _ = after.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err:        errors.New("refresh failed"),
+		Action:     "refresh",
+		Name:       kept.Name,
+		Generation: 3,
+	})
+	failed := got.(hubModel)
+	if failed.err == nil || !strings.Contains(failed.err.Error(), "refresh failed") {
+		t.Fatalf("failed refresh did not surface its failure = %v", failed.err)
+	}
+	if failed.marketplaceOutcomeWarning == nil || !strings.Contains(failed.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("failed refresh erased the standing clone-remains warning = %v", failed.marketplaceOutcomeWarning)
+	}
+}
+
+func TestMarketplaceSuccessfulRemoveKeepsEarlierCloneRemainsWarning(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	other := appwire.MarketplaceEntry{Name: "other", LastUpdated: 1, Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	m := hubModel{
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed, other),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+		Applied:         appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{other}},
+	})
+
+	// Removal A lands applied-with-litter: the fence clears and A's
+	// clone-remains warning stands on its own account.
+	got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: removed.Name, Generation: 1})
+	after := got.(hubModel)
+	if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("applied settlement did not leave its warning standing = %v", after.marketplaceOutcomeWarning)
+	}
+
+	// Another client's successful remove of a different marketplace is
+	// fresh post-floor news, but only the account it supersedes - the
+	// transient one - is its to clear: A's clone files are still on disk,
+	// and nothing about B's removal re-derives that fact.
+	got, _ = after.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Action:     "remove",
+		Name:       other.Name,
+		Generation: 3,
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{}},
+	})
+	settled := got.(hubModel)
+	if settled.marketplaceRemovePending != "" {
+		t.Fatalf("successful remove left the fence at %q, want cleared", settled.marketplaceRemovePending)
+	}
+	if settled.err != nil {
+		t.Fatalf("successful remove should clear only the transient account it supersedes: %v", settled.err)
+	}
+	if settled.marketplaceOutcomeWarning == nil || !strings.Contains(settled.marketplaceOutcomeWarning.Error(), "clone files remain") {
+		t.Fatalf("successful remove of another marketplace erased removal A's standing warning = %v", settled.marketplaceOutcomeWarning)
+	}
+}
+
+func TestMarketplaceOutcomeWarningSurvivesUnrelatedClears(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	kept := appwire.MarketplaceEntry{Name: "kept", LastUpdated: 1, Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	for name, apply := range map[string]func(hubModel) hubModel{
+		// A plugin mutation's success clears the transient account its
+		// failure would have raised - never the removal's standing one.
+		"plugin mutation success": func(m hubModel) hubModel {
+			got, _ := m.handlePluginMutateResult(launchconfig.PluginMutateResultMsg{})
+			return got.(hubModel)
+		},
+		// A hub tree read's success clears the transient account its own
+		// failure would have raised - the removal's account is not the
+		// tree's to retire.
+		"hub tree read success": func(m hubModel) hubModel {
+			got, _ := m.Update(hubTreeMsg{tree: hubTreeResponse{}})
+			return got.(hubModel)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := hubModel{
+				pluginsPanel:                   marketplacePanelWithEntries(t, removed, kept),
+				marketplaceRemovePending:       removed.Name,
+				marketplaceReconcileGeneration: 1,
+			}
+			err := marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+				EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+				Applied:         appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+			})
+			got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{Err: err, Action: "remove", Name: removed.Name, Generation: 1})
+			after := got.(hubModel)
+			if after.marketplaceOutcomeWarning == nil || !strings.Contains(after.marketplaceOutcomeWarning.Error(), "clone files remain") {
+				t.Fatalf("applied settlement did not leave its warning standing = %v", after.marketplaceOutcomeWarning)
+			}
+
+			settled := apply(after)
+			if settled.marketplaceOutcomeWarning == nil || !strings.Contains(settled.marketplaceOutcomeWarning.Error(), "clone files remain") {
+				t.Fatalf("%s erased the standing clone-remains warning = %v", name, settled.marketplaceOutcomeWarning)
+			}
+		})
+	}
+}
+
+func TestProminentErrorsStacksTransientBeforeOutcomeWarning(t *testing.T) {
+	transient := errors.New("boom")
+	durable := errors.New("marketplace removed; clone files remain on disk")
+
+	// Nil-safety: a model with no live account renders nothing.
+	if errs := (hubModel{}).prominentErrors(); len(errs) != 0 {
+		t.Fatalf("empty model prominentErrors = %v, want none", errs)
+	}
+	// Single-account degeneracy: each slot alone is the only account.
+	if errs := (hubModel{err: transient}).prominentErrors(); len(errs) != 1 || errs[0] != transient {
+		t.Fatalf("transient-only prominentErrors = %v, want exactly the transient", errs)
+	}
+	if errs := (hubModel{marketplaceOutcomeWarning: durable}).prominentErrors(); len(errs) != 1 || errs[0] != durable {
+		t.Fatalf("durable-only prominentErrors = %v, want exactly the outcome warning", errs)
+	}
+	// Stacked order: transient first, then the durable warning.
+	errs := (hubModel{err: transient, marketplaceOutcomeWarning: durable}).prominentErrors()
+	if len(errs) != 2 || errs[0] != transient || errs[1] != durable {
+		t.Fatalf("stacked prominentErrors = %v, want transient then outcome warning", errs)
+	}
+
+	// The status text degenerates to today's byte-identical returns with
+	// one live account, and joins transient-then-durable when both live,
+	// keeping the prominent-accounts-over-sessionStatusError preference.
+	if got := (hubModel{err: transient, sessionStatusError: "stale"}).sessionStatusErrorText(); got != "boom" {
+		t.Fatalf("transient-only status text = %q, want %q", got, "boom")
+	}
+	if got := (hubModel{marketplaceOutcomeWarning: durable}).sessionStatusErrorText(); got != durable.Error() {
+		t.Fatalf("durable-only status text = %q, want %q", got, durable.Error())
+	}
+	if got := (hubModel{err: transient, marketplaceOutcomeWarning: durable, sessionStatusError: "stale"}).sessionStatusErrorText(); got != "boom; "+durable.Error() {
+		t.Fatalf("stacked status text = %q, want transient then outcome warning", got)
+	}
+	if got := (hubModel{sessionStatusError: " stale "}).sessionStatusErrorText(); got != "stale" {
+		t.Fatalf("no-account status text = %q, want the trimmed session status error", got)
+	}
+
+	// Single-account degeneracy at the render sites: with exactly one
+	// live account the emitted bytes equal today's single-slot emission.
+	width := 100
+	wantDashboard := tuitext.TruncateText(fmt.Sprintf("error: %v", transient), width) + "\n\n"
+	m := newHubModel(nil, "http://hub.test")
+	m.width = width
+	m.height = 24
+	m.err = transient
+	view := m.dashboardView()
+	if !strings.Contains(view, wantDashboard) {
+		t.Fatalf("single-account dashboard is not byte-identical to the single-slot emission; want %q:\n%s", wantDashboard, view)
+	}
+	if strings.Count(view, "error: boom") != 1 {
+		t.Fatalf("single-account dashboard rendered the account more than once:\n%s", view)
+	}
+	if got := m.dashboardDetailsView(nil, width); got != renderDetailsPane(strings.Join([]string{
+		"details",
+		"Diagnostic",
+		"Message:  boom",
+		"Next:     refresh dashboard or check Hub health",
+	}, "\n"), width) {
+		t.Fatalf("single-account details pane is not byte-identical to the single-slot emission:\n%s", got)
+	}
+
+	// Stacked: two accounts render two error lines, transient first, and
+	// the details pane composes both messages.
+	m.marketplaceOutcomeWarning = durable
+	view = m.dashboardView()
+	wantStacked := tuitext.TruncateText(fmt.Sprintf("error: %v", transient), width) + "\n" +
+		tuitext.TruncateText(fmt.Sprintf("error: %v", durable), width) + "\n\n"
+	if !strings.Contains(view, wantStacked) {
+		t.Fatalf("stacked dashboard did not render transient then outcome warning; want %q:\n%s", wantStacked, view)
+	}
+	if got, want := m.dashboardDetailsView(nil, width), renderDetailsPane(strings.Join([]string{
+		"details",
+		"Diagnostic",
+		"Message:  boom\nMessage:  " + durable.Error(),
+		"Next:     refresh dashboard or check Hub health",
+	}, "\n"), width); got != want {
+		t.Fatalf("stacked details pane = %q, want both accounts' messages composed:\n%s", got, want)
+	}
+
+	// The session and spawn views emit one stacked "error: %v" line per
+	// account, in prominentErrors order.
+	s := newSessionHubModel(nil)
+	s.width = width
+	s.height = 24
+	s.err = transient
+	s.marketplaceOutcomeWarning = durable
+	sessionBody := s.renderSessionMainBody()
+	if !strings.Contains(sessionBody, "\nerror: boom\n\nerror: "+durable.Error()+"\n") {
+		t.Fatalf("session body did not stack transient then outcome warning:\n%s", sessionBody)
+	}
+
+	sp := newHubModel(nil, "http://hub.test")
+	sp.openSpawnForm()
+	sp.width = width
+	sp.height = 30
+	sp.err = transient
+	sp.marketplaceOutcomeWarning = durable
+	spawnView := sp.spawnView()
+	if !strings.Contains(spawnView, "\nerror: boom\n\nerror: "+durable.Error()+"\n") {
+		t.Fatalf("spawn view did not stack transient then outcome warning:\n%s", spawnView)
 	}
 }
