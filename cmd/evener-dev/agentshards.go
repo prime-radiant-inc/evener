@@ -555,10 +555,12 @@ func effectiveGoflags() (string, error) {
 }
 
 // surveyRedLine is the marker that announces a failure in a `go test -v` log:
-// a failing test's verdict, or the panic that ended the binary. The survey
-// has no per-shard verdict to sort by — it is one pass over the whole suite —
-// so the excerpt is built around these markers.
-var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
+// a failing test's verdict, or the panic that ended the binary. The verdict is
+// matched through its colon, so `--- FAILURE: ...` — a test's own output — is
+// not a marker; `panic:` stays a prefix, since the message after it is the
+// panic's own text. The survey has no per-shard verdict to sort by — it is one
+// pass over the whole suite — so the excerpt is built around these markers.
+var surveyRedLine = regexp.MustCompile(`^(?:--- FAIL:|panic:)`)
 
 // The red survey's excerpt is one failure block per marker, never the suite
 // log: these bound how much of the failing test's own output a block carries,
@@ -758,36 +760,54 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	}
 }
 
+// surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
+// a test starts, and `PAUSE` and `CONT` around a parallel test's wait. The
+// space after the directive closes it off from the test name, so a test's own
+// line that merely begins with one of the words (`=== PAUSED ...`) is output.
+var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT) `)
+
+// surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
+// closed by the colon `go test -v` always writes. Without the colon a line is
+// a test's own output — a printed diff's `--- expected`, or `--- FAILURE: ...`.
+var surveyTestVerdictLine = regexp.MustCompile(`^--- (?:PASS|FAIL|SKIP):`)
+
 // surveyVerdictLine matches a `go test -v` verdict line and nothing that
-// merely begins like one: the test binary's bare `PASS` or `FAIL`, the package
-// verdict `go test` prints (`FAIL\tpkg\t1.2s`), and its summary
-// (`ok  \tpkg\t1.2s`). A token followed by a colon or a longer word is a test's
-// own output that starts with the token — `FAIL: ...`, `FAILURE: ...`,
-// `PASSWORD=...`, `ok done` — and stays in the block rather than ending it.
-var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)(?:\s|$)|^ok\s{2}`)
+// merely begins like one. The test binary prints its bare `PASS` or `FAIL`
+// verdict with nothing after it, so those are whole lines; the package verdict
+// `go test` prints is `FAIL`, a tab, the package, and a tab (`FAIL\tpkg\t1.2s`);
+// its summary is `ok`, two spaces, a tab, the package, and a tab
+// (`ok  \tpkg\t1.2s`). The package and timing after the tab are left open —
+// import paths vary — but the tabs are not: a test's own `FAIL reason`,
+// `PASS details`, or `ok  details` starts like a form without being one, and
+// stays in the block rather than ending it.
+var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok  \t[^\t]+\t`)
 
 // surveyFrameworkLine reports whether a `go test -v` log line is the
-// toolchain's own framing rather than a test's output: a `=== RUN`/`=== PAUSE`
-// phase line, a test verdict (`--- PASS`/`--- FAIL`/`--- SKIP`), one of the
-// binary's or `go test`'s own verdicts (`PASS` or `FAIL` alone,
-// `FAIL\tpkg\t1.2s`, `ok  \tpkg\t1.2s`), or another failure marker (`panic:`).
-// A failure's excerpt runs until the next such line, so a test's own
+// toolchain's own framing rather than a test's output: a phase line, a test
+// verdict, one of the binary's or `go test`'s own verdicts, or another failure
+// marker. A failure's excerpt runs until the next such line, so a test's own
 // unindented output — fmt.Println, log.Print, a child process — stays in the
 // block instead of being cut at the first line that is not indented.
 //
-// `=== ` and `--- ` stay prefix matches: they are the toolchain's own phase and
-// verdict framing, and the block boundaries are built on them, so matching them
-// less strictly would swallow a following test's framing into the block. A
-// test's own top-level line of that shape cannot be told from the real framing
-// on the line alone — `go test` indents t.Log output, but a test's direct
-// fmt.Println stays unindented, as the fixture's own `FAIL: ...` line shows —
-// so the prefix stays the toolchain's, and `--- FAIL` is a marker besides. The
-// close calls are the token forms, and they break toward keeping a line:
-// mis-including a test's own line costs a bounded amount of context, while
-// mis-classifying one cuts the diagnosis out of the excerpt it exists to show.
+// Each form is matched through the delimiter the toolchain always writes, not
+// a prefix it merely starts with. A phase line is `=== ` plus `RUN`, `PAUSE`,
+// or `CONT` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
+// `PASS:`, `FAIL:`, or `SKIP:` (`surveyTestVerdictLine`); and the bare binary
+// verdict plus `go test`'s package verdict and summary come from
+// `surveyVerdictLine`. The variable tail of each — the test name and time, the
+// package path and timing — stays open, because the toolchain's own text there
+// can be anything; the delimiter is what tells framing from output. `panic:`
+// alone is still a prefix: `panic: ` is the whole framing and the message
+// after it is the panic's own. An ambiguous line is kept, and the ambiguous
+// ones here all broke the same way: a test's direct fmt.Println stays
+// unindented, so `--- expected` from a printed diff, `--- FAILURE: ...`,
+// `FAIL reason`, `PASS details`, and `ok  details` were mistaken for framing
+// and cut the diagnosis out of the excerpt it exists to show. Including a
+// lookalike costs a bounded amount of context; mis-classifying one loses the
+// diagnosis.
 func surveyFrameworkLine(line string) bool {
-	return strings.HasPrefix(line, "=== ") ||
-		strings.HasPrefix(line, "--- ") ||
+	return surveyPhaseLine.MatchString(line) ||
+		surveyTestVerdictLine.MatchString(line) ||
 		surveyVerdictLine.MatchString(line) ||
 		surveyRedLine.MatchString(line)
 }

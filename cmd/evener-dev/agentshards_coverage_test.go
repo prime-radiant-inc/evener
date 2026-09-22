@@ -342,6 +342,36 @@ func TestReplaySurveyFailuresVerdictFormsStillBound(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsFramingLookalikes is the follow-up review
+// finding: the boundary predicate matched `=== `, `--- `, and the verdict
+// tokens by prefix, so a failing test's own unindented output shaped like the
+// framing — a printed diff's `--- expected`, or a line that merely begins with
+// `--- FAILURE:`, `FAIL `, `PASS `, or `ok  ` — was read as toolchain framing
+// (or, for `--- FAILURE:`, as a failure marker) and cut the diagnosis out of
+// the excerpt it exists to show. Only the toolchain's actual framing grammar
+// may end a block or announce a failure, and every line here stays.
+func TestReplaySurveyFailuresKeepsFramingLookalikes(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestLooksFramed\n"+
+			"--- expected\n"+
+			"--- FAILURE: not really a verdict\n"+
+			"FAIL reason\n"+
+			"PASS details\n"+
+			"ok  details\n"+
+			"--- FAIL: TestLooksFramed (0.00s)\n")
+	want := []string{
+		"--- expected",
+		"--- FAILURE: not really a verdict",
+		"FAIL reason",
+		"PASS details",
+		"ok  details",
+		"--- FAIL: TestLooksFramed (0.00s)",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a failing test's framing-shaped output ended the block: replayed %q, want %q", got, want)
+	}
+}
+
 // TestReplaySurveyFailuresMarkerlessTailWithTestOKPrint is the D2 contract:
 // the excerpt runs only once the survey pass has already exited nonzero, so
 // there is no green verdict to consult. A log with no failure marker whose
