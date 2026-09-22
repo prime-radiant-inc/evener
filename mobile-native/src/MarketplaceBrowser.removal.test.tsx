@@ -6,7 +6,7 @@
 // carries that wiring too. Mirrors ProvidersScreen.recovery.test.tsx's
 // mocking: every native edge the screen reaches is mocked here, and the
 // stores are driven through the SDK's FakeClient.
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { MarketplaceEntry } from "@evener/appwire-client";
@@ -15,7 +15,10 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+  createMarketplacesStore,
+  createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { createPluginMutationGate } from "./pluginMutationGate";
@@ -70,6 +73,12 @@ function GuardedBrowser({
 }) {
   const [names, setNames] = useState<ReadonlySet<string>>(() => new Set());
   const [warning, setWarning] = useState<string | null>(null);
+  // The screen's half of the store wiring, in this harness's minimal shape:
+  // the marketplaces store outlives the browser, and the add answer is
+  // captured beside it. Nothing here drives connection transitions - these
+  // tests hold a ready connection throughout.
+  const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
+  const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
   return (
     <>
       <ErrorMessage message={warning} />
@@ -78,6 +87,8 @@ function GuardedBrowser({
         connectionState="ready"
         hubName="Work hub"
         installed={createPluginsStore(client)}
+        marketplaces={marketplaces}
+        lastAddMarketplaces={lastAddMarketplaces}
         gate={createPluginMutationGate()}
         ready={true}
         canUseConnection={canUseConnection}
