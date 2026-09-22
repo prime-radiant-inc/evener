@@ -96,13 +96,12 @@ export function MarketplaceBrowser({
   /** Reports every name this browser's own successful add just registered:
    * the write replaced whatever registration the screen had fenced, so the
    * fence clears for it. A submitted name is reported as-is; a blank one is
-   * one the hub assigned, so the browser reads it off the list the add's
-   * own answer published - through the store, or through the client when
-   * the store died with an unmounted browser and dropped the publication -
-   * and when even that list cannot tell a fresh same-second registration
-   * from the stale row it replaced, off the fenced row still carrying the
-   * source the add submitted - and reports it the same way, or a
-   * re-registration the wire cannot distinguish would stay fenced forever. */
+   * one the hub assigned, so the browser names it off the hub's own list -
+   * read directly through the client, never off the store, whose
+   * publication of the add a newer read can hold and an unmounted
+   * browser's store drops - and when even that list cannot tell a fresh
+   * same-second registration from the stale row it replaced, off the
+   * fenced row still carrying the source the add submitted. */
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
@@ -429,39 +428,36 @@ export function MarketplaceBrowser({
           gate={gate}
           onClose={() => setAdding(false)}
           onAdd={async (params) => {
-            // The list the screen last carried, so a blank submitted name -
-            // one the hub assigns - can still be read off the list the
-            // add's own answer published.
+            // The list the screen last carried, to tell the add's own
+            // registration from the rows that were already there.
             const before = model.getState().marketplaces ?? [];
             await state.addMarketplace(params);
             if (params.name) {
               onMarketplaceAdded(params.name, client);
               return;
             }
-            // A store that died with an unmounted browser drops everything
-            // the add publishes, so the registration is only in the hub:
-            // read the list through the client, which outlives browsers. A
-            // failed read reports nothing - the add itself already stood,
-            // and the fence holds until a fresh read reconciles it.
-            let after = model.getState().marketplaces ?? [];
-            if (!alive.current) {
-              try {
-                after = (await client.request("evener/marketplace/list", {}))
-                  .marketplaces;
-              } catch {
-                return;
-              }
-            }
-            const added = addedMarketplaceNames(before, after);
-            if (added.length > 0) {
-              for (const name of added) onMarketplaceAdded(name, client);
+            // A blank submitted name is one the hub assigns from the
+            // source's own catalog, and the store's publication of the add
+            // cannot be trusted to name it: a newer list read holds it,
+            // and an unmounted browser's store drops it. Read the hub's
+            // own list directly - the client outlives browsers - and name
+            // the registration from it. A failed read reports nothing: the
+            // add already stood, and the fence holds until a fresh read
+            // reconciles it.
+            let after: readonly MarketplaceEntry[];
+            try {
+              after = (await client.request("evener/marketplace/list", {}))
+                .marketplaces;
+            } catch {
               return;
             }
-            // The answer is indistinguishable from the stale list: the add
-            // re-registered a name within the same whole second its removed
-            // registration was stamped, so the add's own source is the only
-            // thing that names it - a fenced row still carrying that exact
-            // source is the registration this add put back.
+            for (const name of addedMarketplaceNames(before, after))
+              onMarketplaceAdded(name, client);
+            // The hub's list is indistinguishable from the stale one: the
+            // add re-registered a name within the same whole second its
+            // removed registration was stamped, so the add's own source is
+            // the only thing that names it - a fenced row still carrying
+            // that exact source is the registration this add put back.
             for (const { name, source } of after)
               if (
                 appliedRemovalNames.has(name) &&
