@@ -192,6 +192,7 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 	const lastAddMarketplaces: {
 		current: readonly MarketplaceEntry[] | null;
 	} = { current: null };
+	const authoritativeFrom = { current: 0 };
 	// ConnectionStatus inside the modal reads the connection itself, so the
 	// harness must say what the browser's connectionState prop says - this
 	// test does not inherit the state a sibling test leaves behind.
@@ -204,6 +205,7 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			installed={createPluginsStore(client)}
 			marketplaces={marketplaces}
 			lastAddMarketplaces={lastAddMarketplaces}
+			authoritativeFrom={authoritativeFrom}
 			gate={createPluginMutationGate()}
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}

@@ -372,6 +372,20 @@ function Plugins({
     () => createMarketplacesStore(marketplaceStoreClient),
     [marketplaceStoreClient],
   );
+  // The publication watermark of the latest applied outcome recorded against
+  // the marketplaces store. Everything the store published at or below it
+  // predates the fence that outcome raised - including a stale read's answer
+  // the outcome's own rejection passed ownership to, one beat before the
+  // recording - so only a publication NEWER than this counts as an
+  // authoritative read for retiring the fence. Reads issued after the outcome
+  // (its own reconciliation refetch, a reconnect re-read, a remount's mount
+  // read) always publish newer: the wire answers one connection's requests in
+  // order, and the store's revision fence drops anything a newer read outruns.
+  // Held here, at the store's own lifetime, so every browser over that store
+  // shares one watermark: a remount carries it forward instead of resetting
+  // it, and the retained pre-outcome snapshot a fresh browser would otherwise
+  // report never retires a standing fence.
+  const authoritativeFrom = useRef(0);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
@@ -500,6 +514,7 @@ function Plugins({
           installed={model}
           marketplaces={marketplaces}
           lastAddMarketplaces={lastAddMarketplaces}
+          authoritativeFrom={authoritativeFrom}
           gate={gate}
           ready={ready}
           canUseConnection={canUseConnection}

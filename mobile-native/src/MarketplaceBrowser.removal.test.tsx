@@ -79,6 +79,7 @@ function GuardedBrowser({
   // tests hold a ready connection throughout.
   const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
   const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
+  const authoritativeFrom = useRef(0);
   return (
     <>
       <ErrorMessage message={warning} />
@@ -89,6 +90,7 @@ function GuardedBrowser({
         installed={createPluginsStore(client)}
         marketplaces={marketplaces}
         lastAddMarketplaces={lastAddMarketplaces}
+        authoritativeFrom={authoritativeFrom}
         gate={createPluginMutationGate()}
         ready={true}
         canUseConnection={canUseConnection}

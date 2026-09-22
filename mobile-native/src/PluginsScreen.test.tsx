@@ -780,6 +780,68 @@ it("reconciles through the remounted browser after the old browser is disposed",
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
 });
 
+it("keeps a remounted browser from retiring the fence on the pre-outcome snapshot", async () => {
+	let listCalls = 0;
+	let releaseRead!: () => void;
+	const pendingRead = new Promise<void>((resolve) => {
+		releaseRead = () => resolve();
+	});
+	const hub = marketplaceClient({
+		list: async () => {
+			listCalls += 1;
+			// The mount read shows the registration the removal targets; the
+			// outcome's own reconciliation read fails; the remount's first
+			// read stays on the wire until the test releases it.
+			if (listCalls === 2) throw new Error("list unavailable");
+			if (listCalls >= 3) await pendingRead;
+			return { marketplaces: [marketplace] };
+		},
+		remove: async () => {
+			throw cloneLitterError(null, false);
+		},
+	});
+	harness.connection = readyConnection(hub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	await browseMarketplace(tree);
+	await confirmMarketplaceRemoval(tree);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+	// The applied outcome's reconciliation read failed, so the store still
+	// carries the pre-removal list. Leave and come back: the remounted
+	// browser must not report that retained snapshot as an authoritative
+	// read - the fence stays up while the remount's own first read is still
+	// on the wire, and the stale row it exposes stays unremovable.
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+	});
+	await act(async () => {});
+	const fenced = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(fenced.props.disabled).toBe(true);
+
+	// The remount's read is the first publication newer than the outcome:
+	// the fallback ruling trusts it whatever it carries, and Remove
+	// re-enables - a press would only draw the hub's same idempotent
+	// applied outcome.
+	releaseRead();
+	await act(async () => {});
+	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(remove.props.disabled).toBe(false);
+	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+});
+
 it("ignores an applied removal result from a replaced client", async () => {
   let releaseOld!: () => void;
   const oldRemoval = new Promise<never>((_resolve, reject) => {

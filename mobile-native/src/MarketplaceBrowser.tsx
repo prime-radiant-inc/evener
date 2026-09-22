@@ -57,6 +57,7 @@ export function MarketplaceBrowser({
   installed,
   marketplaces,
   lastAddMarketplaces,
+  authoritativeFrom,
   gate,
   ready,
   canUseConnection,
@@ -82,6 +83,13 @@ export function MarketplaceBrowser({
    * registrations from it because a newer list read can hold the store's
    * publication of the add. */
   lastAddMarketplaces: { current: readonly MarketplaceEntry[] | null };
+  /** The publication watermark of the latest applied outcome recorded
+   * against the store this browser reads - the screen's, shared by every
+   * browser over that store's life, so a remount never mistakes a
+   * publication the outcome already predates for an authoritative read.
+   * The reporting effect below reads it; the removal path below raises it.
+   * See PluginsScreen's wiring for the watermark's full semantics. */
+  authoritativeFrom: { current: number };
   // The screen's plugin-mutation gate, shared with the installed list: a
   // write started here keeps running after this view is gone, so the lock
   // it takes has to outlive the view - and living at the screen means the
@@ -149,17 +157,6 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
-  // The publication watermark of the latest applied outcome this browser
-  // recorded. Everything the store published at or below it predates the
-  // fence that outcome raised - including a stale read's answer the
-  // outcome's own rejection passed ownership to, one beat before the
-  // recording - so only a publication NEWER than this counts as an
-  // authoritative read for retiring the fence. Reads issued after the
-  // outcome (its own reconciliation refetch, a reconnect re-read, a
-  // remount's mount read) always publish newer: the wire answers one
-  // connection's requests in order, and the store's revision fence drops
-  // anything a newer read outruns.
-  const authoritativeFrom = useRef(0);
   useEffect(() => {
     if (
       state.marketplaces !== null &&
@@ -296,8 +293,7 @@ export function MarketplaceBrowser({
               if (!onAppliedRemoval(name, notice, client)) return;
               // The watermark everything this fence predates: publications at
               // or below it - including a stale read's answer the rejection
-              // just passed ownership to - never retire it (the effect's
-              // doc above).
+              // just passed ownership to - never retire it (the prop's doc).
               // The store is the screen's and survives this view, so the
               // reconciliation read still publishes somewhere a mounted
               // browser reads: this view's own unmount must not stop it -
