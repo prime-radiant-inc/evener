@@ -491,9 +491,6 @@ it("leaves a re-added marketplace removable after an applied removal reconciles 
       removals += 1;
       return removals === 1 ? firstRemoval : Promise.resolve({ marketplaces: [] });
     },
-    // The re-add registers a fresh identity, the way a hub that just accepted
-    // a registration does.
-    add: async () => ({ marketplaces: [{ ...marketplace, lastUpdated: 2 }] }),
   });
   harness.connection = readyConnection(hub.client);
   const props = {
@@ -514,9 +511,13 @@ it("leaves a re-added marketplace removable after an applied removal reconciles 
   // the remounted browser reads the reconciled list the hub now publishes -
   // acme is gone from it - BEFORE the outcome records with the screen's
   // guard, so the record lands over an absence the screen has already seen
-  // and the fence covers the name until truth re-establishes it. The re-add
-  // below carries a fresh registration identity, which has to clear the
-  // fence - or the re-added acme could never be removed.
+  // and the fence covers the name again. The re-add below submits a BLANK
+  // name - the hub assigns one - and lands within the same wire second, so
+  // neither the add's own published list (a same-timestamp row reads as the
+  // stale registration the fence guards) nor any later read can tell the
+  // fresh registration from the removed one: only the add itself reporting
+  // the name it registered can clear the fence, or the re-added acme could
+  // never be removed.
   await act(async () => {
     tree.root.findByProps({ accessibilityLabel: "Installed" }).props.onPress();
   });

@@ -91,10 +91,13 @@ export function MarketplaceBrowser({
     marketplaces: readonly MarketplaceEntry[],
     owner: ConversationClientLike,
   ): void;
-  /** Reports a name this browser's own successful add just registered: the
-   * write replaced whatever registration the screen had fenced, so the
-   * fence clears for it. A blank name (the hub assigns one) is not reported
-   * and reconciles through the authoritative lists instead. */
+  /** Reports every name this browser's own successful add just registered:
+   * the write replaced whatever registration the screen had fenced, so the
+   * fence clears for it. A submitted name is reported as-is; a blank one is
+   * one the hub assigned, so the browser reads it off the list the add's
+   * own answer published and reports it the same way - a fresh registration
+   * the wire cannot tell from the removed one would otherwise stay fenced
+   * forever. */
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
@@ -421,8 +424,19 @@ export function MarketplaceBrowser({
           gate={gate}
           onClose={() => setAdding(false)}
           onAdd={async (params) => {
+            // The names the hub's list carried before this screen's add, so
+            // a blank submitted name - one the hub assigns - can still be
+            // read off the list the add's own answer published.
+            const before = new Set(
+              (model.getState().marketplaces ?? []).map(({ name }) => name),
+            );
             await state.addMarketplace(params);
-            if (params.name) onMarketplaceAdded(params.name, client);
+            if (params.name) {
+              onMarketplaceAdded(params.name, client);
+              return;
+            }
+            for (const { name } of model.getState().marketplaces ?? [])
+              if (!before.has(name)) onMarketplaceAdded(name, client);
           }}
         />
       )}
