@@ -8,8 +8,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-
-	"primeradiant.com/evener/internal/valueexpr"
 )
 
 // protocolDefaults are the endpoint paths a protocol uses when the
@@ -908,9 +906,9 @@ func templatePlaceholders(tpl string) []string {
 // and the header map, so a failing command runs once (a second run could
 // also race the first and split the outcome between credential and header).
 func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]string, []string) {
-	authKey, auth, authOK, unresolved := r.authorization(rec)
-	cred, cw := r.credentialWithAuth(rec, auth, authOK, unresolved)
-	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, authKey, auth, authOK, unresolved)
+	auth := r.authorization(rec)
+	cred, cw := r.credentialWithAuth(rec, auth)
+	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth)
 	return cred, credHeaders, append(cw, hw...)
 }
 
@@ -918,36 +916,38 @@ func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]strin
 // key authHeaderKey resolved — the Authorization header, whatever case its
 // author wrote — arrives pre-expanded from resolveCredentials, so its
 // command expressions run once per resolution; every other header expands
-// here. A header that expands to no credential material (an empty value or
-// a bare auth scheme word) is not present — it drops with a warning naming
-// it — while a raw-empty value is spec §10's removal of an inherited header
-// and stays silent.
-func (r *Registry) expandCredentialHeaders(headers map[string]string, authKey, auth string, authOK bool, authUnresolved []valueexpr.Unresolved) (map[string]string, []string) {
+// here. A header with no credential material — an empty expansion, or one
+// whose only authored material is a bare auth scheme word — is not
+// present: it drops with a warning naming it. A raw-empty value is spec
+// §10's removal of an inherited header and stays silent.
+func (r *Registry) expandCredentialHeaders(headers map[string]string, auth authExpansion) (map[string]string, []string) {
 	credHeaders := map[string]string{}
 	var warnings []string
 	for k, v := range headers {
 		if v == "" {
 			continue
 		}
-		if authOK && k == authKey {
+		if auth.present && k == auth.key {
 			switch {
-			case len(authUnresolved) > 0:
-				warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(authUnresolved)))
-			case auth == "":
+			case len(auth.unresolved) > 0:
+				warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(auth.unresolved)))
+			case auth.expanded == "":
 				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
-			case schemeOnly(auth):
+			case auth.noMaterial:
 				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to nothing but an auth scheme word", k))
 			default:
-				credHeaders[k] = auth
+				credHeaders[k] = auth.expanded
 			}
 			continue
 		}
-		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
+		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" && !r.schemeWordDefault(v) {
 			credHeaders[k] = e
 		} else if len(missing) > 0 {
 			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
-		} else {
+		} else if e == "" {
 			warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("credential header %q: expands to nothing but an auth scheme word", k))
 		}
 	}
 	return credHeaders, warnings

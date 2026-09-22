@@ -249,17 +249,19 @@ func realRunCommand(command string) (string, error) {
 		return "", &CommandError{Detail: firstLine(err.Error())}
 	}
 	if err := cmd.Wait(); err != nil {
+		// WaitDelay may have closed the pipes while a descendant still held
+		// them, and os/exec reports the shell's own exit status — an
+		// ExitError — in preference to the drain's ErrWaitDelay, so the
+		// kill cannot live on any one error branch. Cancel never ran
+		// without a context deadline (os/exec calls it only from the
+		// Context's watcher), so every failure path kills the group here:
+		// the pgid is the only handle on descendants the shell left
+		// behind, and a failed mint is retried on the next resolve.
+		procgroup.Kill(cmd.Process.Pid)
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}
 		}
 		if errors.Is(err, exec.ErrWaitDelay) {
-			// The shell exited cleanly while a descendant still held the
-			// captured pipes, so the drain grace cut the run short. Cancel
-			// never ran — os/exec calls it only from the Context's watcher,
-			// and no deadline fired — so the group outlives the run unless
-			// it is killed here, and a failed mint is retried on the next
-			// resolve: without this kill, one process leaks per attempt.
-			procgroup.Kill(cmd.Process.Pid)
 			return "", &CommandError{Detail: firstLine(err.Error())}
 		}
 		if exit, ok := errors.AsType[*exec.ExitError](err); ok {

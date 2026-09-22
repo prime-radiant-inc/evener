@@ -486,10 +486,9 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 func (r *Registry) credential(rec *record) (Credential, []string) {
 	h := rec.head
 	if h.Transport.Auth == AuthOAuthOpenAICodex || h.Transport.Auth == AuthGCPADC || h.APIKey != "" {
-		return r.credentialWithAuth(rec, "", false, nil)
+		return r.credentialWithAuth(rec, authExpansion{})
 	}
-	_, auth, authOK, unresolved := r.authorization(rec)
-	return r.credentialWithAuth(rec, auth, authOK, unresolved)
+	return r.credentialWithAuth(rec, r.authorization(rec))
 }
 
 // authHeaderKey resolves which credential-header key carries the
@@ -518,33 +517,67 @@ func authHeaderKey(headers map[string]string) string {
 	return first
 }
 
+// authExpansion is the one expansion of the record's Authorization
+// credential header: the header key it read (authHeaderKey), the expanded
+// value, the pieces that never resolved, and whether the value's only
+// possible material is a bare auth scheme word.
+type authExpansion struct {
+	key        string
+	expanded   string
+	present    bool
+	unresolved []valueexpr.Unresolved
+	noMaterial bool
+}
+
 // authorization expands the record's Authorization credential header once,
 // shared by credential() and resolveCredentials so its command expressions
 // run once per resolution, and reports which header key it expanded so the
 // header map and the credential always read the same entry.
-func (r *Registry) authorization(rec *record) (key, expanded string, ok bool, unresolved []valueexpr.Unresolved) {
-	key = authHeaderKey(rec.head.CredentialHeaders)
+func (r *Registry) authorization(rec *record) authExpansion {
+	key := authHeaderKey(rec.head.CredentialHeaders)
 	if key == "" {
-		return "", "", false, nil
+		return authExpansion{}
 	}
-	expanded, unresolved = expandEnv(rec.head.CredentialHeaders[key], r.env)
-	return key, expanded, true, unresolved
+	raw := rec.head.CredentialHeaders[key]
+	expanded, unresolved := expandEnv(raw, r.env)
+	return authExpansion{key: key, expanded: expanded, present: true, unresolved: unresolved, noMaterial: r.schemeWordDefault(raw)}
 }
 
-// schemeOnly reports whether an expanded Authorization value is nothing but
-// an auth scheme word. The authoring boundary admits a scheme word only
-// standing ahead of real material ("Bearer $TOKEN", or a reference's
-// default: "${KEY:-Bearer}"), so an expansion that rounds to the bare word
-// — the variable was unset and the default filled — carries no credential
-// and must not resolve as one.
-func schemeOnly(expanded string) bool {
-	return isAuthSchemeWord(strings.TrimSpace(expanded))
+// schemeWordDefault reports whether the raw credential-header value's only
+// possible material is an auth scheme word. Minted and environment-supplied
+// bytes are data — a command's all-letters output is a token, not a scheme
+// word — so only authored text is judged: literal runs and the defaults
+// references fall back to, the two places the authoring boundary admits a
+// scheme word. A value whose authored text is a bare scheme word can never
+// carry a credential, whatever the environment holds.
+func (r *Registry) schemeWordDefault(raw string) bool {
+	pieces, err := valueexpr.Pieces(raw)
+	if err != nil {
+		return false
+	}
+	var material strings.Builder
+	for _, p := range pieces {
+		switch p.Kind {
+		case valueexpr.PieceLit:
+			material.WriteString(p.Lit)
+		case valueexpr.PieceRef:
+			if v, ok := r.env(p.Ref.Name); ok && v != "" {
+				return false
+			}
+			if p.Ref.HasDefault {
+				material.WriteString(p.Ref.Default)
+			}
+		case valueexpr.PieceCommand:
+			return false
+		}
+	}
+	return isAuthSchemeWord(strings.TrimSpace(material.String()))
 }
 
 // credentialWithAuth is credential with the Authorization header's expansion
 // supplied, so the resolution path that also builds the credential header map
 // never runs the header's command expressions twice.
-func (r *Registry) credentialWithAuth(rec *record, auth string, authOK bool, authUnresolved []valueexpr.Unresolved) (Credential, []string) {
+func (r *Registry) credentialWithAuth(rec *record, auth authExpansion) (Credential, []string) {
 	h := rec.head
 	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
 	none := func(reason string) (Credential, []string) {
@@ -602,19 +635,19 @@ func (r *Registry) credentialWithAuth(rec *record, auth string, authOK bool, aut
 		}
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
-	if authOK {
-		if len(authUnresolved) > 0 {
-			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(authUnresolved)))
+	if auth.present {
+		if len(auth.unresolved) > 0 {
+			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(auth.unresolved)))
 			cred.AuthoredLayer = "credential_headers"
 			return cred, warns
 		}
-		if auth == "" {
+		if auth.expanded == "" {
 			return none("no credential (the Authorization credential header expands to an empty value)")
 		}
-		if schemeOnly(auth) {
+		if auth.noMaterial {
 			return none("no credential (the Authorization credential header expands to nothing but an auth scheme word)")
 		}
-		return Credential{Value: auth, Source: "credential_headers"}, nil
+		return Credential{Value: auth.expanded, Source: "credential_headers"}, nil
 	}
 	if r.creds != nil {
 		if v, ok := r.creds.Lookup(rec.name); ok && v != "" {

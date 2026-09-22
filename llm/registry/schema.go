@@ -323,6 +323,9 @@ func validateProvider(ps providerSchema, where string) error {
 	if err := checkEnvRefs(ps.APIKey, where+".api_key"); err != nil {
 		return err
 	}
+	if err := checkCredentialHeaderNames(ps.CredentialHeaders, where); err != nil {
+		return err
+	}
 	for k, v := range ps.CredentialHeaders {
 		if err := checkEnvRefs(v, fmt.Sprintf("%s.credential_headers.%q", where, k)); err != nil {
 			return err
@@ -340,6 +343,25 @@ func validateProvider(ps providerSchema, where string) error {
 		return err
 	}
 	return validateCaps(ps.Caps, where)
+}
+
+// checkCredentialHeaderNames refuses two credential-header names that differ
+// only by case: header names are case-insensitive on the wire, so the
+// variants would collide into one header, while resolution picks a single
+// entry for the credential — one name, in one case, is the only consistent
+// shape.
+func checkCredentialHeaderNames(headers map[string]string, where string) error {
+	names := make([]string, 0, len(headers))
+	for k := range headers {
+		names = append(names, k)
+	}
+	slices.Sort(names)
+	for i := 1; i < len(names); i++ {
+		if strings.EqualFold(names[i], names[i-1]) {
+			return fmt.Errorf("%s.credential_headers: %q and %q differ only by case; header names are case-insensitive, so one of them must go", where, names[i-1], names[i])
+		}
+	}
+	return nil
 }
 
 func validateModel(ms modelSchema, where string) error {

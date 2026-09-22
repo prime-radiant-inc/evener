@@ -81,3 +81,40 @@ func TestWaitDelayKillsLingeringGroup(t *testing.T) {
 		t.Fatalf("the shell's descendant outlived the run: %s", lingering)
 	}
 }
+
+// The nonzero-exit sibling: os/exec reports the shell's own exit status in
+// preference to the drain's ErrWaitDelay, so a failed run whose descendant
+// still holds the captured pipes must kill the group too — the kill cannot
+// live on the ErrWaitDelay branch alone.
+func TestWaitDelayKillsLingeringGroupOnNonzeroExit(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	commandTimeout = 800 * time.Millisecond
+	drainGrace = 200 * time.Millisecond
+
+	script := filepath.Join(t.TempDir(), "linger.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { exec.Command("pkill", "-f", script).Run() })
+
+	_, err := realRunCommand(`"` + script + `" & exit 3`)
+	cmdErr, ok := errors.AsType[*CommandError](err)
+	if !ok || cmdErr.Status != 3 {
+		t.Fatalf("err = %v; want the shell's exit status 3", err)
+	}
+
+	var lingering string
+	for range 20 {
+		out, _ := exec.Command("pgrep", "-af", script).Output()
+		if len(out) == 0 {
+			lingering = ""
+			break
+		}
+		lingering = string(out)
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lingering != "" {
+		t.Fatalf("the shell's descendant outlived the failed run: %s", lingering)
+	}
+}

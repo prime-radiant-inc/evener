@@ -964,3 +964,72 @@ func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
 		t.Fatalf("the Authorization command ran %d time(s) across listing+resolution; want 1 (the resolution reads it for the wire)", flakyRuns)
 	}
 }
+
+// Credential-header names are case-insensitive on the wire, so two that
+// differ only by case would collide into one header while resolution picks
+// a single entry for the credential: the load refuses the pair.
+func TestCredentialHeaderCaseVariantsRefusedAtLoad(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"credential_headers = { \"Authorization\" = '''$A''', \"authorization\" = '''$B''' }\n"
+	if _, err := ParseConfig([]byte(config)); err == nil || !strings.Contains(err.Error(), "differ only by case") {
+		t.Fatalf("ParseConfig err = %v; want the case-variant refusal", err)
+	}
+}
+
+// A minted token is data, never judged by its shape: an all-letters command
+// output is a credential, not a scheme word, so the no-material rule reads
+// the authored pieces (literals and reference defaults), never the
+// expanded text.
+func TestMintedLettersOnlyTokenIsACredential(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) { return "abcdeftoken", nil }
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''$(mint-auth)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "credential_headers" || res.Credential.Value != "abcdeftoken" {
+		t.Fatalf("credential = %+v; want the minted letters-only token", res.Credential)
+	}
+	if got := res.CredentialHeaders["Authorization"]; got != "abcdeftoken" {
+		t.Fatalf("credential header map carries %q; want the minted token", got)
+	}
+}
+
+// The no-material rule is the same for every credential header, not just
+// Authorization: a gateway key whose only authored material is a bare
+// scheme word carries no credential and drops with a warning.
+func TestGenericCredentialHeaderSchemeWordDefaultDrops(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Gateway-Key\"\n" +
+		"credential_headers = { \"X-Gateway-Key\" = '''${MISSING:-Bearer}''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
+		t.Fatal("the scheme-word-only gateway key is on the wire; want it dropped")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "auth scheme word") {
+		t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
+	}
+}
