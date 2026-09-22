@@ -3244,16 +3244,6 @@ export function createConversationStore() {
             // with no row. askPending rides every thread/status/changed
             // frame but only moves when an ask raises or resolves, so
             // resyncing on the change cannot storm.
-            // An askPending change needs it for the same reason and one
-            // more: question rows come only from the canonical projection
-            // (F6 — ask_user is never single-item projected), while the
-            // sheet reads the model directly (questionAnswers.ts's
-            // pendingQuestions, through liveAsksFor), so a model-only flip
-            // would otherwise leave the sheet and the timeline disagreeing —
-            // a stale question row beside an empty sheet, or a pending ask
-            // with no row. askPending rides every thread/status/changed
-            // frame but only moves when an ask raises or resolves, so
-            // resyncing on the change cannot storm.
             if (
               state.ref !== null &&
               (n.method.startsWith("item/") || askPendingMoved)
