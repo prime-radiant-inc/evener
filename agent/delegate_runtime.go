@@ -1829,6 +1829,11 @@ func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModel
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
+	// The pairing decode enforces for the tool surface, re-asserted so a
+	// direct caller cannot build a descriptor that silently drops the name.
+	if args.Name != "" && isolationName != "worktree" {
+		return delegatestore.Descriptor{}, identifier.Project{}, errors.New(`invalid_request: name is only valid with isolation:"worktree"`)
+	}
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1907,13 +1912,6 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	} else {
 		sharedTaskStoreOwnerSessionID = ""
 	}
-	// The mnemonic lane branch exists only for worktree isolation; decode
-	// refuses the pairing otherwise, and describe re-asserts it for direct
-	// callers that bypass decode.
-	worktreeBranch := ""
-	if isolationName == "worktree" {
-		worktreeBranch = args.Name
-	}
 	descriptor := delegatestore.Descriptor{
 		VisibleSessionID:              s.id,
 		Task:                          brief,
@@ -1932,7 +1930,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
-		WorktreeBranch:                worktreeBranch,
+		WorktreeBranch:                args.Name,
 		Sandbox:                       sandboxSnapshot,
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,

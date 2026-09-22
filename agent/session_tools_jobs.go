@@ -556,7 +556,10 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
-		Isolation:       stringArg(args, "isolation"),
+		// Isolation is normalized here so every downstream consumer — the
+		// name pairing guard below, create, describe — sees one shape; a
+		// padded value must not refuse at exactly one of them.
+		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
 		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
 	if raw, exists := args["fork_context"]; exists {

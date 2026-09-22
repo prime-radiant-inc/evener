@@ -56,6 +56,34 @@ func TestDecodeDelegateArgs_Name(t *testing.T) {
 	if _, err := decodeDelegateArgs(map[string]any{"prompt": "p", "isolation": "worktree", "name": "bad name!"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
 		t.Fatalf("invalid name: err = %v, want invalid_request", err)
 	}
+
+	// The isolation value is normalized at decode, so a padded value pairs
+	// with a name exactly like a clean one (create and describe trim it; the
+	// decode guard must not be the one place that doesn't).
+	padded, err := decodeDelegateArgs(map[string]any{"prompt": "p", "isolation": "worktree ", "name": "parser-rename"})
+	if err != nil {
+		t.Fatalf("padded isolation with a name: %v", err)
+	}
+	if padded.Isolation != "worktree" || padded.Name != "parser-rename" {
+		t.Fatalf("padded isolation decoded as %q/%q, want worktree/parser-rename", padded.Isolation, padded.Name)
+	}
+}
+
+// describe must refuse a name without worktree isolation, the same pairing
+// decode enforces, so a direct caller cannot build a descriptor that silently
+// drops the name.
+func TestDescribeDelegate_NameWithoutWorktreeIsolationRefused(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	args := delegateArgs{Task: "unpaired name", Name: "parser-rename", DelegationAllowance: new(0)}
+	selection, err := r.s.selectSubagentModel(context.Background(), args.Model, args.AgentType)
+	if err != nil {
+		t.Fatalf("selectSubagentModel: %v", err)
+	}
+	_, _, err = (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, selection, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid_request") {
+		t.Fatalf("describe with an unpaired name: err = %v, want invalid_request", err)
+	}
 }
 
 // spawnIsolationLaneForTest drives the fresh-create plumbing up to and including

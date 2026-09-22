@@ -381,6 +381,14 @@ func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
 func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
+	if lane.branch == "" {
+		// Defense in depth: a lane record that never resolved its branch (a
+		// future caller's omission) must not delete the sidecar and strand the
+		// real branch behind it. Touch nothing; the lane stays exactly as it
+		// is, like a lane whose lock could not be released.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
+		return laneDeclined, ""
+	}
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:

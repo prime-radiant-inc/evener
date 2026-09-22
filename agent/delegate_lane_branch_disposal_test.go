@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
@@ -55,6 +57,93 @@ func TestDelegateLaneBranchCanary_DisposeFullLane(t *testing.T) {
 		t.Errorf("result Branch = %q, want %q", res.Branch, canaryLaneBranch)
 	}
 	assertCanaryLaneGone(t, r, id, lanePath)
+}
+
+// A lane record that never resolved its branch (a future caller's omission)
+// must not let the mechanics delete the sidecar and strand the real branch
+// behind it: nothing is touched, and the lane stays exactly as it was.
+func TestDelegateLaneBranchCanary_UnresolvedBranchLeavesLaneForPrune(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLaneOpts(t, canaryLaneBranch)
+
+	local := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
+		t.Fatal("laneControlEnv failed")
+	}
+	defer done()
+	run := r.s.newWorktreeGitRunner(context.Background(), controlEnv)
+	metaDir := metaDirForLane(lanePath)
+	locked, reason, lockErr := lockStateOf(run, lanePath)
+	if lockErr != nil || !locked {
+		t.Fatalf("lock state: locked=%v err=%v", locked, lockErr)
+	}
+	st := worktree.ClassifyReason(reason, r.s.id, id)
+
+	outcome, _ := r.s.disposeUnchangedLaneMechanics(run, st, isolationLane{delegateID: id, path: lanePath}, metaDir, downgradeUnlockKeep, false)
+
+	if outcome != laneDeclined {
+		t.Fatalf("outcome = %v, want laneDeclined (nothing touched)", outcome)
+	}
+	if !r.lanePresent(lanePath) {
+		t.Error("the lane directory was touched")
+	}
+	if !r.branchExists(t, canaryLaneBranch) {
+		t.Error("the named branch was touched")
+	}
+	if _, err := worktree.ReadSidecar(metaDir, id); err != nil {
+		t.Errorf("the sidecar was deleted: %v", err)
+	}
+}
+
+// A pre-existing branch refuses the spawn with zero residue: no sidecar, no
+// lane directory, and the existing branch's tip untouched. The refusal is
+// newly reachable for delegate lanes — a user-supplied name can collide where
+// a freshly-minted delegate id never could.
+func TestDelegateLaneBranchCanary_CollisionRefusesWithZeroResidue(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	takenTip := r.commitInMainCheckout(t, "taken-branch", "taken.txt", "taken\n", "advance taken-branch")
+	args := delegateArgs{Task: "collide", DelegationAllowance: new(0), Isolation: "worktree", Name: "taken-branch"}
+	runtime, reservation, project := reserveWorktreeIsolatedDelegateArgs(t, r.s, args)
+
+	_, err := runtime.prepareIsolation(context.Background(), reservation, project, nil)
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("collision: err = %v, want the branch-exists refusal", err)
+	}
+	if _, scErr := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), reservation.delegateID); !os.IsNotExist(scErr) {
+		t.Errorf("a refused collision left a sidecar: %v", scErr)
+	}
+	if r.branchExists(t, reservation.delegateID) {
+		t.Error("a refused collision left a delegate-id branch")
+	}
+	if r.lanePresent(reservation.worktreePath) {
+		t.Error("a refused collision left a lane directory")
+	}
+	if got := strings.TrimSpace(wtGit(t, r.mainRoot, "rev-parse", "refs/heads/taken-branch")); got != takenTip {
+		t.Errorf("the taken branch's tip moved: got %s, want %s", got, takenTip)
+	}
+}
+
+// A legacy sidecar that records no branch disposes by the fallback (the lane
+// name), never silently skipping the branch delete.
+func TestDelegateLaneBranchCanary_LegacySidecarFallsBackToName(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLaneOpts(t, "")
+	if err := r.s.updateWorktreeSidecar(metaDirForLane(lanePath), id, func(sc *worktree.Sidecar) { sc.Branch = "" }); err != nil {
+		t.Fatalf("strip the sidecar's branch: %v", err)
+	}
+
+	res, err := r.s.worktreeDispose(context.Background(), id, false, false)
+	if err != nil {
+		t.Fatalf("dispose a legacy-branch-less lane: %v", err)
+	}
+	if res.Branch != id {
+		t.Errorf("result Branch = %q, want the name fallback %q", res.Branch, id)
+	}
+	assertNoDelegateLane(t, r, id, lanePath)
 }
 
 // The half-removed arm (worktree gone, branch and sidecar remain) must judge
