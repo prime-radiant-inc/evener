@@ -253,14 +253,21 @@ export function markItemIdentityOnly(item: ItemModel): ItemModel {
 // unmarked item is identity-only only when it says so structurally: its
 // text is omitted (never a textSource winner) and every field it carries
 // is one a skeleton could carry — the wire's own sparse identity-only
-// fragment. A real item with omitted text is NOT identity-only: tool items
-// routinely omit text while carrying their current output, arguments,
-// images, and status.
+// fragment, counting only fields that actually carry a value: hydration
+// creates every field as an enumerable property, undefined-valued when the
+// wire omitted it, so key presence alone would disqualify the wire's own
+// sparse fragments (review round 16) — and a payload-free newer fragment
+// would then count as fresh participation, letting stale content win
+// duplicate reconciliation by source precedence. A real item with omitted
+// text is NOT identity-only: tool items routinely omit text while carrying
+// their current output, arguments, images, and status.
 const itemIdentityOnlyFields = new Set(["id", "turnId", "type", "text", "transcriptKey", "position", "callId"]);
 function itemIsIdentityOnly(item: ItemModel): boolean {
   if ((item as ItemModel & { [ITEM_IDENTITY_ONLY]?: boolean })[ITEM_IDENTITY_ONLY] === true) return true;
   if (itemTextPresence(item) !== "omitted") return false;
-  return Object.keys(item).every((field) => itemIdentityOnlyFields.has(field));
+  return Object.keys(item).every(
+    (field) => itemIdentityOnlyFields.has(field) || (item as unknown as Record<string, unknown>)[field] === undefined,
+  );
 }
 
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
@@ -495,11 +502,21 @@ type ToolItemSourceMembership =
   | { item: ItemModel }
   | { left: ToolItemSourceMembership; right: ToolItemSourceMembership };
 type ToolItemProvenance = Partial<Record<ToolItemSource, ToolItemSourceMembership>>;
-type ToolItemMergeContext = { provenance: WeakMap<ItemModel, ToolItemProvenance> };
+type ToolItemMergeContext = {
+  provenance: WeakMap<ItemModel, ToolItemProvenance>;
+  // The results the tool fold absorbed onto each rewritten call, keyed by
+  // the rewritten call (review round 16). Retention-only metadata: the
+  // window bound needs it — a folded call is the only payload behind its
+  // result's row once the row set keeps the result but not the call —
+  // but it must stay OUT of the provenance membership, whose consumers
+  // (the strip's real-source test, duplicate-reconciliation freshness)
+  // treat a surviving candidate as a source the call never merged from.
+  toolResultFolds: WeakMap<ItemModel, readonly ItemModel[]>;
+};
 type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
 
 function createToolItemMergeContext(fresh: readonly TurnModel[], older: readonly TurnModel[]): ToolItemMergeContext {
-  const context: ToolItemMergeContext = { provenance: new WeakMap() };
+  const context: ToolItemMergeContext = { provenance: new WeakMap(), toolResultFolds: new WeakMap() };
   const add = (source: ToolItemSource, turns: readonly TurnModel[]): void => {
     for (const turn of turns) {
       for (const item of turn.items) {
@@ -687,7 +704,11 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
             outputImages: field("outputImages"),
             raw: field("raw"),
           });
-          if (context) recordToolFoldRewrite(context, rewritten, item);
+          if (context) {
+            recordToolFoldRewrite(context, rewritten, item);
+            const absorbed = [...fresh.results, ...older.results];
+            if (absorbed.length > 0) context.toolResultFolds.set(rewritten, absorbed);
+          }
           items.push(rewritten);
           continue;
         }
@@ -1235,11 +1256,16 @@ export interface TurnHistoryMergeResult {
 //   final identity (the strip pass of the mobile store's retained-turn
 //   bound reads it exactly that way). The tool-result fold records no
 //   membership: it rewrites calls in place from candidates by callId, which
-//   is a different mechanism with its own participation rule.
+//   is a different mechanism with its own participation rule — but the
+//   results it absorbs onto a rewritten call are exposed separately
+//   (toolResultFoldSources), because a retention consumer must treat the
+//   call as backing its absorbed results' rows without any other consumer
+//   starting to read call-precedence candidates as fold sources.
 export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   olderTurnFolds: ReadonlyMap<string, readonly string[]>;
   newerTurnFolds: ReadonlyMap<string, readonly string[]>;
   itemFoldSources: (item: ItemModel) => readonly ItemModel[];
+  toolResultFoldSources: (item: ItemModel) => readonly ItemModel[];
 }
 
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
@@ -1671,6 +1697,7 @@ function mergeTurnHistoryWithContext(
     olderTurnFolds,
     newerTurnFolds,
     itemFoldSources: itemFoldSourcesOf(context),
+    toolResultFoldSources: toolResultFoldSourcesOf(context),
   };
 }
 
@@ -1697,6 +1724,13 @@ function itemFoldSourcesOf(context?: ToolItemMergeContext): (item: ItemModel) =>
         if (provenance === undefined) return [item];
         return [...membershipLeaves(provenance.older), ...membershipLeaves(provenance.fresh)];
       };
+}
+
+// The results the tool fold absorbed onto a rewritten call — empty for
+// every other item. Deliberately separate from itemFoldSources (see the
+// folds' doc above): only retention consumers read it.
+function toolResultFoldSourcesOf(context?: ToolItemMergeContext): (item: ItemModel) => readonly ItemModel[] {
+  return context === undefined ? () => [] : (item) => context.toolResultFolds.get(item) ?? [];
 }
 
 // The older-page merge plus its own fragment membership, for callers that

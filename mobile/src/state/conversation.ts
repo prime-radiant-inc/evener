@@ -857,7 +857,9 @@ export function createConversationStore() {
     conversation: MobileConversation,
     n: AnyNotification,
   ): MobileConversation {
-    return applyNotification(conversation, n, Date.now());
+    const next = applyNotification(conversation, n, Date.now());
+    carryFoldIdentitiesThroughNotification(conversation, next);
+    return next;
   }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
@@ -1395,25 +1397,71 @@ export function createConversationStore() {
   // so a later unrelated merge cannot erase a prior chain's aliases, while
   // a source that was itself a merged item contributes the identities IT
   // folded from (the per-merge provenance does not chain across merges).
+  // Review round 16: the results the tool fold absorbed onto a rewritten
+  // call land in the same memory — a folded call is the only payload
+  // behind its result's row once the row set keeps the result but not the
+  // call — and notification replacements re-key it (below), so a live
+  // update cannot orphan a recorded chain.
   const mergedItemFoldIdentities = new WeakMap<ItemModel, ReadonlySet<string>>();
   function recordItemFoldSources(
     turns: TurnModel[],
     itemFoldSources: (item: ItemModel) => readonly ItemModel[],
+    toolResultFoldSources: (item: ItemModel) => readonly ItemModel[],
   ): void {
+    const addIdentities = (identities: Set<string>, source: ItemModel): void => {
+      identities.add(source.transcriptKey ?? source.id);
+      identities.add(source.id);
+      for (const carried of mergedItemFoldIdentities.get(source) ?? []) identities.add(carried);
+    };
     for (const turn of turns) {
       for (const item of turn.items) {
         const sources = itemFoldSources(item);
+        // The results the tool fold absorbed onto this item. Only the
+        // keep-window reads them — the strip's real-source test and the
+        // reconciliation's freshness must not see call-precedence
+        // candidates as fold sources.
+        const absorbed = toolResultFoldSources(item);
         // Untouched — no fold combined anything into it. The window check
         // already reads the item's own fields; recording the entry would
         // overwrite the identities an earlier merge remembered for it.
-        if (sources.length === 1 && sources[0] === item) continue;
+        if (sources.length === 1 && sources[0] === item && absorbed.length === 0) continue;
         const identities = new Set(mergedItemFoldIdentities.get(item));
-        for (const source of sources) {
-          identities.add(source.transcriptKey ?? source.id);
-          identities.add(source.id);
-          for (const carried of mergedItemFoldIdentities.get(source) ?? []) identities.add(carried);
-        }
+        for (const source of sources) addIdentities(identities, source);
+        for (const result of absorbed) addIdentities(identities, result);
         if (identities.size > 0) mergedItemFoldIdentities.set(item, identities);
+      }
+    }
+  }
+
+  // The package's notification folds replace item objects — a streaming
+  // delta appends, a settlement folds completed fields, a full-view settle
+  // replaces the whole item set — and the identity-string ancestry is
+  // keyed by object. Each replacement is built off the model item the
+  // package found by identity, so it carries the same identity the entry
+  // was recorded under: re-key the ancestry to the replacements, or a
+  // live update silently orphans the fold memory and the next bound pass
+  // trims the turn whose row is still visible (review round 16).
+  function carryFoldIdentitiesThroughNotification(
+    before: MobileConversation,
+    after: MobileConversation,
+  ): void {
+    const remembered = new Map<string, ReadonlySet<string>>();
+    for (const turn of before.turns) {
+      for (const item of turn.items) {
+        const identities = mergedItemFoldIdentities.get(item);
+        if (identities === undefined) continue;
+        for (const key of [item.transcriptKey ?? item.id, item.id]) {
+          const existing = remembered.get(key);
+          remembered.set(key, existing === undefined ? identities : new Set([...existing, ...identities]));
+        }
+      }
+    }
+    if (remembered.size === 0) return;
+    for (const turn of after.turns) {
+      for (const item of turn.items) {
+        if (mergedItemFoldIdentities.get(item) !== undefined) continue;
+        const identities = remembered.get(item.transcriptKey ?? item.id) ?? remembered.get(item.id);
+        if (identities !== undefined) mergedItemFoldIdentities.set(item, identities);
       }
     }
   }
@@ -2445,7 +2493,7 @@ export function createConversationStore() {
               rehydrateRealSources,
               history.itemFoldSources,
             );
-            recordItemFoldSources(mergedTurns, history.itemFoldSources);
+            recordItemFoldSources(mergedTurns, history.itemFoldSources, history.toolResultFoldSources);
             transferFoldedCompactedEntries(mergedTurns, history.olderTurnFolds);
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
@@ -2696,7 +2744,12 @@ export function createConversationStore() {
               pageRealSources,
               pageMerge?.folds.itemFoldSources,
             );
-            if (pageMerge) recordItemFoldSources(strippedPageTurns, pageMerge.folds.itemFoldSources);
+            if (pageMerge)
+              recordItemFoldSources(
+                strippedPageTurns,
+                pageMerge.folds.itemFoldSources,
+                pageMerge.folds.toolResultFoldSources,
+              );
             // The compact turns are the merge's NEWER (retained) side here;
             // the retained-side folds name the carrier a bridged compact
             // turn's content landed in.
