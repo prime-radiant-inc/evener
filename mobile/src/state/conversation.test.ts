@@ -7394,6 +7394,275 @@ describe("ConversationStore", () => {
         scope: "loaded",
       });
     });
+
+    // Review round 6, alias folds: an item restored under a different id with
+    // the same transcript key and compacted again leaves BOTH id aliases
+    // remembered. A later page restoring a DIFFERENT item of the same turn
+    // injects both aliases, and the package folds them into each other — a
+    // placeholder no real side contributed to. The strip pass must remove
+    // it: an unrestored placeholder would claim transcript coverage a later
+    // rehydrate reads as retained evidence.
+    it("a partial page does not leave alias-folded skeleton placeholders on the turn", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering TWO keyed items.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "x-0",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "z0",
+                  transcriptKey: "pz",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "zed",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // Restore px under a DIFFERENT id (same transcript key).
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "px", text: "px row" }],
+          turns: [
+            {
+              id: "pt",
+              status: "completed",
+              items: [
+                {
+                  id: "rx",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "restored",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(
+        store.getState().conversation?.turns.find((t) => t.id === "pt")?.items,
+      ).toEqual([expect.objectContaining({ transcriptKey: "px", text: "restored" })]);
+
+      // Compact again: the restored item sheds a SECOND alias for px.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // A PARTIAL page restores only pz. Both remembered px aliases are
+      // injected and fold into each other; the placeholder they form must
+      // not survive the strip, while the real pz fold does.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "pz", text: "pz row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "z9",
+                  transcriptKey: "pz",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "zed page",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const folded =
+        store.getState().conversation?.turns.find((t) => t.id === "pt")?.items ?? [];
+      expect(folded).toHaveLength(1);
+      expect(folded[0]?.transcriptKey).toBe("pz");
+      expect(folded[0]?.text).toBe("zed page");
+      expect(folded.some((item) => item.transcriptKey === "px")).toBe(false);
+    });
+
+    // Review round 6, explicit empty text: overlapping page fragments that
+    // provide text and then an EXPLICIT "" for the same identity settle to
+    // the empty string (the reducer keeps the later fragment's provided
+    // value). Nothing may reinstate the earlier fragment's stale text over
+    // that legitimate empty.
+    it("a later fragment's explicit empty text is not overwritten by an earlier fragment's text", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn: compacts at its own load and remembers px.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "x-0",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // Overlapping page carrying the SAME turn twice: the first fragment
+      // provides text, the second explicitly clears it. The later
+      // fragment's empty is the legitimate settle.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "px", text: "px row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "r1",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "hello",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "r2",
+                  transcriptKey: "px",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const folded =
+        store.getState().conversation?.turns.find((t) => t.id === "pt")?.items ?? [];
+      expect(folded).toHaveLength(1);
+      expect(folded[0]?.transcriptKey).toBe("px");
+      expect(folded[0]?.text).toBe("");
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

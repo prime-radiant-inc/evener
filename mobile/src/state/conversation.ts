@@ -1430,74 +1430,39 @@ export function createConversationStore() {
   }
 
   // Remove injected skeleton items the package kept without folding them
-  // into a real item. Skeletons the package DID fold become new objects
-  // carrying the real side's fields, so reference identity removes exactly
-  // the leftovers and nothing else.
+  // into real content. Two passes, because folded results are new objects:
+  // (1) Reference identity removes skeletons the package left untouched.
+  // (2) An identity pass removes results the merge built out of skeletons
+  //     ALONE — two remembered aliases of the same item (an item restored
+  //     under a different id with the same transcript key, then compacted
+  //     again, leaves both) match each other in mergePageItems and fold into
+  //     an unrestored placeholder that no real side contributed to. Such an
+  //     item claims transcript coverage a later rehydrate would read as
+  //     retained evidence. An item survives the pass only when its identity
+  //     was already real before the injection or the other merge side
+  //     actually carried it (a fold with a page/fresh item keeps both sides'
+  //     identities in the allowed set); the both-fields test over-keeps,
+  //     which is the safe direction (review round 6).
   function stripInjectedSkeletons(
     turns: TurnModel[],
     injected: ItemModel[],
+    allowedIdentities: Set<string>,
   ): TurnModel[] {
     if (injected.length === 0) return turns;
     const injectedRefs = new Set(injected);
     let changed = false;
     const stripped = turns.map((turn) => {
-      if (!turn.items.some((item) => injectedRefs.has(item))) return turn;
+      const kept = turn.items.filter(
+        (item) =>
+          !injectedRefs.has(item) &&
+          (allowedIdentities.has(item.transcriptKey ?? item.id) ||
+            allowedIdentities.has(item.id)),
+      );
+      if (kept.length === turn.items.length) return turn;
       changed = true;
-      return {
-        ...turn,
-        items: turn.items.filter((item) => !injectedRefs.has(item)),
-      };
+      return { ...turn, items: kept };
     });
     return changed ? stripped : turns;
-  }
-
-  // mergePageItem takes text from a textSource instead of a ?? chain, and on
-  // the model side of mergeOlderItemPage the NEWER input — the retained copy
-  // — wins it, so a skeleton the injection added to that side leaves the
-  // just-arrived page item's text erased to the skeleton's empty settle.
-  // Re-adopt the text from the page's own wire item for exactly the
-  // skeleton-erased identities: an identity is erased when an injected
-  // skeleton carried it (or a page item matching an injected skeleton by the
-  // package's identity rule — the merged item can take its transcript key
-  // from that side), the item's text is the empty settle, and the page's
-  // wire actually provided text. A page item that omitted text has nothing to
-  // give (the map holds only provided text), and its hydrated empty settle
-  // is the correct bound — the repair must skip it, not force anything.
-  function adoptStrippedTextFromWireItems(
-    turns: TurnModel[],
-    wireTextByIdentity: Map<string, string>,
-    erasedIdentities: Set<string>,
-  ): TurnModel[] {
-    if (wireTextByIdentity.size === 0 || erasedIdentities.size === 0) return turns;
-    let changed = false;
-    const adopted = turns.map((turn) => {
-      if (
-        !turn.items.some(
-          (item) =>
-            (item.text === undefined || item.text === "") &&
-            erasedIdentities.has(item.transcriptKey ?? item.id) &&
-            (wireTextByIdentity.has(item.transcriptKey ?? item.id) ||
-              wireTextByIdentity.has(item.id)),
-        )
-      ) {
-        return turn;
-      }
-      changed = true;
-      return {
-        ...turn,
-        items: turn.items.map((item) => {
-          const text =
-            wireTextByIdentity.get(item.transcriptKey ?? item.id) ??
-            wireTextByIdentity.get(item.id);
-          return text !== undefined &&
-            (item.text === undefined || item.text === "") &&
-            erasedIdentities.has(item.transcriptKey ?? item.id)
-            ? { ...item, text }
-            : item;
-        }),
-      };
-    });
-    return changed ? adopted : turns;
   }
 
   // After a rehydrate merge, a compact turn may have folded away entirely
@@ -2251,10 +2216,25 @@ export function createConversationStore() {
             if (coverage.olderCoverage && coverage.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
-            // Strip the injected skeletons the merge did not fold away,
-            // move folded compact turns' memory and page ownership to
-            // their surviving carriers, then bound the payloads.
-            mergedTurns = stripInjectedSkeletons(mergedTurns, injectedFresh.injected);
+            // Strip the injected skeletons the merge did not fold away —
+            // including skeleton-on-skeleton alias folds no real side
+            // contributed to — move folded compact turns' memory and page
+            // ownership to their surviving carriers, then bound the payloads.
+            // The allowed set is every identity that was real before the
+            // injection plus every identity the fresh read carries: an item
+            // failing it can only be remembered memory, never content.
+            const rehydrateAllowedIdentities = new Set(freshIdentities);
+            for (const turn of currentConvForMerge.turns) {
+              for (const item of turn.items) {
+                rehydrateAllowedIdentities.add(item.transcriptKey ?? item.id);
+                rehydrateAllowedIdentities.add(item.id);
+              }
+            }
+            mergedTurns = stripInjectedSkeletons(
+              mergedTurns,
+              injectedFresh.injected,
+              rehydrateAllowedIdentities,
+            );
             transferFoldedCompactedEntries(mergedTurns);
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
@@ -2466,40 +2446,16 @@ export function createConversationStore() {
             // as the unbounded main would have. The retained copy stays the
             // newer merge input, so its usage still wins the fold.
             const pageIdentities = new Set<string>();
-            const pageTextByIdentity = new Map<string, string>();
             for (const turn of result.turnsPage?.data ?? []) {
               for (const item of turn.items ?? []) {
                 pageIdentities.add(item.transcriptKey ?? item.id);
                 pageIdentities.add(item.id);
-                if (
-                  item.text !== undefined &&
-                  !pageTextByIdentity.has(item.transcriptKey ?? item.id)
-                ) {
-                  pageTextByIdentity.set(item.transcriptKey ?? item.id, item.text);
-                }
               }
             }
             const injectedPage = injectCompactedSkeletons(
               currentConv.turns,
               compactedTurnsCollidingWith(pageIdentities),
             );
-            // Review round 4: the identities a skeleton fold could have
-            // erased the page's text from — each injected skeleton's own
-            // identity key, plus the identity keys of the page items that
-            // match it by the package's rule. A fold's merged item carries
-            // the skeleton's transcript key when it has one, else the page
-            // item's, so both keys name the erased entry.
-            const erasedIdentities = new Set<string>();
-            for (const skeleton of injectedPage.injected) {
-              erasedIdentities.add(skeleton.transcriptKey ?? skeleton.id);
-              for (const turn of result.turnsPage?.data ?? []) {
-                for (const item of turn.items ?? []) {
-                  if (itemIdentityMatches(item, skeleton)) {
-                    erasedIdentities.add(item.transcriptKey ?? item.id);
-                  }
-                }
-              }
-            }
             const mergeConv: MobileConversation =
               injectedPage.injected.length > 0
                 ? { ...currentConv, turns: injectedPage.turns }
@@ -2507,17 +2463,31 @@ export function createConversationStore() {
             const mergedTurns = result.turnsPage
               ? mergeOlderItemPage(mergeConv, result.turnsPage).turns
               : currentConv.turns;
-            const strippedPageTurns = stripInjectedSkeletons(mergedTurns, injectedPage.injected);
+            // The allowed set for the strip pass: every identity that was
+            // real before the injection plus every identity the page carries.
+            // An item failing it can only be remembered memory — a skeleton
+            // the merge left behind or a fold of skeletons alone (review
+            // round 6) — never content. Skeletons carry the reducer's
+            // omitted-text semantics, so a fold with a page item keeps the
+            // page's text natively; there is nothing to repair post-merge.
+            const pageAllowedIdentities = new Set(pageIdentities);
+            for (const turn of currentConv.turns) {
+              for (const item of turn.items) {
+                pageAllowedIdentities.add(item.transcriptKey ?? item.id);
+                pageAllowedIdentities.add(item.id);
+              }
+            }
+            const strippedPageTurns = stripInjectedSkeletons(
+              mergedTurns,
+              injectedPage.injected,
+              pageAllowedIdentities,
+            );
             transferFoldedCompactedEntries(strippedPageTurns);
             // #1919 follow-up: bound the retained turn payloads against the
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
             // whose payloads left the keep-window to the compact set.
-            const boundedTurns = adoptStrippedTextFromWireItems(
-              boundRetainedTurns(strippedPageTurns, pageMerged),
-              pageTextByIdentity,
-              erasedIdentities,
-            );
+            const boundedTurns = boundRetainedTurns(strippedPageTurns, pageMerged);
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
               // never the capped nextCursor above.
