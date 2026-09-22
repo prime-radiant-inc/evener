@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -224,19 +226,29 @@ func TestEvenerEnvScrubHelper(t *testing.T) {
 // a different working directory finds it rather than reaching for t.Chdir.
 func chdirTemp(t *testing.T, dir string) {
 	t.Helper()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(dir); err != nil {
+	if err := os.Chdir(abs); err != nil {
 		t.Fatal(err)
 	}
-	// Keep PWD consistent with the new working directory, as testing.T.Chdir
-	// does, so os.Getwd and anything reading PWD agree.
-	t.Setenv("PWD", dir)
+	// Register the restore before anything that can fail: t.Setenv panics on a
+	// parallel test, and a panic between the chdir and this cleanup would leave
+	// the working directory changed for every test that ran after it.
 	t.Cleanup(func() {
 		if err := os.Chdir(old); err != nil {
-			t.Fatalf("restore working directory to %s: %v", old, err)
+			t.Errorf("restore working directory to %s: %v", old, err)
 		}
 	})
+	// Keep PWD consistent with the new working directory, as testing.T.Chdir
+	// does. PWD is a POSIX convention, and a relative value is one os.Getwd
+	// ignores rather than agrees with, hence the absolute target.
+	if runtime.GOOS != "windows" {
+		t.Setenv("PWD", abs)
+	}
 }
