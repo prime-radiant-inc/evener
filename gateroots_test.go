@@ -198,15 +198,31 @@ func TestClaimGateRootReclaimHasOneWinner(t *testing.T) {
 		t.Fatalf("write stale lock: %v", err)
 	}
 
-	script := ". " + gateRootsLib + "\n" +
-		"for i in 1 2 3 4 5 6; do ( evener_claim_gate_root \"$1\" && echo win ) & done\n" +
-		"wait\n"
-	out, code := runShSource(t, script, nil, root)
-	if code != 0 {
-		t.Fatalf("racer script exited %d:\n%s", code, out)
+	// Each racer is its own process, as separate gate runs are. Subshells of one
+	// shell would share $$ and so share the lock's private temp file, which
+	// neither models production nor stays clear of the winner's lock.
+	const racers = 6
+	claims := make([]*exec.Cmd, racers)
+	for i := range claims {
+		claims[i] = exec.Command("sh", "-c", ". "+gateRootsLib+"\nevener_claim_gate_root \"$1\"", "sh", root)
+		claims[i].Env = envOverride([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"})
+		if err := claims[i].Start(); err != nil {
+			t.Fatalf("start racer %d: %v", i, err)
+		}
 	}
-	if got := strings.Count(out, "win"); got != 1 {
-		t.Errorf("%d of 6 racing claims won; exactly one must hold the root:\n%s", got, out)
+	won := 0
+	for i, claim := range claims {
+		err := claim.Wait()
+		if err == nil {
+			won++
+			continue
+		}
+		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
+			t.Fatalf("racer %d: %v", i, err)
+		}
+	}
+	if won != 1 {
+		t.Errorf("%d of %d racing claims won; exactly one must hold the root", won, racers)
 	}
 }
 
