@@ -216,10 +216,14 @@ calls it out as "not a present fact"), and this slice is what makes snapshot
 deploys reachable, so leaving it out would ship the wiring that needs it.
 
 **Decided and landed** (`320de73215`): the check is in, the hub really does
-publish the field (`web_api.go:87`), the three restart call sites pass the pin,
-and the cold-bootstrap start path deliberately passes none — nothing was running
-to confuse the started hub with, and the binary it starts is the one already
-verified on disk. `snapshot_pin_test.go` pins all four cases.
+publish the field (`web_api.go:87`), and the three restart call sites pass the
+pin. The cold-bootstrap start path passes it too (`13099d0fba`): the binary it
+launches is the one already verified on disk, but the version-equality rule that
+accepted it cannot tell two snapshot builds apart, so a start on a stopped host
+would otherwise attach to a commit this controller did not install. What the
+start path deliberately lacks is a predecessor identity to compare — nothing was
+running to confuse the started hub with — not the pin. `snapshot_pin_test.go`
+pins the channel source, the wait, the restart wiring, and the start wiring.
 
 ## Contract
 
@@ -424,9 +428,10 @@ coverage.
    `TestEnsureInstallerFallbackDeploysPinnedRelease` and
    `TestInstallerFallbackRecordsDefaultRunTarget` pin the release/snapshot
    admission; `TestSnapshotPinGitSHASourcesFromBuildChannel`,
-   `TestWaitHealthySnapshotPin` and `TestRestartHubPinsSnapshotBuildFromBuildChannel`
-   pin the `backend_git_sha` identity. Component 04 and the code state the same
-   rule.
+   `TestWaitHealthySnapshotPin`, `TestRestartHubPinsSnapshotBuildFromBuildChannel`
+   and `TestFirstAttachBootstrapPinsSnapshotBuild` (the cold-bootstrap start
+   path) pin the `backend_git_sha` identity. Component 04 and the code state the
+   same rule.
 8. **Pinned** — `TestEnsurePostDeployBuildMismatchRefusesTerminally`
    (`cmd/evener-hub/internal/sshconn/deploy_test.go`), three cases. The
    running-host case is the hole this closed: a live hub unit answers the

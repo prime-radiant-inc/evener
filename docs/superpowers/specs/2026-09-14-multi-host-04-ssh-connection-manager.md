@@ -1106,8 +1106,13 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   exhaustion, naming the version that answered against the commit that was
   deployed (`version.go`) — which is the stricter *build*-identity check the
   earlier rule anticipated, with the version-equality rule above unchanged. The
-  start path passes no pin deliberately: a start has no deferred deploy to
-  re-verify (`waitStartedHealthy`, `version.go`).
+  start path passes the same pin (`waitStartedHealthy`, `version.go`): the
+  binary it launches is the one on disk, but "on disk" was accepted by the
+  version-equality rule, and a snapshot version cannot tell two builds apart, so
+  a start on a stopped host would otherwise attach to a commit this controller
+  did not install. What a start deliberately lacks is a predecessor identity to
+  compare, not the pin: `bootstrapHub` refuses to start while a listener holds
+  the address, so there is no process whose survival could satisfy the wait.
 
   **What the version check proves — and what it does not.** `waitHealthy`
   proves that *a* process of the expected build is answering on the configured

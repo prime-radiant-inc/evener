@@ -1546,7 +1546,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if err != nil {
 			return nil, err
 		}
-		if err := deployedBuildNotStamped(host.Name, facts, expected, true); err != nil {
+		if err := m.deployedBuildNotStamped(host.Name, facts, expected, true); err != nil {
 			return nil, err
 		}
 	}
@@ -1619,7 +1619,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// errControllerDirty is: retrying re-pushes the same artifact, so it can never
 	// converge.
 	if deploy || restart {
-		if err := deployedBuildNotStamped(host.Name, facts, expected, deploy); err != nil {
+		if err := m.deployedBuildNotStamped(host.Name, facts, expected, deploy); err != nil {
 			return nil, err
 		}
 	}
@@ -1855,8 +1855,11 @@ func (m *Manager) reReadLaunchContract(ctx context.Context, host hostreg.Host, f
 // deployed names what this pass actually did, so the refusal is true for both call
 // sites: a deploy installed this controller's build, while a restart-only attempt
 // launched the build already on disk and must not be told a deploy wrote anything.
-// The gate itself is unchanged — a restart-only mismatch is still refused.
-func deployedBuildNotStamped(hostName string, facts Preflight, expected string, deployed bool) error {
+// The remedy clause comes through Options.DeployHelp (unstampedRemedy), so a hub
+// names the flags to set exactly as its sibling refusals do while an embedder with
+// no flags keeps the library's own sentence. The gate itself is unchanged — a
+// restart-only mismatch is still refused.
+func (m *Manager) deployedBuildNotStamped(hostName string, facts Preflight, expected string, deployed bool) error {
 	if !facts.LaunchCheckKnown || facts.Version == expected {
 		return nil
 	}
@@ -1864,8 +1867,8 @@ func deployedBuildNotStamped(hostName string, facts Preflight, expected string, 
 	if deployed {
 		what = "deployed its build"
 	}
-	return fmt.Errorf("%w: host %q still reports version %q after this controller %s, want %q; the build the host now holds was not built from this controller's tree, so the host cannot be pinned to the controller's build — supply an artifact built from this controller's tree, or a build source",
-		errDeployUnstamped, hostName, facts.Version, what, expected)
+	return fmt.Errorf("%w: host %q still reports version %q after this controller %s, want %q; the build the host now holds was not built from this controller's tree, so the host cannot be pinned to the controller's build — %s",
+		errDeployUnstamped, hostName, facts.Version, what, expected, m.unstampedRemedy())
 }
 
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and
@@ -2599,6 +2602,16 @@ func (m *Manager) deployHelp() string {
 // field they cannot act on.
 func (m *Manager) installerRemedy() string {
 	return m.deployRemedy("use the atomic push path or Options.BuildBinary")
+}
+
+// unstampedRemedy is the remedy clause the post-phase build-identity refusal
+// appends (deployedBuildNotStamped). Its default names what an embedder can do
+// directly — supply a matching artifact or a build source — which is the right
+// text when there are no CLI flags to name; a hub supplies Options.DeployHelp
+// instead, so an operator is told which flags to set rather than an internal
+// field they cannot act on.
+func (m *Manager) unstampedRemedy() string {
+	return m.deployRemedy("supply an artifact built from this controller's tree, or a build source")
 }
 
 // isDevDeployed reports whether this Manager has installed its own dev build on

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -181,5 +182,66 @@ func TestInstallerMovedTagRefusalNamesThePushPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), help) {
 		t.Fatalf("moved-tag refusal does not name the remedy %q: %v", help, err)
+	}
+}
+
+// unstampedRefusal drives a deploy that writes an artifact the controller did
+// not stamp and returns the terminal post-phase refusal it produces. It reads
+// the shipped message rather than the clause alone, so the remedy seam is pinned
+// on the same error an operator would see.
+func unstampedRefusal(t *testing.T, opts Options) error {
+	t.Helper()
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The on-disk binary before the deploy.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			// The artifact the deploy wrote: right platform, foreign identity.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	opts.controllerVersionOverride = "newsha"
+	if opts.sleep == nil {
+		opts.sleep = func(context.Context, time.Duration) error { return nil }
+	}
+	if opts.BuildBinary == nil {
+		opts.BuildBinary = writeStageBinary
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, errDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	}
+	return err
+}
+
+// TestUnstampedRefusalNamesSuppliedDeployHelp pins the remedy seam for the
+// post-phase build-identity refusal: an operator whose artifact or build was not
+// stamped is told which flags to set, not the library's internal fields.
+func TestUnstampedRefusalNamesSuppliedDeployHelp(t *testing.T) {
+	const help = "set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path>"
+	err := unstampedRefusal(t, Options{DeployHelp: help})
+	if !strings.Contains(err.Error(), help) {
+		t.Fatalf("unstamped refusal does not carry the embedder's help text %q: %v", help, err)
+	}
+	if strings.Contains(err.Error(), "Options.") {
+		t.Fatalf("unstamped refusal still names a library-internal field: %v", err)
+	}
+}
+
+// TestUnstampedRefusalKeepsTheLibraryRemedy pins the other half of the seam: an
+// embedder with no flags to name still sees the sentence the refusal carried
+// before the remedy moved behind Options.DeployHelp.
+func TestUnstampedRefusalKeepsTheLibraryRemedy(t *testing.T) {
+	err := unstampedRefusal(t, Options{})
+	const want = "supply an artifact built from this controller's tree, or a build source"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("library default remedy changed, want %q in: %v", want, err)
 	}
 }

@@ -35,7 +35,8 @@ const (
 
 // hostDeployDirPrefix names the test-owned directory on the host. The deploy
 // writes its binary under it, never over the host's own install; the directory
-// is removed when the case finishes.
+// carries a per-run token (hostDeployRunID) and is removed when the case
+// finishes, so it is always one this run created rather than one already there.
 const hostDeployDirPrefix = "evener-deploy-e2e"
 
 // hostDeployToml is the private hub.toml each case writes on the host. The
@@ -43,6 +44,15 @@ const hostDeployDirPrefix = "evener-deploy-e2e"
 // test's own state root and port: the host's real hub keeps its lock, its state,
 // and its port untouched.
 const hostDeployToml = "hub.toml"
+
+// hostDeployRunID is the per-run token every directory this test creates on a
+// host carries. The pid separates runs of the test binary and the nanosecond
+// timestamp separates concurrent ones, so a name is never reused across a rerun
+// that left a directory behind — which is what lets the cleanup treat the whole
+// directory as this run's own and remove it.
+func hostDeployRunID() string {
+	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
+}
 
 // TestHostDeployNoEvenerE2E is the live check for the deploy slice's criteria 1
 // and 2 (docs/superpowers/specs/2026-09-22-multi-host-deploy-slice.md): a host
@@ -120,6 +130,7 @@ func TestHostDeployNoEvenerE2E(t *testing.T) {
 
 	staged := stageDeployArtifact(t, repoRoot, goos, goarch)
 
+	runID := hostDeployRunID()
 	cases := []struct {
 		name     string
 		hostName string
@@ -136,14 +147,14 @@ func TestHostDeployNoEvenerE2E(t *testing.T) {
 		{
 			name:     "build-source",
 			hostName: "e2e-deploy-source",
-			dirName:  hostDeployDirPrefix + "-source",
+			dirName:  hostDeployDirPrefix + "-source-" + runID,
 			addr:     "127.0.0.1:19180",
 			args:     []string{"-build-source", repoRoot},
 		},
 		{
 			name:     "deploy-binary",
 			hostName: "e2e-deploy-binary",
-			dirName:  hostDeployDirPrefix + "-binary",
+			dirName:  hostDeployDirPrefix + "-binary-" + runID,
 			addr:     "127.0.0.1:19181",
 			args:     []string{"-deploy-binary", staged},
 		},
@@ -170,14 +181,20 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 
 	// The test creates the host directory itself, because the deploy path needs
 	// the target's parent to exist (deployTarget probes `test -d`). bin/ holds
-	// the run target; the other two are the private hub's config and state.
+	// the run target; the other two are the private hub's config and state. The
+	// name carries a per-run token, and an existing path is refused HERE, before
+	// anything is created: `mkdir -p` on a name that is already there would adopt
+	// a directory this run did not make, and the cleanup would then delete
+	// whatever was already inside it.
+	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
+		t.Fatalf("host %s already has %s; the deploy check creates and removes this directory itself, so it must not adopt an existing one", host.target, hostDir)
+	}
 	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(hostDir+"/state"))
-	// The criterion is a host with NO evener at the run target. Clear anything a
-	// previous aborted run left, and refuse to proceed if it cannot be cleared,
-	// rather than letting a leftover binary make the deploy optional.
-	host.mustRun("rm -f " + shellquote.RemoteWord(runTarget))
+	// The criterion is a host with NO evener at the run target. The directory is
+	// new this run, so nothing can already sit at the target; the assertion is
+	// kept so the precondition is proven rather than assumed.
 	if _, err := host.run("test -e " + shellquote.RemoteWord(runTarget)); err == nil {
-		t.Fatalf("host %s still has %s after the test removed it; the deploy case needs a run target with no evener", host.target, runTarget)
+		t.Fatalf("host %s already has %s at the start of the case; the deploy case needs a run target with no evener", host.target, runTarget)
 	}
 
 	// The private hub.toml keeps the launched host hub on its own port and state
@@ -191,6 +208,10 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 
 	t.Cleanup(func() {
 		stopHostListener(t, host, addr, hostDir+"/"+hostDeployToml)
+		// hostDir is this run's own: the per-run token makes it unique and the
+		// existence check above refused to proceed if anything was already there,
+		// so this removes only what the case created. A failure is reported, not
+		// logged away — a leftover directory must not pass as a clean run.
 		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
