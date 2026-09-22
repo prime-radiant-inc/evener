@@ -38,11 +38,22 @@ const (
 	// defaultCommandTimeout is the timeout the command seam starts at and
 	// ResetForTest restores; naming it keeps the two from drifting apart.
 	defaultCommandTimeout = 30 * time.Second
+	// defaultDrainGrace is the WaitDelay the drain seam starts at and
+	// ResetForTest restores: the bound a shell that exited cleanly waits
+	// for a descendant that still holds the captured pipes.
+	defaultDrainGrace = 5 * time.Second
 )
 
 // commandTimeout bounds one command run; a test seam makes the timeout itself
 // testable without a real 30-second wait.
 var commandTimeout = defaultCommandTimeout
+
+// drainGrace bounds the post-exit drain (the WaitDelay) the same way
+// commandTimeout bounds the run, and is a test seam for the same reason:
+// the ErrWaitDelay path is reachable only when the grace is strictly
+// shorter than the run budget, which production's 30s/5s pair is and no
+// small test pair can be without shrinking the grace too.
+var drainGrace = defaultDrainGrace
 
 // Now is the clock seam; RunCommand is the executor seam, initialized to the
 // real shell invocation. Hosts' tests swap these to keep unit tests off real
@@ -100,6 +111,7 @@ func ResetForTest() {
 	RunCommand = realRunCommand
 	Now = time.Now
 	commandTimeout = defaultCommandTimeout
+	drainGrace = defaultDrainGrace
 }
 
 // evaluate returns the command's value, cached until it stops being fresh. A
@@ -225,7 +237,7 @@ func realRunCommand(command string) (string, error) {
 	// — and with it a request or a session start — blocked past the budget.
 	// The drain grace stays a small fraction of the command budget, so the
 	// whole run costs about one timeout, not two.
-	cmd.WaitDelay = min(commandTimeout, 5*time.Second)
+	cmd.WaitDelay = min(commandTimeout, drainGrace)
 	var stdout cappedBuffer
 	var stderr cappedBuffer
 	stdout.max = maxOutput
@@ -239,6 +251,16 @@ func realRunCommand(command string) (string, error) {
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}
+		}
+		if errors.Is(err, exec.ErrWaitDelay) {
+			// The shell exited cleanly while a descendant still held the
+			// captured pipes, so the drain grace cut the run short. Cancel
+			// never ran — os/exec calls it only from the Context's watcher,
+			// and no deadline fired — so the group outlives the run unless
+			// it is killed here, and a failed mint is retried on the next
+			// resolve: without this kill, one process leaks per attempt.
+			procgroup.Kill(cmd.Process.Pid)
+			return "", &CommandError{Detail: firstLine(err.Error())}
 		}
 		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "", &CommandError{Status: exit.ExitCode(), Detail: firstLine(stderr.String())}

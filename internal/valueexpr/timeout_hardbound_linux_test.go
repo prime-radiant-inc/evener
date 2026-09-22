@@ -4,6 +4,10 @@ package valueexpr
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,5 +34,50 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("evaluate blocked %v; the timeout is not a hard bound", elapsed)
+	}
+}
+
+// WaitDelay also bounds the drain when the shell itself exits cleanly and
+// only a descendant holds the captured pipes. On that path no deadline ever
+// fires, so Cancel — which os/exec calls only from the Context's watcher —
+// never kills the group: the ErrWaitDelay branch must, or every resolve of
+// a config whose command leaves a background job running leaks one process
+// (and a failed run is uncached, so every retry leaks another).
+func TestWaitDelayKillsLingeringGroup(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	// The drain grace must sit strictly inside the run budget, or the
+	// context deadline fires first and the run reports the timeout instead.
+	commandTimeout = 800 * time.Millisecond
+	drainGrace = 200 * time.Millisecond
+
+	script := filepath.Join(t.TempDir(), "linger.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { exec.Command("pkill", "-f", script).Run() })
+
+	_, err := realRunCommand(`"` + script + `" & exit 0`)
+	if err == nil {
+		t.Fatal("realRunCommand returned nil; want the drain error")
+	}
+	cmdErr, ok := errors.AsType[*CommandError](err)
+	if !ok || cmdErr.Timeout || !strings.Contains(cmdErr.Error(), "WaitDelay") {
+		t.Fatalf("err = %v; want the WaitDelay drain error, not the timeout", err)
+	}
+
+	// The kill lands with the return; give the SIGKILL a moment to show.
+	var lingering string
+	for range 20 {
+		out, _ := exec.Command("pgrep", "-af", script).Output()
+		if len(out) == 0 {
+			lingering = ""
+			break
+		}
+		lingering = string(out)
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lingering != "" {
+		t.Fatalf("the shell's descendant outlived the run: %s", lingering)
 	}
 }
