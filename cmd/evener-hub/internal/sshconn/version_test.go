@@ -877,7 +877,7 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
-	if err := m.waitHealthy(context.Background(), host, "newsha", hubIdentity{}); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "newsha", "", hubIdentity{}); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	if !strings.Contains(healthRemote, "127.0.0.1:9999/api/health") {
@@ -901,7 +901,7 @@ func TestWaitHealthyQuotesPort(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.waitHealthy(context.Background(), host, "newsha", hubIdentity{}); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "newsha", "", hubIdentity{}); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	remote := strings.Join(fr.recordedRuns()[0], " ")
@@ -1528,7 +1528,7 @@ func TestWaitHealthyUsesTheConfiguredHostAddr(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.waitHealthy(context.Background(), host, "newsha", hubIdentity{}); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "newsha", "", hubIdentity{}); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	if !strings.Contains(remote, "127.0.0.2:9180/api/health") {
@@ -2720,7 +2720,7 @@ func TestWaitHealthyRejectsThePreRestartProcess(t *testing.T) {
 	if !ok {
 		t.Fatal("parseHubHealth rejected a valid body")
 	}
-	err := m.waitHealthy(context.Background(), host, "dev", replaced)
+	err := m.waitHealthy(context.Background(), host, "dev", "", replaced)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (the pre-restart process must not satisfy verification)", err)
 	}
@@ -2730,7 +2730,7 @@ func TestWaitHealthyRejectsThePreRestartProcess(t *testing.T) {
 
 	// A genuinely new process (same version, later start time) is accepted.
 	replaced.startedAt = replaced.startedAt.Add(-time.Hour)
-	if err := m.waitHealthy(context.Background(), host, "dev", replaced); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "dev", "", replaced); err != nil {
 		t.Fatalf("waitHealthy rejected a new process: %v", err)
 	}
 }

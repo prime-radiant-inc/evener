@@ -350,7 +350,10 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			// This controller is on the snapshot channel (buildinfo.Channel above), so
+			// the post-restart probe requires backend_git_sha to match buildinfo.GitSHA
+			// (waitHealthy); the real hub reports the field (cmd/evener-hub/web_api.go).
+			return []byte(`{"version":"newsha","backend_git_sha":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 		case strings.Contains(joined, "systemctl restart"):
