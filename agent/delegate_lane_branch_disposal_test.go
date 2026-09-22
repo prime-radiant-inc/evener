@@ -349,3 +349,59 @@ func TestDelegateLaneBranchCanary_HalfRemovedUnresolvedBranchRefuses(t *testing.
 		t.Errorf("the sidecar was deleted: %v", serr)
 	}
 }
+
+// A sidecar-less forced remove must derive delete_branch's target from the
+// worktree's own checkout, never from the directory name: a named delegate
+// lane's directory is its id, and the id is not its branch.
+func TestDelegateLaneBranchCanary_RemoveWithoutSidecarDerivesBranch(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, _, _ := r.seedForeignUnlockedLaneOnBranch(t, canaryLaneBranch)
+	if err := worktree.DeleteSidecar(r.metaDir(t, r.canonicalMain(t)), id); err != nil {
+		t.Fatalf("lose the sidecar: %v", err)
+	}
+
+	out, err := r.removeOp(t, map[string]any{"name": id, "force": true, "delete_branch": true})
+	if err != nil {
+		t.Fatalf("remove a sidecar-less lane: %v", err)
+	}
+	if got := out["branch"]; got != canaryLaneBranch {
+		t.Errorf("remove result branch = %v, want %q (derived from the checkout)", got, canaryLaneBranch)
+	}
+	if out["branch_deleted"] != true {
+		t.Errorf("branch_deleted = %v, want true", out["branch_deleted"])
+	}
+	if r.branchExists(t, canaryLaneBranch) {
+		t.Error("the named branch survived a delete_branch remove")
+	}
+}
+
+// A sidecar-less lane whose checkout names no branch must refuse
+// delete_branch outright: falling back to the directory name would delete
+// any unrelated branch that happens to share the delegate id.
+func TestDelegateLaneBranchCanary_RemoveWithoutSidecarRefusesUnresolvableBranch(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedForeignUnlockedLaneOnBranch(t, canaryLaneBranch)
+	wtGit(t, lanePath, "checkout", "--detach")
+	// An unrelated branch that merely shares the delegate id: exactly the
+	// branch a directory-name fallback would have deleted.
+	wtGit(t, r.mainRoot, "branch", id)
+	if err := worktree.DeleteSidecar(r.metaDir(t, r.canonicalMain(t)), id); err != nil {
+		t.Fatalf("lose the sidecar: %v", err)
+	}
+
+	out, err := r.removeOp(t, map[string]any{"name": id, "force": true, "delete_branch": true})
+	if err != nil {
+		t.Fatalf("remove a detached sidecar-less lane: %v", err)
+	}
+	if out["branch_deleted"] == true {
+		t.Error("delete_branch deleted a branch it could not attribute")
+	}
+	if !r.branchExists(t, id) {
+		t.Error("the id-named unrelated branch was deleted")
+	}
+	if !r.branchExists(t, canaryLaneBranch) {
+		t.Error("the detached lane's branch was deleted")
+	}
+}

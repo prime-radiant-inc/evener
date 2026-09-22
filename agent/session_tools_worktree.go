@@ -1562,6 +1562,19 @@ func lockStateFromPorcelain(porcelain []worktree.PorcelainEntry, path string) (l
 	return false, ""
 }
 
+// branchOfCheckout resolves the branch checked out in the worktree at path
+// from git's own worktree list — the only authoritative source once the
+// metadata sidecar is gone. A bare or detached worktree names no branch.
+func branchOfCheckout(porcelain []worktree.PorcelainEntry, path string) (string, bool) {
+	target := canonicalOrClean(path)
+	for _, e := range porcelain {
+		if canonicalOrClean(e.Path) == target && e.Branch != "" {
+			return strings.TrimPrefix(e.Branch, "refs/heads/"), true
+		}
+	}
+	return "", false
+}
+
 // worktreeControlRun builds a GitRunner over the control env rooted at
 // mainRepoRoot (spec §2 "Git control environment"), for lifecycle git calls
 // that must run outside the (possibly worktree-rooted) user-facing env.
@@ -2344,12 +2357,17 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// finding) with little safety value, so the lane proceeds.
 	sc, scErr := worktree.ReadSidecar(metaDir, name)
 	hasSidecar := scErr == nil
-	// The lane's git branch; the sidecar names it for a parent-named delegate
-	// lane, the name otherwise. Every branch-acting step below uses this,
-	// never the name by assumption.
-	branch := name
+	// The lane's git branch. The sidecar names it for a parent-named delegate
+	// lane; with no sidecar, git's own worktree list names the checkout, and a
+	// lane whose branch stays unresolved (sidecar gone, worktree bare or
+	// detached) gets an empty branch rather than a guess from the directory
+	// name: the directory name is not the branch of a named lane, and step 9
+	// refuses to delete a branch it cannot attribute.
+	branch := ""
 	if hasSidecar {
 		branch = sc.BranchOrName()
+	} else if b, ok := branchOfCheckout(porcelain, target); ok {
+		branch = b
 	}
 	if scErr != nil && !os.IsNotExist(scErr) {
 		return WorktreeRemoveResult{}, fmt.Errorf("manage_worktree remove: reading metadata: %w", scErr)
@@ -2510,7 +2528,13 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// entirely (unconditional -D). A branch checked out in any other worktree
 	// cannot be deleted by git at all, gate or no gate — that refusal is
 	// surfaced with the checkout location git itself reports.
-	if deleteBranch {
+	if deleteBranch && branch == "" {
+		// The branch could not be attributed: no sidecar, and the worktree
+		// named no checked-out branch before its removal. Falling back to the
+		// directory name would delete any unrelated branch that happens to
+		// share it, so nothing is deleted.
+		result.BranchKeptReason = "branch could not be resolved (no metadata sidecar, no checked-out branch)"
+	} else if deleteBranch {
 		tipOut, tipErr := run("rev-parse", "--verify", "refs/heads/"+branch)
 		if tipErr != nil {
 			result.BranchKeptReason = fmt.Sprintf("branch %q not found: %v", branch, tipErr)
