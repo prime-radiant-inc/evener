@@ -71,7 +71,12 @@ func classifyMarketplaceRemovalOutcome(err error) (marketplaceRemovalState, appw
 // or empty-object member a row, and a snapshot carrying one must never look
 // authoritative - the rule a partially decoded snapshot already follows.
 // Real rows always carry a name and a source kind; an empty list is a valid
-// one, since the marketplace just removed can be the last.
+// one, since the marketplace just removed can be the last. The check is
+// presence-blind by design: it runs on decoded values from both wire shapes,
+// and the zero-timestamp rule that compensates for the typed path's erased
+// presence lives in decodeMarketplaceCloneRemainsData's typed branch, where
+// the JSON presence re-check cannot reach - a present zero that crossed the
+// wire is a real timestamp and stays authoritative.
 func validMarketplaceSnapshot(snapshot appwire.MarketplaceListResponse) bool {
 	for _, entry := range snapshot.Marketplaces {
 		if entry.Name == "" || entry.Source.Kind == "" {
@@ -85,9 +90,9 @@ func validMarketplaceSnapshot(snapshot appwire.MarketplaceListResponse) bool {
 // the marketplaceRemoveApplied discriminator, as the typed value the hub
 // builds in-process or the map a JSON-RPC client decodes. The marker alone is
 // the proof: the hub emits it from one site, always with AppliedUnavailable,
-// and #2068 deliberately stopped the strict data check there - a malformed
-// payload must not demote a standing removal back to a retryable failure. The
-// marker carries no snapshot to decode, so nothing else is read.
+// and nothing beyond the discriminator is checked - a malformed payload must
+// not demote a standing removal back to a retryable failure. The marker
+// carries no snapshot to decode, so nothing else is read.
 func marketplaceRemovalAppliedMarker(raw any) bool {
 	if data, ok := raw.(appwire.MarketplaceRemoveAppliedData); ok {
 		return data.EvenerErrorInfo == appwire.ErrorMarketplaceRemoveApplied
@@ -112,7 +117,24 @@ func marketplaceRemovalAppliedMarker(raw any) bool {
 // discriminator is not this marker's payload at all, whatever else it holds.
 func decodeMarketplaceCloneRemainsData(raw any) (appwire.MarketplaceUnregisteredCloneRemainsData, bool) {
 	if data, ok := raw.(appwire.MarketplaceUnregisteredCloneRemainsData); ok {
-		return data, data.EvenerErrorInfo == appwire.ErrorMarketplaceUnregisteredCloneRemains
+		if data.EvenerErrorInfo != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+			return appwire.MarketplaceUnregisteredCloneRemainsData{}, false
+		}
+		// The typed payload crossed no wire, so the JSON path's presence
+		// re-check never ran on its members, and decoding into the struct
+		// has erased presence: a zero lastUpdated is indistinguishable
+		// from the omitted field that re-check rejects. Degrade the
+		// snapshot like a partial JSON one - never let it look
+		// authoritative - while the JSON path keeps its own presence rule,
+		// where a present zero is a real timestamp the hub really sends
+		// and the snapshot stays applied.
+		for _, entry := range data.Applied.Marketplaces {
+			if entry.LastUpdated == 0 {
+				data.Applied = appwire.MarketplaceListResponse{}
+				return data, true
+			}
+		}
+		return data, true
 	}
 	encoded, err := json.Marshal(raw)
 	if err != nil || string(encoded) == "null" {

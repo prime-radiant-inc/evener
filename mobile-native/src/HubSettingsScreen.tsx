@@ -1,4 +1,4 @@
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Crypto from "expo-crypto";
 import {
@@ -163,6 +163,7 @@ function HubSettings({
 }) {
 	const colors = useColors();
 	const ready = isReady(connectionState);
+	const focused = useIsFocused();
 	const model = useMemo(() => createHubOverviewStore(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
@@ -181,13 +182,22 @@ function HubSettings({
 	);
 	useEffect(() => () => upgrade.dispose(), [upgrade]);
 	useEffect(() => () => model.dispose(), [model]);
-	useFocusEffect(
-		useCallback(() => {
-			if (!canUseConnection()) return;
-			void model.getState().refresh();
-			void upgrade.reconcileAfterReconnect();
-		}, [canUseConnection, model, upgrade]),
-	);
+	// The two recovery paths below coordinate through one client-generation
+	// note. A replacement client that becomes ready while the screen is
+	// focused re-runs the focus effect in the same commit the ready
+	// transition recovers in - useFocusEffect's callback identity changes
+	// with the client - so without the note every retry issued two read-sets:
+	// two overview refreshes and two reconciles, the first invalidated by
+	// the second (hubUpgrade.ts bumps its generation per reconcile and drops
+	// the earlier answer). The transition effect runs first and leaves the
+	// note; the focus effect reads it in that same commit and skips, so one
+	// event recovers exactly once. A transition the screen is not focused
+	// through leaves no note - no focus read is coming to read it - so the
+	// next refocus still reads, the way it always has.
+	const transitionRecovered = useRef<{
+		client: ConversationClientLike;
+	} | null>(null);
+	const refreshedAtReady = useRef(connectionState === "ready");
 	// useFocusEffect covers a screen the user comes back to; a passive
 	// reconnect never refocuses it, and the client a manual retry replaces
 	// this one with is still connecting when the focus effect re-runs, so
@@ -196,10 +206,9 @@ function HubSettings({
 	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
 	// data stays usable meanwhile; this is the recovery read: one refresh and
 	// one upgrade reconcile per transition back to ready. The seed counts a
-	// mount that is already ready as refreshed: the focus read above is the
+	// mount that is already ready as refreshed: the focus read below is the
 	// read it owes, and a ready "transition" that never happened must not
 	// fire a second refresh and reconcile on top of it.
-	const refreshedAtReady = useRef(connectionState === "ready");
 	useEffect(() => {
 		if (connectionState !== "ready") {
 			refreshedAtReady.current = false;
@@ -207,9 +216,32 @@ function HubSettings({
 		}
 		if (refreshedAtReady.current) return;
 		refreshedAtReady.current = true;
+		// A transition the screen is focused through owes the focus path's
+		// read too: the client replacement that re-runs the focus effect
+		// makes both effects fire in this one commit, and the note is what
+		// keeps that to a single read-set.
+		if (focused) transitionRecovered.current = { client };
 		void model.getState().refresh();
 		void upgrade.reconcileAfterReconnect();
-	}, [connectionState, model, upgrade]);
+	}, [client, connectionState, focused, model, upgrade]);
+	useFocusEffect(
+		useCallback(() => {
+			// The blur/dep-change cleanup runs before any later callback and
+			// clears whatever note a previous commit left, so a note read
+			// here is always one this commit's transition just set.
+			const clearNote = () => {
+				transitionRecovered.current = null;
+			};
+			if (!canUseConnection()) return clearNote;
+			if (transitionRecovered.current?.client === client) {
+				transitionRecovered.current = null;
+				return clearNote;
+			}
+			void model.getState().refresh();
+			void upgrade.reconcileAfterReconnect();
+			return clearNote;
+		}, [canUseConnection, client, model, upgrade]),
+	);
 	const data = state.data;
 	const hub = data?.hub;
 	return (

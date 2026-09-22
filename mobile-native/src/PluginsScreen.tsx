@@ -22,11 +22,17 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
+  AnyNotification,
   ConnectionState,
   MarketplaceEntry,
+  MethodName,
+  MethodTypes,
   PluginRefParams,
 } from "@evener/appwire-client";
-import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+  createMarketplacesStore,
+  createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
@@ -51,18 +57,23 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 /** The applied marketplace removals one client's writes reported, keyed by
- * name: names a write said the hub already removed, held with the client
- * whose write said so because a fresh browser must not offer Remove again
- * for any of them. The fence covers a name only for the window between the
- * applied outcome and the first authoritative read that lands after it -
- * see reconcileAppliedRemovals. The removed registrations' wire identities
- * are deliberately not stored: the fallback retires on the read's arrival,
- * not its contents, and the durable fix (a hub-assigned registration id the
- * wire can compare, PR #2137's protocol backlog) is what will put identity
- * back into the comparison. */
+ * name with the publication version each fence predates: a name is one a
+ * write said the hub already removed, held with the client whose write said
+ * so because a fresh browser must not offer Remove again for it. Every name
+ * carries its OWN baseline - the store's publication version at the outcome
+ * that recorded it - and retires with the first authoritative read newer
+ * than that baseline (reconcileAppliedRemovals): one watermark shared
+ * browser-wide would advance on ANY later outcome's recording, past a read
+ * that had not been reported yet, and the earlier fence would then wait for
+ * a retirement read that already landed. Per-name baselines are the shape
+ * the web guard keeps (marketplacesPlugins/index.tsx). The removed
+ * registrations' wire identities are deliberately not stored: the fallback
+ * retires on the read's arrival, not its contents, and the durable fix (a
+ * hub-assigned registration id the wire can compare, PR #2137's protocol
+ * backlog) is what will put identity back into the comparison. */
 type AppliedRemovalGuard = {
   client: ConversationClientLike | null;
-  names: ReadonlySet<string>;
+  publicationVersions: ReadonlyMap<string, number>;
 };
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
@@ -123,23 +134,23 @@ function PluginsScreenBody({
   const [appliedRemovalGuard, setAppliedRemovalGuard] =
     useState<AppliedRemovalGuard>(() => ({
       client: null,
-      names: new Set(),
+      publicationVersions: new Map(),
     }));
   // The guard's own store is a ref, so the recording paths below check and
   // store against one synchronous source; the state beside it exists only to
   // publish each change to renders (appliedRemovalNames below).
-  // markAppliedRemoval's return has to mean the entry was actually stored,
-  // and an updater's view of the guard arrives only when React applies it -
-  // a client switch landing between a passing check and that apply would let
-  // the function answer true for a store the updater then refused. Reading
-  // the same ref the entry lands in, in one synchronous block nothing can
-  // interleave, makes true structural.
+  // markAppliedRemoval's return has to mean the screen actually accepted the
+  // outcome - fence or no fence - and an updater's view of the guard arrives
+  // only when React applies it: a client switch landing between a passing
+  // check and that apply would let the function answer true for a store the
+  // updater then refused. Reading the same ref the entry lands in, in one
+  // synchronous block nothing can interleave, makes true structural.
   const appliedRemovalGuardRef = useRef<AppliedRemovalGuard>(
     appliedRemovalGuard,
   );
   const appliedRemovalNames =
     appliedRemovalGuard.client === client
-      ? appliedRemovalGuard.names
+      ? new Set(appliedRemovalGuard.publicationVersions.keys())
       : EMPTY_APPLIED_REMOVALS;
   const visibleMarketplaceWarning =
     marketplaceWarning?.client === client ? marketplaceWarning.text : null;
@@ -153,7 +164,7 @@ function PluginsScreenBody({
       // and its render mirror together, the way every guard change does.
       appliedRemovalGuardRef.current = {
         client: client ?? null,
-        names: new Set(),
+        publicationVersions: new Map(),
       };
       setAppliedRemovalGuard(appliedRemovalGuardRef.current);
     }
@@ -174,50 +185,78 @@ function PluginsScreenBody({
   // is a row the read had not caught up with - pressing Remove on it draws
   // the same idempotent applied outcome, which re-fences the name and
   // re-raises the warning. The durable fix is a hub-assigned registration id
-  // the wire can compare (protocol backlog, PR #2137). Only reads the
-  // browser's own revision fencing already vouches for are reported here,
-  // so stale and in-flight replies never retire anything.
+  // the wire can compare (protocol backlog, PR #2137).
+  //
+  // WHICH read retires a name is per name: the read's publication version
+  // must be newer than the baseline the recording outcome left for THAT name
+  // alone (the guard's own doc). A read published before a later outcome's
+  // recording - one a browser-wide watermark would have swallowed by
+  // advancing to it - still reaches every earlier fence here, so an earlier
+  // fence never misses its retirement read. The read's contents no longer
+  // decide anything - its arrival does - so the list it carried goes
+  // unread here; the report's shape stays the browser's contract. Only
+  // reads the browser's own revision fencing already vouches for are
+  // reported, so stale and in-flight replies never retire anything.
   const reconcileAppliedRemovals = useCallback(
     (
       _marketplaces: readonly MarketplaceEntry[],
       owner: ConversationClientLike,
+      publicationVersion: number,
     ): void => {
       if (currentClient.current !== owner) return;
-      // The read's contents no longer decide anything - its arrival does -
-      // so the list it carried goes unread here; the report's shape stays
-      // the browser's contract.
       const current = appliedRemovalGuardRef.current;
-      if (current.client !== owner || !current.names.size) return;
-      appliedRemovalGuardRef.current = { client: owner, names: new Set() };
+      if (current.client !== owner || !current.publicationVersions.size) return;
+      const next = new Map(current.publicationVersions);
+      for (const [name, baseline] of next) {
+        if (publicationVersion > baseline) next.delete(name);
+      }
+      if (next.size === current.publicationVersions.size) return;
+      appliedRemovalGuardRef.current = {
+        client: owner,
+        publicationVersions: next,
+      };
       setAppliedRemovalGuard(appliedRemovalGuardRef.current);
     },
     [],
   );
   // The browser's recording path for an applied removal: fences the name
-  // whatever the hub's truth currently carries, for the window between the
-  // outcome and the first authoritative read after it (reconcile's doc),
-  // sets the warning to the outcome's own notice, and answers whether the
-  // entry was actually stored: false means the outcome came from a client
-  // this screen has replaced, and the browser drops it whole.
+  // against the publication baseline the store carried when the outcome
+  // landed - the snapshot and version the browser read off the store, which
+  // the store's rejection processing has already settled - for the window
+  // between the outcome and the first authoritative read after it
+  // (reconcile's doc), sets the warning to the outcome's own notice, and
+  // answers whether the outcome was actually accepted: false means it came
+  // from a client this screen has replaced, and the browser drops it whole.
+  // An accepted snapshot that already omits the target is the outcome's own
+  // reconciliation, so it leaves no fence at all - the shape the web's
+  // sheet records (MarketplaceSheet.tsx) - while the cleanup warning still
+  // reports what the outcome said.
   const markAppliedRemoval = useCallback(
     (
       name: string,
       notice: string | null,
       owner: ConversationClientLike,
+      marketplaces: readonly MarketplaceEntry[] | null,
+      publicationVersion: number,
     ): boolean => {
       // The check reads the same synchronous store the entry lands in
-      // below, so `true` structurally means the entry was stored: a client
-      // switch that already landed has reset the ref and answers false
-      // here, and one that lands after cannot come between the check and
-      // the store - the block is synchronous. An owner the guard no longer
-      // belongs to changes nothing and answers false, for the browser to
-      // drop the outcome whole.
+      // below, so `true` structurally means the screen accepted this
+      // outcome: a client switch that already landed has reset the ref and
+      // answers false here, and one that lands after cannot come between the
+      // check and the store - the block is synchronous. An owner the guard
+      // no longer belongs to changes nothing and answers false, for the
+      // browser to drop the outcome whole.
       if (currentClient.current !== owner) return false;
       const current = appliedRemovalGuardRef.current;
       if (current.client !== owner) return false;
-      const names = new Set(current.names);
-      names.add(name);
-      appliedRemovalGuardRef.current = { client: owner, names };
+      const publicationVersions = new Map(current.publicationVersions);
+      if (
+        marketplaces === null ||
+        marketplaces.some((item) => item.name === name)
+      )
+        publicationVersions.set(name, publicationVersion);
+      else publicationVersions.delete(name);
+      appliedRemovalGuardRef.current = { client: owner, publicationVersions };
       setAppliedRemovalGuard(appliedRemovalGuardRef.current);
       // The warning slot reports the latest outcome for the marketplace it
       // holds: a noticed outcome replaces whatever the slot showed, and a
@@ -241,10 +280,11 @@ function PluginsScreenBody({
     (name: string, owner: ConversationClientLike): void => {
       if (currentClient.current !== owner) return;
       const current = appliedRemovalGuardRef.current;
-      if (current.client !== owner || !current.names.has(name)) return;
-      const names = new Set(current.names);
-      names.delete(name);
-      appliedRemovalGuardRef.current = { client: owner, names };
+      if (current.client !== owner || !current.publicationVersions.has(name))
+        return;
+      const publicationVersions = new Map(current.publicationVersions);
+      publicationVersions.delete(name);
+      appliedRemovalGuardRef.current = { client: owner, publicationVersions };
       setAppliedRemovalGuard(appliedRemovalGuardRef.current);
     },
     [],
@@ -318,10 +358,13 @@ function Plugins({
     name: string,
     notice: string | null,
     owner: ConversationClientLike,
+    marketplaces: readonly MarketplaceEntry[] | null,
+    publicationVersion: number,
   ): boolean;
   onAuthoritativeMarketplaces(
     marketplaces: readonly MarketplaceEntry[],
     owner: ConversationClientLike,
+    publicationVersion: number,
   ): void;
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
   onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
@@ -329,6 +372,43 @@ function Plugins({
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
+  // The hub's add answer is the one place that names what the write
+  // registered, and the store cannot be trusted to hand it over: a newer
+  // list read holds its publication. Capture the answer as it passes
+  // through the client the marketplaces store is built on, so the
+  // browser's add flow reads it independent of every store.
+  const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
+  // The marketplaces store is this screen's, not the browser's: a write
+  // that outlives a tab switch keeps publishing into it, and the browser a
+  // remount replaces reads what it retained instead of starting cold.
+  const marketplaceStoreClient = useMemo(() => {
+    const request = <M extends MethodName>(
+      method: M,
+      params: MethodTypes[M]["params"],
+      opts?: { timeoutMs?: number },
+    ): Promise<MethodTypes[M]["result"]> => {
+      const pending = client.request(method, params, opts);
+      if (method === "evener/marketplace/add") {
+        lastAddMarketplaces.current = null;
+        void (pending as Promise<MethodTypes["evener/marketplace/add"]["result"]>).then(
+          (answer) => {
+            lastAddMarketplaces.current = answer.marketplaces;
+          },
+          () => {},
+        );
+      }
+      return pending;
+    };
+    return {
+      request,
+      onNotification: (callback: (notification: AnyNotification) => void) =>
+        client.onNotification(callback),
+    };
+  }, [client]);
+  const marketplaces = useMemo(
+    () => createMarketplacesStore(marketplaceStoreClient),
+    [marketplaceStoreClient],
+  );
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const ready = isReady(connectionState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
@@ -350,6 +430,16 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  // The browser's first list read is a passive effect. Bind this screen-owned
+  // store before child effects run so that first read is not mistaken for a
+  // reconnect and issued twice by the lifecycle's wanted-list recovery.
+  useLayoutEffect(() => {
+    marketplaces.connectionChanged(client, connectionState);
+  }, [marketplaces, client, connectionState]);
+  useLayoutEffect(() => {
+    marketplaces.start();
+    return () => marketplaces.dispose();
+  }, [marketplaces]);
   // The store's own reconnect recovery is what a banner over a live screen
   // needs: the hub broadcasts a change only to clients connected when it
   // happens, so everything that moved while this one was away arrives as
@@ -445,6 +535,8 @@ function Plugins({
           connectionState={connectionState}
           hubName={hubName}
           installed={model}
+          marketplaces={marketplaces}
+          lastAddMarketplaces={lastAddMarketplaces}
           gate={gate}
           ready={ready}
           canUseConnection={canUseConnection}

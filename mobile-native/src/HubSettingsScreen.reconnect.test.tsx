@@ -5,8 +5,12 @@
 // show remounted the store instead, and a manual retry's replacement client
 // is still connecting when the stores around it first read. Mirrors
 // ProvidersScreen.test.tsx's mocking; the focus effect stands in for
-// @react-navigation/native's, and the upgrade controller is stubbed so the
-// overview read is the only hub traffic the assertions count.
+// @react-navigation/native's the way the installed hook (7.3.18) behaves -
+// it runs the callback on mount and on every identity change while the
+// screen is focused, calling the returned cleanup first, which is the re-run
+// a client replacement triggers under a focused screen - and the upgrade
+// controller is stubbed so the overview read is the only hub traffic the
+// assertions count.
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
@@ -22,7 +26,10 @@ import {
 	renderedText,
 } from "./renderNative.testkit";
 
-const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
+const harness = vi.hoisted(() => ({
+	connection: {} as Record<string, unknown>,
+	focused: true,
+}));
 const reconciles = vi.hoisted(() => ({ count: 0 }));
 const starts = vi.hoisted(() => ({ count: 0 }));
 const upgrade = vi.hoisted(() => ({
@@ -38,7 +45,12 @@ vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect } = await import("react");
 	return {
-		useFocusEffect: (effect: () => void | (() => void)) => useEffect(effect, []),
+		useFocusEffect: (effect: () => void | (() => void)) =>
+			useEffect(() => {
+				if (!harness.focused) return;
+				return effect();
+			}, [effect, harness.focused]),
+		useIsFocused: () => harness.focused,
 	};
 });
 vi.mock("./nativeHubUpgrade", () => ({ nativeHubUpgradeStorage: {} }));
@@ -329,4 +341,87 @@ it("reads the overview and reconcile once on a mount that is already ready", asy
 	expect(reads).toBe(1);
 	expect(reconciles.count).toBe(1);
 	upgrade.snapshot = { kind: "idle" };
+});
+
+it("reconciles a replacement recovery exactly once while the screen is focused", async () => {
+	const first = new FakeClient("ready");
+	first.on("evener/settings/overview", () => ({
+		hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.connection = connection(first, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+	reconciles.count = 0;
+
+	// A manual retry hands the screen a fresh client while it is still
+	// connecting, and the screen stays focused through the whole gap: the
+	// replacement re-runs the focus effect in the same commit the ready
+	// transition recovers in.
+	const second = new FakeClient("connecting");
+	second.on("evener/settings/overview", () => ({
+		hub: { version: "9.9.9", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.connection = connection(second, "connecting");
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	second.state = "ready";
+	harness.connection = connection(second, "ready");
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 9.9.9");
+	// One event, one read-set: the controller does not deduplicate
+	// concurrent reconciles (hubUpgrade.ts bumps its generation per call and
+	// drops the earlier answer), so the two recovery paths have to
+	// coordinate - a replacement that becomes ready under a focused screen
+	// must not issue two reconciles that race to invalidate each other.
+	expect(reconciles.count).toBe(1);
+});
+
+it("still reads on refocus after a replacement recovered while the screen was away", async () => {
+	const first = new FakeClient("ready");
+	first.on("evener/settings/overview", () => ({
+		hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.focused = true;
+	harness.connection = connection(first, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+
+	// The screen loses focus before the retry, and the replacement becomes
+	// ready while it is away: the transition recovers on its own, and no
+	// focus read co-runs with it to consume or duplicate.
+	harness.focused = false;
+	const second = new FakeClient("connecting");
+	second.on("evener/settings/overview", () => ({
+		hub: { version: "9.9.9", daemonIdleTimeoutMillis: 3600000 },
+	}));
+	harness.connection = connection(second, "connecting");
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	second.state = "ready";
+	harness.connection = connection(second, "ready");
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	await act(async () => {});
+	reconciles.count = 0;
+
+	// Coming back to the screen is its own event: the refocus read has to
+	// survive the transition's recovery - the coordination must suppress
+	// only the focus re-run that coincides with a transition, never the one
+	// a user's return owes.
+	harness.focused = true;
+	await act(async () => {
+		tree.update(<HubSettingsScreen {...props} />);
+	});
+	await act(async () => {});
+	expect(reconciles.count).toBe(1);
+	harness.focused = true;
 });

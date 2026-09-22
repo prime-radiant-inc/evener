@@ -197,8 +197,12 @@ func providerFromModel(model string) string {
 }
 
 func (m hubModel) sessionStatusErrorText() string {
-	if m.err != nil {
-		return m.err.Error()
+	if errs := m.prominentErrors(); len(errs) > 0 {
+		texts := make([]string, len(errs))
+		for i, err := range errs {
+			texts[i] = err.Error()
+		}
+		return strings.Join(texts, "; ")
 	}
 	return strings.TrimSpace(m.sessionStatusError)
 }
@@ -215,8 +219,8 @@ func (m hubModel) renderSessionMainBody() string {
 		b.WriteString(statusLine)
 		b.WriteString("\n")
 	}
-	if m.err != nil {
-		fmt.Fprintf(&b, "\nerror: %v\n", m.err)
+	for _, err := range m.prominentErrors() {
+		fmt.Fprintf(&b, "\nerror: %v\n", err)
 	}
 	if notices := m.renderNotices(); notices != "" {
 		b.WriteString("\n")
