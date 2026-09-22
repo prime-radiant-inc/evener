@@ -48,6 +48,15 @@ func runInstall(args []string, stdin io.Reader, stdout, stderr io.Writer) error 
 	if strings.TrimSpace(*version) == "" {
 		return errors.New("--version must not be empty")
 	}
+	if err := rejectTildePath("--prefix", *prefix); err != nil {
+		return err
+	}
+	if err := rejectTildePath("--bin-dir", *binDir); err != nil {
+		return err
+	}
+	if err := rejectTildePath("--share-bin-dir", *shareBinDir); err != nil {
+		return err
+	}
 
 	remoteScript := remoteinstall.Command(*version, *prefix, *binDir, *shareBinDir)
 	sshArgs := []string{
@@ -83,6 +92,18 @@ func validateInstallTarget(target string) error {
 		return unicode.IsSpace(r) || unicode.IsControl(r)
 	}) >= 0 {
 		return errors.New("SSH target must not contain whitespace or control characters")
+	}
+	return nil
+}
+
+// rejectTildePath refuses a '~'-prefixed install path flag: the value travels
+// as an argument to `env` in the remote command, where POSIX shells perform no
+// tilde expansion, so '~/x' would install under a directory literally named
+// '~' on the remote host instead of the remote user's home. An absolute path
+// says what '~' cannot.
+func rejectTildePath(flagName, value string) error {
+	if strings.HasPrefix(value, "~") {
+		return fmt.Errorf("%s must not begin with '~': the remote host does not expand it there; pass an absolute path instead", flagName)
 	}
 	return nil
 }

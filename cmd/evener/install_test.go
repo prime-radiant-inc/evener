@@ -35,7 +35,7 @@ func TestRunInstallBuildsSafeSSHCommand(t *testing.T) {
 		t.Fatalf("SSH args = %#v", gotArgs)
 	}
 	if !strings.Contains(gotArgs[6], "EVENER_INSTALL_VERSION=snapshot") {
-		t.Fatalf("remote command omitted version: %q", gotArgs[5])
+		t.Fatalf("remote command omitted version: %q", gotArgs[6])
 	}
 	if !strings.Contains(gotArgs[6], "PREFIX='/tmp/evener;do-not-run'") {
 		t.Fatalf("remote command did not quote prefix: %q", gotArgs[6])
@@ -82,6 +82,35 @@ func TestRunInstallRejectsUnsafeTarget(t *testing.T) {
 	}
 	if called {
 		t.Fatal("SSH runner called for an unsafe target")
+	}
+}
+
+// TestRunInstallRejectsTildePrefixedPaths pins why the path flags refuse a
+// leading '~': the value travels as an argument to `env` in the remote command,
+// where POSIX shells perform no tilde expansion, so '~/.local' would install
+// under a directory literally named '~' on the remote host. Leaving the flag
+// unset already installs into the remote user's $HOME/.local.
+func TestRunInstallRejectsTildePrefixedPaths(t *testing.T) {
+	old := runRemoteInstallCommand
+	t.Cleanup(func() { runRemoteInstallCommand = old })
+	called := false
+	runRemoteInstallCommand = func(context.Context, []string, io.Reader, io.Writer, io.Writer) error {
+		called = true
+		return nil
+	}
+
+	for _, args := range [][]string{
+		{"--prefix", "~/.local", "user@example.com"},
+		{"--bin-dir", "~/bin", "user@example.com"},
+		{"--share-bin-dir", "~/.local/share/evener/bin", "user@example.com"},
+	} {
+		err := runInstall(args, strings.NewReader(""), io.Discard, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "~") {
+			t.Errorf("runInstall(%v) err = %v, want a tilde rejection", args, err)
+		}
+	}
+	if called {
+		t.Fatal("the SSH runner was called despite a tilde-prefixed path")
 	}
 }
 

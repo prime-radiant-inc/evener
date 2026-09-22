@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -211,33 +212,32 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 // the ref is pinned (never `latest`), and a custom run target passes BINDIR and
 // EVENER_SHARE_BINDIR so the symlink lands at evener_path.
 func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
-	const size = 77
-	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin", size)
+	got := remoteinstall.Command("v1.2.3", "", "/opt/evener/bin", "/opt/evener/share/evener/bin")
 	// The script is written to a temp file and the write's status checked before it
 	// runs; a `cat … | sh` pipeline would report sh's status and hide a failed
 	// write, and any fetch here would be a mutable installer. The write's byte
 	// count is checked too (round twelve): a dropped stream reaches `cat` as a
 	// clean EOF, so the length is what proves the whole script arrived.
-	wantCheck := "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = 77 ] && env "
+	wantCheck := "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ] && env "
 	if !strings.Contains(got, wantCheck) {
-		t.Fatalf("installerCommand does not check the script write (and its byte count) before executing the installer: %q", got)
+		t.Fatalf("the installer command does not check the script write (and its byte count) before executing the installer: %q", got)
 	}
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
-		t.Fatalf("installerCommand still pipes the script into sh: %q", got)
+		t.Fatalf("the installer command still pipes the script into sh: %q", got)
 	}
 	if strings.Contains(got, "http") || strings.Contains(got, "curl") {
-		t.Fatalf("installerCommand fetches the installer script instead of streaming the embedded copy: %q", got)
+		t.Fatalf("the installer command fetches the installer script instead of streaming the embedded copy: %q", got)
 	}
 	want := "env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
 	if !strings.HasSuffix(got, want) {
-		t.Fatalf("installerCommand = %q, want suffix %q", got, want)
+		t.Fatalf("remoteinstall.Command = %q, want suffix %q", got, want)
 	}
-	got = installerCommand("snapshot", "", "", size)
+	got = remoteinstall.Command("snapshot", "", "", "")
 	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || strings.Contains(got, "BINDIR") {
-		t.Fatalf("installerCommand(default) = %q, want snapshot ref and no BINDIR override", got)
+		t.Fatalf("remoteinstall.Command(default) = %q, want snapshot ref and no BINDIR override", got)
 	}
 	if strings.Contains(got, "latest") {
-		t.Fatalf("installerCommand passed `latest`: %q", got)
+		t.Fatalf("remoteinstall.Command passed `latest`: %q", got)
 	}
 }
 
@@ -381,7 +381,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			}
 			// The streamed script's length is verified on the host before it runs
 			// (round twelve), and the length is the embedded copy's, not a constant.
-			if want := "[ \"$v\" = " + strconv.Itoa(len(installerScript)) + " ]"; !strings.Contains(joined, want) {
+			if want := "[ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ]"; !strings.Contains(joined, want) {
 				t.Fatalf("installer does not verify the streamed script's byte count (%s): %v", want, argv)
 			}
 		}

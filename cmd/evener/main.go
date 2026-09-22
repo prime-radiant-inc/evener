@@ -387,6 +387,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the evener HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
+	_, _ = fmt.Fprintf(tw, "  install\tInstall Evener on a remote macOS or Linux host over SSH\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")

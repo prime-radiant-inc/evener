@@ -122,8 +122,12 @@ if [ "$(printf '%s\n' "$checksum_line" | wc -l | tr -d ' ')" -ne 1 ]; then
 fi
 
 # Re-emit the line under the bare name so the tool finds the file next to
-# checksums.txt whatever prefix the release wrote.
-expected_sha=${checksum_line%% *}
+# checksums.txt whatever prefix the release wrote. The hash is everything up to
+# the first non-hex byte: the line-matching grep accepts any [[:space:]]
+# separator, and a checksums.txt that separates hash and name with a tab is as
+# valid as the space-separated kind sha256sum writes, so the extraction must not
+# assume a literal space.
+expected_sha=${checksum_line%%[!0-9a-fA-F]*}
 if ! (cd "$tmpdir" && printf '%s  %s\n' "$expected_sha" "$archive_name" | $sha_check); then
 	echo "Checksum verification failed for $archive_name." >&2
 	exit 1
