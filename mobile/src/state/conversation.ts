@@ -3224,7 +3224,33 @@ export function createConversationStore() {
         // a reread request) still publishes the model half.
         const conv = applyThreadNotification(state.conversation, n);
         const publishModel = () => {
-          if (conv !== state.conversation) set({ conversation: conv });
+          // A model-only publish still carries the reducer's half — a
+          // completion's full view can repopulate a compacted turn's
+          // entire payload — and no row-applier pass ran to bound it:
+          // bound against the rows the publish keeps (the final retained
+          // rows), or the payloads stay resident with no display row
+          // backing them — on the open() compatibility path no reread is
+          // scheduled to clean up after it either (review round 25).
+          if (conv === state.conversation) return;
+          const activeTurnId = conv.activeTurnId;
+          const bounded = boundRetainedTurns(conv.turns, conv.items, mergedItemFoldIdentities);
+          set({
+            conversation: {
+              ...conv,
+              // The active turn's payloads are the live working set, not
+              // retained history — the dual-write row appliers lag the
+              // model half (a steering append has no row applier yet), so
+              // bounding it would trim live items before any row exists
+              // to back them. Every settled turn bounds (review round
+              // 25): a completion's full view can repopulate a compacted
+              // turn's entire payload with no row-applier pass to bound
+              // it, and on the open() compatibility path no reread is
+              // scheduled to clean up after it either.
+              turns: bounded.map((turn, index) =>
+                turn.id === activeTurnId ? (conv.turns[index] ?? turn) : turn,
+              ),
+            },
+          });
         };
         switch (n.method) {
           case "item/started":

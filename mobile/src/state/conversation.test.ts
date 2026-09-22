@@ -10697,6 +10697,125 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "kk", text: "restored text", status: "completed" }),
       ]);
     });
+
+    // Review round 25, the model-only publish: a completion's full view
+    // repopulates a compacted turn's entire payload through the reducer,
+    // and the row-applier paths that bail publish the model half WITHOUT
+    // the retention bound — no display row backs the payloads, and on the
+    // open() compatibility path no reread is scheduled to clean up, so
+    // they stay resident indefinitely. A model-only publish bounds against
+    // the rows it keeps: the payloads trim again while the turn's usage
+    // survives.
+    it("a completion repopulating a compacted turn stays bounded", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rb",
+                  transcriptKey: "kr",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "original",
+                  position: { entry: 90, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 10, outputTokens: 1 },
+            },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // An unrelated page load bounds the turns: no row backs rt's item,
+      // so rt compacts to identity + usage.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "un",
+              [
+                {
+                  id: "un-0",
+                  transcriptKey: "un",
+                  turnId: "un",
+                  type: "agentMessage",
+                  text: "unrelated",
+                  position: { entry: 91, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 9, outputTokens: 9 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([]);
+
+      // The turn runs and completes with a FULL view: the reducer
+      // repopulates rt's entire payload. The store has no row applier for
+      // turn/completed — the model-only publish is the only path — and it
+      // must bound what it publishes.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "rt", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "rt",
+            itemsView: "full",
+            status: "completed",
+            usage: { inputTokens: 42, outputTokens: 4 },
+            items: [
+              {
+                id: "rb",
+                turnId: "rt",
+                type: "agentMessage",
+                text: "the full payload",
+                transcriptKey: "kr",
+                position: { entry: 90, item: 0 },
+                status: "completed",
+              },
+            ],
+          },
+        },
+      } as AnyNotification);
+      const after = store.getState().conversation!;
+      const settled = after.turns.find((turn) => turn.id === "rt");
+      expect(settled?.items).toEqual([]);
+      expect(settled?.usage).toEqual({ inputTokens: 42, outputTokens: 4 });
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
