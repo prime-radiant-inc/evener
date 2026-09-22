@@ -9743,6 +9743,116 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "kt", output: "restored output" }),
       ]);
     });
+
+    // Review round 17, field-scoped freshness: a fresh fragment carrying
+    // ONLY a status does supply payload — the merged item is fresh — but
+    // its freshness covers only the fields the fresh side supplied. The
+    // output the merged item inherited from the older alias is older
+    // content, and its conflict with the later keyed sibling's restored
+    // output must resolve in list order, not ride the item's status-borne
+    // freshness.
+    it("a status-only fresh fragment does not promote inherited stale output", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A retained turn holding a STATUS-ONLY fragment: identity and
+      // ordering fields plus a completed status — no text, no arguments,
+      // no output. The status is real payload, so the fragment is not
+      // identity-only; the projector rows it under its transcript key.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "rt",
+              [
+                {
+                  id: "item_tool_7",
+                  type: "commandExecution",
+                  callId: "call-9",
+                  status: "completed",
+                  transcriptKey: "kt",
+                  position: { entry: 50, item: 0 },
+                },
+              ],
+              { inputTokens: 60, outputTokens: 6 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ id: "item_tool_7", transcriptKey: "kt", status: "completed" }),
+      ]);
+
+      // The next page carries the fragment's KEYLESS alias — holding the
+      // STALE output — followed by a keyed sibling holding the restored
+      // one. The status-only fragment folds into the keyless alias: the
+      // merged item is fresh through the status, but the output it carries
+      // came from the older alias, so the restored sibling's output must
+      // still win the reconciliation.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "item_tool_7",
+                  type: "commandExecution",
+                  callId: "call-9",
+                  output: "stale output",
+                  exitCode: 1,
+                  status: "failed",
+                  position: { entry: 50, item: 0 },
+                },
+                {
+                  id: "item_tool_8",
+                  type: "commandExecution",
+                  callId: "call-8",
+                  output: "restored output",
+                  exitCode: 0,
+                  status: "completed",
+                  transcriptKey: "kt",
+                  position: { entry: 51, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kt", output: "restored output" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

@@ -848,6 +848,13 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
 // keeps, so it never makes an item fresh — an unpositioned skeleton folding
 // an older reissue must not tie with the positioned restored item beside it
 // and let display order hand the stale text the win.
+// Review round 17: the precedence itself is FIELD-scoped. A fresh input
+// supplying one payload field (a status-only fragment) makes the merged
+// item fresh, but its freshness covers only the fields that fresh input
+// supplied: fields the item inherited from older-side leaves are older
+// content, and their conflicts with the other duplicate's own values
+// resolve in list order — the same later-wins a participation tie applies
+// (reconcileFreshOverPlain).
 function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const reconciled: ItemModel[] = [];
   for (const item of items) {
@@ -863,11 +870,56 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
     const existingIsNewer = existingCarriesFresh && !itemCarriesFresh;
     const olderItem = existingIsNewer ? item : existing;
     const newerItem = existingIsNewer ? existing : item;
-    const mergedItem = mergePageItem(olderItem, newerItem);
+    const mergedItem =
+      existingIsNewer && context
+        ? reconcileFreshOverPlain(existing, item, freshSuppliedFields(context, existing))
+        : mergePageItem(olderItem, newerItem);
     if (context) recordMergedToolItem(context, mergedItem, olderItem, newerItem);
     reconciled[index] = mergedItem;
   }
   return reconciled;
+}
+
+// The fields an item's FRESH inputs supplied — the fields its freshness
+// actually covers (review round 17). Text counts as supplied only when a
+// fresh leaf PROVIDED it (the omitted marker means the wire carried none);
+// every other field counts when a fresh leaf defines it. An item the
+// context never saw speaks only for itself.
+function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): ReadonlySet<string> {
+  const supplied = new Set<string>();
+  const record = (leaf: ItemModel): void => {
+    for (const [key, value] of Object.entries(leaf)) {
+      if (value !== undefined) supplied.add(key);
+    }
+    if (itemTextPresence(leaf) === "provided") supplied.add("text");
+  };
+  const provenance = context.provenance.get(item);
+  if (provenance === undefined) {
+    record(item);
+    return supplied;
+  }
+  for (const leaf of membershipLeaves(provenance.fresh)) record(leaf);
+  return supplied;
+}
+
+// The fresh-precedence merge of an earlier duplicate over a later one,
+// with the freshness scoped to the fields the earlier item's fresh inputs
+// supplied (review round 17): a field it inherited from an older-side leaf
+// is older content, and its conflict with the later duplicate's own value
+// resolves exactly as the plain later-wins tiebreak would. Composed as
+// the plain merge overlaid with the fresh-supplied fields, so every field
+// keeps the merge's own rule (nullish fallback, status rank, text
+// presence) instead of a key-by-key patch.
+function reconcileFreshOverPlain(existing: ItemModel, item: ItemModel, freshSupplied: ReadonlySet<string>): ItemModel {
+  const plain = mergePageItem(existing, item);
+  if (freshSupplied.size === 0) return plain;
+  const overlay = copyItemTextPresence(existing, { ...existing });
+  for (const key of Object.keys(overlay)) {
+    if (key === "text") continue;
+    if (!freshSupplied.has(key)) delete (overlay as unknown as Record<string, unknown>)[key];
+  }
+  if (!freshSupplied.has("text")) return mergePageItem(plain, markItemTextOmitted({ ...overlay, text: "" }));
+  return mergePageItem(plain, overlay);
 }
 
 // Whether an item's merge membership includes newer-side ("fresh") inputs
