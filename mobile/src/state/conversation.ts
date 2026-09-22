@@ -50,6 +50,7 @@ import type {
 } from "../conversation/project";
 import {
   activityIdentity,
+  attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
   MAX_ITEM_BYTES,
@@ -1886,8 +1887,7 @@ export function createConversationStore() {
             currentConvForMerge !== null && currentConvForMerge.instanceId === conversation.instanceId;
           const replacesInstance = currentConvForMerge !== null && !sameInstance;
           const preservePageHistory =
-            sameInstance &&
-            (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
+            sameInstance && pageOwnedIds.size > 0;
           // Turn-history and wire-cursor merging gate on turn ownership, not
           // item ownership — a page whose items
           // were entirely deduped or evicted still owns turns that must not
@@ -1940,13 +1940,6 @@ export function createConversationStore() {
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
           // The reread's own turns cover only its itemLimit-bounded window,
-          // so a turn loaded via an earlier loadOlder (outside that window)
-          // is absent from it. The pre-truncation capped rows the commit
-          // below keeps are the keep-window for the bound.
-          let mergedTurns = conversation.turns;
-          let wireOlderCursor = conversation.olderCursor;
-          const rehydrateCapped = capItems(merged.items);
-          // The reread's own turns cover only its itemLimit-bounded window,
           // so a turn loaded via an earlier
           // loadOlder (outside that window) is absent from it. Preserve those
           // turns — deduped by id, older first — under preserveTurnHistory
@@ -1963,6 +1956,7 @@ export function createConversationStore() {
           // capped value here would flip a partial sum's scope to "session".
           let mergedTurns = conversation.turns;
           let wireOlderCursor = conversation.olderCursor;
+          const rehydrateCapped = capItems(merged.items);
           if (preserveTurnHistory && currentConvForMerge !== null) {
             // The public merge folds accumulated page turns into the fresh
             // read with fresh-defined fields winning and older fragments
@@ -2907,6 +2901,26 @@ export function createConversationStore() {
             applied.turns === state.conversation.turns)
         ) {
           requestRehydrate(state.ref);
+        }
+        // The transient-warning settle finding (RoboRev, Sep-18, on this
+        // piece's pre-restack branch): a warning folds into the active
+        // turn's items and a bare turn/completed settles the turn without
+        // touching them, so the projected warning row lingered with nothing
+        // in flight to clear it. The wire never persists warnings, so the
+        // canonical read is the one honest way to drop what the settle
+        // kept: a completed turn that still holds warning items requests
+        // it. A full settle stamp replaces the turn's items wire-authoritatively
+        // (no warnings survive it) and needs nothing here.
+        if (n.method === "turn/completed") {
+          const settledTurnId = (n.params as { turn?: { id?: string } }).turn
+            ?.id;
+          const settledTurn =
+            settledTurnId === undefined
+              ? undefined
+              : applied.turns.find((turn) => turn.id === settledTurnId);
+          if (settledTurn?.items.some((item) => item.type === "warning")) {
+            requestRehydrate(state.ref);
+          }
         }
       },
 
