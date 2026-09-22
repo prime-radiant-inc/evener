@@ -88,8 +88,20 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	if err := syscall.Kill(identity.PID, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill daemon pid %d: %v", identity.PID, err)
 	}
-	if err := awaitDaemonGone(ctx, client, ref); err != nil {
-		t.Fatalf("the daemon never exited: %v", err)
+	// Wait for the roster to drop the killed daemon: the send below is only the
+	// reported flow once the hub reads this session as exited.
+	killedAt := time.Now()
+	for {
+		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
+		if err == nil {
+			if _, still := residentIdentityForRef(list, ref); !still {
+				break
+			}
+		}
+		if time.Since(killedAt) > 30*time.Second {
+			t.Fatal("the killed daemon never left the roster")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	// The user's next prompt. This is the send the report is about.
