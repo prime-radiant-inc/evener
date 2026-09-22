@@ -13,6 +13,7 @@ import {
 } from "@evener/appwire-client";
 import type {
   AnyNotification,
+  AskQuestionRef,
   EvenerThread,
   InputItem,
   MutationReceipt,
@@ -3074,6 +3075,156 @@ describe("ConversationStore", () => {
       expect(attachment.name?.endsWith("… truncated")).toBe(true);
       // src is never bounded — byte-for-byte identical to the input.
       expect(attachment.src).toBe(src);
+    });
+  });
+
+  describe("truncation ownership covers every kind the display bounds cut (#1737 follow-up)", () => {
+    // project.ts's truncateItem (arrived with #1737) cuts user text, notice
+    // text, a failure row's title and detail, question prose, and an
+    // activity's description and label — but reconcileTruncationFrom decided
+    // ownership from assistant markdown and activity arguments/output/error
+    // alone, so rows of the other kinds arrived truncated with no id in the
+    // set and the affordance never showed for them.
+    const big = "x".repeat(MAX_ITEM_BYTES + 100);
+
+    async function openWithItems(items: MobileTimelineItem[]) {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items });
+      await store.getState().open(service, "ref-1");
+      return store;
+    }
+
+    it("records an oversized user row's text as truncated", async () => {
+      const store = await openWithItems([
+        { kind: "user", id: "user-big", text: big },
+        { kind: "user", id: "user-short", text: "short" },
+      ]);
+      const truncated = store.getState().getTruncatedItemIds();
+      expect(truncated.has("user-big")).toBe(true);
+      expect(truncated.has("user-short")).toBe(false);
+      const row = store
+        .getState()
+        .conversation?.items.find((candidate) => candidate.id === "user-big");
+      expect(row?.kind).toBe("user");
+      if (row?.kind === "user") {
+        expect(row.text.endsWith(TRUNCATION_MARKER)).toBe(true);
+      }
+    });
+
+    it("records an oversized notice row's text as truncated", async () => {
+      const store = await openWithItems([
+        {
+          kind: "notice",
+          id: "notice-big",
+          origin: "steering",
+          family: "informational",
+          tone: "info",
+          text: big,
+        },
+      ]);
+      expect(store.getState().getTruncatedItemIds().has("notice-big")).toBe(true);
+      const row = store
+        .getState()
+        .conversation?.items.find((candidate) => candidate.id === "notice-big");
+      expect(row?.kind).toBe("notice");
+      if (row?.kind === "notice") {
+        expect(row.text.endsWith(TRUNCATION_MARKER)).toBe(true);
+      }
+    });
+
+    it("records an oversized failure row's title or detail as truncated", async () => {
+      const store = await openWithItems([
+        { kind: "failure", id: "failure-title-big", title: big, detail: "short" },
+        { kind: "failure", id: "failure-detail-big", title: "short", detail: big },
+      ]);
+      const truncated = store.getState().getTruncatedItemIds();
+      expect(truncated.has("failure-title-big")).toBe(true);
+      expect(truncated.has("failure-detail-big")).toBe(true);
+    });
+
+    it("records a question row whose own prose is oversized as truncated", async () => {
+      const question = (over: Partial<AskQuestionRef>): AskQuestionRef => ({
+        key: "k",
+        callId: "c",
+        header: "header",
+        question: "prompt",
+        options: [{ label: "option", detail: "detail" }],
+        multiSelect: false,
+        ...over,
+      });
+      const store = await openWithItems([
+        {
+          kind: "question",
+          id: "q-header-big",
+          questions: [question({ header: big })],
+        },
+        {
+          kind: "question",
+          id: "q-option-label-big",
+          questions: [question({ options: [{ label: big, detail: "detail" }] })],
+        },
+      ]);
+      const truncated = store.getState().getTruncatedItemIds();
+      expect(truncated.has("q-header-big")).toBe(true);
+      expect(truncated.has("q-option-label-big")).toBe(true);
+    });
+
+    it("records an activity row with an oversized description or label as truncated", async () => {
+      const store = await openWithItems([
+        {
+          kind: "activity",
+          id: "act-description-big",
+          label: "shell",
+          family: "tool",
+          state: "completed",
+          detail: { description: big },
+        },
+        {
+          kind: "activity",
+          id: "act-label-big",
+          label: big,
+          family: "tool",
+          state: "completed",
+          detail: {},
+        },
+      ]);
+      const truncated = store.getState().getTruncatedItemIds();
+      expect(truncated.has("act-description-big")).toBe(true);
+      expect(truncated.has("act-label-big")).toBe(true);
+    });
+
+    it("records a clustered member with an oversized description under its own identity", async () => {
+      const store = await openWithItems([
+        {
+          kind: "activity",
+          id: "act-members",
+          label: "shell",
+          family: "tool",
+          state: "completed",
+          detail: {},
+          members: [
+            {
+              id: "member-short",
+              label: "shell",
+              family: "tool",
+              state: "completed",
+              detail: { output: "fine" },
+            },
+            {
+              id: "member-description-big",
+              label: "shell",
+              family: "tool",
+              state: "completed",
+              detail: { description: big },
+            },
+          ],
+        },
+      ]);
+      const truncated = store.getState().getTruncatedItemIds();
+      expect(truncated.has("member-description-big")).toBe(true);
+      expect(truncated.has("member-short")).toBe(false);
+      expect(truncated.has("act-members")).toBe(false);
     });
   });
 
