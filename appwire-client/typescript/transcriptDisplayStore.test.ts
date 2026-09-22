@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { WireError } from "./errors";
 import { deferred } from "./testing/deferred";
+import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient } from "./testing/fakeClient";
 import {
   type HubTranscriptDisplayDefault,
@@ -13,6 +14,8 @@ import {
   createTranscriptDisplayStore,
   fromWireChange,
   type TranscriptDisplayStore,
+  type TranscriptDisplayStoreDeps,
+  type TranscriptDraftCheckpoint,
   transcriptDisplaySupport,
 } from "./transcriptDisplayStore";
 import type { AnyNotification, TranscriptDisplayDefaults, TranscriptDisplayPatchResponse } from "./types.gen";
@@ -70,8 +73,11 @@ function captureLoadedPublications(store: TranscriptDisplayStore): {
   return { publications, unsubscribe };
 }
 
-async function readyStore(client: FakeClient): Promise<TranscriptDisplayStore> {
-  const store = createTranscriptDisplayStore({ client });
+async function readyStore(
+  client: FakeClient,
+  deps: Partial<TranscriptDisplayStoreDeps> = {},
+): Promise<TranscriptDisplayStore> {
+  const store = createTranscriptDisplayStore({ client, ...deps });
   store.setSupport("supported");
   store.beginReadyGeneration();
   await store.getState().refreshHubDefaults();
@@ -1188,5 +1194,906 @@ describe("the direct write", () => {
     const result = await store.getState().patchHubDefault("mobile", proposed);
     expect(result).toEqual(hubDefault(2, mobileConfig));
     expect(client.calls.some((call) => call.method === patchMethod)).toBe(false);
+  });
+});
+
+describe("the checkpointed draft editor", () => {
+  test("edit persists the proposal; save checkpoints before the PATCH leaves and clears it on confirmation", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(drafts.stored()).toMatchObject({
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+
+    // The checkpoint must name the uncertain intent before the request can
+    // leave: the PATCH handler observes what the port already holds.
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    let checkpointAtRequest: unknown = null;
+    client.on(patchMethod, () => {
+      checkpointAtRequest = drafts.stored();
+      return reply.promise;
+    });
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(checkpointAtRequest).toMatchObject({ writeUncertain: true }));
+    expect(client.calls.at(-1)?.params).toEqual({
+      layout: "mobile",
+      expectedRevision: 2,
+      config: toWireConfig(proposed),
+    });
+    expect(store.getState().saving).toBe(true);
+
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await save).toEqual(hubDefault(3, proposed));
+    expect(store.getState()).toMatchObject({
+      saving: false,
+      writeUncertain: false,
+      draft: null,
+      draftConflict: false,
+    });
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+  });
+
+  test("save refuses stale, unloaded, saving, uncertain, unsupported, and replaced-checkpoint state", async () => {
+    // Unloaded: no ready generation has confirmed anything.
+    const fresh = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    await expect(fresh.getState().saveDraft("mobile", proposed)).rejects.toThrow(/unavailable/);
+
+    // Unsupported: the hub does not advertise the section.
+    const retired = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)));
+    retired.setSupport("unsupported");
+    await expect(retired.getState().saveDraft("mobile", proposed)).rejects.toThrow(/unavailable/);
+
+    // Busy, then uncertain, then stale, in sequence on one live store.
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow(/unavailable/);
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await save;
+
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", mobileConfig)).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+    await expect(store.getState().saveDraft()).rejects.toThrow(/unavailable/);
+
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 7, config: toWireConfig(desktopConfig) },
+    });
+    expect(store.getState().draftConflict).toBe(true);
+    await expect(store.getState().saveDraft()).rejects.toThrow(/before saving your changes/);
+
+    // A checkpoint another writer replaced since this store classified it
+    // refuses through the port's compare-and-swap, and the replacement is
+    // adopted rather than overwritten.
+    const replaced = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const replacedStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)), {
+      drafts: replaced.storage,
+    });
+    replacedStore.getState().editDraft("mobile", proposed);
+    const other: TranscriptDraftCheckpoint = {
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    };
+    replaced.storage.save(other);
+    await expect(replacedStore.getState().saveDraft()).rejects.toThrow(/changed again/);
+    expect(replaced.stored()).toEqual(other);
+    expect(replacedStore.getState().draft?.layout).toBe("desktop");
+  });
+
+  test("a lost reply preserves the uncertain checkpoint; an authoritative read settles it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftConflict: true });
+    expect(drafts.stored()).toMatchObject({ writeUncertain: true });
+    // Edits stay blocked while the outcome is unknown.
+    expect(() => store.getState().editDraft("mobile", mobileConfig)).toThrow(/unavailable/);
+
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+  });
+
+  test("a known revision conflict lands the canonical value and keeps the proposal for review", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw conflictError("mobile", hubDefault(5, desktopConfig));
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(5, desktopConfig));
+    expect(store.getState().draft?.config).toEqual(proposed);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
+  });
+
+  test("a conflict settles its checkpoint before edits unblock, so a subscriber's newer edit survives", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw conflictError("mobile", hubDefault(5, desktopConfig));
+    });
+    // A synchronous subscriber edits the moment the conflict publication
+    // unblocks the editor.
+    let edited = false;
+    const unsubscribe = store.subscribe((state) => {
+      if (edited || state.saving || !state.draftConflict) return;
+      edited = true;
+      store.getState().editDraft("mobile", mobileConfig);
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    unsubscribe();
+    // The re-mark must settle this write's own record before edits unblock -
+    // not reach past the subscriber's newer edit once their save has
+    // re-classified the repository.
+    expect(drafts.stored()).toMatchObject({ layout: "mobile", config: mobileConfig });
+  });
+
+  test("a checkpointed takeover clears the superseded direct write's preview even when both writes fail", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const first = deferred<TranscriptDisplayPatchResponse>();
+    const second = deferred<TranscriptDisplayPatchResponse>();
+    let patchCount = 0;
+    client.on(patchMethod, () => {
+      patchCount += 1;
+      return patchCount === 1 ? first.promise : second.promise;
+    });
+    const direct = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    // The checkpointed editor takes the layer over while the direct write's
+    // reply is still outstanding.
+    store.getState().editDraft("mobile", desktopConfig);
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    first.reject(new Error("connection lost"));
+    second.reject(new Error("connection lost"));
+    // The direct write's discarded reply settles nothing of its own.
+    expect(await direct).toEqual(hubDefault(2, mobileConfig));
+    await expect(save).rejects.toThrow("connection lost");
+    // An unchanged refresh contradicts nothing, so it cannot clear the
+    // preview either: only the takeover can.
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().drafts).toEqual({});
+  });
+
+  test("a checkpoint replaced during a successful save adopts the replacement without sticking on saving", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    // Another window replaces the checkpoint while this PATCH is in flight.
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => {
+      drafts.storage.save({
+        id: "other",
+        layout: "desktop",
+        baseRevision: 3,
+        config: desktopConfig,
+        writeUncertain: false,
+      });
+      return reply.promise;
+    });
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await save).toEqual(hubDefault(3, proposed));
+    // The replacement survives, the settlement clears the in-flight flags,
+    // and the editor stays usable.
+    expect(drafts.stored()).toMatchObject({ id: "other", layout: "desktop" });
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().draft?.layout).toBe("desktop");
+    expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
+  });
+
+  test("a checkpoint replaced during a newer-external save adopts the replacement without sticking on saving", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+    // An external change beats this write's revision and another window
+    // replaces the checkpoint, both while the PATCH is out.
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 7, config: toWireConfig(desktopConfig) },
+    });
+    drafts.storage.save({
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    });
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await save).toEqual(hubDefault(3, proposed));
+    expect(drafts.stored()).toMatchObject({ id: "other", layout: "desktop" });
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().draft?.layout).toBe("desktop");
+    expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
+  });
+
+  test("a post-apply rejection is a confirmed save, not an uncertain one", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new WireError("post-apply failure", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "mobile",
+        applied: hubDefault(5, proposed),
+      });
+    });
+    // The hub applied the write before a follow-up durable step failed and
+    // reported what it applied: the save resolves, the flags settle, and the
+    // editor stays usable - unlike a lost reply, nothing is uncertain.
+    expect(await store.getState().saveDraft()).toEqual(hubDefault(5, proposed));
+    expect(store.getState()).toMatchObject({
+      saving: false,
+      writeUncertain: false,
+      draftConflict: false,
+      draft: null,
+    });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(5, proposed));
+    expect(drafts.stored()).toBeNull();
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+  });
+
+  test("a generation change flags the draft stale even when the next hub reports the same revision", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    // The connection drops and reconnects to a hub whose own numbering happens
+    // to confirm the identical revision this draft was composed against.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile?.revision).toBe(2);
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
+  test("an edit continuing the draft keeps its generation stale across a reconnect with equal revisions", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draftConflict).toBe(true);
+
+    // An ordinary edit continues the draft: it must keep the generation the
+    // draft was composed under and stay in review, not re-stamp itself
+    // current against the replacement hub's coincidentally equal revision.
+    store.getState().editDraft("mobile", desktopConfig);
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: desktopConfig,
+      generation: 1,
+    });
+    expect(store.getState().draftConflict).toBe(true);
+    await expect(store.getState().saveDraft()).rejects.toThrow(/before saving your changes/);
+
+    // Reviewing the replacement hub's current value is what clears it.
+    store.getState().rebaseDraft(2);
+    expect(store.getState().draftConflict).toBe(false);
+  });
+
+  test("a read that confirms an adopted draft stamps its generation, so an equal-revision reconnect stays in review", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // An uncertain write whose checkpoint another window replaced
+    // mid-flight: the settling read adopts the replacement, which by design
+    // carries no generation (a replacement record knows nothing about this
+    // store's).
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    drafts.storage.save({
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: false,
+    });
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: mobileConfig,
+      generation: null,
+    });
+
+    // An unchanged refresh confirms the adopted draft's base revision is
+    // still the current state: that read has earned the generation stamp.
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draft?.generation).toBe(1);
+
+    // A reconnect whose numbering restarts on the same revision must leave
+    // the draft in review, not stamp the new generation onto it.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
+  test("a failed draft restore gates the support-driven refresh until the port recovers", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    drafts.failLoad();
+    const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
+    expect(store.getState().storageUnavailable).toBe(true);
+
+    // Generation begins before support does. The support-driven refresh must
+    // carry the same draft-port recovery gate an explicit one does, or its
+    // read would land `loaded` with the checkpoint - possibly an uncertain
+    // saved write - still unread on the port, opening the direct-write path
+    // with the draft unknown.
+    store.beginReadyGeneration();
+    store.setSupport("supported");
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(0);
+    expect(store.getState().loaded).toBe(false);
+    await expect(store.getState().patchHubDefault("mobile", mobileConfig)).rejects.toThrow(/unavailable/);
+
+    // Once the port recovers, a refresh re-reads the checkpoint (absent here)
+    // and the hub read proceeds.
+    drafts.failLoad(false);
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draft).toBeNull();
+  });
+
+  test("a draft-port failure after the hub loaded keeps direct writes gated until the uncertainty is settled", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // Another window's UNCERTAIN write lands on the port behind this
+    // store's back, and the port fails before this store ever reads it: the
+    // record is unknown here, and its outcome is unresolved.
+    drafts.storage.save({
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: true,
+    });
+    drafts.failSave();
+    expect(() => store.getState().editDraft("mobile", proposed)).toThrow(/save the transcript draft/);
+    expect(store.getState()).toMatchObject({
+      loaded: true,
+      storageUnavailable: true,
+      writeUncertain: false,
+    });
+    // The direct write's gate attempts the port's recovery itself: the
+    // reload reveals the other window's uncertain write, and the revealed
+    // uncertainty - not the stale storage flag - is what refuses the send.
+    client.on(patchMethod, () => patchAnswer("mobile", hubDefault(3, desktopConfig)));
+    await expect(store.getState().patchHubDefault("mobile", desktopConfig)).rejects.toThrow(/unavailable/);
+    expect(store.getState().hubErrors.mobile).toBe("Hub transcript display settings are unavailable.");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // An authoritative read settles the revealed uncertainty (the hub still
+    // holds revision 2, so that write never landed), leaving the other
+    // window's proposal as a clean current draft - and the direct path
+    // reopens.
+    drafts.failSave(false);
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: mobileConfig,
+      generation: 1,
+    });
+    expect(await store.getState().patchHubDefault("mobile", desktopConfig)).toEqual(hubDefault(3, desktopConfig));
+  });
+
+  test("a port failure behind a stale unreadable classification still gates reads and writes", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // The corrupt record is classified unreadable: the port read its bytes,
+    // the draft is simply absent, and the section stays usable.
+    expect(store.getState().draftUnreadable).toBe(true);
+    expect(store.getState().loaded).toBe(true);
+
+    // Another window replaces the corrupt record with an uncertain write,
+    // and the port fails before this store can read the replacement.
+    drafts.storage.save({
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: true,
+    });
+    drafts.failLoad();
+    const readsBefore = client.calls.filter((call) => call.method === getMethod).length;
+    await store.getState().refreshHubDefaults();
+    // No read may land past the inaccessible port, stale flag or not: the
+    // record it classified unreadable may have been replaced by anything.
+    expect(client.calls.filter((call) => call.method === getMethod)).toHaveLength(readsBefore);
+    client.on(patchMethod, () => patchAnswer("mobile", hubDefault(3, desktopConfig)));
+    await expect(store.getState().patchHubDefault("mobile", desktopConfig)).rejects.toThrow(/unavailable/);
+
+    // The stale unreadable classification survives for discard to keep
+    // naming the record it classified.
+    expect(() => store.getState().discardDraft()).not.toThrow(/unavailable/);
+
+    // Once loading succeeds again, the refresh reveals the replacement's
+    // uncertainty and settles it in the same read (the hub's unchanged
+    // revision proves that write never landed), and the direct path reopens.
+    drafts.failLoad(false);
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(await store.getState().patchHubDefault("mobile", desktopConfig)).toEqual(hubDefault(3, desktopConfig));
+  });
+
+  test("a read cannot settle an uncertainty adopted behind its back", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+
+    // A read leaves; then another window persists an UNCERTAIN write, and
+    // this store's next edit loses its compare-and-swap to it, adopting it
+    // while the read is still outstanding.
+    const reply = deferred<TranscriptDisplayDefaults>();
+    client.on(getMethod, () => reply.promise);
+    const refresh = store.getState().refreshHubDefaults();
+    drafts.storage.save({
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: true,
+    });
+    expect(() => store.getState().editDraft("mobile", desktopConfig)).toThrow(/changed again/);
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // That write left for the hub AFTER this read's snapshot, so the read
+    // says nothing about its outcome: neither the record on the port nor
+    // the published state may be settled by it.
+    reply.resolve({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    });
+    await refresh;
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toMatchObject({ id: "other", writeUncertain: true });
+
+    // A read that postdates the adoption settles it and unblocks editing.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    }));
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
+    expect(() => store.getState().editDraft("desktop", proposed)).not.toThrow();
+  });
+
+  test("reset re-reads the persisted draft instead of losing it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // A lifecycle reset re-reads the checkpoint rather than wiping it: the
+    // unresolved write survives reset with its uncertainty, so nothing may
+    // compose past the still-classified record. The re-read is
+    // identity-aware, so the same record keeps the generation it was
+    // composed under.
+    store.reset();
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: proposed,
+      generation: 1,
+    });
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(() => store.getState().editDraft("mobile", proposed)).toThrow(/unavailable/);
+
+    // Reuse settles the retained uncertainty under a fresh generation and
+    // reopens the editor.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+  });
+
+  test("reset keeps an unreadable classification discardable through a port failure", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    expect(store.getState().draftUnreadable).toBe(true);
+
+    // A temporary load failure strikes. The reset's re-read fails plainly,
+    // so the unreadable classification must survive it exactly as a
+    // recovery reload's would: discard is the one fix for an unreadable
+    // record, and the repository still holds its identity.
+    drafts.failLoad();
+    store.reset();
+    expect(store.getState().storageUnavailable).toBe(true);
+    expect(store.getState().draftUnreadable).toBe(true);
+    expect(() => store.getState().discardDraft()).not.toThrow(/unavailable/);
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState().draftUnreadable).toBe(false);
+    expect(store.getState().storageUnavailable).toBe(false);
+  });
+
+  test("reset preserves a persisted draft's generation against an equal-revision replacement hub", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    expect(store.getState().draft?.generation).toBe(1);
+
+    // The lifecycle reset re-reads the SAME record: the generation stamp is
+    // this store's own claim about it, and wiping it would let a
+    // replacement hub's coincidentally equal revision read the draft as
+    // current - exactly what the generation guard exists to prevent.
+    store.reset();
+    expect(store.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: proposed,
+      generation: 1,
+    });
+
+    // The replacement hub restarts numbering on the same revision: the
+    // draft stays in review and saving refuses.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draftConflict).toBe(true);
+    await expect(store.getState().saveDraft()).rejects.toThrow(/before saving your changes/);
+  });
+
+  test("a pre-ready restore is stamped by the first authoritative payload; a pre-generation relay stamps nothing", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
+
+    // A relayed change before any ready generation began is fenced by the
+    // live-hub gate and must not stamp a fake generation onto the draft.
+    store.getState().applyHubChange({ layout: "mobile", revision: 2, config: mobileConfig });
+    expect(store.getState().draft?.generation).toBeNull();
+    expect(store.getState().hub).toEqual({});
+
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+  });
+
+  test("an unreadable stored record keeps the hub usable, exposes draftUnreadable, and discard clears it", async () => {
+    // The shape the native host wrote before layouts were recorded - and any
+    // other value this build cannot read.
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: legacy.storage });
+    expect(store.getState().draft).toBeNull();
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().storageUnavailable).toBe(true);
+    expect(store.getState().draftUnreadable).toBe(true);
+    expect(store.getState().draftError).toMatch(/restore/);
+
+    store.getState().discardDraft();
+    expect(legacy.stored()).toBeNull();
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draftUnreadable).toBe(false);
+
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+    expect(store.getState().draft?.config).toEqual(proposed);
+  });
+
+  test("discard honors compare-and-remove for readable and unreadable records; replacements are adopted", async () => {
+    // An unreadable record another writer replaced before the discard.
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const unreadableStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)), {
+      drafts: legacy.storage,
+    });
+    expect(unreadableStore.getState().draftUnreadable).toBe(true);
+    const newer: TranscriptDraftCheckpoint = {
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    };
+    legacy.storage.save(newer);
+    unreadableStore.getState().discardDraft();
+    expect(legacy.stored()).toEqual(newer);
+    expect(unreadableStore.getState().draftUnreadable).toBe(false);
+    expect(unreadableStore.getState().storageUnavailable).toBe(false);
+    expect(unreadableStore.getState().draft).toMatchObject({ layout: "mobile", revision: 2, config: proposed });
+
+    // A readable record another writer replaced before the discard. The
+    // discard must name the record this store classified, not a fresh reload.
+    const readable = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const readableStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)), {
+      drafts: readable.storage,
+    });
+    expect(readableStore.getState().draft).toEqual({
+      layout: "mobile",
+      revision: 2,
+      config: proposed,
+      generation: 1,
+    });
+    const replacement: TranscriptDraftCheckpoint = {
+      id: "d1",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    };
+    readable.storage.save(replacement);
+    readableStore.getState().discardDraft();
+    expect(readable.stored()).toEqual(replacement);
+    expect(readableStore.getState().draft).toMatchObject({
+      layout: "desktop",
+      revision: 3,
+      config: desktopConfig,
+    });
+    expect(readableStore.getState().draft?.generation).toBeNull();
+
+    // A replacement landing while an uncertain write is being settled by a
+    // read is adopted, never overwritten with the stale checkpoint.
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const settleStore = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(settleStore.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    expect(settleStore.getState().writeUncertain).toBe(true);
+    const other: TranscriptDraftCheckpoint = {
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    };
+    drafts.storage.save(other);
+    await settleStore.getState().refreshHubDefaults();
+    expect(settleStore.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toEqual(other);
+    expect(settleStore.getState().draft).toMatchObject({
+      layout: "desktop",
+      revision: 3,
+      config: desktopConfig,
+    });
+  });
+
+  test("rebase requires reviewing the current revision and then allows save", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 4, config: toWireConfig(desktopConfig) },
+    });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+    expect(store.getState().draftConflict).toBe(true);
+    expect(() => store.getState().rebaseDraft(3)).toThrow(/changed again/);
+    store.getState().rebaseDraft(4);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 4, config: proposed, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    client.on(patchMethod, () => patchAnswer("mobile", hubDefault(5, proposed)));
+    expect(await store.getState().saveDraft()).toEqual(hubDefault(5, proposed));
+    expect(store.getState().draft).toBeNull();
+    expect(drafts.stored()).toBeNull();
+  });
+
+  test("port save, load, remove, and replace failures set the right flags without dropping an uncertain checkpoint", async () => {
+    // A save that throws marks storage unavailable with the save-failure copy.
+    const failing = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const failingStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)), {
+      drafts: failing.storage,
+    });
+    failing.failSave();
+    expect(() => failingStore.getState().editDraft("mobile", proposed)).toThrow(/save the transcript draft locally/);
+    expect(failingStore.getState().storageUnavailable).toBe(true);
+    expect(failingStore.getState().draftError).toMatch(/save the transcript draft locally/);
+
+    // A load that throws at restore marks storage unavailable with the
+    // restore-failure copy, and the hub read waits: an edit cannot compose
+    // against a confirmed payload with the draft unknown.
+    const flaky = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    flaky.failLoad();
+    const flakyClient = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const flakyStore = createTranscriptDisplayStore({ client: flakyClient, drafts: flaky.storage });
+    expect(flakyStore.getState().storageUnavailable).toBe(true);
+    expect(flakyStore.getState().draftError).toMatch(/restore/);
+    flakyStore.setSupport("supported");
+    flakyStore.beginReadyGeneration();
+    await flakyStore.getState().refreshHubDefaults();
+    expect(flakyStore.getState().loaded).toBe(false);
+    expect(flakyClient.calls.filter((call) => call.method === getMethod)).toHaveLength(0);
+
+    // A remove that throws refuses the discard and keeps the record.
+    const throwing = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const discardStore = await readyStore(serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig)), {
+      drafts: {
+        ...throwing.storage,
+        removeIf: () => {
+          throw new Error("disk unavailable");
+        },
+      },
+    });
+    discardStore.getState().editDraft("mobile", proposed);
+    expect(() => discardStore.getState().discardDraft()).toThrow(/discard the transcript draft locally/);
+    expect(discardStore.getState().storageUnavailable).toBe(true);
+    expect(discardStore.getState().draftError).toMatch(/discard the transcript draft locally/);
+    expect(throwing.stored()).not.toBeNull();
+
+    // A replace that throws while an uncertain write is being settled keeps
+    // the uncertainty: the checkpoint still says writeUncertain on disk.
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+    drafts.failReplace();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().storageUnavailable).toBe(true);
+    expect(store.getState().draftError).toMatch(/save the transcript draft locally/);
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: true });
+  });
+
+  test("without a draft port the ephemeral fallback does not manufacture a concurrent replacement", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    // No drafts port: the documented in-memory fallback, which retains its
+    // checkpoint for the instance and compares its swaps against that value
+    // - only this one repository instance ever touches it, so a refusal can
+    // only mean something in this instance really did replace the record.
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw conflictError("mobile", hubDefault(5, desktopConfig));
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
+    // The proposal must still be here for review, not silently wiped to null
+    // by a phantom concurrent writer only real storage could have.
+    expect(store.getState().draft).not.toBeNull();
+    expect(store.getState().draft?.config).toEqual(proposed);
+  });
+
+  test("the in-memory fallback keeps drafts and their uncertainty coherent across reset", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    store.getState().editDraft("mobile", proposed);
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft()).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The fallback retains its checkpoint for the instance: reset re-reads
+    // the proposal with its unresolved outcome instead of wiping both.
+    store.reset();
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(() => store.getState().editDraft("mobile", proposed)).toThrow(/unavailable/);
+
+    // A refresh settles the retained uncertainty the ordinary way.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+  });
+
+  test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The stored checkpoint becomes unreadable (a newer app version wrote a
+    // shape this build cannot decode) while the write's outcome is still
+    // unknown.
+    drafts.corrupt();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+    // The record is unreadable - there is nothing left to be "uncertain"
+    // about and nothing to review a "conflict" against. Both must clear, or
+    // discardDraft (the one recovery this state allows) is refused too.
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draftConflict).toBe(false);
+    expect(store.getState().draft).toBeNull();
+    expect(() => store.getState().discardDraft()).not.toThrow();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
   });
 });

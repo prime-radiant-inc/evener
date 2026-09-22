@@ -77,6 +77,91 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
+// canonicalStateDir anchors a relative --state-dir to the process working
+// directory at session construction and resolves it to its physical path: a
+// state dir reached through a symlink keeps that component in an Abs-only
+// resolution, and the sandbox's file tools refuse symlinked ancestors on some
+// hosts (macOS's /tmp, /var), which would turn a path the session records —
+// attachment paths named to the model, transcript locations — into a
+// deterministic refusal for a later reader whose working directory differs.
+// Empty means "no state directory" and stays empty. A path that does not
+// resolve — most commonly a state dir that has not been created yet —
+// resolves its deepest existing ancestor instead, with the missing tail
+// joined back unchanged, so a fresh state dir behind a symlinked parent
+// records the physical path it will occupy rather than the symlinked form.
+func canonicalStateDir(dir string) string {
+	if dir == "" {
+		return dir
+	}
+	// Anchor relative paths BEFORE resolving anything: a relative
+	// EvalSymlinks result stays relative, and anchoring it afterward — or
+	// anchoring through filepath.Abs — can preserve a lexical symlinked
+	// working directory, because os.Getwd prefers PWD whenever it matches
+	// ".", so a shell that cd'd through a symlink hands us the lexical form.
+	// The component walk below resolves every existing component of the
+	// anchored path, lexical or not.
+	//
+	// filepath.Abs would also Clean ".." lexically, which is wrong across a symlink:
+	// the kernel resolves `link/../state` against the physical parent of
+	// link's target, while Clean folds it to link's lexical parent. Anchor
+	// without cleaning and walk the components top-down instead, resolving
+	// symlinks as they accumulate so ".." pops the resolved parent. The walk
+	// ends at the first component that does not exist, joining the missing
+	// tail back unchanged, and always terminates: the root resolves.
+	anchored := dir
+	if !filepath.IsAbs(anchored) {
+		cwd, gerr := os.Getwd()
+		if gerr != nil {
+			// No faithful anchor is available; the cleaning Abs is the
+			// best remaining answer.
+			abs, aerr := filepath.Abs(dir)
+			if aerr != nil {
+				return dir
+			}
+			return resolveStatePathComponents(abs)
+		}
+		anchored = cwd + string(filepath.Separator) + dir
+	}
+	return resolveStatePathComponents(anchored)
+}
+
+// resolveStatePathComponents walks an absolute path component by component,
+// resolving each existing component's symlinks before the next is applied,
+// so ".." pops the physical parent the kernel would choose. The first
+// component that does not exist ends the walk with the remaining tail joined
+// back unchanged; a component that exists but will not resolve (e.g. a
+// permission failure mid-walk) stays lexical and the walk continues.
+func resolveStatePathComponents(abs string) string {
+	sep := string(filepath.Separator)
+	vol := filepath.VolumeName(abs)
+	root := filepath.Join(vol, sep)
+	rest := strings.TrimPrefix(strings.TrimPrefix(abs, vol), sep)
+	if rest == "" {
+		return root
+	}
+	resolved := root
+	parts := strings.Split(rest, sep)
+	for i, comp := range parts {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		candidate := filepath.Join(resolved, comp)
+		if target, lerr := filepath.EvalSymlinks(candidate); lerr == nil {
+			resolved = target
+			continue
+		}
+		if _, serr := os.Lstat(candidate); serr != nil {
+			return filepath.Join(append([]string{resolved}, parts[i:]...)...)
+		}
+		resolved = candidate
+	}
+	return resolved
+}
+
 // escapeHistoryWithSessionProvenance escapes a restored history for the model
 // copy. Turns before the session's divergence point came from a parent, whose
 // journal this session does not hold -- and a child mutation may reuse a parent's
@@ -288,6 +373,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		jobClock = newJobActivityClock(sessionID)
 	}
 	cfg.spawn.jobActivityClock = jobClock
+	cfg.StateDir = canonicalStateDir(cfg.StateDir)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -761,7 +847,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.ReasoningEffort = ""
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
-	cfg.StateDir = restoreCfg.StateDir
+	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership

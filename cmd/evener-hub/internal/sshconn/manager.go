@@ -137,6 +137,28 @@ type Options struct {
 	// for the host gate. Tests use it to establish, without a sleep, that one
 	// contender has reached a gate the test holds before another one does.
 	beforeHostGate func(name string)
+	// beforeUpdateHostSwap, when set, runs inside UpdateHost's gate hold after the
+	// retired channel's teardown and before the registry Update. That is exactly
+	// the window a gate-free reader would see: the retired channel is already
+	// unmapped while the registry still holds the pre-edit entry. Tests use it to
+	// drive a directly driven registry insert into the teardown/Update window, so
+	// an update can be observed swapping an entry it did not capture, and to
+	// assert the state a gate-free row build would observe in that window.
+	beforeUpdateHostSwap func(name string)
+	// AfterUpdateHostSwap, when set, runs inside UpdateHost's gate hold after a
+	// successful registry swap and after the onRetire hook, immediately before the
+	// gate is released. That is the window a caller's next read sits in once the
+	// swap is committed: the registry already holds the new entry and the retired
+	// identity is retired, but no concurrent attach can have started, because the
+	// gate this call still holds is the one Ensure and a supervisor contend for.
+	// Tests use it to interleave a directly driven registry change — the only
+	// writer that can race the gate-free finish-phase reread — into the window
+	// between a committed swap and the caller's next read, without a sleep. It is
+	// never run on a refusal: there is no committed swap to observe then. Unlike
+	// the seams above it is exported, because the hub package's own tests (which
+	// drive this Manager through Options) must install it just as they install
+	// Runner and OnEvent.
+	AfterUpdateHostSwap func(name string)
 	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
 	// the link drop and before it contends for the host gate. Tests use it to park
 	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
@@ -627,7 +649,7 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		_ = ch.Close()
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
-	if !m.publishChannel(name, ch) {
+	if !m.publishChannel(name, ch, host) {
 		// Close landed while this attach was in flight. Handing back a channel
 		// that nothing will ever supervise would be a lie, so reap it.
 		lock.Unlock()
@@ -1206,6 +1228,174 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 	lock.Lock()
 	defer lock.Unlock()
 	return m.reg.Add(entry)
+}
+
+// UpdateHost replaces name's registry entry with entry and tears the host's
+// channel down as one atomic step, under the per-host gate. Inside the one
+// hold the order is fixed: refuse an absent name, validate, then tear the
+// retired channel down, then swap the registry, then release.
+//
+// The teardown comes BEFORE the swap because a gate-free reader must never pair
+// the new entry with the retired channel. The row build behind host/list and
+// host/status takes no host gate: it snapshots the registry and then resolves
+// the channel by name alone (ClientIfAttached/ChannelIfAttached compare no
+// registrations). If the swap landed first, such a reader could take the new
+// entry inside that window and pair it with the still-mapped channel of the
+// identity this call is retiring, record the retired host's handshake and facts
+// under the new generation — which is above the generation fence the swap
+// itself advances — and render the retired host's server facts for the new
+// identity until the next successful attach. Unmapping the channel before the
+// new generation becomes visible makes that pairing impossible. The reverse
+// window, the old entry observed with no channel, is harmless: it can only make
+// a row render offline, and the retire leaves that clean.
+//
+// An absent name is refused and the entry validated before the teardown because
+// the caller's contract is that an error from this method means nothing live
+// changed. The absence check runs first: Registry.Update is the authority on
+// ErrUnknownHost and rechecks it under its own lock, but by the time it runs
+// below the channel is already retired, so a name a directly driven registry
+// dropped would otherwise be disconnected while still live. hostreg.ValidateEntry
+// is the side-effect-free half of the same Normalize+validateEntry pass
+// Registry.Update runs, so checking it here lets the teardown stay
+// unconditional — a shape refusal returns before the channel is touched, and
+// the swap below cannot refuse for a shape reason. Only a directly driven
+// registry can still refuse the swap (the name dropped inside the gate hold
+// after the capture); that path returns the error with the retired channel
+// already gone, and the host reattaches on the next Ensure.
+//
+// Every update tears the channel down, whether or not the edit changed a field
+// the dial reads. The reason is the fence, not the dial: a supervisor captures
+// the entry it supervises when it starts, and reconnectOnce refuses to publish a
+// replacement once SameRegistration no longer matches that capture — so a
+// channel kept across an update that advanced the generation could never be
+// reconnected by the supervisor that owns it, and the host would go dark on the
+// next link drop with nothing to bring it back. Retiring the channel with the
+// identity keeps one rule instead of a rebind path.
+//
+// It never dials, deploys, or attaches. An unknown name is hostreg's own
+// ErrUnknownHost, and a nil registry is an error rather than a silent no-op,
+// mirroring AddHost and RemoveHost: an update that committed nothing must not
+// report success.
+//
+// onRetire, when non-nil, runs while the per-host gate is still held, in the
+// same hold as the swap: after the registry already holds the new entry and the
+// retired identity's teardown (its Detached included) has been emitted, and
+// immediately before the gate is released. That placement is the contract, not
+// an implementation detail. Every lifecycle event is delivered synchronously
+// with the gate held, so a concurrent attach can only start for the new
+// generation once the gate is free; a caller's per-identity state retired from
+// this hook therefore cannot have a new-generation event interleave between the
+// swap and the retirement and be erased by it. The hook runs only on a swap
+// this call actually made: never on a refusal, and the pre-swap capture it is
+// handed is guaranteed present, because an absent name is refused before
+// anything live moves.
+//
+// The hook receives the entry the swap actually retired — the pre-swap capture,
+// its Generation included — so a caller can retire per-identity state by
+// generation rather than by timing: it can mark every row built from that
+// identity (or any earlier one) as retired, which is what makes the retirement
+// immune to a late write from a row that captured the old entry before the
+// swap but only reaches its state write after the hook. The hook must not call
+// back into Manager — the gate is non-reentrant — and must not take a lock
+// another goroutine may hold while parked on this gate.
+func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.Host)) error {
+	if m.reg == nil {
+		return errors.New("sshconn: UpdateHost with no registry")
+	}
+	// Trimmed for the lock key exactly as AddHost trims, so a padded spelling
+	// takes the same host gate as its canonical name.
+	name := strings.TrimSpace(entry.Name)
+	lock := m.hostLock(name)
+	defer m.releaseHostLock(name)
+	lock.Lock()
+	// The identity this call retires is resolved under the gate, and so is the
+	// swap: a remove/re-add that took the name while this call waited is not
+	// this call's to tear down, and the teardown below is scoped to the entry
+	// the update actually replaced. The capture is guaranteed present on every
+	// path that reaches the teardown — an absent name is refused immediately
+	// below — so hadCaptured reads as "there is an identity here to retire" for
+	// teardownHostChannel's own contract.
+	before, hadCaptured := m.reg.Get(name)
+	// Refuse an absent name before anything live moves, in the same gate hold as
+	// the swap it guards. Registry.Update is the authority on this refusal and
+	// rechecks it under its own lock, but by the time it runs below the teardown
+	// has already retired the channel: an update whose name a directly driven
+	// registry dropped (one bypassing this manager) would disconnect a host that
+	// is still live and then answer an error — exactly the "an error means
+	// nothing live changed" contract the validate-first step exists to keep.
+	// The message is Registry.Update's own — fmt.Errorf("%w: %q",
+	// ErrUnknownHost, name) — so callers' errors.Is keeps working across the
+	// moved check.
+	if !hadCaptured {
+		lock.Unlock()
+		return fmt.Errorf("%w: %q", hostreg.ErrUnknownHost, name)
+	}
+	// Validate before anything live moves. The caller's contract is that an
+	// error from this method means nothing live changed, so a refused update
+	// must not have torn the host's channel down on its way out. ValidateEntry
+	// is the side-effect-free half of the same Normalize+validateEntry pass
+	// Registry.Update runs below; doing it here, ahead of the teardown, is what
+	// lets the teardown stay unconditional — the swap below can then refuse only
+	// for a reason independent of the entry's shape.
+	if err := hostreg.ValidateEntry(entry); err != nil {
+		lock.Unlock()
+		return err
+	}
+	// The teardown targets the captured entry's own spelling. The capture is
+	// guaranteed present — an absent name was refused above — so before.Name is
+	// always a real host and there is no fallback to the gate key: a fallback
+	// keyed to name could never run, and the empty name it once guarded against
+	// (a directly driven registry inserting the name inside the capture/swap
+	// window) is now refused before the teardown instead of swapped past it.
+	// Tear the retired channel down BEFORE the swap becomes visible. A gate-free
+	// row build resolves a name through the registry and then looks the channel
+	// up by name alone, so a swap that landed first would let it pair the new
+	// entry with this retired channel; unmapping first closes that window. See
+	// the method comment.
+	ch := m.teardownHostChannel(before.Name, before, hadCaptured)
+	if m.opts.beforeUpdateHostSwap != nil {
+		m.opts.beforeUpdateHostSwap(name)
+	}
+	if err := m.reg.Update(entry); err != nil {
+		// Validation above already passed, so this refusal is not a shape
+		// refusal: only a directly driven registry — one whose name was dropped
+		// from under the gate — can reach it. The entry is unchanged and the
+		// retired channel is already gone; the host reattaches on the next
+		// Ensure, which finds no channel under the name and dials fresh. Reap
+		// the channel this call did retire — the close blocks on the ssh child's
+		// exit, so it happens after the gate is released, as everywhere else —
+		// and report the refusal.
+		lock.Unlock()
+		if ch != nil {
+			_ = ch.Close()
+		}
+		return err
+	}
+	// The caller's retirement runs under the gate, in the same hold as the swap,
+	// so no new-identity lifecycle event can interleave before it: an attach
+	// cannot acquire the gate until it is released below. It receives the entry
+	// the swap replaced — the capture above, guaranteed present because an
+	// absent name was refused before the teardown — so the caller retires by
+	// identity rather than by timing.
+	if onRetire != nil {
+		onRetire(before)
+	}
+	// The post-swap seam runs last in the hold, so the window it exposes is
+	// exactly "the swap and the caller's retirement are done, the gate is still
+	// ours": a directly driven registry change made here lands after the committed
+	// swap and the retirement, inside the same gate hold, and before any gate-free
+	// reread the caller makes. It runs only down this path — a refusal returned
+	// above — so a test can key it to a swap that actually happened.
+	if m.opts.AfterUpdateHostSwap != nil {
+		m.opts.AfterUpdateHostSwap(name)
+	}
+	lock.Unlock()
+	// The reap runs after the lock is released, exactly as DetachHost's and
+	// RemoveHost's do: Channel.Close blocks on the ssh child's exit.
+	if ch != nil {
+		_ = ch.Close()
+	}
+	return nil
 }
 
 // clearHostCaches drops every per-host record that must not survive a detach or
@@ -1934,7 +2124,7 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 			m.stateEvent(host.Name, StateDisconnected)
 			return false
 		}
-		if !m.publishChannel(host.Name, nch) {
+		if !m.publishChannel(host.Name, nch, host) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.
 			_ = nch.Close()
 			m.stateEvent(host.Name, StateDisconnected)
@@ -2169,7 +2359,25 @@ func (m *Manager) Attached(name string) bool {
 // publishChannel records ch as name's channel unless Close already ran, in which
 // case nothing would ever supervise it: the caller reaps ch and reports
 // ErrManagerClosed instead.
-func (m *Manager) publishChannel(name string, ch *Channel) bool {
+//
+// registration is the entry the channel was dialed for, which the caller
+// revalidated with hostreg.Registry.SameRegistration under the host lock
+// immediately before this call: the registry entry name resolved to before
+// ensureOnce folded this Manager's resolved executable path into the copy of
+// the host it dialed. Storing that value — rather than re-reading the registry
+// here — is what keeps identity pairing honest. A re-read is a TOCTOU: an
+// update landing between the caller's recheck and this function would stamp a
+// channel built from the pre-update entry with the post-update one, which
+// MatchesRegistration then accepts for a row rendering the new configuration.
+// The caller's capture cannot go stale in that way: the registry never mutates
+// an inserted entry, so a later update only makes SameRegistration refuse the
+// capture, never adopt it.
+func (m *Manager) publishChannel(name string, ch *Channel, registration hostreg.Host) bool {
+	// Write the identity before the channel becomes visible through the map
+	// below, so no reader can find it there with an empty registration. The
+	// manager mutex is left unnested from the registry's: nothing here reads the
+	// registry.
+	ch.reg = registration
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -2406,7 +2614,17 @@ func (m *Manager) failedEvent(name string, err error) {
 
 // Channel is one owned SSH channel plus the AppWire client over it.
 type Channel struct {
-	host  hostreg.Host
+	host hostreg.Host
+	// reg is the registration this channel was published for: the registry
+	// entry the caller validated under the host lock and passed to
+	// publishChannel, captured before ensureOnce folded this Manager's
+	// resolved executable path (applyResolvedTarget) into the copy of the host
+	// it dialed. Identity pairing (MatchesRegistration) compares reg, not host:
+	// a host that configured no evener_path never carries the resolved path in
+	// the registry, so comparing host refused the common case. It is written
+	// once, under the host lock at publish and before the channel is visible
+	// through the map, and never mutated.
+	reg   hostreg.Host
 	facts Preflight
 	// handshake is the InitializeResponse the attach's own initialize captured.
 	// It is published once, before the channel is visible through the map, and
@@ -2457,6 +2675,19 @@ func (c *Channel) Host() hostreg.Host {
 	h := c.host
 	h.Roots = slices.Clone(c.host.Roots)
 	return h
+}
+
+// MatchesRegistration reports whether entry is the registration this channel
+// was published for: content and generation both, the same predicate
+// hostreg.SameRegistration wraps. It compares the registration captured at
+// publish (reg), not the host the bridge was dialed with (host): that copy
+// carries the executable path this Manager resolved for a host that configured
+// no evener_path, which the registry entry never does, so comparing it refused
+// the common case. It compares in place, so a caller pairing a live channel
+// with the entry it renders — and only comparing — need not clone the host and
+// its roots.
+func (c *Channel) MatchesRegistration(entry hostreg.Host) bool {
+	return hostreg.SameRegistration(c.reg, entry)
 }
 
 // Close kills the ssh child and closes the stream. It is idempotent and

@@ -2645,6 +2645,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	}
 	s.mu.Unlock()
 
+	// Persist attachments before the turn is built so the message can name
+	// their durable paths (agent/image_persist.go).
+	images = s.persistInputImages(images)
+
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))

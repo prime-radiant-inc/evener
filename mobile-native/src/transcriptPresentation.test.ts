@@ -7,14 +7,24 @@ import type {
 	MobileConversation,
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
-import { projectNativeTranscript } from "./transcriptPresentation";
+import type { TurnModel } from "@evener/appwire-client";
+import { projectNativeTranscript, usageRows } from "./transcriptPresentation";
 
-function conversation(items: MobileTimelineItem[]): MobileConversation {
+function conversation(
+	items: MobileTimelineItem[],
+	overrides: Partial<Pick<MobileConversation, "usage" | "turns" | "olderCursor" | "cost">> = {},
+): MobileConversation {
 	return {
 		items,
 		usage: { inputTokens: 10, outputTokens: 20 },
+		turns: [],
 		cost: "$1",
+		...overrides,
 	} as MobileConversation;
+}
+
+function usageTurn(id: string, inputTokens: number, outputTokens: number): TurnModel {
+	return { id, status: "completed", items: [], usage: { inputTokens, outputTokens } };
 }
 
 const member = (
@@ -240,8 +250,8 @@ it("applies typed system-event flags and masks usage fields independently", () =
 // tokenCounts gates the token aggregate and estimatedCost gates the cost, each
 // on its own: a crossed gate or an always-null branch fails one of these rows.
 it.each([
-	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20 }, cost: "$1" },
-	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20 }, cost: null },
+	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: "$1" },
+	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20, scope: "session" }, cost: null },
 	{ tokenCounts: false, estimatedCost: true, usage: null, cost: "$1" },
 	{ tokenCounts: false, estimatedCost: false, usage: null, cost: null },
 ])(
@@ -267,9 +277,97 @@ it("reads an unknown cost as null even when estimatedCost is on", () => {
 		),
 	);
 	expect(result.usage).toEqual({
-		usage: { inputTokens: 10, outputTokens: 20 },
+		usage: { inputTokens: 10, outputTokens: 20, scope: "session" },
 		cost: null,
 	});
+});
+
+// A fork child's persisted meta carries no CumulativeUsage (agent/fork.go's
+// writeForkChild never stamps one) even though every loaded turn has real
+// usage, which is why the transcript's per-turn stamps rendered right beside
+// a footer that showed nothing.
+it("falls back to summing the loaded turns when the thread has no cumulative total", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: undefined, turns: [usageTurn("t1", 6961, 73), usageTurn("t2", 1276, 47)] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 8237, outputTokens: 120, scope: "session" },
+		cost: null,
+	});
+});
+
+// thread/read windows items via itemLimit and reports the truncation through
+// olderCursor. A sum over that window is not the session total, so the scope
+// says exactly what it counts instead of overstating it.
+it("labels a derived total over a truncated turn window as covering only the loaded turns", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: undefined, turns: [usageTurn("t1", 500, 20)], olderCursor: "cursor_1" }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 500, outputTokens: 20, scope: "loaded" },
+		cost: null,
+	});
+});
+
+// The wire's EvenerUsage permits a sparse cumulative object: cacheReadTokens
+// or totalTokens alone, with no input/output pair at all. sessionTokens has
+// no per-turn equivalent for either field, so accountingFor must not lose
+// them just because the derived input/output pair came back empty.
+it("keeps a cache-only cumulative breakdown even when sessionTokens finds no input/output data", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: { cacheReadTokens: 42 }, turns: [] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ usage: { cacheReadTokens: 42 }, cost: null });
+});
+
+it("keeps a total-only cumulative breakdown even when sessionTokens finds no input/output data", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: { totalTokens: 500 }, turns: [] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ usage: { totalTokens: 500 }, cost: null });
+});
+
+// D18 B3 round 6 (Low): a cumulative field's Go zero value signals absence,
+// the same rule sessionTokens already applies to inputTokens/outputTokens
+// (threadUsage.ts) - a real "0 tokens" for cacheReadTokens/totalTokens is
+// indistinguishable from an unset field, so it must not render as data.
+it("treats a zero cacheReadTokens/totalTokens the same as an absent one", () => {
+	const result = projectNativeTranscript(
+		conversation([], { usage: { cacheReadTokens: 0, totalTokens: 0 }, turns: [] }),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({ usage: null, cost: null });
+});
+
+// A sparse cumulative object (total-only, no input/output) alongside a
+// truncated turn window: sessionTokens sums the turns and scopes the result
+// "loaded", but the cumulative total is a whole-session figure and must
+// carry no scope of its own - it is not itself a loaded-turn sum.
+it("keeps the cumulative breakdown's scope independent of a turn-summed loaded result", () => {
+	const result = projectNativeTranscript(
+		conversation([], {
+			usage: { totalTokens: 500 },
+			turns: [usageTurn("t1", 60, 40)],
+			olderCursor: "cursor_1",
+		}),
+		makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { tokenCounts: true, estimatedCost: false }),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 60, outputTokens: 40, scope: "loaded", totalTokens: 500 },
+		cost: null,
+	});
+	// The data alone doesn't show which unit each field renders with - that's
+	// usageRows's job, and it must never stamp the whole-session Total row
+	// with the derived pair's "loaded" scope.
+	expect(usageRows(result.usage!.usage)).toEqual([
+		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
+		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
+		{ label: "Total", value: 500, unit: "tokens" },
+	]);
 });
 
 it("does not mutate clustered members or source items while projecting", () => {
@@ -585,3 +683,29 @@ it.each([null, undefined])(
 		]);
 	},
 );
+
+// tokenUnitLabel itself moved to appwire-client/typescript/threadUsage.ts
+// (D18 B3 round 3): its tests moved with it, to threadUsage.test.ts.
+
+// --- usage rows ----------------------------------------------------------
+
+// usageRows is what TranscriptUsage renders: each row's own unit, never one
+// unit borrowed from a different row's scope.
+it("labels Input/Output with the derived pair's own scope and Cached/Total plainly, even when the derived pair is loaded-scoped", () => {
+	expect(
+		usageRows({ inputTokens: 60, outputTokens: 40, scope: "loaded", cacheReadTokens: 10, totalTokens: 500 }),
+	).toEqual([
+		{ label: "Input", value: 60, unit: "tokens (loaded turns)" },
+		{ label: "Output", value: 40, unit: "tokens (loaded turns)" },
+		{ label: "Cached", value: 10, unit: "tokens" },
+		{ label: "Total", value: 500, unit: "tokens" },
+	]);
+});
+
+it("renders only the cumulative Total row when there is no derived input/output pair", () => {
+	expect(usageRows({ totalTokens: 500 })).toEqual([{ label: "Total", value: 500, unit: "tokens" }]);
+});
+
+it("renders no rows for null usage", () => {
+	expect(usageRows(null)).toEqual([]);
+});

@@ -309,6 +309,15 @@ export interface DaemonIdentity {
   generation: string;
 }
 
+export interface DaemonIdleTimeoutSetParams {
+  identity: DaemonIdentity;
+  timeoutMillis: number;
+}
+
+export interface DaemonIdleTimeoutSetResponse {
+  lifecycle: DaemonLifecycle;
+}
+
 export interface DaemonLifecycle {
   phase: string;
   timeoutMillis: number;
@@ -932,9 +941,7 @@ export interface HarnessListResponse {
 }
 
 export interface HostAddParams {
-  name: string;
-  address: string;
-  keyPath?: string;
+  entry: HostEntry;
 }
 
 export interface HostAttachParams {
@@ -951,6 +958,17 @@ export interface HostAttachResponse {
   os?: string;
   arch?: string;
   features?: FeatureSet;
+}
+
+export interface HostEntry {
+  name?: string;
+  address: string;
+  user?: string;
+  keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
 }
 
 export interface HostForwardedResult {
@@ -983,7 +1001,12 @@ export interface HostRequestParams {
 export interface HostRow {
   name: string;
   address?: string;
+  user?: string;
   keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
   origin: string;
   attached: boolean;
   serverName?: string;
@@ -1001,6 +1024,15 @@ export interface HostStatusParams {
 }
 
 export interface HostStatusResponse {
+  host: HostRow;
+}
+
+export interface HostUpdateParams {
+  name: string;
+  entry: HostEntry;
+}
+
+export interface HostUpdateResponse {
   host: HostRow;
 }
 
@@ -2634,9 +2666,12 @@ export interface ThreadCapabilities {
   rename: boolean;
   /**
    * SkillInput advertises support for canonical {type:"skill", name} input
-   * items on the input-bearing turn mutations. False everywhere until
-   * runtime consumption is wired per endpoint; ValidateSkillInputSupport
-   * keeps skill items rejected wherever this capability is false.
+   * items on the input-bearing turn mutations. A live daemon advertises it
+   * when all of those endpoints are wired; the hub's cold projections
+   * (past reads, close and gave-up frames, and list rows) advertise the same
+   * current-daemon floor, since each input-bearing mutation re-verifies
+   * against the live daemon. ValidateSkillInputSupport keeps skill items
+   * rejected wherever this capability is false.
    */
   skillInput?: boolean;
 }
@@ -3385,6 +3420,7 @@ export const METHOD_NAMES = [
   "evener/daemon/list",
   "evener/daemon/retire",
   "evener/daemon/status",
+  "evener/daemon/idle-timeout/set",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -3462,6 +3498,7 @@ export const METHOD_NAMES = [
   "evener/host/list",
   "evener/host/status",
   "evener/host/remove",
+  "evener/host/update",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3593,6 +3630,7 @@ export interface MethodTypes {
   "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
   "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
   "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
+  "evener/daemon/idle-timeout/set": { params: DaemonIdleTimeoutSetParams; result: DaemonIdleTimeoutSetResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
@@ -3670,6 +3708,7 @@ export interface MethodTypes {
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
+  "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
 }
 
 export interface NotificationTypes {

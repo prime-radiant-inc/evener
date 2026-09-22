@@ -157,6 +157,7 @@ export {
   ErrorEndpointConflict,
   ErrorInstanceRemoveApplied,
   ErrorInstanceRenamePersisted,
+  ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
@@ -164,6 +165,7 @@ export {
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
+  hostFieldError,
   isHubLaunchError,
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
@@ -321,7 +323,7 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey } from "./reducer";
+export type { NotificationRoutingKey, TurnHistoryMergeResult } from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -333,6 +335,7 @@ export {
   joinedReasoningParagraphs,
   joinWarningParts,
   mergeOlderItemPage,
+  mergeTurnHistory,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
@@ -418,7 +421,7 @@ export {
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
-export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,
@@ -494,6 +497,9 @@ export type {
   TranscriptDisplayStoreFields,
   TranscriptDisplayStoreState,
   TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
 } from "./transcriptDisplayStore";
 export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export type {

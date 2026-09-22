@@ -33,7 +33,10 @@ export interface BrowserSync {
   broadcastLocal(layout: ViewportClass, encoded: string | null): void;
 }
 
-function makeSourceId(): string {
+/** A random id from the browser's own randomness source, with a fallback for
+ * the privacy modes that expose crypto but deny randomUUID - shared by the
+ * cross-tab source id and the draft checkpoint port's record ids. */
+export function makeSourceId(): string {
   try {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   } catch {
