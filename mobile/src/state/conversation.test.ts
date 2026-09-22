@@ -10335,6 +10335,98 @@ describe("ConversationStore", () => {
         expect.objectContaining({ callId: "c9", output: "corrected output", exitCode: 0 }),
       ]);
     });
+
+    // Review round 22, explicit clears: the spread-merged fields follow
+    // property PRESENCE — a fresh leaf's own undefined CLEARS the field,
+    // the spread keeping the clear — but the fresh-supplied field set
+    // treated explicit undefined as omission for every field, so a fresh
+    // fragment explicitly clearing its transcript entry index lost the
+    // clear at reconciliation: the later stale duplicate's index came
+    // back. Presence, not value, decides the spread-merged fields.
+    it("a fresh fragment's explicit clear survives alias reconciliation", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                // A status-bearing retained fragment whose EXPLICIT
+                // undefined transcript entry index clears the field.
+                markItemTextOmitted({
+                  id: "f9",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "",
+                  status: "completed",
+                  transcriptKey: "kk",
+                  transcriptEntryIndex: undefined,
+                  position: { entry: 50, item: 0 },
+                }),
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page reissues the fragment's keyless alias — carrying a STALE
+      // entry index the explicit clear must displace — followed by a
+      // keyed sibling carrying the restored text and ANOTHER index. The
+      // alias fold keeps the clear; the reconciliation must keep it too,
+      // not let the sibling's index back in.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "f9",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale text",
+                  transcriptEntryIndex: 5,
+                  position: { entry: 50, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "g2",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "restored text",
+                  transcriptEntryIndex: 7,
+                  status: "completed",
+                  transcriptKey: "kk",
+                  position: { entry: 51, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      const merged = after.turns.find((turn) => turn.id === "rt")?.items ?? [];
+      expect(merged).toEqual([
+        expect.objectContaining({ transcriptKey: "kk", text: "restored text", status: "completed" }),
+      ]);
+      expect(merged[0]?.transcriptEntryIndex).toBeUndefined();
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

@@ -906,27 +906,41 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
 
 // The fields an item's FRESH inputs supplied — the fields its freshness
 // actually covers (review round 17). Text counts as supplied only when a
-// fresh leaf PROVIDED it (the omitted marker means the wire carried none);
-// every other field counts when a fresh leaf defines it. An identity-only
-// leaf supplies nothing at all — not even its identity (review round 19:
-// a remembered skeleton must not claim per-field precedence over a
-// restored item's fields) — and an item the context never saw speaks only
-// for itself.
+// fresh leaf PROVIDED it (the omitted marker means the wire carried
+// none). Every other field counts by the merge's OWN rule for it (review
+// rounds 20 and 22): the nullish-fallback fields only when the leaf
+// carries a value (null falls through to the older side), the rank-merged
+// status only when defined, and the spread-merged fields by property
+// PRESENCE — a fresh leaf's own undefined clears the field, and the
+// clearing property must claim precedence or a later stale duplicate's
+// value survives the reconciliation. An identity-only leaf supplies
+// nothing at all — not even its identity (review round 19: a remembered
+// skeleton must not claim per-field precedence over a restored item's
+// fields) — and an item the context never saw speaks only for itself.
 function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): ReadonlySet<string> {
   const supplied = new Set<string>();
   const record = (leaf: ItemModel): void => {
     if (itemIsIdentityOnly(leaf)) return;
     for (const [key, value] of Object.entries(leaf)) {
-      // Hydration gives every item an enumerable text property — "" under
-      // the omitted marker when the wire carried none — so key presence
-      // says nothing about text: only the presence check below counts it.
+      // Text follows the presence marker, not the property — see below.
       if (key === "text") continue;
-      // Participation follows the merge's own presence rules (review
-      // round 20): the nullish-fallback fields inherit the older side's
-      // value when the fresh leaf's is null, so a null supplies nothing —
-      // counting it would give the older side's inherited metadata fresh
-      // precedence over a later duplicate's own.
-      if (!absentForCoverage(value, itemNullishMergedFields.has(key))) supplied.add(key);
+      if (freshSuppliedNullishFallbackFields.has(key)) {
+        // The merge inherits the older side's value when the leaf's is
+        // null or undefined, so neither counts as supplied (review
+        // round 20).
+        if (value !== null && value !== undefined) supplied.add(key);
+        continue;
+      }
+      if (key === "status") {
+        // The rank rule keeps the older side's status when the leaf's is
+        // undefined, so only a defined status counts.
+        if (value !== undefined) supplied.add(key);
+        continue;
+      }
+      // Every other field is spread-merged by property presence: the
+      // leaf's own undefined CLEARS the field, and the clearing property
+      // counts as supplied (review round 22).
+      supplied.add(key);
     }
     if (itemTextPresence(leaf) === "provided") supplied.add("text");
   };
@@ -1409,6 +1423,18 @@ const itemNullishMergedFields = new Set([
   "source",
   "startedAt",
   "completedAt",
+]);
+
+// The fields whose null OR undefined falls through to the older side in
+// the item merge — mergePageItem's nullish-fallback list above, plus the
+// fields that list leaves to their own helpers (reasoning summaries and
+// the observed timing fields) — so a fresh leaf supplies one only by
+// carrying a value (freshSuppliedFields reads exactly this).
+const freshSuppliedNullishFallbackFields = new Set([
+  ...itemNullishMergedFields,
+  "reasoningSummaries",
+  "observedStartedAt",
+  "observedCompletedAt",
 ]);
 
 // What "absent" means for coverage follows each field's merge rule: every
