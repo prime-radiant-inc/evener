@@ -12,6 +12,7 @@
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
+import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
 import type { PendingTurnEntry } from "../../composer/queue/pendingReconcile";
 import {
   useBlockedMutationEntries,
@@ -89,7 +90,7 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
 
   return (
     <div role="status" aria-live="polite" data-testid="held-steer-announcements">
-      <span key={announcement.key}>{announcement.text}</span>
+      <VisuallyHidden key={announcement.key}>{announcement.text}</VisuallyHidden>
     </div>
   );
 }
