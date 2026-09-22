@@ -67,9 +67,9 @@ func FuzzFc2ShellTerminalDecision(f *testing.F) {
 		case exitCode == 0:
 			wantStatus, wantReason = jobstore.StatusCompleted, "exit_zero"
 		case exitCode < 0:
-		wantStatus, wantReason = jobstore.StatusCommandKilled, "killed_by_signal"
+			wantStatus, wantReason = jobstore.StatusCommandKilled, "killed_by_signal"
 		default:
-		wantStatus, wantReason = jobstore.StatusCommandExitedNonzero, "exit_nonzero"
+			wantStatus, wantReason = jobstore.StatusCommandExitedNonzero, "exit_nonzero"
 		}
 		if status != wantStatus || reason != wantReason {
 			t.Fatalf("precedence: inputs(timedOut=%v,waitErr=%v,exit=%d) got (%q,%q), want (%q,%q)",

@@ -2138,8 +2138,8 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
-				jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
-				jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
+			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)
