@@ -103,3 +103,18 @@ export function sameMarketplaceSource(
     a.sha === b.sha
   );
 }
+
+/** Whether a listed registration is the one an applied removal took out:
+ * the source the hub recorded for it and the wire's whole-second stamp both
+ * match. The stamp alone cannot tell a same-second re-add apart - the wire
+ * rounds to seconds - so the source, which a re-registration replaces with
+ * its own, is what keeps the comparison honest. */
+export function sameRemovedRegistration(
+  entry: MarketplaceEntry,
+  removed: Pick<MarketplaceEntry, "source" | "lastUpdated">,
+): boolean {
+  return (
+    entry.lastUpdated === removed.lastUpdated &&
+    sameMarketplaceSource(entry.source, removed.source)
+  );
+}

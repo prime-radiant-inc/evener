@@ -10,6 +10,7 @@ import {
   catalogToBrowse,
   refetchAfterRemoval,
   sameMarketplaceSource,
+  sameRemovedRegistration,
 } from "./marketplaceBrowserModel";
 
 const entry = (name: string): MarketplaceEntry => ({
@@ -108,6 +109,20 @@ test("sources match by kind and the fields that pin them", () => {
     sameMarketplaceSource(
       { kind: "github", repo: "a/plugins", ref: "v1" },
       { kind: "github", repo: "a/plugins" },
+    ),
+  ).toBe(false);
+});
+
+test("a row is the removed registration only when source and stamp both match", () => {
+  const removed = { source: entry("a").source, lastUpdated: 1 };
+  expect(sameRemovedRegistration(entry("a"), removed)).toBe(true);
+  expect(
+    sameRemovedRegistration({ ...entry("a"), lastUpdated: 2 }, removed),
+  ).toBe(false);
+  expect(
+    sameRemovedRegistration(
+      { ...entry("a"), source: { kind: "github", repo: "a/plugins" } },
+      removed,
     ),
   ).toBe(false);
 });

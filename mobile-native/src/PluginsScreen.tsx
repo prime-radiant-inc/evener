@@ -28,6 +28,7 @@ import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
 } from "./MarketplaceBrowser";
+import { sameRemovedRegistration } from "./marketplaceBrowserModel";
 import {
   createPluginMutationGate,
   PLUGIN_MUTATION_BUSY,
@@ -37,19 +38,30 @@ import {
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
+/** The registration an applied removal took out, as the wire names it: the
+ * source the hub recorded for it and the whole-second `lastUpdated` stamp
+ * it carries. A row carrying exactly this identity is the removed
+ * registration itself; any other identity - or no row at all - is a
+ * replacement or an absence. */
+type RemovedRegistration = {
+  source: MarketplaceEntry["source"];
+  lastUpdated: MarketplaceEntry["lastUpdated"];
+};
+
 /** The applied marketplace removals one client's writes reported, keyed by
- * name to the hub's last-seen `lastUpdated` for that registration: names a
- * write said the hub already removed, held with the client whose write said
- * so because a fresh browser must not offer Remove again for any of them.
- * The fence covers the name from the applied outcome until the authoritative
- * reads establish what the hub now carries: a list omitting the name (the
- * removal reconciled) or carrying a different `lastUpdated` (a re-add, which
- * the hub stamps with a fresh lastUpdated on every registration -
- * internal/plugins/marketplaces.go) clears it, and only a stale row still
- * carrying the removed registration's own identity keeps it. */
+ * name to the registration the write removed: names a write said the hub
+ * already removed, held with the client whose write said so because a fresh
+ * browser must not offer Remove again for any of them. The fence covers the
+ * name from the applied outcome until the authoritative reads establish
+ * what the hub now carries: a list omitting the name (the removal
+ * reconciled) or carrying a different registration (a re-add - a fresh
+ * stamp, which the hub writes on every registration, or a different source
+ * within the wire's whole-second stamp - internal/plugins/marketplaces.go)
+ * clears it, and only a stale row still carrying the removed
+ * registration's own identity keeps it. */
 type AppliedRemovalGuard = {
   client: ConversationClientLike | null;
-  entries: ReadonlyMap<string, MarketplaceEntry["lastUpdated"] | null>;
+  entries: ReadonlyMap<string, RemovedRegistration>;
 };
 
 const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
@@ -108,9 +120,10 @@ export function PluginsScreen({
   }, [client]);
   // A guard name the hub's own list no longer carries is fully reconciled -
   // its row is gone with it - and one it carries under a NEW registration
-  // identity is a re-add, a write someone made after the removal this fence
-  // guards. The guard forgets both, so neither a reconciled name nor a
-  // re-added one is fenced forever.
+  // identity - a fresh stamp, or a different source the wire's whole-second
+  // stamp cannot tell apart on its own - is a re-add, a write someone made
+  // after the removal this fence guards. The guard forgets both, so neither
+  // a reconciled name nor a re-added one is fenced forever.
   const reconcileAppliedRemovals = useCallback(
     (
       marketplaces: readonly MarketplaceEntry[],
@@ -118,15 +131,15 @@ export function PluginsScreen({
     ): void => {
       if (currentClient.current !== owner) return;
       const currentEntries = new Map(
-        marketplaces.map((item) => [item.name, item.lastUpdated] as const),
+        marketplaces.map((item) => [item.name, item] as const),
       );
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
         let changed = false;
         const next = new Map(current.entries);
-        for (const [name, asOf] of current.entries) {
+        for (const [name, removed] of current.entries) {
           const seen = currentEntries.get(name);
-          if (seen === asOf) continue;
+          if (seen && sameRemovedRegistration(seen, removed)) continue;
           next.delete(name);
           changed = true;
         }
@@ -148,13 +161,16 @@ export function PluginsScreen({
       name: string,
       notice: string | null,
       owner: ConversationClientLike,
-      asOf: MarketplaceEntry["lastUpdated"],
+      removed: MarketplaceEntry,
     ): boolean => {
       if (currentClient.current !== owner) return false;
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
         const entries = new Map(current.entries);
-        entries.set(name, asOf);
+        entries.set(name, {
+          source: removed.source,
+          lastUpdated: removed.lastUpdated,
+        });
         return { client: owner, entries };
       });
       if (notice !== null) setMarketplaceWarning({ client: owner, text: notice });
@@ -222,7 +238,7 @@ function Plugins({
     name: string,
     notice: string | null,
     owner: ConversationClientLike,
-    asOf: MarketplaceEntry["lastUpdated"],
+    removed: MarketplaceEntry,
   ): boolean;
   onAuthoritativeMarketplaces(
     marketplaces: readonly MarketplaceEntry[],

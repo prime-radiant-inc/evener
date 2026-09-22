@@ -14,8 +14,11 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
+  AnyNotification,
   MarketplaceAddParams,
   MarketplaceEntry,
+  MethodName,
+  MethodTypes,
   PluginRefParams,
 } from "@evener/appwire-client";
 import {
@@ -78,14 +81,14 @@ export function MarketplaceBrowser({
    * joins the guard whatever the hub's truth currently carries: the fence
    * holds until an authoritative read establishes that truth - absence or
    * a replacement registration clears it, and only a stale row still
-   * carrying `asOf` - the registration the write removed - keeps it; the
-   * return value says whether `owner` was still the current client, false
-   * meaning a replaced client's late result is dropped whole. */
+   * carrying `removed` - the registration the write removed - keeps it;
+   * the return value says whether `owner` was still the current client,
+   * false meaning a replaced client's late result is dropped whole. */
   onAppliedRemoval(
     name: string,
     notice: string | null,
     owner: ConversationClientLike,
-    asOf: MarketplaceEntry["lastUpdated"],
+    removed: MarketplaceEntry,
   ): boolean;
   /** Reports every authoritative list read, so the screen can prune guard
    * names the hub no longer carries. */
@@ -105,7 +108,38 @@ export function MarketplaceBrowser({
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
-  const model = useMemo(() => createMarketplacesStore(client), [client]);
+  // The hub's add answer is the one place that names what the write
+  // registered, and the store cannot be trusted to hand it over: a newer
+  // list read holds its publication, and this browser's unmount drops it.
+  // Capture the answer as it passes through the client this browser's own
+  // store is built on, so the add flow below reads it independent of every
+  // store.
+  const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
+  const storeClient = useMemo(() => {
+    const request = <M extends MethodName>(
+      method: M,
+      params: MethodTypes[M]["params"],
+      opts?: { timeoutMs?: number },
+    ): Promise<MethodTypes[M]["result"]> => {
+      const pending = client.request(method, params, opts);
+      if (method === "evener/marketplace/add") {
+        lastAddMarketplaces.current = null;
+        void (pending as Promise<MethodTypes["evener/marketplace/add"]["result"]>).then(
+          (answer) => {
+            lastAddMarketplaces.current = answer.marketplaces;
+          },
+          () => {},
+        );
+      }
+      return pending;
+    };
+    return {
+      request,
+      onNotification: (callback: (notification: AnyNotification) => void) =>
+        client.onNotification(callback),
+    };
+  }, [client]);
+  const model = useMemo(() => createMarketplacesStore(storeClient), [storeClient]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
   // Marketplace writes take the same gate an install does; see
@@ -197,8 +231,8 @@ export function MarketplaceBrowser({
     // The registration this write targets: the outcome fences the name until
     // an authoritative read establishes what the hub now carries - absence
     // or a replacement registration clears the fence, and only a stale row
-    // still carrying this registration's own identity keeps it.
-    const target = marketplace.lastUpdated;
+    // still carrying this registration's own source and stamp keeps it.
+    const target = marketplace;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
       { text: "Cancel", style: "cancel" },
@@ -232,7 +266,7 @@ export function MarketplaceBrowser({
             // reconcile a stale list, never a retry hint.
             const notice = appliedRemovalNotice(caught);
             if (notice !== undefined) {
-              if (!onAppliedRemoval(name, notice, client, target)) return;
+            if (!onAppliedRemoval(name, notice, client, target)) return;
               if (alive.current && refetchAfterRemoval(model, name))
                 void state.fetchMarketplaces();
               return;
@@ -438,19 +472,12 @@ export function MarketplaceBrowser({
             }
             // A blank submitted name is one the hub assigns from the
             // source's own catalog, and the store's publication of the add
-            // cannot be trusted to name it: a newer list read holds it,
-            // and an unmounted browser's store drops it. Read the hub's
-            // own list directly - the client outlives browsers - and name
-            // the registration from it. A failed read reports nothing: the
-            // add already stood, and the fence holds until a fresh read
-            // reconciles it.
-            let after: readonly MarketplaceEntry[];
-            try {
-              after = (await client.request("evener/marketplace/list", {}))
-                .marketplaces;
-            } catch {
-              return;
-            }
+            // cannot be trusted to name it: a newer list read holds it, and
+            // an unmounted browser's store drops it. Name the registration
+            // off the add's own answer, captured above as it passed through
+            // the client - independent of every store.
+            const after = lastAddMarketplaces.current;
+            if (after === null) return;
             for (const name of addedMarketplaceNames(before, after))
               onMarketplaceAdded(name, client);
             // The hub's list is indistinguishable from the stale one: the
