@@ -1,8 +1,15 @@
 import { expect, it } from "vitest";
-import type { MobileTimelineItem } from "../../mobile/src/conversation/project";
+import type { AskQuestionRef } from "@evener/appwire-client";
+import {
+	boundQuestion,
+	MAX_ITEM_BYTES,
+	truncateText,
+	type MobileTimelineItem,
+} from "../../mobile/src/conversation/project";
 import {
 	groupTimeline,
 	isInterruptedNotice,
+	questionOptionKey,
 	steeringNoticeLabel,
 	timelineGap,
 } from "./timeline";
@@ -194,3 +201,45 @@ it.each([
 		]);
 	},
 );
+
+// The option rows TimelineItem renders come from the store's bounded publish
+// (state/conversation.ts's truncateItem over project.ts's boundQuestion), so
+// their labels are cut copies — the same display bound
+// questionAnswers.ts's questionsIdentity works against. This pins the
+// option-row React key against that bounding collision: keyed on the label,
+// two options whose labels share a prefix past the display bound cut to the
+// same string and both rows answer to one key (React's duplicate-key
+// collision); keyed on the option's position, they cannot.
+const ask: AskQuestionRef = {
+	key: "call:0",
+	callId: "call",
+	header: "Choose",
+	question: "Pick one",
+	multiSelect: false,
+	options: [],
+};
+
+function boundedLabel(label: string): string {
+	return boundQuestion(
+		{ ...ask, options: [{ label, detail: "" }] },
+		(text) => truncateText(text, MAX_ITEM_BYTES),
+	).options[0].label;
+}
+
+it("keys an ask's option rows by position, not by the bounded label", () => {
+	const prefix = "x".repeat(MAX_ITEM_BYTES * 2);
+	const first = `${prefix}-first-tail`;
+	const second = `${prefix}-second-tail`;
+
+	// The store's publish bounds both labels to the same cut copy — the
+	// collision the position key exists to survive. (TimelineItem keyed the
+	// option row on exactly this bounded label before the fix, so both rows
+	// answered to one React key: `${question.key}:${option.label}`.)
+	expect(boundedLabel(first)).toBe(boundedLabel(second));
+
+	// The option-row key stays distinct where the bounded labels do not.
+	expect(questionOptionKey("call:0", 0)).not.toBe(questionOptionKey("call:0", 1));
+	// And across questions, as the key's question half already guaranteed.
+	expect(questionOptionKey("call:0", 0)).not.toBe(questionOptionKey("call:1", 0));
+	expect(questionOptionKey("call:0", 1)).toBe("call:0:1");
+});
