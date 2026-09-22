@@ -417,6 +417,114 @@ func TestRestoreKeepsFreshScratchWhenRetainedSlotContended(t *testing.T) {
 	}
 }
 
+// TestRestoreAdoptsPoolOwnedHandleDespiteStaleContentionMark pins the round-5
+// healing at the replacement guard: a pool left holding both a reacquired
+// handle and a contention record for the same directory — the wedged state
+// the pre-round-5 refresh could write — must still adopt. A pooled handle is
+// transferable, so the marker is stale by definition, and the next restore
+// takes the retained directory instead of running beside the stranded
+// allocation.
+func TestRestoreAdoptsPoolOwnedHandleDespiteStaleContentionMark(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RESTOREPOOLHEAL1"
+	const bindingID = "b-pool-heal"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: retainedDir, Kind: sandbox.ScratchKindSandbox})
+	if err != nil {
+		t.Fatalf("pool-owned fixture handle: %v", err)
+	}
+	// The wedged pool: its own reacquired handle AND a contention record for
+	// the same directory, with rows current so the restore adopts from the
+	// pool.
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: handle},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{key: {}},
+		adopted:   map[string]string{},
+	})
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, true); err != nil {
+		t.Fatalf("restore adoption over a stale contention mark: %v", err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(retainedDir) {
+		t.Fatalf("the pooled handle behind the stale mark was not adopted; the restored session runs on %q, want the retained %q", got, retainedDir)
+	}
+}
+
+// TestScratchRefreshNeverContendsPoolOwnedHandle pins the round-5 ownership
+// invariant at the refresh's reacquire: a slot whose lease the POOL already
+// holds — a handle a prior refresh reacquired and never adopted — is not
+// contention. The re-open fails with the lease-held sentinel against the
+// pool's own handle, a transferable allocation, so marking it contended
+// would wedge the consumer permanently: the marker blocks every later
+// adoption while the pooled handle forever fails the re-probe against
+// itself. The refresh must leave the slot unmarked and the handle pooled.
+func TestScratchRefreshNeverContendsPoolOwnedHandle(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHPOOLOWN1"
+	const bindingID = "b-pool-owned"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+	key := canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)
+
+	// A prior refresh reacquired the slot, and its adoption never took the
+	// handle: the pool owns the lease while the consumer's rows are missing,
+	// so this refresh re-installs its rows and re-opens its own slot.
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: slots[sandbox.ScratchKindSandbox].Dir, Kind: sandbox.ScratchKindSandbox})
+	if err != nil {
+		t.Fatalf("pool-owned fixture handle: %v", err)
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: handle},
+		bindings:  map[string]sandbox.ScratchBinding{},
+		consumers: map[string]sandbox.ScratchConsumerBinding{},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("refresh of %q: %v", consumerID, err)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("no pool was published")
+	}
+	pool.mu.Lock()
+	_, marked := pool.contended[key]
+	pooled := pool.handles[key]
+	pool.mu.Unlock()
+	if marked {
+		t.Fatal("the refresh marked the pool's own handle contended; the marker wedges every later adoption against a transferable pooled lease")
+	}
+	if pooled == nil {
+		t.Fatal("the refresh dropped the pool's own reacquired handle")
+	}
+}
+
 // TestScratchRefreshInstallWindowBlocksManifestUpdates pins the round-2
 // serialization: the revision recheck and the row install hold the manifest's
 // durable update lock, so a manifest update cannot commit between them —
@@ -457,6 +565,9 @@ func TestScratchRefreshInstallWindowBlocksManifestUpdates(t *testing.T) {
 	}
 	if windowErr == nil {
 		t.Fatal("a manifest update committed inside the refresh's recheck-to-install window; the install is not serialized against manifest writers")
+	}
+	if !errors.Is(windowErr, sandbox.ErrScratchRetentionLockHeld) {
+		t.Fatalf("in-window update refused with %v; want the install hold's lock sentinel", windowErr)
 	}
 	// The refusal was the install hold, not a broken manifest: once the
 	// refresh returns and releases the lock, the same update commits.
@@ -595,6 +706,7 @@ func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
 	}
 	holderHeld := make(chan struct{})
 	loserPaused := make(chan struct{})
+	var loserPausedOnce sync.Once
 	loserDone := make(chan struct{})
 	var loserErr error
 	// The loser pauses between its opens and its install — and only the
@@ -603,7 +715,7 @@ func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
 	// hold itself.
 	s.cfg.testOnly.scratchRefreshBeforeInstall = func(sessionID string) {
 		if sessionID == loserConsumer {
-			close(loserPaused)
+			loserPausedOnce.Do(func() { close(loserPaused) })
 			<-holderHeld
 		}
 	}
@@ -629,6 +741,83 @@ func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
 	}
 	if got := loserAttempts.Load(); got < 2 {
 		t.Fatalf("the loser failed its restore on pass %d of lock contention instead of retrying; contention must route through the bounded retry, not fail the send", got)
+	}
+}
+
+// TestScratchRefreshRetriesInstallHoldContentionClears pins the round-3
+// retry at install depth END-TO-END: a refresh whose install loses the
+// manifest lock to another in-process writer must SUCCEED on its next pass
+// once the holder releases, not merely fail loudly after the bound. The
+// re-reached before-install hook also pins the hook contract: lock-contention
+// retries re-run test hooks, so a hook's one-shot signaling must be
+// close-once — an unguarded close panics on the retry pass instead of
+// exercising the retry (round 5).
+func TestScratchRefreshRetriesInstallHoldContentionClears(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHHOLDCLR1"
+	const bindingID = "b-hold-clears"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+
+	// A second in-process writer holds the manifest lock exactly for the
+	// refresh's first install window: the hook hands the lock over before
+	// the install attempt, and the retry pass's first reacquire open is
+	// synchronized after the verifiable release — so pass 1 deterministically
+	// loses the install hold and pass 2 deterministically recovers.
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	var opens atomic.Int32
+	var hookPasses atomic.Int32
+	s.cfg.testOnly.scratchRefreshOpenOverride = func(ref sandbox.ScratchReference, _ int) error {
+		if opens.Add(1) == 2 {
+			// The retry pass's first open: release the install-hold holder
+			// and wait for its lock to verifiably drop before the real open.
+			close(releaseLock)
+			<-lockReleased
+		}
+		return nil
+	}
+	// The hook's one-shot handover is close-once: lock-contention retries
+	// re-run the hook, and an unguarded close would panic on the retry pass
+	// instead of exercising the bounded retry.
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func(sessionID string) {
+		if hookPasses.Add(1) == 1 {
+			close(takeLock)
+			<-lockTaken
+		}
+	}
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("install-depth contention did not recover once the holder released: %v", err)
+	}
+	if got := hookPasses.Load(); got < 2 {
+		t.Fatalf("the retry never re-ran the before-install hook (%d passes); hooks must be idempotent across lock-contention retries", got)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("no pool was published")
+	}
+	pool.mu.Lock()
+	row := pool.consumers[consumerID]
+	_, sandboxHeld := pool.handles[canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)]
+	pool.mu.Unlock()
+	if row.CurrentBindingID != bindingID || !sandboxHeld {
+		t.Fatalf("recovery left the consumer on %q with its handle pooled=%v", row.CurrentBindingID, sandboxHeld)
 	}
 }
 

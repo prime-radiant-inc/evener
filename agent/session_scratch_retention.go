@@ -804,8 +804,9 @@ func releaseRefreshHandles(handles map[string]*sandbox.SessionScratch) {
 // and its current binding become adoptable, reacquired handles join the pool
 // and drop any adoption record their reacquire proves stale — the previous
 // adopter gave the lease back — and contended marks record slots whose leases
-// are held elsewhere in this process, so an adoption that finds no handle
-// borrows or skips instead of erroring.
+// are held elsewhere in this process — never a slot the pool itself holds a
+// handle for, which is transferable rather than contended — so an adoption
+// that finds no handle borrows or skips instead of erroring.
 //
 // The fold is guarded by the session's published-pool identity, checked under
 // the same mutex hold that guards the maps: a terminal release can swap the
@@ -834,6 +835,14 @@ func (s *Session) installConsumerRefresh(pool *retainedScratchPool, consumer san
 		delete(pool.contended, key)
 	}
 	for key := range contended {
+		// A slot the pool holds a handle for — a reacquire a prior refresh
+		// installed that no adoption has taken — is pool-owned, the opposite
+		// of contended: the allocation is transferable, and a contention
+		// mark beside the pooled handle would wedge every later adoption
+		// against the pool's own lease (round 5).
+		if _, held := pool.handles[key]; held {
+			continue
+		}
 		pool.contended[key] = struct{}{}
 	}
 	return true
@@ -1213,10 +1222,13 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 
 // retainedScratchSlotContended reports whether the pool holds no reacquired
 // handle for dir because its lease is held elsewhere in this process — the
-// racing-idle-release window. A dispose-then-adopt replacement must never run
-// against a contended slot: the adoption cannot take the lease (no handle),
-// and with the fresh allocation already disposed the session would end up
-// running on the retained directory unowned, beside its in-process holder.
+// racing-idle-release window. A slot the pool holds a handle for is never
+// contended, whatever a stale contention record beside it says: the handle is
+// the transferable reacquire the marker claims is missing, so the guard reads
+// the slot as adoptable. A dispose-then-adopt replacement must never run
+// against a genuinely contended slot: the adoption cannot take the lease (no
+// handle), and with the fresh allocation already disposed the session would end
+// up running on the retained directory unowned, beside its in-process holder.
 // The replacement is skipped instead, the fresh allocation stays, and the next
 // restore re-probes the settled contention (refreshRetainedScratchConsumer)
 // and resumes in the retained directory with the lease in hand. An engineered
@@ -1229,7 +1241,17 @@ func (s *Session) retainedScratchSlotContended(dir string) bool {
 	}
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
-	_, contended := pool.contended[canonicalScratchDir(dir)]
+	key := canonicalScratchDir(dir)
+	if _, held := pool.handles[key]; held {
+		// A reacquired handle makes the slot pool-owned — transferable —
+		// whatever a stale contention record beside it says: the marker and
+		// a pooled handle describe mutually exclusive states, and the handle
+		// wins. This is also the heal for pools wedged by the pre-round-5
+		// refresh: the next restore adopts the pooled handle instead of
+		// skipping the slot forever.
+		return false
+	}
+	_, contended := pool.contended[key]
 	return contended
 }
 
