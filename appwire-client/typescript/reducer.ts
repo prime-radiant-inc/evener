@@ -438,6 +438,14 @@ function activeTurnIdFromThread(thread: Thread): string | undefined {
 const isToolResultId = (id: string) => id.startsWith("item_tool_result_");
 const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResultId(id);
 
+// The same wire id conventions, public for callers that must classify items
+// exactly as the callId fold does (it removes item_tool_result_* results and
+// rewrites item_tool_* calls). The mobile store's skeleton strip needs the
+// distinction: a rewritten CALL host can carry content the removed result was
+// the only other holder of.
+export const isToolResultItemId: (id: string) => boolean = isToolResultId;
+export const isToolCallItemId: (id: string) => boolean = isToolCallId;
+
 // Reload projects a tool CALL and its RESULT as two items sharing a callId, in
 // separate wire turns (apptranscript.TurnsFromFile mints one turn per transcript
 // entry). Collapse them the way the live path already produces a single item:
@@ -1088,6 +1096,23 @@ export interface TurnHistoryMergeResult {
   transcriptOverlap: boolean;
 }
 
+// The turn-level fragment membership of a turn-history merge: for each
+// returned turn id, the ids of every OLDER input turn that coalesced into
+// it. Coalescing is transitive — turnsMatch chains through shared item
+// identities, and mergePageItems folds item aliases into a final identity
+// neither original carried — so an older turn's content can land in an
+// output turn whose items match none of the older turn's identities.
+// Membership, not final-identity matching, is the authoritative answer to
+// "which returned turn carries this input turn's content" (the mobile
+// store's compact-turn ownership transfer reads it exactly that way). A
+// fold's output id can be absent from turns — the fold drops a group turn
+// it emptied of removable results, and a merge whose older side contributed
+// nothing returns the newer side unchanged — so a caller must treat a fold
+// whose output turn is missing as having no carrier.
+export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
+  olderTurnFolds: ReadonlyMap<string, readonly string[]>;
+}
+
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
 const itemIdentityFields = new Set(["id", "turnId", "transcriptKey", "clientMutationId"]);
 const itemNonCoverageFields = new Set([
@@ -1442,8 +1467,19 @@ function mergeTurnHistoryWithContext(
   older: TurnModel[],
   newer: TurnModel[],
   context?: ToolItemMergeContext,
-): TurnHistoryMergeResult {
+): TurnHistoryFoldDetail {
   const groups = coalesceTurnFragments(older, newer, context);
+  const olderTurnFolds = new Map<string, readonly string[]>();
+  for (const group of groups) {
+    if (group.olderIndexes.length === 0) continue;
+    olderTurnFolds.set(
+      group.turn.id,
+      group.olderIndexes.flatMap((index): string[] => {
+        const id = older[index]?.id;
+        return id === undefined ? [] : [id];
+      }),
+    );
+  }
   let olderContributed = false;
   let olderCoverage = false;
   let transcriptOverlap = false;
@@ -1492,10 +1528,19 @@ function mergeTurnHistoryWithContext(
     turns: olderContributed ? mergeToolCallsByCallId(placed, context, view) : newer,
     olderCoverage,
     transcriptOverlap,
+    olderTurnFolds,
   };
 }
 
 export function mergeTurnHistory(older: TurnModel[], newer: TurnModel[]): TurnHistoryMergeResult {
+  return mergeTurnHistoryWithContext(older, newer, createToolItemMergeContext(newer, older));
+}
+
+// The same merge carrying its turn-level fragment membership, for callers
+// that must follow an older turn's content to the output turn that holds it
+// even through alias chains that leave the merged items matching none of the
+// input's identities.
+export function mergeTurnHistoryWithFolds(older: TurnModel[], newer: TurnModel[]): TurnHistoryFoldDetail {
   return mergeTurnHistoryWithContext(older, newer, createToolItemMergeContext(newer, older));
 }
 

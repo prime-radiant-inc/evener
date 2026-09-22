@@ -7689,6 +7689,424 @@ describe("ConversationStore", () => {
       expect(folded[0]?.text).toBe("");
     });
 
+    // Review round 8, tool-result folds: the incoming page can restore a
+    // compact turn's OTHER identity while carrying the RESULT of the tool
+    // call the same compact turn remembers as a skeleton. The injection
+    // puts the call skeleton into the merge, the package's tool fold
+    // removes the page's result item and carries its fields onto that
+    // skeleton by callId, and the rewritten host is a new object whose
+    // identity matches no real source — so the strip pass deleted it, and
+    // BOTH representations of the result (the folded host and the removed
+    // result item) vanished from conversation.turns. A skeleton host that
+    // received a real result's fields is content, not remembered memory:
+    // it must survive the strip.
+    it("a page's real tool result folded into a remembered call skeleton survives the strip", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering a tool CALL skeleton (callId call-1)
+      // and a second item under transcript key ka.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "inProgress",
+                  transcriptKey: "kc",
+                  position: { entry: 99, item: 0 },
+                },
+                {
+                  id: "a-0",
+                  transcriptKey: "ka",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // The incoming page restores ka — carrying the call's RESULT under the
+      // same callId, but not the call itself. The retained turn is the
+      // newer merge input, so pt hosts the fold; the ka row keeps pt's
+      // window seat so the merged payloads stay retained.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "ka", text: "ka row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "item_tool_result_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  output: "ok",
+                  exitCode: 0,
+                  status: "completed",
+                  transcriptKey: "kr",
+                  position: { entry: 101, item: 0 },
+                },
+                {
+                  id: "a-1",
+                  transcriptKey: "ka",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "alpha page",
+                  position: { entry: 100, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const folded = store.getState().conversation?.turns.find((t) => t.id === "pt")?.items ?? [];
+      // The restored identity folds as ever, and the enriched call host
+      // keeps the result's real fields — the fold removed the result item,
+      // so the host is the only item left holding that content.
+      expect(folded).toEqual([
+        expect.objectContaining({
+          id: "item_tool_1",
+          callId: "call-1",
+          output: "ok",
+          exitCode: 0,
+          status: "completed",
+        }),
+        expect.objectContaining({ transcriptKey: "ka", text: "alpha page" }),
+      ]);
+      // The turn's usage still reads through the retained stamp.
+      expect(sessionTokens(store.getState().conversation!)).toEqual({
+        inputTokens: 501,
+        outputTokens: 21,
+        scope: "loaded",
+      });
+    });
+
+    // Review round 8, transitive alias folds: the fresh read re-issues a
+    // remembered keyless item under its bare id now carrying a transcript
+    // key, and a second fresh fragment shares that key under a different id —
+    // the package coalesces the chain, and the merged item's FINAL identity
+    // (the second fragment's) matches neither remembered skeleton. The
+    // ownership transfer matched only final identities, found no carrier, and
+    // deleted the vanished compact turn's memory — including the
+    // still-unrestored identities it also remembered. A later reissue of one
+    // of those then survived beside the carrier and double-counted usage.
+    // The transfer must follow the merge's own fragment membership instead.
+    it("a transitive alias fold keeps a vanished compact turn's remaining identities foldable", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering TWO KEYLESS items (fa and fz).
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ta",
+              [
+                {
+                  id: "fa",
+                  turnId: "ta",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 90, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "fz",
+                  turnId: "ta",
+                  type: "agentMessage",
+                  text: "zed",
+                  position: { entry: 91, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ta")?.items).toEqual([]);
+
+      // A fresh read re-issues fa under its bare id — now carrying transcript
+      // key kk — in one fragment, and a second fragment shares kk under a
+      // different id. The package coalesces the chain: fa folds through kk
+      // into fb, whose final identity matches NEITHER remembered skeleton,
+      // and ta folds away with the fresh carrier.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "tf1",
+              status: "completed",
+              items: [
+                {
+                  id: "fa",
+                  transcriptKey: "kk",
+                  turnId: "tf1",
+                  type: "agentMessage",
+                  text: "alpha fresh",
+                  position: { entry: 90, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+            {
+              id: "tf2",
+              status: "completed",
+              items: [
+                {
+                  id: "fb",
+                  transcriptKey: "kk",
+                  turnId: "tf2",
+                  type: "agentMessage",
+                  text: "bravo",
+                  position: { entry: 90, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.some((turn) => turn.id === "ta")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "tf2")?.items).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "bravo" }),
+      ]);
+
+      // A later page re-issues fz. It must fold into the carrier that took
+      // ta's content — its memory survived the alias fold — instead of
+      // surviving beside it and double-counting usage.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "tz",
+              [
+                {
+                  id: "fz",
+                  turnId: "tz",
+                  type: "agentMessage",
+                  text: "zed page",
+                  position: { entry: 91, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.some((turn) => turn.id === "tz")).toBe(false);
+      expect(after.turns.find((turn) => turn.id === "tf2")?.items).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "bravo" }),
+        expect.objectContaining({ id: "fz", text: "zed page" }),
+      ]);
+      expect(sessionTokens(after)).toEqual({
+        inputTokens: 501,
+        outputTokens: 21,
+        scope: "loaded",
+      });
+    });
+
+    // Review round 8, cursor coverage without injection: compact-only turns
+    // were excluded from the coverage merge only when a collision had
+    // actually injected skeletons. With NO collision the unmatched compact
+    // turn itself still entered the merge and claimed olderCoverage (usage
+    // metadata counts as coverage for an empty turn), and an unchanged real
+    // turn supplied transcriptOverlap — so the stale wire cursor overrode a
+    // complete fresh read. A compact-only turn holds no transcript content by
+    // construction; it must never supply coverage, injected or not.
+    it("a noncolliding compact turn does not claim cursor coverage over a complete fresh read", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "PK", text: "pk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn: compacts at its own load and remembers px.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "x-0",
+                  transcriptKey: "px",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ct")?.items).toEqual([]);
+
+      // A COMPLETE fresh read repeats the unchanged real turn and re-issues
+      // nothing the compact turn remembers — no collision, no injection.
+      // The fresh read's own cursor is null: nothing older exists.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "PK", text: "pk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+          ],
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // The complete read's null cursor stands: the compact turn survives
+      // with its usage, but usage metadata is not transcript coverage.
+      expect(conv.olderCursor).toBeUndefined();
+      expect(conv.turns.find((turn) => turn.id === "ct")?.usage).toEqual({
+        inputTokens: 500,
+        outputTokens: 20,
+      });
+      expect(sessionTokens(conv)).toEqual({
+        inputTokens: 509,
+        outputTokens: 29,
+        scope: "session",
+      });
+    });
+
     // Review round 7, cursor coverage: a compact turn that the injected
     // merge folds into a fresh carrier under a different id must not claim
     // older coverage in the cursor gate's uninjected merge — an unmatched
