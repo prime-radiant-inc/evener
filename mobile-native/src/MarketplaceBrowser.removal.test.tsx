@@ -61,9 +61,10 @@ beforeEach(() => {
 
 /** The guard PluginsScreen wires around the browser, in the minimal shape
  * these browser-level tests need: the names the browser reports applied
- * (fenced from removing again), the warning slot the applied outcome's
- * notice renders in, and a client that never gets replaced. The guard's own
- * client scoping and remount survival is PluginsScreen.test.tsx's to pin. */
+ * (fenced from removing again) held with the publication baseline each fence
+ * predates, the warning slot the applied outcome's notice renders in, and a
+ * client that never gets replaced. The guard's own client scoping and remount
+ * survival is PluginsScreen.test.tsx's to pin. */
 function GuardedBrowser({
   client,
   canUseConnection = () => true,
@@ -71,7 +72,9 @@ function GuardedBrowser({
   client: ConversationClientLike;
   canUseConnection?: () => boolean;
 }) {
-  const [names, setNames] = useState<ReadonlySet<string>>(() => new Set());
+  const [guard, setGuard] = useState<ReadonlyMap<string, number>>(
+    () => new Map(),
+  );
   const [warning, setWarning] = useState<string | null>(null);
   // The screen's half of the store wiring, in this harness's minimal shape:
   // the marketplaces store outlives the browser, and the add answer is
@@ -79,7 +82,7 @@ function GuardedBrowser({
   // tests hold a ready connection throughout.
   const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
   const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
-  const authoritativeFrom = useRef(0);
+  const names = useMemo(() => new Set(guard.keys()), [guard]);
   return (
     <>
       <ErrorMessage message={warning} />
@@ -90,30 +93,48 @@ function GuardedBrowser({
         installed={createPluginsStore(client)}
         marketplaces={marketplaces}
         lastAddMarketplaces={lastAddMarketplaces}
-        authoritativeFrom={authoritativeFrom}
         gate={createPluginMutationGate()}
         ready={true}
         canUseConnection={canUseConnection}
         onOpenPlugin={() => {}}
         appliedRemovalNames={names}
-        onAppliedRemoval={(name, notice) => {
-          setNames((current) => new Set([...current, name]));
+        onAppliedRemoval={(name, notice, _owner, marketplaces, publicationVersion) => {
+          // The production screen's recording rule, in this harness's
+          // minimal shape: an accepted snapshot that already omits the
+          // target is the outcome's own reconciliation and leaves no fence,
+          // and a fence records the publication baseline the outcome read.
+          setGuard((current) => {
+            const next = new Map(current);
+            if (marketplaces === null || marketplaces.some((item) => item.name === name))
+              next.set(name, publicationVersion);
+            else next.delete(name);
+            return next;
+          });
           if (notice !== null) setWarning(notice);
           return true;
         }}
-        onAuthoritativeMarketplaces={() => {
+        onAuthoritativeMarketplaces={(_marketplaces, _owner, publicationVersion) => {
           // The screen's fallback ruling, in this harness's minimal shape:
-          // the first publication after an outcome retires the fence
-          // whatever it carries - the browser's own watermark decides which
-          // publications count as that first one. The updater bails on an
-          // already-empty fence so the re-render it triggers cannot loop
-          // back into the reporting effect.
-          setNames((current) => (current.size ? new Set() : current));
+          // a fence retires with the first publication NEWER than its own
+          // baseline, whatever the publication carries - per name, the way
+          // the production screen prunes. A report that outruns no baseline
+          // changes nothing, so the re-render a report triggers cannot loop
+          // back into the reporting effect and a re-report of an unchanged
+          // publication retires nothing.
+          setGuard((current) => {
+            if (![...current.values()].some((baseline) => publicationVersion > baseline))
+              return current;
+            const next = new Map(current);
+            for (const [name, baseline] of next) {
+              if (publicationVersion > baseline) next.delete(name);
+            }
+            return next;
+          });
         }}
         onMarketplaceAdded={(name) => {
-          setNames((current) => {
+          setGuard((current) => {
             if (!current.has(name)) return current;
-            const next = new Set([...current]);
+            const next = new Map(current);
             next.delete(name);
             return next;
           });
@@ -294,4 +315,76 @@ it("keeps the cleanup warning when a removal never runs (readiness lost at the g
     tree.root.findAllByProps({ accessibilityLabel: "Remove marketplace" })[0]
       ?.props.disabled,
   ).toBe(false);
+});
+
+it("keeps the fence while the outcome's reconciliation read is on the wire", async () => {
+  const fake = new FakeClient("ready");
+  let listCalls = 0;
+  let releaseRead!: (value: { marketplaces: MarketplaceEntry[] }) => void;
+  const pendingRead = new Promise<{ marketplaces: MarketplaceEntry[] }>(
+    (resolve) => {
+      releaseRead = (value) => resolve(value);
+    },
+  );
+  fake.on("evener/marketplace/list", () => {
+    listCalls += 1;
+    return listCalls === 1 ? { marketplaces: [ACME] } : pendingRead;
+  });
+  fake.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
+  fake.on("evener/marketplace/remove", () => {
+    // The hub applied the removal but its clone cleanup failed, and the
+    // answer's applied list is unavailable: the outcome records a fence
+    // against the mount read's publication and asks the store to reconcile.
+    throw new WireError("clone could not be removed", -32603, {
+      evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+    });
+  });
+  const client = fake as unknown as ConversationClientLike;
+  const tree = render(<GuardedBrowser client={client} />);
+  await act(async () => {});
+  const row = tree.root.findAllByProps({ accessibilityLabel: "Browse acme" })[0];
+  if (!row) throw new Error("no acme row");
+  await act(async () => {
+    row.props.onPress();
+  });
+  const remove = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  const removePress = remove?.props.onPress;
+  if (!removePress) throw new Error("no Remove marketplace action");
+  act(() => removePress());
+  const request = alertRequests.at(-1);
+  const confirmPress = request?.buttons?.find(
+    (button) => button.text === "Remove",
+  )?.onPress;
+  if (!confirmPress) throw new Error("no Remove confirm button");
+  await act(async () => {
+    confirmPress();
+  });
+  await act(async () => {});
+
+  // The fence recorded against the mount read's version, and its
+  // reconciliation read is still on the wire: no publication newer than the
+  // baseline has landed - not even the re-report the recording's own
+  // re-render triggers - so the fence stands under the cleanup warning.
+  expect(renderedText(tree)).toContain(
+    "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
+  );
+  const fenced = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  expect(fenced?.props.disabled).toBe(true);
+  expect(listCalls).toBe(2);
+
+  // The read lands - still carrying the row, a re-registration the wire
+  // cannot tell from the stale one - and it is the first publication newer
+  // than the fence's own baseline, so the fallback ruling retires it
+  // whatever it carries.
+  releaseRead({ marketplaces: [ACME] });
+  await act(async () => {});
+  await act(async () => {});
+  const again = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  expect(again?.props.disabled).toBe(false);
 });

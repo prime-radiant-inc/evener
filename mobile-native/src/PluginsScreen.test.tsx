@@ -131,7 +131,14 @@ function pluginsProps(tree: ReturnType<typeof render>) {
           name: string,
           notice: string | null,
           owner: ConversationClientLike,
+          marketplaces: readonly MarketplaceEntry[] | null,
+          publicationVersion: number,
         ) => boolean;
+        onAuthoritativeMarketplaces: (
+          marketplaces: readonly MarketplaceEntry[],
+          owner: ConversationClientLike,
+          publicationVersion: number,
+        ) => void;
         appliedRemovalNames: ReadonlySet<string>;
       }
     | undefined;
@@ -840,6 +847,135 @@ it("keeps a remounted browser from retiring the fence on the pre-outcome snapsho
 	const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
 	expect(remove.props.disabled).toBe(false);
 	expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(1);
+});
+
+it("retires an earlier fence on the read a later outcome's fence outran", async () => {
+	// The round-4 M1 shape from #2137's review: a browser-wide watermark
+	// advances on ANY outcome's recording, so a read that publishes inside
+	// the same window - before any effect can report it - is mistaken for
+	// one the earlier fence already predates once the later outcome records
+	// against it. Per-name baselines keep the earlier fence's retirement
+	// its own, the way the web guard prunes per name.
+	const beta: MarketplaceEntry = {
+		name: "beta",
+		source: { kind: "github", repo: "beta/plugins" },
+		lastUpdated: 1,
+	};
+	let listCalls = 0;
+	let removals = 0;
+	let releaseAcmeRead!: () => void;
+	const acmeRead = new Promise<void>((resolve) => {
+		releaseAcmeRead = () => resolve();
+	});
+	let releaseLaterReads!: () => void;
+	const laterReads = new Promise<void>((resolve) => {
+		releaseLaterReads = () => resolve();
+	});
+	let releaseAcmeRemoval!: () => void;
+	const acmeRemoval = new Promise<never>((_resolve, reject) => {
+		releaseAcmeRemoval = () => reject(cloneLitterError(null, false));
+	});
+	const hub = marketplaceClient({
+		list: async () => {
+			listCalls += 1;
+			// The mount read carries both rows; acme's reconciliation read is
+			// held on the wire until the window below opens it; every later
+			// read stays on the wire, so nothing else publishes.
+			if (listCalls >= 3) await laterReads;
+			if (listCalls === 2) await acmeRead;
+			return { marketplaces: [marketplace, beta] };
+		},
+		remove: () => {
+			removals += 1;
+			// Both removals answer with the idempotent applied outcome and an
+			// unavailable applied list, so each records a fence and asks the
+			// store to reconcile.
+			return removals === 1
+				? acmeRemoval
+				: Promise.reject(cloneLitterError(null, false));
+		},
+	});
+	harness.connection = readyConnection(hub.client);
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	await browseMarketplace(tree);
+	await confirmMarketplaceRemoval(tree);
+	releaseAcmeRemoval();
+	await act(async () => {
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+	const fencedAcme = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(fencedAcme.props.disabled).toBe(true);
+	expect(listCalls).toBe(2);
+
+	// Open beta's confirmation while acme's reconciliation read is still on
+	// the wire, so the window below can settle beta's outcome before any
+	// effect reports the read.
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse beta" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Remove marketplace" }).props.onPress();
+	});
+	const request = alertRequests.at(-1);
+	const betaConfirm = request?.buttons?.find((button) => button.text === "Remove");
+	if (!betaConfirm?.onPress) throw new Error("Remove confirmation was not shown");
+
+	// The window: acme's reconciliation read publishes - still carrying acme,
+	// a row only a re-registration can be once the removal stood - and
+	// beta's outcome records against that publication before any effect can
+	// report it. A browser-wide watermark would rise to the read's version
+	// with beta's recording and swallow acme's retirement read whole;
+	// per-name baselines hand the read to acme's fence alone.
+	await act(async () => {
+		releaseAcmeRead();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		betaConfirm.onPress?.();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+	expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+	// Acme's fence retired on the read beta's recording outran; beta's own
+	// fence stands until a read newer than ITS baseline, and its
+	// reconciliation read never comes off the wire.
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+	});
+	await act(async () => {});
+	const acmeRemove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(acmeRemove.props.disabled).toBe(false);
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
+	});
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse beta" }).props.onPress();
+	});
+	await act(async () => {});
+	const betaRemove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+	expect(betaRemove.props.disabled).toBe(true);
+	expect(removals).toBe(2);
 });
 
 it("ignores an applied removal result from a replaced client", async () => {
@@ -1802,7 +1938,9 @@ it("answers false for an applied outcome a client switch outran, and records for
   // A late applied outcome from the replaced client must answer false -
   // not store the name and answer true, which would send the browser off to
   // set its watermark and refetch for a fence that never existed.
-  expect(record("acme", notice, oldHub.client)).toBe(false);
+  // The snapshot and version the recording reads: a list unavailable to the
+  // outcome, so the fence is the answer's own, and the store's baseline.
+  expect(record("acme", notice, oldHub.client, null, 0)).toBe(false);
   expect(pluginsProps(tree).appliedRemovalNames.size).toBe(0);
 
   // The store is alive for the client that replaced it: an outcome of its
@@ -1810,7 +1948,7 @@ it("answers false for an applied outcome a client switch outran, and records for
   // store's.
   let stored = false;
   await act(async () => {
-    stored = pluginsProps(tree).onAppliedRemoval("acme", notice, newHub.client);
+    stored = pluginsProps(tree).onAppliedRemoval("acme", notice, newHub.client, null, 0);
   });
   expect(stored).toBe(true);
   expect(pluginsProps(tree).appliedRemovalNames.has("acme")).toBe(true);
@@ -1836,7 +1974,7 @@ it("stores an applied outcome that recorded before the switch, then drops it wit
   // browser sets its watermark and refetches off that true.
   let answer: boolean | undefined;
   act(() => {
-    answer = record("acme", notice, oldHub.client);
+    answer = record("acme", notice, oldHub.client, null, 0);
   });
   expect(answer).toBe(true);
   // The store the true answered for, as the fence the browser sees: the
@@ -1855,9 +1993,83 @@ it("stores an applied outcome that recorded before the switch, then drops it wit
   // And the new client's own outcome still records.
   let fresh = false;
   await act(async () => {
-    fresh = pluginsProps(tree).onAppliedRemoval("beta", notice, newHub.client);
+    fresh = pluginsProps(tree).onAppliedRemoval("beta", notice, newHub.client, null, 0);
   });
   expect(fresh).toBe(true);
+  expect(pluginsProps(tree).appliedRemovalNames.has("beta")).toBe(true);
+});
+
+it("prunes each fence against its own baseline, not the latest outcome's", async () => {
+  const beta: MarketplaceEntry = {
+    name: "beta",
+    source: { kind: "github", repo: "beta/plugins" },
+    lastUpdated: 1,
+  };
+  const hub = marketplaceClient({});
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  const notice = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
+  const record = pluginsProps(tree).onAppliedRemoval;
+  const report = pluginsProps(tree).onAuthoritativeMarketplaces;
+
+  // Two fences with different baselines: acme's predates the read reported
+  // below, beta's was recorded against a later publication. One browser-wide
+  // watermark would rise to beta's baseline with its recording and the read
+  // acme's fence was waiting for would never be reported (the round-4 M1
+  // shape from #2137's review); each name's own baseline hands that read to
+  // acme's fence alone.
+  let storedAcme = false;
+  let storedBeta = false;
+  await act(async () => {
+    storedAcme = record("acme", notice, hub.client, [marketplace], 1);
+    storedBeta = record("beta", notice, hub.client, [beta], 3);
+  });
+  expect(storedAcme).toBe(true);
+  expect(storedBeta).toBe(true);
+  await act(async () => {
+    report([marketplace, beta], hub.client, 2);
+  });
+  const names = pluginsProps(tree).appliedRemovalNames;
+  expect(names.has("acme")).toBe(false);
+  expect(names.has("beta")).toBe(true);
+});
+
+it("leaves no fence when the store's snapshot already omits the target", async () => {
+  const beta: MarketplaceEntry = {
+    name: "beta",
+    source: { kind: "github", repo: "beta/plugins" },
+    lastUpdated: 1,
+  };
+  const hub = marketplaceClient({});
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  const notice = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
+  const record = pluginsProps(tree).onAppliedRemoval;
+
+  // An accepted snapshot that already omits the target is the outcome's own
+  // reconciliation, so it leaves no fence at all - the shape the web's sheet
+  // records (MarketplaceSheet.tsx) - while the outcome's notice still warns.
+  let stored = false;
+  await act(async () => {
+    stored = record("acme", notice, hub.client, [], 4);
+  });
+  expect(stored).toBe(true);
+  expect(pluginsProps(tree).appliedRemovalNames.size).toBe(0);
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+
+  // A snapshot that still carries the target - or no list at all - fences.
+  await act(async () => {
+    stored = record("beta", notice, hub.client, [beta], 5);
+  });
+  expect(stored).toBe(true);
   expect(pluginsProps(tree).appliedRemovalNames.has("beta")).toBe(true);
 });
 
