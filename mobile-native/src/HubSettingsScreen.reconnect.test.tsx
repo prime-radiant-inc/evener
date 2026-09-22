@@ -295,3 +295,38 @@ it("refuses an upgrade confirmation that outlives the connection it was opened o
 	});
 	expect(starts.count).toBe(0);
 });
+
+it("reads the overview and reconcile once on a mount that is already ready", async () => {
+	// A pending upgrade checkpoint is what makes the mount's reconcile a real
+	// wire read: with one in storage the controller's first snapshot is
+	// "uncertain" and every reconcileAfterReconnect reads the overview
+	// (hubUpgrade.ts), so an already-ready mount owes exactly one read-set -
+	// the mount's own focus read. The ref that arms the ready-TRANSITION read
+	// seeds false, so a mount that was already ready at first render counted
+	// as a transition too and fired the transition read on top of the mount
+	// read: two overview/reconcile reads where one was owed.
+	upgrade.snapshot = {
+		kind: "uncertain",
+		message: "An upgrade may have been installed. Reconnect and verify.",
+	};
+	reconciles.count = 0;
+	const hub = new FakeClient("ready");
+	let reads = 0;
+	hub.on("evener/settings/overview", () => {
+		reads += 1;
+		return {
+			hub: { version: "1.2.3", daemonIdleTimeoutMillis: 3600000 },
+		};
+	});
+	harness.connection = connection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("Evener 1.2.3");
+	// One overview refresh (the store joins a second refresh into the
+	// in-flight one) and one upgrade reconcile: a mount that was already
+	// ready at first render has no ready transition to recover from.
+	expect(reads).toBe(1);
+	expect(reconciles.count).toBe(1);
+	upgrade.snapshot = { kind: "idle" };
+});
