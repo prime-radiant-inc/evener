@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hydrateThread,
+  markItemTextOmitted,
   QUEUE_UNAVAILABLE,
   SEND_UNAVAILABLE,
   sessionControls,
@@ -9954,6 +9955,99 @@ describe("ConversationStore", () => {
       const after = store.getState().conversation!;
       expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
         expect.objectContaining({ transcriptKey: "kt", text: "restored text" }),
+      ]);
+    });
+
+    // Review round 19, per-field freshness across a two-fresh tie: two
+    // aliases of one identity can each fold a fresh input — one carrying
+    // real text, one only a status. Both duplicates then carry fresh
+    // participation, and the item-granular tiebreak let the later
+    // duplicate's OLDER-inherited text overwrite the earlier duplicate's
+    // fresh text. Freshness resolves per field: the text only one side's
+    // fresh input supplied survives, the status the other side supplied
+    // survives, and everything else falls to the later-wins tiebreak.
+    it("two fresh-folded duplicates keep each side's fresh-supplied fields", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "pa",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "fresh",
+                  transcriptKey: "kk",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+                // The second retained alias carries ONLY a status — its
+                // text is the omitted marker, so it supplies no text.
+                markItemTextOmitted({
+                  id: "pb",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "",
+                  status: "completed",
+                  position: { entry: 71, item: 0 },
+                }),
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page reissues both retained aliases keyless — each holding
+      // its own STALE text — and the second one already keyed: both
+      // folds land, leaving two duplicates of the kk identity, the
+      // fresh-text one ordered first.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "pa",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "old A",
+                  position: { entry: 70, item: 0 },
+                },
+                {
+                  id: "pb",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "old B",
+                  transcriptKey: "kk",
+                  position: { entry: 71, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kk", text: "fresh", status: "completed" }),
       ]);
     });
   });

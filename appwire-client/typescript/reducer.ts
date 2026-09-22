@@ -848,13 +848,15 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
 // keeps, so it never makes an item fresh — an unpositioned skeleton folding
 // an older reissue must not tie with the positioned restored item beside it
 // and let display order hand the stale text the win.
-// Review round 17: the precedence itself is FIELD-scoped. A fresh input
-// supplying one payload field (a status-only fragment) makes the merged
-// item fresh, but its freshness covers only the fields that fresh input
-// supplied: fields the item inherited from older-side leaves are older
-// content, and their conflicts with the other duplicate's own values
-// resolve in list order — the same later-wins a participation tie applies
-// (reconcileFreshOverPlain).
+// Review rounds 17 and 19: the precedence itself is FIELD-scoped. A
+// fresh input supplying one payload field (a status-only fragment)
+// makes the merged item fresh, but its freshness covers only the fields
+// that fresh input supplied: fields the item inherited from older-side
+// leaves are older content, and their conflicts with the other
+// duplicate's own values resolve in list order — the same later-wins a
+// participation tie applies — including when BOTH duplicates carry
+// fresh participation, each supplying its own fields
+// (reconcileDuplicatesByFields).
 function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const reconciled: ItemModel[] = [];
   for (const item of items) {
@@ -871,9 +873,9 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
     const olderItem = existingIsNewer ? item : existing;
     const newerItem = existingIsNewer ? existing : item;
     const mergedItem =
-      existingIsNewer && context
-        ? reconcileFreshOverPlain(existing, item, freshSuppliedFields(context, existing))
-        : mergePageItem(olderItem, newerItem);
+      context === undefined
+        ? mergePageItem(olderItem, newerItem)
+        : reconcileDuplicatesByFields(existing, item, context);
     if (context) recordMergedToolItem(context, mergedItem, olderItem, newerItem);
     reconciled[index] = mergedItem;
   }
@@ -883,11 +885,15 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
 // The fields an item's FRESH inputs supplied — the fields its freshness
 // actually covers (review round 17). Text counts as supplied only when a
 // fresh leaf PROVIDED it (the omitted marker means the wire carried none);
-// every other field counts when a fresh leaf defines it. An item the
-// context never saw speaks only for itself.
+// every other field counts when a fresh leaf defines it. An identity-only
+// leaf supplies nothing at all — not even its identity (review round 19:
+// a remembered skeleton must not claim per-field precedence over a
+// restored item's fields) — and an item the context never saw speaks only
+// for itself.
 function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): ReadonlySet<string> {
   const supplied = new Set<string>();
   const record = (leaf: ItemModel): void => {
+    if (itemIsIdentityOnly(leaf)) return;
     for (const [key, value] of Object.entries(leaf)) {
       // Hydration gives every item an enumerable text property — "" under
       // the omitted marker when the wire carried none — so key presence
@@ -906,24 +912,39 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
   return supplied;
 }
 
-// The fresh-precedence merge of an earlier duplicate over a later one,
-// with the freshness scoped to the fields the earlier item's fresh inputs
-// supplied (review round 17): a field it inherited from an older-side leaf
-// is older content, and its conflict with the later duplicate's own value
-// resolves exactly as the plain later-wins tiebreak would. Composed as
-// the plain merge overlaid with the fresh-supplied fields, so every field
-// keeps the merge's own rule (nullish fallback, status rank, text
-// presence) instead of a key-by-key patch.
-function reconcileFreshOverPlain(existing: ItemModel, item: ItemModel, freshSupplied: ReadonlySet<string>): ItemModel {
-  const plain = mergePageItem(existing, item);
-  if (freshSupplied.size === 0) return plain;
-  const overlay = copyItemTextPresence(existing, { ...existing });
+// One duplicate's fresh-supplied fields, masked back onto its item: the
+// overlay a per-field reconciliation layers over the plain merge. Text
+// masks to the omitted marker when the fresh side did not supply it, so
+// the merge's presence rule falls through to the value underneath.
+function freshSuppliedOverlay(item: ItemModel, freshSupplied: ReadonlySet<string>): ItemModel {
+  const overlay = copyItemTextPresence(item, { ...item });
   for (const key of Object.keys(overlay)) {
     if (key === "text") continue;
     if (!freshSupplied.has(key)) delete (overlay as unknown as Record<string, unknown>)[key];
   }
-  if (!freshSupplied.has("text")) return mergePageItem(plain, markItemTextOmitted({ ...overlay, text: "" }));
-  return mergePageItem(plain, overlay);
+  if (!freshSupplied.has("text")) return markItemTextOmitted({ ...overlay, text: "" });
+  return overlay;
+}
+
+// Per-field reconciliation of a duplicate pair (review rounds 17-19):
+// each side's fresh inputs supply fields, and a field supplied fresh by
+// one side wins over a value the other side merely inherited from older
+// inputs — whichever duplicate is earlier in the list, and whether or
+// not the other side also carries fresh participation. Fields both
+// sides supplied fresh — or neither did — resolve as the plain later-wins
+// tiebreak does. Composed through mergePageItem's own rules (nullish
+// fallback, status rank, text presence) rather than a key-by-key patch:
+// the plain merge first, then each side's fresh-supplied overlay, the
+// earlier side's first so a both-fresh conflict lands on the later
+// duplicate exactly as the tiebreak decides it.
+function reconcileDuplicatesByFields(existing: ItemModel, item: ItemModel, context: ToolItemMergeContext): ItemModel {
+  const earlier = freshSuppliedFields(context, existing);
+  const later = freshSuppliedFields(context, item);
+  if (earlier.size === 0 && later.size === 0) return mergePageItem(existing, item);
+  let merged = mergePageItem(existing, item);
+  if (earlier.size > 0) merged = mergePageItem(merged, freshSuppliedOverlay(existing, earlier));
+  if (later.size > 0) merged = mergePageItem(merged, freshSuppliedOverlay(item, later));
+  return merged;
 }
 
 // Whether an item's merge membership includes newer-side ("fresh") inputs
