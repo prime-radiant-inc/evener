@@ -860,24 +860,37 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
 function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const reconciled: ItemModel[] = [];
   for (const item of items) {
-    const index = reconciled.findIndex((candidate) => itemIdentityMatches(candidate, item));
-    if (index === -1) {
-      reconciled.push(item);
-      continue;
+    // A fold can GROW its item's identity — a keyless older alias takes
+    // the transcript key of the reissue it folded — so the merged result
+    // can identity-match an accumulated candidate the original did not
+    // (review round 20): keep folding the merged result against the
+    // accumulated candidates until no match remains. Each step consumes
+    // one candidate, so the loop always ends.
+    let current = item;
+    for (;;) {
+      const index = reconciled.findIndex((candidate) => itemIdentityMatches(candidate, current));
+      if (index === -1) {
+        reconciled.push(current);
+        break;
+      }
+      const existing = reconciled[index];
+      if (existing === undefined) {
+        reconciled.push(current);
+        break;
+      }
+      const existingCarriesFresh = freshParticipates(context, existing);
+      const itemCarriesFresh = freshParticipates(context, current);
+      const existingIsNewer = existingCarriesFresh && !itemCarriesFresh;
+      const olderItem = existingIsNewer ? current : existing;
+      const newerItem = existingIsNewer ? existing : current;
+      const mergedItem =
+        context === undefined
+          ? mergePageItem(olderItem, newerItem)
+          : reconcileDuplicatesByFields(existing, current, context);
+      if (context) recordMergedToolItem(context, mergedItem, olderItem, newerItem);
+      reconciled.splice(index, 1);
+      current = mergedItem;
     }
-    const existing = reconciled[index];
-    if (existing === undefined) continue;
-    const existingCarriesFresh = freshParticipates(context, existing);
-    const itemCarriesFresh = freshParticipates(context, item);
-    const existingIsNewer = existingCarriesFresh && !itemCarriesFresh;
-    const olderItem = existingIsNewer ? item : existing;
-    const newerItem = existingIsNewer ? existing : item;
-    const mergedItem =
-      context === undefined
-        ? mergePageItem(olderItem, newerItem)
-        : reconcileDuplicatesByFields(existing, item, context);
-    if (context) recordMergedToolItem(context, mergedItem, olderItem, newerItem);
-    reconciled[index] = mergedItem;
   }
   return reconciled;
 }
@@ -899,7 +912,12 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
       // the omitted marker when the wire carried none — so key presence
       // says nothing about text: only the presence check below counts it.
       if (key === "text") continue;
-      if (value !== undefined) supplied.add(key);
+      // Participation follows the merge's own presence rules (review
+      // round 20): the nullish-fallback fields inherit the older side's
+      // value when the fresh leaf's is null, so a null supplies nothing —
+      // counting it would give the older side's inherited metadata fresh
+      // precedence over a later duplicate's own.
+      if (!absentForCoverage(value, itemNullishMergedFields.has(key))) supplied.add(key);
     }
     if (itemTextPresence(leaf) === "provided") supplied.add("text");
   };

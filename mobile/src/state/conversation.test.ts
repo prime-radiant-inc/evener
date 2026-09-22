@@ -10050,6 +10050,190 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "kk", text: "fresh", status: "completed" }),
       ]);
     });
+
+    // Review round 20, null is not supplied: the raw field merges with the
+    // nullish fallback — a fresh leaf carrying raw: null contributes
+    // NOTHING (the merged item inherits the older side's raw) — but the
+    // fresh-supplied field set counted any non-undefined value, so the
+    // inherited STALE metadata received fresh precedence and overwrote
+    // the later duplicate's own raw. Field participation must follow the
+    // merge's own presence rules: null is absent for the nullish-fallback
+    // fields.
+    it("a fresh null raw field does not promote inherited stale metadata", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                // A status-bearing retained fragment whose raw is NULL —
+                // it supplies a status but no raw of its own.
+                markItemTextOmitted({
+                  id: "s1",
+                  turnId: "rt",
+                  type: "commandExecution",
+                  callId: "c9",
+                  text: "",
+                  status: "completed",
+                  raw: null,
+                  transcriptKey: "kk",
+                  position: { entry: 50, item: 0 },
+                }),
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page reissues the fragment's keyless alias — carrying STALE
+      // raw metadata the null-raw fragment cannot displace — followed by
+      // a keyed sibling carrying the RESTORED metadata. The alias fold
+      // inherits the stale raw; the reconciliation must let the later
+      // sibling's own raw stand.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "s1",
+                  turnId: "pq",
+                  type: "commandExecution",
+                  callId: "c9",
+                  raw: { stale: "yes" },
+                  position: { entry: 50, item: 0 },
+                },
+                {
+                  id: "t2",
+                  turnId: "pq",
+                  type: "commandExecution",
+                  callId: "c8",
+                  raw: { restored: "yes" },
+                  status: "completed",
+                  transcriptKey: "kk",
+                  position: { entry: 51, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kk", raw: { restored: "yes" } }),
+      ]);
+    });
+
+    // Review round 20, the recheck: a fold can GROW its item's identity —
+    // a keyless older alias takes the transcript key of the reissue it
+    // folded — so the merged result can identity-match an accumulated
+    // candidate the original did not. Ordered {id b}, {id a, tk k},
+    // {id b, tk k}: the third folds into the first, the merged pair gains
+    // the key, and the second — already accumulated — is left beside it
+    // as a second item of one identity. The reconciliation must keep
+    // folding the merged result until no accumulated candidate matches.
+    it("a three-item alias bridge reconciles to one item", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "k", text: "k row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "b",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "retained b",
+                  position: { entry: 20, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page carries the bridge: a bare {id b} alias, a keyed {id a,
+      // tk k} item, and the {id b, tk k} reissue. The reissue folds into
+      // the bare alias (the first id match) and the fold GAINS the key —
+      // which the keyed item ahead of it also carries.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "b",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale b",
+                  position: { entry: 40, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "a",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "alpha a",
+                  transcriptKey: "k",
+                  position: { entry: 41, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "b",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale b2",
+                  transcriptKey: "k",
+                  position: { entry: 42, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "k", text: "retained b" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
