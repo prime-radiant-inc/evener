@@ -48,25 +48,24 @@ export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: n
 }
 
 // The held set's arrival counter, mirroring askDockStore's activationEpoch
-// semantics: bumps when a new id joins the stack, never on removal (a
-// departure is the announcements region's job, not new content). A pane
+// semantics: bumps when an id joins the current held set, never on removal
+// (a departure is the announcements region's job, not new content). A pane
 // reused across refs baselines the fresh ref's already-held entries without
 // a bump - the reader opens scrolled to the bottom, so nothing is unseen.
+// The comparison is against the PREVIOUS observation, not a lifetime set: a
+// retried blocked/canceled mutation re-enters holding the id it already
+// had, and its reappeared ghost is new content again for a scrolled-away
+// reader - a lifetime set would suppress that bump forever.
 export function useHeldSteerEpoch(ref: string, entries: readonly PendingTurnEntry[]): number {
   const [epoch, setEpoch] = useState(0);
-  const seenRef = useRef<{ ref: string; ids: ReadonlySet<string> } | null>(null);
+  const prevRef = useRef<{ ref: string; ids: ReadonlySet<string> } | null>(null);
   useEffect(() => {
-    const seen = seenRef.current;
-    if (seen?.ref !== ref) {
-      seenRef.current = { ref, ids: new Set(entries.map((entry) => entry.id)) };
-      return;
-    }
-    const added = entries.some((entry) => !seen.ids.has(entry.id));
+    const prev = prevRef.current;
+    const ids = new Set(entries.map((entry) => entry.id));
+    prevRef.current = { ref, ids };
+    if (prev?.ref !== ref) return;
+    const added = entries.some((entry) => !prev.ids.has(entry.id));
     if (!added) return;
-    seenRef.current = {
-      ref,
-      ids: new Set([...seen.ids, ...entries.map((entry) => entry.id)]),
-    };
     setEpoch((count) => count + 1);
   }, [ref, entries]);
   return epoch;

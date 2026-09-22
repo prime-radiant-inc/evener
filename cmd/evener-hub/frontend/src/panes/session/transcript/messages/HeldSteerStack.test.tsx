@@ -3,7 +3,7 @@
 // become, caption in the meta slot, in the shared known-first order
 // reconcilePendingEntries already produced (the stack never re-sorts), with
 // the stack-owned [queued messages] fallback for a blank composed body.
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, renderHook, screen, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -14,7 +14,7 @@ import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from ".
 import { pendingEntryPreview } from "../../composer/queue/queueDisplay";
 import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionNowContext } from "../../liveness";
-import { HeldSteerStack, heldCaption, heldSteerEntries } from "./HeldSteerStack";
+import { HeldSteerStack, heldCaption, heldSteerEntries, useHeldSteerEpoch } from "./HeldSteerStack";
 import { CAPABILITIES, connectFakeClient, hydrate, readResponse, seedHeld } from "./testing/heldSteerTestUtils";
 
 // The fixed clock every render is wrapped in: SessionNowContext's default is
@@ -90,6 +90,25 @@ test("heldSteerEntries keeps steer/drain/promote and excludes send/queue/blocked
     { ...ENTRY("canceled"), id: "c" },
   ];
   expect(heldSteerEntries(entries).map((entry) => entry.id)).toEqual(["steer", "drain", "promote"]);
+});
+
+// A retried blocked/canceled mutation re-enters with the id it already had
+// (roborev #2140): the epoch compares against the PREVIOUS observation, not
+// a lifetime set, so the reappeared ghost counts as new content again for a
+// scrolled-away reader - a lifetime set would suppress that bump forever.
+test("useHeldSteerEpoch bumps on a returning id and never on a removal", () => {
+  const held = (id: string): PendingTurnEntry => ({ ...ENTRY("submitting"), id });
+  const { result, rerender } = renderHook(
+    ({ entries }: { entries: readonly PendingTurnEntry[] }) => useHeldSteerEpoch("ref_a", entries),
+    { initialProps: { entries: [held("a")] as readonly PendingTurnEntry[] } },
+  );
+
+  rerender({ entries: [held("a")] as readonly PendingTurnEntry[] });
+  expect(result.current).toBe(0); // nothing changed: no bump
+  rerender({ entries: [] as readonly PendingTurnEntry[] });
+  expect(result.current).toBe(0); // a departure never bumps (announced, not counted)
+  rerender({ entries: [held("a")] as readonly PendingTurnEntry[] });
+  expect(result.current).toBe(1); // the retried id returns: new content again
 });
 
 // Folded in from Task 1's review: the [queued messages] fallback below keys

@@ -208,6 +208,37 @@ describe("stick-to-bottom vs. the new-content pill", () => {
     expect(list.scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
   });
 
+  test("a held arrival epoch bump while scrolled away surfaces the new-content pill once", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, heldVisible, heldEpoch, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          heldVisible,
+          heldEpoch,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), heldVisible: false, heldEpoch: 0, rowCount: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0);
+
+    // A held steer arrives while the reader is scrolled away: no turn/item
+    // shape changed, so the epoch is the only edge. Pinned after roborev
+    // #2140 found the edge effect had no observable-behavior test at all.
+    rerender({ m: model([turn("t1", ["i1"])]), heldVisible: true, heldEpoch: 1, rowCount: 2 });
+    expect(result.current.pillCount).toBe(1);
+
+    // The same epoch again (a plain rerender, or a departure - which never
+    // bumps) adds nothing.
+    rerender({ m: model([turn("t1", ["i1"])]), heldVisible: true, heldEpoch: 1, rowCount: 2 });
+    expect(result.current.pillCount).toBe(1);
+  });
+
   test("initial end targeting uses the transformed row count", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);

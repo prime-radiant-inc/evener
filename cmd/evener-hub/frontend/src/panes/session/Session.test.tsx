@@ -2333,6 +2333,117 @@ test("a dormant live session renders an idle drain in the live-edge row", async 
   expect(screen.getByTestId("held-steer-announcements")).toBeTruthy();
 });
 
+// Spec §1's live gate (roborev #2140): held ghosts never render on
+// read-only surfaces - the same family the shared-notes surface keys on
+// (humanNoteDrafts.ts). A hold parked on a restart-required session waits
+// with the queue, not as a ghost promising delivery.
+test("a restart-required session renders no held ghost for a seeded hold", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "restartRequired" },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await act(async () => {});
+
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+// The last departure on a dormant session must still announce (roborev
+// #2140): removing the final held steer unmounts the transcript subtree in
+// the same commit (heldVisible flips false, the dormant empty surface takes
+// over), so the announcements region has to live outside that subtree.
+test("a dormant session's last held departure still announces its outcome", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "System prompt",
+            },
+          ],
+        },
+      ],
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+
+  // The departure: Stop cancels the ref's non-attempted rows - the entry
+  // leaves the held set and the dormant empty surface replaces the
+  // transcript subtree in this same commit.
+  await act(async () => {
+    await mutationStorage.cancelUnattempted("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
+      "Steering message was canceled by Stop. It's kept with the queue.",
+    ),
+  );
+  // The transcript subtree went dormant; the region outlived it.
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+});
+
 test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));

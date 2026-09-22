@@ -67,6 +67,14 @@ import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 
+// Spec §1: held-steer surfaces render only while the session is live -
+// never on notLoaded or read-only surfaces. The read-only family matches
+// the shared-notes surface's (humanNoteDrafts.ts): ended, closed,
+// notLoaded, restartRequired. Awaiting stays live: a hold parked at a
+// boundary delivers with the next turn.
+const HELD_SURFACE_OFF_STATUSES = new Set(["ended", "closed", "notLoaded", "restartRequired"]);
+const heldSurfaceLive = (statusType: string): boolean => !HELD_SURFACE_OFF_STATUSES.has(statusType);
+
 export interface SessionPaneParams {
   ref: string;
 }
@@ -307,9 +315,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // One predicate decides the row and the count (spec §1): renderedRowCount
   // derives from the trailingRow handed to the list - the same form
   // TranscriptBody itself uses - so the count and the row cannot drift and
-  // jump-to-bottom/append-follow cannot land one row short. Live-gated: no
-  // ghost on a notLoaded surface (spec §6 accepts that window).
-  const heldVisible = model !== undefined && model.status.type !== "notLoaded" && heldSteers.length > 0;
+  // jump-to-bottom/append-follow cannot land one row short. Live-gated per
+  // spec §1: no ghost on notLoaded or read-only surfaces.
+  const heldVisible = model !== undefined && heldSurfaceLive(model.status.type) && heldSteers.length > 0;
   const trailingRow =
     askPending || heldVisible
       ? {
@@ -556,10 +564,6 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           re-announce on every scroll-away/scroll-back remount. This
           component announces only real pending/count transitions. */}
       <AskDockAnnouncements ref={ref} />
-      {/* The held-steer ghosts' ONE live region, same rule as the ask
-          dock's: outside the virtual list, announcing only real
-          appearance/delivery/departure transitions. */}
-      <HeldSteerAnnouncements ref={ref} />
     </div>
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
@@ -610,6 +614,15 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <div className={styles.contentColumn}>
         <TopNotesPanel sessionRef={ref} model={model} />
         <SandboxEscalationRail sessionRef={ref} />
+        {/* The held-steer ghosts' ONE live region, same rule as the ask
+            dock's: outside the virtual list, announcing only real
+            appearance/delivery/departure transitions. It mounts here,
+            INDEPENDENT of the transcript subtree: a dormant transcript's
+            LAST departure unmounts that subtree in the same commit
+            (heldVisible flips false, the dormant empty surface takes
+            over), so a region inside it would never observe the departure
+            it must announce (spec §5). Live-gated per spec §1. */}
+        {heldSurfaceLive(model.status.type) && <HeldSteerAnnouncements ref={ref} />}
         {showDormantSurface ? dormantSurface : transcript}
       </div>
     </PaneScaffold>
