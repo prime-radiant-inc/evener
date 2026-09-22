@@ -129,6 +129,20 @@ type Header struct {
 // matching that sort so a projected line stays byte-identical to the
 // persisted one. TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn
 // pins the round trip.
+//
+// MachineryFlagged is set on EVERY entry this build writes — not only
+// entries carrying machinery parts — by deliberate decision: decode's
+// pre-flag inference must never run on a current-build entry, because an
+// unflagged block-shaped part in a new entry is most commonly a user's
+// verbatim paste, and the sharp case is a pre-flag session resumed by this
+// build, whose new turns would otherwise have their pastes inferred and
+// hidden. The cost is the wf7e one-way door (see decodeStrictJSON): an
+// older build fails to decode any entry carrying this unknown field, so
+// every post-upgrade transcript is unreadable to pre-change binaries, not
+// only the machinery-bearing ones. That trade is accepted for schema
+// evolution per kata wf7e; narrower keying — a build version in the
+// header — breaks on dev builds with empty versions and on resumed
+// old-header sessions.
 type Entry struct {
 	Kind string `json:"kind"` // Always "entry"
 	// MachineryFlagged marks an entry written by a build that flags

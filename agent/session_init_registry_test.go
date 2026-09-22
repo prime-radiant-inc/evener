@@ -241,6 +241,7 @@ func TestCanonicalStateDirResolvesDotDotThroughSymlink(t *testing.T) {
 // directory: a shell that cd'd through a symlink hands the process a lexical
 // PWD, which os.Getwd prefers whenever it matches ".". Anchoring a relative
 // state dir onto that lexical form — or resolving it before anchoring — must
+// not preserve the symlink: the session records the physical path its
 // attachment reads will actually address. No t.Parallel: chdir and PWD are
 // process-global.
 func TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd(t *testing.T) {
