@@ -88,6 +88,29 @@ evener_reset_gate_root() {
 	mkdir -p -m 0700 "$evener_gate_root_dir" || return 1
 }
 
+# evener_gate_root_base_is_safe BASE — refuse a base that is a symlink or is not
+# a directory.
+#
+# The base name is a predictable path under the caller's TMPDIR, normally /tmp,
+# so another user can create that name first. Everything this library does to a
+# root — mkdir, chmod 0700, and reset's recursive delete — resolves through the
+# base, so a symlink left there would redirect all of it into whatever it points
+# at: a planted `ln -s "$HOME" /tmp/evener-gate-roots-<hash>` would have the next
+# `make test` tighten and delete directories inside the victim's home. Refusing
+# sends the stream to its per-run fallback root instead, which is uncached but
+# safe. The root inside the base needs no such check: it is removed before it is
+# recreated, and removing a symlink never follows it.
+evener_gate_root_base_is_safe() {
+	if [ -L "$1" ]; then
+		printf 'gate-roots: refusing %s: the base is a symlink\n' "$1" >&2
+		return 1
+	fi
+	if [ -e "$1" ] && [ ! -d "$1" ]; then
+		printf 'gate-roots: refusing %s: the base is not a directory\n' "$1" >&2
+		return 1
+	fi
+}
+
 # evener_take_gate_root_lock LOCK — create LOCK, holding this shell's pid, if it
 # does not already exist. Returns 0 when this shell created it, 1 when it was
 # already there.
@@ -119,7 +142,8 @@ evener_claim_gate_root() {
 	evener_gate_root_is_owned "$evener_gate_root_dir" || return 1
 	evener_gate_root_lock="$1.lock"
 	evener_gate_root_base=$(dirname -- "$evener_gate_root_dir")
-	mkdir -p "$evener_gate_root_base" || return 1
+	evener_gate_root_base_is_safe "$evener_gate_root_base" || return 1
+	mkdir -p -m 0700 "$evener_gate_root_base" || return 1
 	chmod 0700 "$evener_gate_root_base" || return 1
 	evener_gate_root_attempt=0
 	while :; do

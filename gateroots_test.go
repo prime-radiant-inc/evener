@@ -210,6 +210,33 @@ func TestClaimGateRootReclaimHasOneWinner(t *testing.T) {
 	}
 }
 
+// TestClaimGateRootRefusesASymlinkedBase pins the shared-TMPDIR planting
+// attack: the base name is predictable, so a symlink left at that path between
+// runs must abort the claim instead of being followed. Following it would make
+// the next run's mkdir, chmod 0700, and recursive reset operate inside whatever
+// the link names — the shape the scratch guard exists for, after a cleanup once
+// deleted a home directory from a shared path.
+func TestClaimGateRootRefusesASymlinkedBase(t *testing.T) {
+	t.Parallel()
+	victim := t.TempDir()
+	base := filepath.Join(t.TempDir(), "evener-gate-roots-0123456789abcdef")
+	if err := os.Symlink(victim, base); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	out, code := runShSource(t, gateRootsClaim, nil, filepath.Join(base, "agent"))
+	if code == 0 {
+		t.Fatalf("claiming through a symlinked base succeeded; it must refuse:\n%s", out)
+	}
+	entries, err := os.ReadDir(victim)
+	if err != nil {
+		t.Fatalf("read %s: %v", victim, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the refused claim wrote inside the symlink's target: %v", entries)
+	}
+}
+
 // TestClaimGateRootReportsLiveContention drops one claim onto a root a second,
 // live shell already holds. That is the case the runner must fall back for: the
 // held run must be left untouched, and the second claim must refuse rather than
