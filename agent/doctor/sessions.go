@@ -71,7 +71,8 @@ type SessionsOpts struct {
 	Since time.Duration
 	// Bucket scopes the enumeration to one project id. Empty enumerates every
 	// bucket under the state root (the default — the shape a fleet-wide batch
-	// study needs).
+	// study needs). A Bucket naming no enumerated bucket is an explicit
+	// not-found error, never a silently empty list.
 	Bucket string
 }
 
@@ -82,9 +83,13 @@ type SessionsOpts struct {
 // sweep or silently vanishes from the count — mirroring ScanTurnIDs, the
 // established convention for a whole-state-root sweep.
 func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
-	buckets, err := resolveBuckets(stateBase)
+	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return SessionsResult{}, err
+	}
+	if opts.Bucket != "" && !slices.ContainsFunc(buckets, func(b bucket) bool { return b.projectID == opts.Bucket }) {
+		return SessionsResult{}, fmt.Errorf("bucket %s not found under %s (%d %s scanned)",
+			opts.Bucket, stateRoot, len(buckets), plural(len(buckets), "bucket"))
 	}
 
 	var cutoff time.Time

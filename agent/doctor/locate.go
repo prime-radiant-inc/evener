@@ -25,49 +25,49 @@ type bucket struct {
 // there is no second selector dialect.
 //
 // stateBase is the already-resolved state root (the cmd layer applies the
-// --state-dir / EVENER_STATE_DIR / XDG precedence). Locate auto-detects whether
-// stateBase is an XDG state home (it contains evener/projects/<project-id> buckets) or
-// is itself a single bucket (an override / E2E scratch root with sessions/
-// directly under it). It resolves by globbing the on-disk layout — it never
-// recomputes a project ID.
+// --state-dir / EVENER_STATE_DIR / XDG precedence). Locate auto-detects the
+// base's shape via resolveBuckets: an XDG state home (it contains
+// evener/projects/<project-id> buckets), a project bucket directory itself
+// (the daemon's per-session state dir — the sweep still covers every sibling
+// bucket under its state home), or a single override / scratch bucket
+// (sessions/ directly under it). It resolves by globbing the on-disk layout —
+// it never recomputes a project ID.
 func Locate(stateBase, selector string) (Paths, error) {
 	sel, err := parseSelector(selector)
 	if err != nil {
 		return Paths{}, err
 	}
-	buckets, err := resolveBuckets(stateBase)
+	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return Paths{}, err
 	}
 
 	if sel.projectID != "" {
-		return locateInBucket(stateBase, buckets, sel)
+		return locateInBucket(buckets, stateRoot, sel)
 	}
-	return locateAcrossBuckets(stateBase, buckets, sel)
+	return locateAcrossBuckets(buckets, stateRoot, sel)
 }
 
-// locateInBucket resolves a proj:<project-id>:<sid> selector to its named bucket.
-func locateInBucket(stateBase string, buckets []bucket, sel selector) (Paths, error) {
+// locateInBucket resolves a proj:<project-id>:<sid> selector to its named
+// bucket. A project id that names no enumerated bucket is an explicit
+// not-found error carrying the state root and the scan breadth — never a
+// silent empty result.
+func locateInBucket(buckets []bucket, stateRoot string, sel selector) (Paths, error) {
 	for _, b := range buckets {
 		if b.projectID == sel.projectID {
 			if !sessionInBucket(b, sel.sid) {
-				return Paths{}, fmt.Errorf("session %s not found in project %s", sel.sid, sel.projectID)
+				return Paths{}, fmt.Errorf("session %s not found in project %s under %s", sel.sid, sel.projectID, stateRoot)
 			}
 			return pathsFor(b, sel.sid), nil
 		}
 	}
-	// Bucket was not enumerated (e.g. addressed directly under an XDG home that
-	// has no other buckets yet); construct the path and verify it exists.
-	b := bucket{dir: filepath.Join(stateBase, "evener", "projects", sel.projectID), projectID: sel.projectID}
-	if sessionInBucket(b, sel.sid) {
-		return pathsFor(b, sel.sid), nil
-	}
-	return Paths{}, fmt.Errorf("session %s not found in project %s", sel.sid, sel.projectID)
+	return Paths{}, fmt.Errorf("project %s not found under %s (%d %s scanned)",
+		sel.projectID, stateRoot, len(buckets), plural(len(buckets), "bucket"))
 }
 
 // locateAcrossBuckets resolves a bare <sid> (or local:<sid>) by searching every
 // bucket; a sid present in more than one bucket is reported as ambiguous.
-func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Paths, error) {
+func locateAcrossBuckets(buckets []bucket, stateRoot string, sel selector) (Paths, error) {
 	var found []bucket
 	for _, b := range buckets {
 		if sessionInBucket(b, sel.sid) {
@@ -76,7 +76,8 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 	}
 	switch len(found) {
 	case 0:
-		return Paths{}, fmt.Errorf("session %s not found under %s", sel.sid, stateBase)
+		return Paths{}, fmt.Errorf("session %s not found under %s (%d %s scanned)",
+			sel.sid, stateRoot, len(buckets), plural(len(buckets), "bucket"))
 	case 1:
 		return pathsFor(found[0], sel.sid), nil
 	default:
@@ -90,30 +91,49 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 	}
 }
 
-// resolveBuckets returns the project buckets under stateBase, auto-detecting the
-// layout: an XDG state home enumerates evener/projects/*, while an override /
-// scratch root (sessions/ directly under it) is itself the single bucket.
-func resolveBuckets(stateBase string) ([]bucket, error) {
+// resolveBuckets returns the project buckets a selector can resolve into, plus
+// the state root they were enumerated under (the root not-found errors name).
+// Three base shapes are auto-detected, keyed on the on-disk layout the runtime
+// itself writes (agent.RuntimeDir) and never on bucket names:
+//
+//   - a state home (the doctor's default resolution chain): buckets are the
+//     directories under <base>/evener/projects, root is the base itself;
+//   - a project bucket directory (the daemon's per-session state dir, what
+//     EVENER_STATE_DIR carries): the sweep up-walks to the state home and
+//     enumerates the same sibling set, root is that state home;
+//   - an override / scratch root (sessions/ directly under it): it is itself
+//     the single bucket, root is the base.
+func resolveBuckets(stateBase string) (buckets []bucket, stateRoot string, err error) {
+	if home := stateHomeForBucketDir(stateBase); home != "" && isDir(filepath.Join(home, "evener", "projects")) {
+		buckets, err = globBuckets(filepath.Join(home, "evener", "projects"))
+		return buckets, home, err
+	}
 	projects := filepath.Join(stateBase, "evener", "projects")
 	if isDir(projects) {
-		matches, err := globProjectBuckets(filepath.Join(projects, "*"))
-		if err != nil {
-			return nil, fmt.Errorf("glob project buckets: %w", err)
-		}
-		buckets := make([]bucket, 0, len(matches))
-		for _, m := range matches {
-			if isDir(m) {
-				projectID := filepath.Base(m)
-				if identifier.ValidateProjectID(projectID) != nil {
-					continue
-				}
-				buckets = append(buckets, bucket{dir: m, projectID: projectID})
-			}
-		}
-		return buckets, nil
+		buckets, err = globBuckets(projects)
+		return buckets, stateBase, err
 	}
 	// Override / scratch layout: stateBase is itself the bucket.
-	return []bucket{{dir: stateBase, projectID: ""}}, nil
+	return []bucket{{dir: stateBase, projectID: ""}}, stateBase, nil
+}
+
+// globBuckets enumerates the bucket directories under a projects dir. Every
+// directory is a bucket: bucket identity is the actual directory name, and
+// filtering on identifier.ValidateProjectID would hide a legacy- or
+// foreign-named bucket that holds real sessions — a forensic sweep must see
+// what is on disk.
+func globBuckets(projects string) ([]bucket, error) {
+	matches, err := globProjectBuckets(filepath.Join(projects, "*"))
+	if err != nil {
+		return nil, fmt.Errorf("glob project buckets: %w", err)
+	}
+	buckets := make([]bucket, 0, len(matches))
+	for _, m := range matches {
+		if isDir(m) {
+			buckets = append(buckets, bucket{dir: m, projectID: filepath.Base(m)})
+		}
+	}
+	return buckets, nil
 }
 
 // pathsFor builds the resolved Paths for a session in a bucket. The jobs.jsonl

@@ -33,3 +33,25 @@ func ResolveStateBase(flagStateDir string) string {
 	}
 	return filepath.Join(home, ".local", "state")
 }
+
+// stateHomeForBucketDir reports the XDG-style state home that a project
+// bucket directory lives under, or "" when stateBase is not laid out as
+// <stateHome>/evener/projects/<project-id>.
+//
+// The daemon runs every session with its state dir set to that bucket
+// directory — what RuntimeDir computes and EVENER_STATE_DIR carries — so a
+// sweep handed such a base must up-walk to the state home before it can see
+// the sibling buckets. The two path components checked (evener, projects)
+// are the runtime's own structural layout (agent.RuntimeDir), not a
+// bucket-naming assumption.
+func stateHomeForBucketDir(stateBase string) string {
+	projects := filepath.Dir(stateBase)
+	if filepath.Base(projects) != "projects" {
+		return ""
+	}
+	evener := filepath.Dir(projects)
+	if filepath.Base(evener) != "evener" {
+		return ""
+	}
+	return filepath.Dir(evener)
+}

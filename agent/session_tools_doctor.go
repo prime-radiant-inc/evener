@@ -101,7 +101,15 @@ func execDoctorEvener(deps *toolDeps, args map[string]any) (any, error) {
 
 	switch command {
 	case "locate":
-		return doctor.Locate(stateBase, selector)
+		// A miss must surface as the error text (where the sweep looked), not
+		// as the zero Paths struct: the tool layer renders a non-nil erroring
+		// value as the result content, and the zero struct marshals as an
+		// all-empty JSON object — a silent miss.
+		res, err := doctor.Locate(stateBase, selector)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
 
 	case "transcript":
 		if v := stringArg(args, "count"); v != "" {
@@ -293,7 +301,7 @@ func doctorCapSessionsRows(res doctor.SessionsResult) doctorSessionsEnvelope {
 // error instead.
 func doctorRequireSelector(command, selector string) error {
 	if strings.TrimSpace(selector) == "" {
-		return fmt.Errorf("doctor command %q requires a selector (local:<id>, proj:<hash>:<id>, or bare <id>)", command)
+		return fmt.Errorf("doctor command %q requires a selector (local:<id>, proj:<project-id>:<id>, or bare <id>)", command)
 	}
 	return nil
 }
