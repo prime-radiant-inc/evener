@@ -20,7 +20,7 @@ import (
 // turn/queue.
 //
 // This asserts what that queued prompt actually does. The hub's turn/queue
-// carries no auto-resume while turn/start does, so a queued prompt to an
+// carried no auto-resume while turn/start did, so a queued prompt to an
 // exited session used to be refused outright ("thread not found") — the
 // session was never resumed for it and the message never ran.
 func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
@@ -79,30 +79,14 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 	}
 }
 
-// startSessionWithOpeningTurn starts a session, drives one complete turn
-// through the fake provider, and returns the session's ref.
+// startSessionWithOpeningTurn opens a session through startLiveThread and
+// drives one complete turn through the fake provider, returning the session's
+// ref. The start and its shutdown cleanup belong to that helper, so the leak
+// guard and the thread/start checks keep one definition.
 func startSessionWithOpeningTurn(ctx context.Context, t *testing.T, client *appwire.Client, provider *fakellm.Server, stack hubStack) string {
 	t.Helper()
 	opening := fmt.Sprintf("EVENER-E2E-OPENING-%d", time.Now().UnixNano())
-	started, err := clientRequest[appwire.ThreadStartResponse](ctx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
-		Harness:         "evener",
-		CWD:             stack.workDir,
-		Input:           []appwire.InputItem{{Type: "text", Text: opening}},
-		Model:           stack.model,
-		LaunchOverrides: &appwire.LaunchConfigLayer{Sandbox: "off"},
-	})
-	if err != nil {
-		t.Fatalf("thread/start: %v", err)
-	}
-	ref := started.Thread.Evener.Ref
-	if ref == "" {
-		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
-	}
-	t.Cleanup(func() {
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancelShutdown()
-		_, _ = clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref})
-	})
+	ref := startLiveThread(ctx, t, client, stack, opening)
 
 	round, err := provider.Next(ctx.Done())
 	if err != nil {
