@@ -109,6 +109,15 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
+	// DeployHelp is the remedy clause the terminal version-mismatch refusal
+	// appends when no deploy path is configured. An embedder with its own CLI
+	// fills in the flags an operator must set; sshconn is a library and must not
+	// learn those names, so they arrive through this field rather than being
+	// written here. Empty falls back to the library's own sentence ("set
+	// Options.BuildSource"), which is the right text for an embedder that has no
+	// flags to name and keeps the refusal byte-for-byte what it was.
+	DeployHelp string
+
 	// HubAddr is the host hub's loopback listen address, used as this host's
 	// --addr for the bridge and by the restart path to find the old pid and probe
 	// /api/health. Both read the same resolution (hostAddrFor), so they cannot
@@ -1579,8 +1588,8 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// its chance (that case never reaches here with a mismatch: the re-probed
 	// facts carry the deployed build's version).
 	if !m.canDeploy() && facts.LaunchCheckKnown && facts.Version != expected {
-		return nil, fmt.Errorf("%w: host %q runs version %q, want %q, and no build source is configured to deploy the controller's build; set Options.BuildSource",
-			ErrVersionMismatch, host.Name, facts.Version, expected)
+		return nil, fmt.Errorf("%w: host %q runs version %q, want %q, and no build source is configured to deploy the controller's build; %s",
+			ErrVersionMismatch, host.Name, facts.Version, expected, m.deployHelp())
 	}
 	// First attach to a stopped host must be able to start the hub. The probe
 	// above only restarts a hub that is already answering, and the bridge is a
@@ -2462,6 +2471,18 @@ func (m *Manager) canDeploy() bool {
 	}
 	_, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
 	return err == nil
+}
+
+// deployHelp is the remedy clause the terminal version refusal appends: the
+// embedder's text when it supplied any, else the library's default. See
+// Options.DeployHelp. The default is what an embedder with no flags to name
+// gets, so an unconfigured hub that also supplies no help is refused exactly as
+// it was before this field existed.
+func (m *Manager) deployHelp() string {
+	if help := strings.TrimSpace(m.opts.DeployHelp); help != "" {
+		return help
+	}
+	return "set Options.BuildSource"
 }
 
 // isDevDeployed reports whether this Manager has installed its own dev build on

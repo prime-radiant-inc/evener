@@ -156,6 +156,15 @@ func verifyBuildSource(source string) (string, error) {
 	return abs, nil
 }
 
+// ValidateBuildSource is the exported entry point an embedder uses to check a
+// build-source value at startup — where its flag is read — instead of deferring
+// a bad value to the first attach. It is verifyBuildSource: the same refusals
+// (not an evener checkout, a dirty tree, an ignored compiled .go file), and it
+// returns the canonical absolute path to store in Options.BuildSource.
+func ValidateBuildSource(source string) (string, error) {
+	return verifyBuildSource(source)
+}
+
 // verifyBuildRevision makes the deployed binary's version stamp honest. The
 // builder stamps this process's own buildinfo into whatever the source checkout
 // compiles, so a checkout at a different revision would install code that reports
