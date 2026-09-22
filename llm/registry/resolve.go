@@ -905,9 +905,12 @@ func templatePlaceholders(tpl string) []string {
 // resolution: the Authorization header's expansion feeds both the credential
 // and the header map, so a failing command runs once (a second run could
 // also race the first and split the outcome between credential and header).
+// A failing Authorization header is reported once, by the header loop that
+// names it; the credential path's parallel reason is suppressed here and
+// kept only on the listing path, which builds no header map.
 func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]string, []string) {
 	auth := r.authorization(rec)
-	cred, cw := r.credentialWithAuth(rec, auth)
+	cred, cw := r.credentialWithAuth(rec, auth, true)
 	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth)
 	return cred, credHeaders, append(cw, hw...)
 }

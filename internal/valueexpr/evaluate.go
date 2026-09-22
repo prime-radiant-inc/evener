@@ -117,9 +117,11 @@ func ResetForTest() {
 // evaluate returns the command's value, cached until it stops being fresh. A
 // failed run is returned uncached, so the next call retries.
 func evaluate(command string) (Result, error) {
-	now := Now()
+	// Every freshness judgment reads the clock under the cache lock, never
+	// before it: a caller that waits — on the lock, or behind a flight —
+	// must not carry an earlier instant past an expiry the wait crossed.
 	evaluateMu.Lock()
-	if res, ok := cache[command]; ok && now.Before(res.ExpiresAt) {
+	if res, ok := cache[command]; ok && Now().Before(res.ExpiresAt) {
 		evaluateMu.Unlock()
 		return res, nil
 	}
@@ -129,7 +131,7 @@ func evaluate(command string) (Result, error) {
 		// Re-check under the flight: a caller that queued behind a finished
 		// leader may find the leader's result already cached and fresh.
 		evaluateMu.Lock()
-		if cached, ok := cache[command]; ok && now.Before(cached.ExpiresAt) {
+		if cached, ok := cache[command]; ok && Now().Before(cached.ExpiresAt) {
 			evaluateMu.Unlock()
 			return cached, nil
 		}
@@ -141,9 +143,12 @@ func evaluate(command string) (Result, error) {
 			// Pruning rides the insertion: an expired entry holds a
 			// secret nobody can be served again, so it leaves memory with
 			// the next command that caches, long before growth could ever
-			// matter.
+			// matter. The prune clock is read under the lock like every
+			// other judgment: a mint that ran past an expiry must not
+			// leave the dead entry measured against arrival time.
+			prune := Now()
 			for k, v := range cache {
-				if !now.Before(v.ExpiresAt) {
+				if !prune.Before(v.ExpiresAt) {
 					delete(cache, k)
 				}
 			}

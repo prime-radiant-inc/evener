@@ -486,9 +486,9 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 func (r *Registry) credential(rec *record) (Credential, []string) {
 	h := rec.head
 	if h.Transport.Auth == AuthOAuthOpenAICodex || h.Transport.Auth == AuthGCPADC || h.APIKey != "" {
-		return r.credentialWithAuth(rec, authExpansion{})
+		return r.credentialWithAuth(rec, authExpansion{}, false)
 	}
-	return r.credentialWithAuth(rec, r.authorization(rec))
+	return r.credentialWithAuth(rec, r.authorization(rec), false)
 }
 
 // authHeaderKey resolves which credential-header key carries the
@@ -578,8 +578,12 @@ func (r *Registry) schemeWordDefault(raw string) bool {
 
 // credentialWithAuth is credential with the Authorization header's expansion
 // supplied, so the resolution path that also builds the credential header map
-// never runs the header's command expressions twice.
-func (r *Registry) credentialWithAuth(rec *record, auth authExpansion) (Credential, []string) {
+// never runs the header's command expressions twice. suppressAuthReason
+// drops the no-credential reason from a failing Authorization header: the
+// resolution path passes it because its header loop reports the same
+// failure naming the header — one condition, one warning — while the
+// listing path builds no header map and passes false to keep the reason.
+func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, suppressAuthReason bool) (Credential, []string) {
 	h := rec.head
 	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
 	none := func(reason string) (Credential, []string) {
@@ -638,16 +642,20 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion) (Credenti
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
 	if auth.present {
+		noneAuth := none
+		if suppressAuthReason {
+			noneAuth = func(string) (Credential, []string) { return Credential{Source: "none"}, nil }
+		}
 		if len(auth.unresolved) > 0 {
-			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(auth.unresolved)))
+			cred, warns := noneAuth(fmt.Sprintf("no credential (%s)", missingReason(auth.unresolved)))
 			cred.AuthoredLayer = "credential_headers"
 			return cred, warns
 		}
 		if auth.expanded == "" {
-			return none("no credential (the Authorization credential header expands to an empty value)")
+			return noneAuth("no credential (the Authorization credential header expands to an empty value)")
 		}
 		if auth.noMaterial {
-			return none("no credential (the Authorization credential header expands to nothing but an auth scheme word)")
+			return noneAuth("no credential (the Authorization credential header expands to nothing but an auth scheme word)")
 		}
 		return Credential{Value: auth.expanded, Source: "credential_headers"}, nil
 	}

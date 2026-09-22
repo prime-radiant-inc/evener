@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -159,15 +160,20 @@ func TestMintAnchorsTTLAtCompletion(t *testing.T) {
 	ResetForTest()
 	t.Cleanup(func() { ResetForTest() })
 	base := time.Unix(1_800_000_000, 0)
-	calls := 0
+	// The clock models the command's 20-second run by whether it has
+	// executed, not by counting clock calls: how many reads a resolve makes
+	// before the command runs is the evaluator's own bookkeeping.
+	ran := false
 	Now = func() time.Time {
-		calls++
-		if calls == 1 { // the resolve start
+		if !ran { // before the command runs
 			return base
 		}
 		return base.Add(20 * time.Second) // the completion instant
 	}
-	RunCommand = func(string) (string, error) { return "plain-value", nil }
+	RunCommand = func(string) (string, error) {
+		ran = true
+		return "plain-value", nil
+	}
 
 	res, err := evaluate("get-key")
 	if err != nil {
@@ -233,5 +239,111 @@ func TestEvaluatePrunesExpiredEntries(t *testing.T) {
 	}
 	if _, ok := cache["short-lived"]; ok {
 		t.Fatal("the expired entry survived the prune")
+	}
+}
+
+// Freshness is judged with a clock read under the cache lock: a caller that
+// waited on the lock must not serve an entry that died while it waited.
+func TestEvaluateFreshnessClockIsReadUnderTheLock(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	base := time.Unix(1_800_000_000, 0)
+	now := base
+	Now = func() time.Time { return now }
+	runs := 0
+	RunCommand = func(string) (string, error) {
+		runs++
+		if runs == 1 {
+			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
+		}
+		return "re-minted", nil
+	}
+
+	if _, err := evaluate("token"); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+
+	// Hold the cache lock and start a second caller, then let the entry's
+	// expiry pass while the caller waits to judge it.
+	evaluateMu.Lock()
+	readClock := make(chan struct{}, 1)
+	Now = func() time.Time {
+		select {
+		case readClock <- struct{}{}:
+		default:
+		}
+		return now
+	}
+	type outcome struct {
+		res Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := evaluate("token")
+		done <- outcome{res, err}
+	}()
+	runtime.Gosched()
+	select {
+	case <-readClock:
+		// The caller read the clock before it could take the lock, so the
+		// instant it carries predates the expiry below.
+	case <-time.After(100 * time.Millisecond):
+		// No pre-lock clock read: the caller went straight to the lock.
+	}
+	now = base.Add(2 * time.Minute)
+	evaluateMu.Unlock()
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("evaluate: %v", got.err)
+	}
+	if got.res.Value != "re-minted" {
+		t.Fatalf("evaluate served %q; the cached entry died while the caller waited, so a clock read after the lock must re-mint", got.res.Value)
+	}
+}
+
+// The prune that rides an insertion reads its clock under the lock too: a
+// slow mint that crossed an expiry must not leave the dead entry judged
+// against the caller's arrival time.
+func TestEvaluatePruneClockIsReadUnderTheLock(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	base := time.Unix(1_800_000_000, 0)
+	now := base
+	Now = func() time.Time { return now }
+
+	minting := make(chan struct{})
+	release := make(chan struct{})
+	RunCommand = func(cmd string) (string, error) {
+		if cmd != "slow" {
+			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
+		}
+		close(minting)
+		<-release
+		return "plain", nil
+	}
+
+	if _, err := evaluate("short-lived"); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := evaluate("slow")
+		done <- err
+	}()
+	<-minting
+	// The slow mint is still running; the short-lived entry dies before it
+	// finishes.
+	now = base.Add(10 * time.Minute)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+
+	evaluateMu.Lock()
+	defer evaluateMu.Unlock()
+	if _, ok := cache["short-lived"]; ok {
+		t.Fatal("the prune judged the expired entry with the caller's arrival time; the clock must be read after the wait")
 	}
 }

@@ -827,6 +827,68 @@ func TestCredentialHeaderEmptyExpansionWarns(t *testing.T) {
 	}
 }
 
+// A failing Authorization header is one condition and one warning: the
+// header loop that builds the map reports it naming the header, and the
+// credential path's parallel "no credential" reason is suppressed on the
+// resolution path. The listing path, which builds no header map, keeps the
+// credential-form warning (pinned in the test below).
+func TestResolveAuthHeaderFailureWarnsOnce(t *testing.T) {
+	for _, tt := range []struct{ name, value, want string }{
+		{"unset reference", "$MISSING", `credential header "Authorization": MISSING unset`},
+		{"empty default", "${MISSING:-}", `credential header "Authorization": expands to an empty value`},
+		{"scheme-word default", "${MISSING:-Bearer}", `credential header "Authorization": expands to nothing but an auth scheme word`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"Authorization\"\n" +
+				"credential_headers = { \"Authorization\" = '''" + tt.value + "''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n"
+			r := fixtureLoad(t, nil, config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "none" {
+				t.Fatalf("credential = %+v; want none", res.Credential)
+			}
+			if len(res.Warnings) != 1 {
+				t.Fatalf("warnings = %v; want exactly one, naming the header", res.Warnings)
+			}
+			if res.Warnings[0] != tt.want {
+				t.Fatalf("warning = %q; want %q", res.Warnings[0], tt.want)
+			}
+		})
+	}
+}
+
+// The listing path builds no header map, so there the credential-form
+// warning is the only report of a failing Authorization header.
+func TestListingKeepsAuthHeaderCredentialWarning(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''$MISSING''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if len(inst.Warnings) != 1 || inst.Warnings[0] != "no credential (MISSING unset)" {
+			t.Fatalf("listing warnings = %v; want the single credential-form warning", inst.Warnings)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
 // The Authorization header's command expression runs once per resolution:
 // the one expansion feeds both the credential and the credential-header map,
 // so the two can never disagree, and a failing command is not retried (and
