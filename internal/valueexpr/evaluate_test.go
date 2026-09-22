@@ -177,3 +177,22 @@ func TestMintAnchorsTTLAtCompletion(t *testing.T) {
 		t.Fatalf("ExpiresAt = %v; want %v (the TTL must start at completion)", res.ExpiresAt, want)
 	}
 }
+
+// An exp claim beyond int64 is no expiry at all: Go's float→int conversion
+// out of range is implementation-defined, and on amd64 it yields MinInt64 —
+// a negative epoch the fuzz invariant would rightly refuse. The claim is
+// rejected before any conversion, so a "successful parse" always means a
+// usable, positive epoch.
+func TestTokenExpiryRejectsOutOfRangeClaims(t *testing.T) {
+	enc := base64.RawURLEncoding
+	for _, exp := range []string{"1e300", "9223372036854775808"} {
+		token := strings.Join([]string{
+			enc.EncodeToString([]byte(`{"alg":"none"}`)),
+			enc.EncodeToString([]byte(fmt.Sprintf(`{"exp":%s}`, exp))),
+			enc.EncodeToString([]byte("sig")),
+		}, ".")
+		if _, ok := tokenExpiry(token); ok {
+			t.Fatalf("tokenExpiry accepted exp %s; an out-of-range claim is no expiry at all", exp)
+		}
+	}
+}

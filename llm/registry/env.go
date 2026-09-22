@@ -133,15 +133,19 @@ func CheckCredentialHeaderValue(value string) error {
 			// The scheme word must be separated from the credential
 			// material by a space or a tab: "Bearer$TOKEN" would glue
 			// scheme and material into one malformed value, and a control
-			// character that also splits tokens cannot travel in a header
-			// value at all, so it gets its own refusal instead of one
+			// character cannot travel in a header value wherever it sits —
+			// not only as the separator — so one hiding behind a space or
+			// tab is refused too, with the same refusal instead of one
 			// demanding whitespace the value already has.
 			schemeGlued, schemeControl = false, false
+			for i := range len(p.Lit) {
+				if p.Lit[i] != ' ' && p.Lit[i] != '\t' && p.Lit[i] < 0x20 {
+					schemeControl = true
+				}
+			}
 			if schemeWord && len(p.Lit) > 0 {
 				switch p.Lit[len(p.Lit)-1] {
 				case ' ', '\t':
-				case '\n', '\r', '\v', '\f':
-					schemeControl = true
 				default:
 					schemeGlued = true
 				}

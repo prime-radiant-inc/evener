@@ -181,7 +181,7 @@ func expiry(value string, now time.Time) time.Time {
 
 // tokenExpiry reads the exp claim out of a three-segment JWT payload, the
 // shape every OIDC id token has. Anything else is not an expiry-bearing
-// token, and a non-positive exp counts as none.
+// token, and a non-positive or out-of-range exp counts as none.
 func tokenExpiry(value string) (time.Time, bool) {
 	parts := strings.Split(value, ".")
 	if len(parts) != 3 {
@@ -197,7 +197,11 @@ func tokenExpiry(value string) (time.Time, bool) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return time.Time{}, false
 	}
-	if claims.Exp <= 0 {
+	// An exp beyond int64 is no expiry at all: the float→int conversion
+	// out of range is implementation-defined, and on amd64 it yields
+	// MinInt64 — a negative epoch. 2^63 is exactly representable as a
+	// float64, so the bound is the exclusive comparison.
+	if claims.Exp <= 0 || claims.Exp >= 9223372036854775808.0 {
 		return time.Time{}, false
 	}
 	return time.Unix(int64(claims.Exp), 0), true

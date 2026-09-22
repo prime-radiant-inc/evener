@@ -126,8 +126,11 @@ api_key = '''$(pass show llm-gateway/token)'''
 
 If your command prints more than the value, pipe it down to what you want
 first — the trimmed stdout is the value, verbatim. MCP server config
-(`mcp.json`) accepts the same forms in the fields it expands (command,
-args, env, url, headers).
+accepts the same forms in the fields it expands (command, args, env, url,
+headers) in the layers you author yourself — the global
+`~/.config/evener/mcp.json` and `--mcp-config` files. The project's
+`.evener/mcp.json` and plugin configs are content evener does not author,
+so they refuse `$(command)` at load and skip the layer with a warning.
 
 The rules that matter in practice:
 
@@ -143,7 +146,8 @@ The rules that matter in practice:
   helper script.
 - A failed command behaves like an unset variable: the credential resolves
   to nothing, the warning carries the command's own stderr, and the next
-  request retries it.
+  request retries it. In MCP config the failure is a load error instead:
+  the layer or server entry does not load.
 - The output is a credential: it is never logged. A failing command's
   error carries its exit status and stderr line, never its output.
 - The hub's credential-header field authors command expressions (as in
