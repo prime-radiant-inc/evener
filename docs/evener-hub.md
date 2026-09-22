@@ -390,8 +390,9 @@ build to push:
 
 - `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
   reads the artifact's own `GOOS`/`GOARCH` and refuses a mismatch before
-  anything is pushed, so the controller needs no Go toolchain and no source
-  tree.
+  anything is pushed; the refusal is permanent, since a retry re-reads the same
+  file. The artifact must be executable. This path needs no Go toolchain and no
+  source tree on the controller.
 - `-build-source <path>` — an evener checkout's module root. The hub
   cross-compiles the host's target on the controller, so this path needs Go and
   the source there; it refuses a dirty tree, an ignored-but-compiled `.go` file,
@@ -404,12 +405,13 @@ writes the path the host runs (`evener_path` when the entry sets it, else what
 verified, then a single `mv` into place — so a failed or interrupted deploy
 never leaves a partial binary. The `-build-source` path stamps the controller's
 build identity in-process, so the installed binary's `launch-check` version is
-exactly the controller's; the `-deploy-binary` artifact instead carries whatever
-identity the operator built. The push path does not re-check that identity on
-the host after the push — the deploy slice spec records the operator-artifact
-verification as unproven (its Evidence, criterion 8) — so a mismatched artifact
-is not refused before attach, and neither flag is better than `-build-source`
-whose identity is true by construction.
+exactly the controller's; a `-deploy-binary` artifact instead carries whatever
+identity the operator built. That difference is checked where it can be seen:
+after a deploy the controller re-reads the launch contract on the host, and if
+the host still reports a build other than the controller's it refuses terminally
+instead of attaching — the artifact was not built from the controller's tree, and
+retrying would re-push the same file. So a mismatched artifact is refused before
+attach, and the hub never serves a host on a build it did not stamp.
 
 With neither flag the push path is unavailable. A release or snapshot
 controller still installs through `install.sh` on the host (the installer
