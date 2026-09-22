@@ -1073,34 +1073,27 @@ func publicTranscriptData(data transcriptData) transcriptData {
 	return public
 }
 
+// publicTranscriptLine projects one retained entry line to its public form:
+// the same entry the writer would marshal, with crash-recovery correlation
+// fields stripped and the public sequence number applied. Lines reaching
+// here have already passed transcript.DecodeEntry's strict validation, so
+// decoding into the Entry struct is total, and re-marshaling the struct
+// reproduces the writer's exact field order — the property the lossless
+// expansion tests pin. (A map-based passthrough cannot do this: map keys
+// marshal alphabetically, which only matched the writer's order while the
+// entry envelope's fields happened to be alphabetical.) Attention-resolution
+// markers carry no model/public content and are omitted entirely so
+// interleaved tool calls and results remain adjacent.
 func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
-	var entry map[string]json.RawMessage
+	var entry transcript.Entry
 	if err := json.Unmarshal(line, &entry); err != nil {
 		return nil, false, fmt.Errorf("decode public transcript entry: %w", err)
 	}
-	var turn map[string]json.RawMessage
-	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
-		return nil, false, fmt.Errorf("decode public transcript turn: %w", err)
-	}
-	var kind schema.TurnKind
-	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
-		return nil, false, fmt.Errorf("decode public transcript turn kind: %w", err)
-	}
-	if kind == schema.TurnAttentionResolution {
+	entry, include := publicTranscriptEntry(entry)
+	if !include {
 		return nil, false, nil
 	}
-	delete(turn, "attention_id")
-	delete(turn, "attention_resolution")
-	delete(turn, "delegate_delivery_commits")
-	encodedTurn, err := json.Marshal(turn)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode public transcript turn: %w", err)
-	}
-	entry["turn"] = encodedTurn
-	entry["seq"], err = json.Marshal(seq)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode public transcript sequence: %w", err)
-	}
+	entry.Seq = seq
 	encoded, err := json.Marshal(entry)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode public transcript entry: %w", err)

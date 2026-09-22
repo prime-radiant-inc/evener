@@ -415,7 +415,7 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		// projection. Both now share the one []byte with no string copies
 		// between them. Fusing them into a single JSON parse would mean
 		// reimplementing one of the two semantics here (strictness vs. the
-		// exact map-marshaled key order), so the two calls stay.
+		// writer's exact field order), so the two calls stay.
 		if _, err := transcript.DecodeEntry(line); err != nil {
 			return "", 0, skipped, false, fmt.Errorf("parse transcript entry: %w", err)
 		}
