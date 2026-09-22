@@ -9138,6 +9138,138 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "pk", text: "fresh" }),
       ]);
     });
+
+    // Review round 13, skeleton participation: an injected skeleton's
+    // participation is identity-only — it carries the omitted-text marker
+    // and no payload — but the reconciliation's source-precedence check
+    // counted it as fresh-side participation anyway. A POSITIONED restored
+    // item beside its UNPOSITIONED remembered alias then both read as
+    // fresh, the tiebreak fell to display order, and because the
+    // unpositioned skeleton fold sorts last, an older keyless reissue's
+    // STALE text — folded through the alias — overwrote the restored text.
+    // Precedence must come from the inputs that actually supplied payload,
+    // and an identity-only skeleton supplies none.
+    it("a keyless reissue through an unpositioned alias does not overwrite the restored text", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering {id ra, transcriptKey kr} — the item
+      // carries NO position, so its remembered skeleton is unpositioned.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "ra",
+                  transcriptKey: "kr",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "alpha",
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // The fresh read restores kr under a DIFFERENT id — POSITIONED, in
+      // window — and the carrier keeps remembering the unpositioned alias.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kr", text: "kr row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rb",
+                  transcriptKey: "kr",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "restored alias",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "pt")).toBe(false);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ id: "rb", transcriptKey: "kr", text: "restored alias" }),
+      ]);
+
+      // An older page re-issues the item KEYLESS under the remembered bare
+      // id, positionless, carrying the item's STALE text. The alias hosts
+      // the reissue (the positioned restored item does not match it), the
+      // unpositioned skeleton fold sorts after the positioned item — and
+      // the restored text must still win: the skeleton supplied no payload.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "kr", text: "kr row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "ra",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale reissue",
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ id: "rb", transcriptKey: "kr", text: "restored alias" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

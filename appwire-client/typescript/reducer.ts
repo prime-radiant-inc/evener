@@ -774,6 +774,11 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
 // list's own order as the tiebreak, the same later-wins the iteration
 // itself applies. The fold's fragment membership is recorded on the merge
 // provenance, so a caller tracking participation still sees every input.
+// Participation means PAYLOAD participation: an identity-only input (a
+// remembered skeleton, a sparse wire fragment) supplies no field the fold
+// keeps, so it never makes an item fresh — an unpositioned skeleton folding
+// an older reissue must not tie with the positioned restored item beside it
+// and let display order hand the stale text the win.
 function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const reconciled: ItemModel[] = [];
   for (const item of items) {
@@ -796,14 +801,22 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
   return reconciled;
 }
 
-// Whether an item's merge membership includes newer-side ("fresh") inputs.
+// Whether an item's merge membership includes newer-side ("fresh") inputs
+// that could supply payload — text-omitted identity-only participants do
+// not count: the retained-turn bound's remembered skeletons, and the wire's
+// own sparse fragments, carry the omitted-text marker and supply no field
+// the fold can keep, so folding one in must not make an item read as fresh.
 // The context records an entry for every input item at creation, so an
 // untouched item speaks for its own side; a folded item speaks for whatever
 // its folds combined. An item the context never saw — a callId-fold rewrite,
 // or a merge without a context at all — reads as older-side, leaving list
 // order to decide exactly as it did before source precedence existed.
 function freshParticipates(context: ToolItemMergeContext | undefined, item: ItemModel): boolean {
-  return context !== undefined && context.provenance.get(item)?.fresh !== undefined;
+  if (context === undefined) return false;
+  const provenance = context.provenance.get(item);
+  return (
+    provenance !== undefined && membershipLeaves(provenance.fresh).some((leaf) => itemTextPresence(leaf) !== "omitted")
+  );
 }
 
 function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {
