@@ -372,7 +372,7 @@ func runShards(cfg shardsConfig) int {
 					return code
 				}
 				_, _ = fmt.Fprintln(cfg.stderr, "agent-shards: the survey pass failed — the suite is red")
-				replayMatching(cfg.stderr, surveyLog, surveyRedLine, 20)
+				replaySurveyFailures(cfg.stderr, surveyLog, maxSurveyFailures)
 				_, _ = fmt.Fprintf(cfg.stderr, "full log: %s\n", surveyLog)
 				return 1
 			}
@@ -554,11 +554,25 @@ func effectiveGoflags() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// surveyRedLine is the excerpt grep the script used when the survey pass came
-// back red. The survey has no per-shard verdict to sort by — it is one pass
-// over the whole suite whose log is pointed at in full — so the excerpt stays
-// a grep here.
-var surveyRedLine = regexp.MustCompile(`^(--- FAIL|panic:)`)
+// surveyRedLine is the marker that announces a failure in a `go test -v` log:
+// a failing test's verdict, or the panic that ended the binary. The verdict is
+// matched through its colon, so `--- FAILURE: ...` — a test's own output — is
+// not a marker; `panic:` stays a prefix, since the message after it is the
+// panic's own text. The survey has no per-shard verdict to sort by — it is one
+// pass over the whole suite — so the excerpt is built around these markers.
+var surveyRedLine = regexp.MustCompile(`^(?:--- FAIL:|panic:)`)
+
+// The red survey's excerpt is one failure block per marker, never the suite
+// log: these bound how much of the failing test's own output a block carries,
+// how many blocks print at all, and how much of the log a markerless run's
+// tail fallback carries. The CI job summary shows the excerpt in full, so an
+// unbounded dump here would drown the job it exists to make readable.
+const (
+	surveyContextBefore = 10
+	surveyContextAfter  = 6
+	maxSurveyFailures   = 20
+	surveyTailLines     = surveyContextBefore + surveyContextAfter
+)
 
 // cachedSurveyPath resolves the survey cache file for this test set, or ""
 // when there is nowhere to cache. Cache trouble is never fatal — it only
@@ -681,23 +695,121 @@ func fileHasContent(path string) bool {
 	return err == nil && info.Size() > 0
 }
 
-// replayMatching writes up to limit matching lines from a log, the script's
-// `grep | head` diagnostic excerpt.
-func replayMatching(w io.Writer, path string, re *regexp.Regexp, limit int) {
+// replaySurveyFailures writes the excerpt a red survey prints: the failing
+// tests' own output from a `go test -v` log, one failure block per marker,
+// bounded per block by surveyContextBefore/surveyContextAfter lines and in the
+// number of blocks by maxBlocks. Those bounds are what keep the excerpt an
+// excerpt — a CI job summary shows it in full.
+//
+// A block is the marker with the test's own output around it, and it runs from
+// the previous framework line to the next one, bounded by the two line counts.
+// That keeps the indented t.Log/t.Error lines and the test's unindented direct
+// output (fmt.Println, log.Print, a child process) alike; only the toolchain's
+// own framing — `=== `, `--- `, `ok `, `FAIL`, `PASS`, or another failure
+// marker such as `panic:` — ends the run, on either side of the marker.
+//
+// A survey that died with no marker at all — a fatal error, an os.Exit, a
+// killed binary — has no block to show, so a bounded tail of the log stands in.
+// The caller reaches this only after the survey pass exited nonzero — the run
+// is already known red — so there is no green verdict to consult here, and a
+// log tail that happens to end in a test's own `ok done` print must not
+// suppress the fallback. The excerpt is non-empty whenever the log has content:
+// the run has just written that log, so the only silent case is a path this
+// function cannot read (or one holding nothing but whitespace) — an unreadable
+// log, not an absent one.
+func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	printed := 0
-	for line := range strings.SplitSeq(string(data), "\n") {
-		if printed >= limit {
-			return
+	trimmed := strings.TrimRight(string(data), "\n")
+	if trimmed == "" {
+		return
+	}
+	lines := strings.Split(trimmed, "\n")
+	matched := false
+	emitted := 0 // exclusive end of the last block written
+	for i := 0; i < len(lines) && maxBlocks > 0; {
+		if !surveyRedLine.MatchString(lines[i]) {
+			i++
+			continue
 		}
-		if re.MatchString(line) {
+		maxBlocks--
+		matched = true
+		start := i
+		for n := 0; n < surveyContextBefore && start > emitted && !surveyFrameworkLine(lines[start-1]); n++ {
+			start--
+		}
+		end := i + 1
+		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
+			end++
+		}
+		for _, excerpt := range lines[start:end] {
+			_, _ = fmt.Fprintln(w, excerpt)
+		}
+		// Scanning resumes past this block and the next block cannot reach
+		// back into it: adjacent failures would otherwise print the lines
+		// between them twice.
+		emitted = end
+		i = end
+	}
+	if !matched && maxBlocks > 0 {
+		for _, line := range lines[max(len(lines)-surveyTailLines, 0):] {
 			_, _ = fmt.Fprintln(w, line)
-			printed++
 		}
 	}
+}
+
+// surveyPhaseLine matches the phases `-test.v` frames with `=== `: `RUN` when
+// a test starts, and `PAUSE` and `CONT` around a parallel test's wait. The
+// space after the directive closes it off from the test name, so a test's own
+// line that merely begins with one of the words (`=== PAUSED ...`) is output.
+var surveyPhaseLine = regexp.MustCompile(`^=== (?:RUN|PAUSE|CONT) `)
+
+// surveyTestVerdictLine matches a test verdict: `--- ` and the verdict word,
+// closed by the colon `go test -v` always writes. Without the colon a line is
+// a test's own output — a printed diff's `--- expected`, or `--- FAILURE: ...`.
+var surveyTestVerdictLine = regexp.MustCompile(`^--- (?:PASS|FAIL|SKIP):`)
+
+// surveyVerdictLine matches a `go test -v` verdict line and nothing that
+// merely begins like one. The test binary prints its bare `PASS` or `FAIL`
+// verdict with nothing after it, so those are whole lines; the package verdict
+// `go test` prints is `FAIL`, a tab, the package, and a tab (`FAIL\tpkg\t1.2s`);
+// its summary is `ok`, two spaces, a tab, the package, and a tab
+// (`ok  \tpkg\t1.2s`). The package and timing after the tab are left open —
+// import paths vary — but the tabs are not: a test's own `FAIL reason`,
+// `PASS details`, or `ok  details` starts like a form without being one, and
+// stays in the block rather than ending it.
+var surveyVerdictLine = regexp.MustCompile(`^(?:PASS|FAIL)$|^FAIL\t[^\t]+\t|^ok  \t[^\t]+\t`)
+
+// surveyFrameworkLine reports whether a `go test -v` log line is the
+// toolchain's own framing rather than a test's output: a phase line, a test
+// verdict, one of the binary's or `go test`'s own verdicts, or another failure
+// marker. A failure's excerpt runs until the next such line, so a test's own
+// unindented output — fmt.Println, log.Print, a child process — stays in the
+// block instead of being cut at the first line that is not indented.
+//
+// Each form is matched through the delimiter the toolchain always writes, not
+// a prefix it merely starts with. A phase line is `=== ` plus `RUN`, `PAUSE`,
+// or `CONT` and a space (`surveyPhaseLine`); a test verdict is `--- ` plus
+// `PASS:`, `FAIL:`, or `SKIP:` (`surveyTestVerdictLine`); and the bare binary
+// verdict plus `go test`'s package verdict and summary come from
+// `surveyVerdictLine`. The variable tail of each — the test name and time, the
+// package path and timing — stays open, because the toolchain's own text there
+// can be anything; the delimiter is what tells framing from output. `panic:`
+// alone is still a prefix: `panic: ` is the whole framing and the message
+// after it is the panic's own. An ambiguous line is kept, and the ambiguous
+// ones here all broke the same way: a test's direct fmt.Println stays
+// unindented, so `--- expected` from a printed diff, `--- FAILURE: ...`,
+// `FAIL reason`, `PASS details`, and `ok  details` were mistaken for framing
+// and cut the diagnosis out of the excerpt it exists to show. Including a
+// lookalike costs a bounded amount of context; mis-classifying one loses the
+// diagnosis.
+func surveyFrameworkLine(line string) bool {
+	return surveyPhaseLine.MatchString(line) ||
+		surveyTestVerdictLine.MatchString(line) ||
+		surveyVerdictLine.MatchString(line) ||
+		surveyRedLine.MatchString(line)
 }
 
 // copyFileTo writes a whole log to w and reports whether there was anything

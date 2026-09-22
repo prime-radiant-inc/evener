@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { marketplaceSourceLabel } from "@evener/appwire-client";
+import { marketplaceSourceLabel, type ConnectionState } from "@evener/appwire-client";
 import type {
   MarketplaceAddParams,
   PluginRefParams,
@@ -22,6 +22,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ConnectionStatus } from "./ConnectionStatus";
 import {
   PLUGIN_MUTATION_BUSY,
   runGatedMutation,
@@ -47,12 +48,14 @@ const WRITE_FAILED =
 
 export function MarketplaceBrowser({
   client,
+  connectionState,
   hubName,
   installed,
   gate,
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
+  connectionState: ConnectionState;
   hubName: string;
   installed: PluginsStore;
   // The screen's plugin-mutation gate, shared with the installed list: a
@@ -74,6 +77,15 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // Wired the way PluginsScreen wires its plugins store: the marketplaces
+  // store hears every connection transition through connectionChanged, so a
+  // reconnection re-reads a list this view has already asked for and retires
+  // the catalogs a change away may have invalidated (storeLifecycle.ts). A
+  // layout effect, so the store knows its connection before the mount
+  // effect's first read issues.
+  useLayoutEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchMarketplaces();
@@ -347,6 +359,7 @@ export function MarketplaceBrowser({
       {adding && (
         <AddMarketplace
           client={client}
+          connectionState={connectionState}
           hubName={hubName}
           gate={gate}
           onClose={() => setAdding(false)}
@@ -358,12 +371,14 @@ export function MarketplaceBrowser({
 }
 
 function AddMarketplace({
+  connectionState,
   client,
   hubName,
   gate,
   onClose,
   onAdd,
 }: {
+  connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
   onClose(): void;
@@ -429,6 +444,10 @@ function AddMarketplace({
           </View>
           <Action onPress={onClose}>Cancel</Action>
         </View>
+        {/* The native modal covers the banner the browser shows behind it,
+         * so the status and the manual reconnect live here while this form
+         * is open. */}
+        {connectionState !== "ready" ? <ConnectionStatus /> : null}
         <KeyboardAvoidingView
           style={styles.fill}
           enabled={Platform.OS === "android"}
