@@ -377,6 +377,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     // the boolean never leaves true.
     askDockPending: askPending,
     askDockActivationEpoch: askEpoch,
+    // A held row mounts the transcript even when its only turn is the
+    // synthetic prelude. Keep the coordinator's mounted-content predicate
+    // aligned with the render branch below; ask-only dormant behavior stays
+    // unchanged.
+    heldVisible,
     // ...and a held steer APPEARING is new content the same way an ask
     // activation is: it changes no turn/item shape, so the pill's edge
     // detector never sees it without this signal. Arrival is the only edge
@@ -591,9 +596,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       <div className={styles.contentColumn}>
         <TopNotesPanel sessionRef={ref} model={model} />
         <SandboxEscalationRail sessionRef={ref} />
-        {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
+        {showColdStartSkeleton && isDormantTranscript(model.turns) && !heldVisible ? (
           <ColdStartSkeleton />
-        ) : isDormantTranscript(model.turns) ? (
+        ) : isDormantTranscript(model.turns) && !heldVisible ? (
           <EmptyTranscript
             active={model.status.type === "active"}
             restartRequired={model.status.type === "restartRequired"}

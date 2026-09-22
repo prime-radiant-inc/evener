@@ -172,6 +172,7 @@ function authoritativeEntry(
   mutation: PendingMutation,
   fromThisClient: boolean,
   submittedHere: ReadonlyMap<string, number>,
+  durableCreatedAt: number | undefined,
 ): PendingTurnEntry | undefined {
   const method = pendingMethod(mutation.method);
   if (!method) return undefined;
@@ -180,10 +181,10 @@ function authoritativeEntry(
     ref,
     method,
     ...inputPreview(mutation.input),
-    // The wire's PendingMutation carries no timestamp: this client's own
-    // createdAt survives the settle only through the submittedHere map
-    // (page-session scope, spec §4); another client's entry stays unknown.
-    createdAt: submittedHere.get(mutation.clientMutationId),
+    // The wire's PendingMutation carries no timestamp. Prefer this client's
+    // page-session carrier after settle; while a matching durable record
+    // exists, its timestamp is known regardless of which client submitted it.
+    createdAt: submittedHere.get(mutation.clientMutationId) ?? durableCreatedAt,
     state: mutation.executionState === "claimed" ? "claimed" : "accepted",
     source: "authoritative",
     fromThisClient,
@@ -229,12 +230,12 @@ export function reconcilePendingEntries(
     if (reflected.has(mutation.clientMutationId)) continue;
     // An entry already placed came from a durable record - which may be
     // another client's, since the outbox is shared - so the daemon's
-    // projection inherits THAT entry's provenance rather than assuming every
-    // durable record is this client's. No durable record means submittedHere
-    // is the only provenance carrier for the id.
+    // projection inherits THAT entry's provenance and timestamp rather than
+    // assuming every durable record is this client's. No durable record means
+    // submittedHere is the only provenance and timestamp carrier for the id.
     const existing = entries.get(mutation.clientMutationId);
     const fromThisClient = existing ? existing.fromThisClient : submittedHere.has(mutation.clientMutationId);
-    const entry = authoritativeEntry(ref, mutation, fromThisClient, submittedHere);
+    const entry = authoritativeEntry(ref, mutation, fromThisClient, submittedHere, existing?.createdAt);
     if (entry) entries.set(entry.id, entry);
   }
 

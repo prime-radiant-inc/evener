@@ -334,6 +334,56 @@ test("a same-batch delivery plus a new arrival announces the delivery", async ()
   );
 });
 
+test("mixed departures announce every distinct outcome in departure order", async () => {
+  const fake = connectFakeClient();
+  const pending = (id: string) => ({
+    clientMutationId: id,
+    method: "turn/steer" as const,
+    input: [{ type: "text" as const, text: id }],
+    executionState: "accepted" as const,
+    projectionState: "pending" as const,
+  });
+  await hydrate(fake, "ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      pendingMutations: [pending("mutation_a"), pending("mutation_b")],
+    },
+  });
+  render(<HeldSteerAnnouncements ref="ref_a" />);
+
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_a",
+              turnId: "turn_1",
+              type: "userMessage",
+              text: "mutation_a",
+              clientMutationId: "mutation_a",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  await act(async () => {
+    await threadsStore.getState().refreshThread("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
+    "Steering message delivered. Steering message failed to deliver.",
+  );
+});
+
 // seedKind names the STORAGE WRITE, not a literal recovery-kind string: the
 // same real durable writes QueueStrip.test.tsx's seedRecovery / seedCanceled /
 // seedBlockedUnknown perform, driven here on the seeded steer's own id - the

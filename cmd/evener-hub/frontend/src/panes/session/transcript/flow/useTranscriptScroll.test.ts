@@ -183,6 +183,31 @@ afterEach(() => {
 });
 
 describe("stick-to-bottom vs. the new-content pill", () => {
+  test("a held row mounts the scroll coordinator for an otherwise dormant transcript", () => {
+    const list = makeListHandle();
+    const handle = list.ref.current;
+    (list.ref as { current: VirtualListHandle | null }).current = null;
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ heldVisible, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("turn_system", [])]),
+          listRef: list.ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          heldVisible,
+        }),
+      { initialProps: { heldVisible: false, rowCount: 0 } },
+    );
+
+    (list.ref as { current: VirtualListHandle | null }).current = handle;
+    rerender({ heldVisible: true, rowCount: 1 });
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
+  });
+
   test("initial end targeting uses the transformed row count", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);

@@ -2265,11 +2265,10 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
 // pill consumes, and the live-surface gate that keeps a notLoaded stub from
 // showing a ghost.
 
-// isDormantTranscript otherwise swaps Session's transcript branch for the
-// EmptyTranscript one, so every live-edge test hydrates a thread carrying
-// one real turn - the same readResponse-override fixture shape
-// readOnlyEntityThread uses above. Fresh object per call, never shared
-// across tests.
+// Most live-edge tests hydrate a thread carrying one real turn - the same
+// readResponse-override fixture shape readOnlyEntityThread uses above. Fresh
+// object per call, never shared across tests. The dormant-session regression
+// below deliberately uses only the synthetic prelude instead.
 function liveSurfaceThread(): Partial<Thread> {
   return {
     turns: [
@@ -2282,6 +2281,57 @@ function liveSurfaceThread(): Partial<Thread> {
     ],
   };
 }
+
+test("a dormant live session renders an idle drain in the live-edge row", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "System prompt",
+            },
+          ],
+        },
+      ],
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
+  expect(screen.getByTestId("held-steer-announcements")).toBeTruthy();
+});
 
 test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
   const fake = connectFakeClient();

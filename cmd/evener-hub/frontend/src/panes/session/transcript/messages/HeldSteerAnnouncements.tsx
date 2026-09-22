@@ -86,9 +86,8 @@ export function HeldSteerAnnouncements({ ref: sessionRef }: { ref: string }): JS
         // error surface is the explanation.
         return "Steering message failed to deliver.";
       };
-      // One announcement per transition batch, classified by the first
-      // departed id - a batch departure is one audible event, not a burst.
-      announce(why(disappeared[0] ?? ""));
+      const outcomes = [...new Set(disappeared.map(why))];
+      announce(outcomes.join(" "));
     } else if (appeared) {
       announce("Steering message held.");
     }

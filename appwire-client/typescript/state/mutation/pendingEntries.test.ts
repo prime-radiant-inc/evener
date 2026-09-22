@@ -120,7 +120,7 @@ test("a locally submitted mutation stays this client's own once the authoritativ
       "ref_a",
       [outbox("mutation_1")],
       model({ pendingMutations: [pending] }),
-      new Map([["mutation_1", 1]]),
+      new Map(),
       UNATTRIBUTED_ONLY,
     ),
   ).toEqual([expect.objectContaining({ id: "mutation_1", source: "authoritative", fromThisClient: true })]);
@@ -172,6 +172,30 @@ test("a pending mutation this client never submitted is not its own", () => {
   ).toEqual([
     expect.objectContaining({ id: "mutation_from_another_client", fromThisClient: false, createdAt: undefined }),
   ]);
+});
+
+test("a foreign durable timestamp survives authoritative replacement", () => {
+  const record: MutationOutboxRecord = {
+    ...outbox("mutation_1", "turn/steer"),
+    createdAt: 1234,
+    originClientId: "another-client",
+  };
+  const pending: PendingMutation = {
+    clientMutationId: "mutation_1",
+    method: "turn/steer",
+    input: [{ type: "text", text: "hello" }],
+    executionState: "accepted",
+    projectionState: "pending",
+  };
+  expect(
+    reconcilePendingEntries(
+      "ref_a",
+      [record],
+      model({ pendingMutations: [pending] }),
+      NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toEqual([expect.objectContaining({ id: "mutation_1", createdAt: 1234, fromThisClient: false })]);
 });
 
 test("a transcript item with the identity removes the optimistic projection regardless of text", () => {
