@@ -5,6 +5,7 @@ import { createMarketplacesStore } from "@evener/appwire-client/state/extensions
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 import {
+  addedMarketplaceNames,
   appliedRemovalNotice,
   catalogToBrowse,
   refetchAfterRemoval,
@@ -57,6 +58,24 @@ test("a clone-litter removal keeps its leftover-files warning", () => {
 
 test("an ordinary removal failure is not an applied removal", () => {
   expect(appliedRemovalNotice(new Error("remove failed"))).toBeUndefined();
+});
+
+test("an add's answer names every registration it left against the stale list", () => {
+  // A fresh name, a fresh stamp, and a re-sourcing all show up, in order.
+  expect(
+    addedMarketplaceNames([entry("a"), entry("b")], [
+      entry("a"),
+      entry("b"),
+      entry("c"),
+      { ...entry("b"), lastUpdated: 2 },
+      { ...entry("a"), source: { kind: "github", repo: "a/plugins" } },
+    ]),
+  ).toEqual(["c", "b", "a"]);
+});
+
+test("a re-add the wire cannot tell from the stale row hides from the list", () => {
+  expect(addedMarketplaceNames([entry("a")], [entry("a")])).toEqual([]);
+  expect(addedMarketplaceNames([entry("a")], [])).toEqual([]);
 });
 
 test("a stale list that still carries the removed name refreshes; a reconciled one does not", () => {

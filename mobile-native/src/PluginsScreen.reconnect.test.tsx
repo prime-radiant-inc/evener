@@ -47,6 +47,12 @@ const ACME: MarketplaceEntry = {
 	lastUpdated: 1,
 };
 
+// The residue guard PluginsScreen wires around the browser in production, in
+// the minimal shape a reconnect test needs: nothing is fenced, nothing is
+// recorded, and every authoritative read reports to nobody. These tests
+// exercise the connection's own recovery, never a marketplace removal.
+const NO_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
+
 function plugin(name: string): PluginEntry {
 	return {
 		plugin: name,
@@ -190,6 +196,11 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
+			appliedRemovalNames={NO_APPLIED_REMOVALS}
+			onAppliedRemoval={() => true}
+			onAuthoritativeMarketplaces={() => {}}
+			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));
@@ -335,6 +346,11 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
+			appliedRemovalNames={NO_APPLIED_REMOVALS}
+			onAppliedRemoval={() => true}
+			onAuthoritativeMarketplaces={() => {}}
+			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));
