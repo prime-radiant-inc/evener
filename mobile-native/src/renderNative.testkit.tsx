@@ -27,11 +27,12 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
  * react-test-renderer, and its children render as they were passed, so a test
  * can find rendered Text by type and read the whole rendered tree as JSON.
  *
- * SectionList is the one component that is not inert: a real host element
- * would swallow renderItem/renderSectionHeader as props, and the mount-order
- * property this harness exists to pin (the listing the screen publishes under
- * the child's mount effect) is only observable in what those callbacks
- * render. This stub drives them the way the real list does, one item per row.
+ * SectionList and FlatList are the components that are not inert: a real host
+ * element would swallow renderItem/renderSectionHeader as props, and the
+ * mount-order property this harness exists to pin (the listing the screen
+ * publishes under the child's mount effect) is only observable in what those
+ * callbacks render. These stubs drive them the way the real lists do, one
+ * item per row.
  */
 export function nativeModuleMock() {
 	const SectionList = (props: {
@@ -58,8 +59,9 @@ export function nativeModuleMock() {
 			props.sections.length === 0 ? (props.ListEmptyComponent ?? null) : null,
 		);
 	const FlatList = (props: {
-		data?: { name: string }[];
-		renderItem?: (info: { item: { name: string } }) => ReactNode;
+		data?: unknown[];
+		keyExtractor?: (item: unknown, index: number) => string;
+		renderItem?: (info: { item: unknown }) => ReactNode;
 		ListHeaderComponent?: ReactNode;
 		ListEmptyComponent?: ReactNode;
 	}) =>
@@ -67,8 +69,12 @@ export function nativeModuleMock() {
 			"FlatList",
 			null,
 			props.ListHeaderComponent ?? null,
-			...(props.data ?? []).map((item) =>
-				createElement("Item", { key: item.name }, props.renderItem?.({ item }) ?? null),
+			...(props.data ?? []).map((item, index) =>
+				createElement(
+					"Item",
+					{ key: props.keyExtractor?.(item, index) ?? index },
+					props.renderItem?.({ item }) ?? null,
+				),
 			),
 			(props.data ?? []).length === 0 ? (props.ListEmptyComponent ?? null) : null,
 		);
@@ -89,6 +95,7 @@ export function nativeModuleMock() {
 		ScrollView: "ScrollView",
 		SectionList,
 		StyleSheet: { create: <T,>(styles: T): T => styles },
+		Switch: "Switch",
 		Text: "Text",
 		TextInput: "TextInput",
 		View: "View",

@@ -40,7 +40,7 @@ it("isReady: only \"ready\" is ready", () => {
 
 it("useConnectionDisplay: ready -> reconnecting keeps the screen tree mounted and shows the banner", () => {
 	let state: ConnectionState = "ready";
-	const hook = renderHook(() => useConnectionDisplay(state, false));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
 	expect(hook.result.current).toBe("none");
 	state = "reconnecting";
 	hook.rerender();
@@ -49,7 +49,7 @@ it("useConnectionDisplay: ready -> reconnecting keeps the screen tree mounted an
 
 it("useConnectionDisplay: reconnecting -> ready removes the banner", () => {
 	let state: ConnectionState = "ready";
-	const hook = renderHook(() => useConnectionDisplay(state, false));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
 	state = "reconnecting";
 	hook.rerender();
 	expect(hook.result.current).toBe("banner");
@@ -61,7 +61,7 @@ it("useConnectionDisplay: reconnecting -> ready removes the banner", () => {
 it("useConnectionDisplay: fatal shows the wall even for a hub that was ready a moment ago", () => {
 	let state: ConnectionState = "ready";
 	let fatal = false;
-	const hook = renderHook(() => useConnectionDisplay(state, fatal));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal));
 	expect(hook.result.current).toBe("none");
 	state = "closed";
 	fatal = true;
@@ -69,18 +69,57 @@ it("useConnectionDisplay: fatal shows the wall even for a hub that was ready a m
 	expect(hook.result.current).toBe("wall");
 });
 
+it("useConnectionDisplay: keeps the wall through a fatal retry until ready", () => {
+	let state: ConnectionState = "ready";
+	let fatal = false;
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, fatal));
+	state = "closed";
+	fatal = true;
+	hook.rerender();
+	expect(hook.result.current).toBe("wall");
+	// A manual retry clears the fatal flag before the replacement client is
+	// ready. The old client must not be remounted in that connecting window.
+	state = "connecting";
+	fatal = false;
+	hook.rerender();
+	expect(hook.result.current).toBe("wall");
+	state = "ready";
+	hook.rerender();
+	expect(hook.result.current).toBe("none");
+});
+
 it("useConnectionDisplay: never having been ready is a wall, not a banner, even before any failure", () => {
 	const state: ConnectionState = "connecting";
-	const hook = renderHook(() => useConnectionDisplay(state, false));
+	const hook = renderHook(() => useConnectionDisplay("hub-1", state, false));
+	expect(hook.result.current).toBe("wall");
+});
+
+// This is the reset's own coverage (the hub-change-resets-everReady case):
+// hub-1 must first be ready for the hub-2 wall to prove anything. A sibling
+// case whose state never reached "ready" passed with the reset deleted, so
+// the panel's review retired it as tautological and left this test as the
+// one that actually exercises the reset.
+it("useConnectionDisplay: everReady for the previous hub does not banner the next hub before it is ready", () => {
+	let hubId = "hub-1";
+	let state: ConnectionState = "ready";
+	const hook = renderHook(() => useConnectionDisplay(hubId, state, false));
+	expect(hook.result.current).toBe("none");
+	hubId = "hub-2";
+	state = "connecting";
+	hook.rerender();
+	// Without the reset this would read as a banner (everReady still true
+	// from hub-1); hub-2 has never been ready, so it must wall.
 	expect(hook.result.current).toBe("wall");
 });
 
 it("useRenderClient: falls back to the last client through a null gap", () => {
 	const first = {} as AppwireClient;
 	let client: AppwireClient | null = first;
-	const hook = renderHook(() => useRenderClient(client));
+	let state: ConnectionState = "ready";
+	const hook = renderHook(() => useRenderClient(client, state, "hub-1"));
 	expect(hook.result.current).toBe(first);
 	client = null;
+	state = "connecting";
 	hook.rerender();
 	expect(hook.result.current).toBe(first);
 });
@@ -101,6 +140,49 @@ it("useLiveReadiness rejects a deferred callback after the client or hub changes
 	state = "reconnecting";
 	hook.rerender();
 	expect(hook.result.current()).toBe(false);
+});
+
+it("useRenderClient: a retry's not-yet-ready replacement never displaces the previous client", () => {
+	// hubConnection.ts's own sequence for a manual retry: `client` clears
+	// while the fresh one dials, then a NEW client object appears while
+	// `state` is still "connecting" - not yet safe to hand to a store.
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const hook = renderHook(() => useRenderClient(client, state, "hub-1"));
+	expect(hook.result.current).toBe(first);
+
+	client = null;
+	state = "connecting";
+	hook.rerender();
+	expect(hook.result.current).toBe(first);
+
+	client = second;
+	// The replacement now exists, but has not reached "ready": still not
+	// safe to render.
+	hook.rerender();
+	expect(hook.result.current).toBe(first);
+
+	state = "ready";
+	hook.rerender();
+	expect(hook.result.current).toBe(second);
+});
+
+it("useRenderClient: a hub change drops the previous hub's client instead of falling back to it", () => {
+	const first = {} as AppwireClient;
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	let hubId = "hub-1";
+	const hook = renderHook(() => useRenderClient(client, state, hubId));
+	expect(hook.result.current).toBe(first);
+	client = null;
+	state = "connecting";
+	hubId = "hub-2";
+	hook.rerender();
+	// Without the reset this would fall back to hub-1's client; hub-2 has
+	// nothing adopted yet and must get nothing instead.
+	expect(hook.result.current).toBeNull();
 });
 
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {

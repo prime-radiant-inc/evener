@@ -12,9 +12,10 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { marketplaceSourceLabel, type ConnectionState } from "@evener/appwire-client";
+import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
   AnyNotification,
+  ConnectionState,
   MarketplaceAddParams,
   MarketplaceEntry,
   MethodName,
@@ -255,6 +256,7 @@ export function MarketplaceBrowser({
     setError(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (revision.current !== version) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed") setError(WRITE_FAILED);
   }
@@ -284,7 +286,12 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current !== version || appliedRemovalNames.has(name)) return;
+          if (
+            revision.current !== version ||
+            !canUseConnection() ||
+            appliedRemovalNames.has(name)
+          )
+            return;
           // Classify, record, and reconcile BEFORE the revision fence: the
           // guard and warning live at the screen, so they must survive this
           // view's selection changes and remounts; only the browser-local
@@ -570,7 +577,7 @@ export function MarketplaceBrowser({
   );
 }
 
-function AddMarketplace({
+export function AddMarketplace({
   connectionState,
   client,
   hubName,
@@ -626,6 +633,13 @@ function AddMarketplace({
     );
     if (!alive.current) return;
     setBusy(false);
+    if (outcome === "not-ready") {
+      // A readiness refusal means nothing ran: the modal keeps its draft
+      // for the connection it was opened on, and the status it already
+      // shows covers the reason nothing ran. Only a write that ran closes
+      // it.
+      return;
+    }
     if (outcome === "refused") {
       setError(PLUGIN_MUTATION_BUSY);
       return;

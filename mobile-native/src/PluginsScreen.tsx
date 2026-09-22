@@ -95,14 +95,16 @@ function PluginsScreenBody({
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(state, fatal);
+  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
   const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   // A flap keeps `client` set (the connection layer's own generation guard -
-  // hubConnection.ts), but a manual retry briefly clears it while it opens a
-  // fresh one; the last client this screen had keeps the list mounted
-  // through that gap too, rather than dropping to the wall for a moment the
-  // banner should cover just as well as a passive reconnect does.
-  const renderClient = useRenderClient(client);
+  // hubConnection.ts), but a manual retry clears it, then reports a fresh
+  // client while it is still dialing; the list keeps rendering the previous
+  // one through the whole gap, never the not-yet-ready replacement, rather
+  // than dropping to the wall for a moment the banner should cover just as
+  // well as a passive reconnect does. Scoped to the active hub: see
+  // useRenderClient's own doc.
+  const renderClient = useRenderClient(client, state, activeProfile?.id);
   // An applied marketplace removal's residue lives beside the gate, above the
   // early returns below, for the same reason it does: they unmount and remount
   // the ready-only child on every connection transition, and the browser that
@@ -371,6 +373,7 @@ function Plugins({
     setNotice(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setActionError(
@@ -391,7 +394,7 @@ function Plugins({
           text: "Remove",
           style: "destructive",
           onPress: () => {
-            if (version === editorVersion.current)
+            if (version === editorVersion.current && canUseConnection())
               void act(() =>
                 state.removePlugin(target.plugin, target.marketplace),
               );
