@@ -285,6 +285,39 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 	}
 }
 
+// UserFacingText concatenates a message's text parts the way Message.Text
+// does, except parts flagged as machinery — llm.ContentPart.Machinery, the
+// notifications the session manufactured for the model (e.g. the
+// stored-attachment path note for a pasted image), which the live stream
+// keeps out of the user bubble and reload must match. Filtering matches the
+// flag alone, never the text shape: an unflagged part is the user's own
+// words even when it is exactly a machinery block pasted verbatim. Entries
+// written before the flag existed get their block-shaped parts flagged by
+// transcript.DecodeEntry's migration before they reach here. A message whose
+// only content is machinery (a cancelled-watches notice routed as steering)
+// keeps its full text — the live stream projects that text as-is, and
+// stripping it would delete the reloaded item outright. An image-bearing
+// turn keeps its stripped text even when empty: the image is the bubble.
+// Exported because agent's fork/edit surface (ForkSessionAtUserTurn) hands a
+// stored turn's text back as editable input and must apply the same rule.
+func UserFacingText(msg llm.Message) string {
+	var b strings.Builder
+	hasImage := false
+	for _, p := range msg.Content {
+		if p.Kind == llm.ContentImage {
+			hasImage = true
+			continue
+		}
+		if p.Kind == llm.ContentText && p.Text != "" && !p.Machinery {
+			b.WriteString(p.Text)
+		}
+	}
+	if b.Len() == 0 && !hasImage {
+		return msg.Text()
+	}
+	return b.String()
+}
+
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
 func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
 	// A persisted message has the entry's recorded instant, not a duration.
@@ -429,7 +462,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
 			TurnID:               turnID,
 			TranscriptEntryIndex: turnIndex,
-			Text:                 turn.Message.Text(),
+			Text:                 UserFacingText(turn.Message),
 			Images:               images,
 			Status:               appwire.TurnStatusCompleted,
 			ClientMutationID:     turn.ClientMutationID,
@@ -447,7 +480,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			}}
 		}
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
-		text := turn.Message.Text()
+		text := UserFacingText(turn.Message)
 		if text == "" && len(images) > 0 {
 			text = ImagePlaceholder(len(images))
 		}

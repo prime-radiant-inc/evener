@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
@@ -187,6 +188,38 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	job := got.RunningJobs[0]
 	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" || job.OutputBytes != 17 {
 		t.Fatalf("running job = %+v, want shell identity and status from Evener.Diagnostics.Jobs", job)
+	}
+}
+
+// TestStatusProberCarriesDaemonCapabilities pins the other half of thread
+// parity: beside the status the probe already carries, it must carry the
+// daemon's own Evener capabilities from the same projection cut, so the
+// hub's list rows can advertise the daemon's answer rather than a hand
+// approximation. The set comes from the LISTED root, so it is the same
+// snapshot cut as the status and the diagnostics the probe carries.
+func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
+	// Wire the production seam set so the daemon's idle answer is the
+	// production shape: every capability but fork is true at idle.
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_caps",
+		state:     appwire.ThreadStatusIdle,
+		setup:     hubtest.WireCapabilitySeams,
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if !got.CapabilitiesKnown {
+		t.Fatal("CapabilitiesKnown = false, want true: the probe must carry the daemon's capabilities answer")
+	}
+	want := appwire.ThreadCapabilities{
+		Send: true, Steer: true, Interrupt: true, Queue: true,
+		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
+		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
+		SkillInput: true, // ForkFromTurn stays the daemon's hardwired false.
+	}
+	if got.Capabilities != want {
+		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)
 	}
 }
 

@@ -11,7 +11,7 @@
 //
 //   Line 2's truncation: COLLAPSED it middle-truncates (head … tail, the
 //   command's ending always visible - the file being written, the branch
-//   being merged - and the full text on the hover title); EXPANDED it wraps
+//   being merged); EXPANDED it wraps
 //   in full, so an open row always shows the whole call. The one exception:
 //   a descriptor whose expanded body already shows the summary's content
 //   (shell - the body renders the command pretty-printed) swaps line 2 for
@@ -144,9 +144,6 @@ export interface ToolRowProps {
   /** Optional status rail content for tools that need a one-glance
    * progression/health signal before human-facing intent text. */
   status?: ReactNode;
-  /** Hover text for details that are real but must not be the headline — the
-   * shell exit code, per A2. */
-  title?: string;
   /** Stable ID of the conditionally rendered body controlled by this trigger. */
   bodyId?: string;
   /** Whether the summary line is open (two-level disclosure: the intent
@@ -512,7 +509,6 @@ export function ToolRow({
   onToggle,
   trailing,
   trailingAfter,
-  title,
   status,
   bodyId,
   summaryOpen = false,
@@ -728,7 +724,6 @@ export function ToolRow({
             hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
           }`}
           data-testid="tool-row-summary"
-          title={hasIntent ? summary : undefined}
         >
           {hasIntent && !expanded ? (
             clampedSummary
@@ -760,7 +755,7 @@ export function ToolRow({
 
   if (!expandable) {
     return (
-      <div className={CLASS.row} data-testid="tool-row" data-intent={hasIntent ? "true" : undefined} title={title}>
+      <div className={CLASS.row} data-testid="tool-row" data-intent={hasIntent ? "true" : undefined}>
         {content}
       </div>
     );
@@ -801,7 +796,6 @@ export function ToolRow({
             hasIntent ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
           }`}
           data-testid="tool-row-summary"
-          title={hasIntent ? summary : undefined}
         >
           {hasIntent && !expanded ? (
             // Collapsed: the middle-truncating clamp is a nowrap flex line
@@ -933,7 +927,6 @@ export function ToolRow({
       data-intent-trailing={showIntentTrailing || bodyTriggerOnIntentLine ? "true" : undefined}
       data-body-trigger-intent={bodyTriggerOnIntentLine ? "true" : undefined}
       data-intent-suppressed={intentControlSuppressed ? "true" : undefined}
-      title={title}
     >
       {hasIntent && showIntentTrailing ? (
         <>

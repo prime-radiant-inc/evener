@@ -9,13 +9,17 @@
 import { describe, expect, it } from "vitest";
 import type {
   AnyNotification,
+  AskQuestionRef,
   EvenerThread,
   InputItem,
+  ItemModel,
   QueueState,
   Thread,
   ThreadCapabilities,
   ThreadItem,
+  ThreadModel,
   Turn,
+  TurnModel,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -24,7 +28,14 @@ import type {
   MobileTimelineItem,
 } from "./project";
 import { applyNotification, hydrateThread } from "@evener/appwire-client";
-import { projectConversation } from "./project";
+import {
+  liveAsksFor,
+  MAX_ITEM_BYTES,
+  projectConversation,
+  projectTimeline,
+  truncateItem,
+  truncateText,
+} from "./project";
 
 // The oracle drives the shim exactly as the service does: hydrate the wire
 // Thread through the package, then project the display rows.
@@ -387,6 +398,40 @@ describe("projectThread", () => {
       const a = c.items[0];
       expect(a?.kind).toBe("assistant");
       if (a?.kind === "assistant") expect(a.streaming).toBe(false);
+    });
+
+    // The streaming signal is per-item, not per-turn: an agentMessage that
+    // carries its own status decides streaming alone (isActiveItemInModel —
+    // the same field the web reads, TurnBlock.tsx's isItemLive), whatever
+    // its turn says. A revert to a turn-only check would keep every test
+    // above green — an item without its own status inherits the turn's — so
+    // these two pin the item-status side of the signal in both directions.
+    it("does not stream a completed agentMessage inside an inProgress turn", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", text: "settled", status: "completed" })],
+          { status: "inProgress" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(false);
+    });
+
+    it("streams an agentMessage that carries inProgress status itself", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", text: "in flight", status: "inProgress" })],
+          { status: "completed" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(true);
     });
   });
 
@@ -1182,9 +1227,29 @@ describe("projectThread", () => {
 
       const first = projectThread(t).items.filter((item) => item.kind === "failure");
       const second = projectThread(t).items.filter((item) => item.kind === "failure");
-      expect(first.map((item) => item.id)).toEqual(["failure:turn-a:Provider error", "failure:turn-b:Provider error"]);
+      expect(first.map((item) => item.id)).toEqual(["failure:turn-a", "failure:turn-b"]);
       expect(new Set(first.map((item) => item.id)).size).toBe(2);
       expect(second).toEqual(first);
+    });
+
+    it("keeps the failure row id bounded even when the turn's error prose is oversized", () => {
+      const huge = "x".repeat(MAX_ITEM_BYTES + 5_000);
+      const t = thread([turn("turn-a", [])]);
+      const firstTurn = t.turns?.[0];
+      if (firstTurn) firstTurn.error = { message: huge, title: huge };
+
+      const f = projectThread(t).items.find((item) => item.kind === "failure");
+      if (f?.kind !== "failure") throw new Error("expected a failure row");
+      // The id never embeds the error's prose — only the turn it belongs to —
+      // so it stays bounded regardless of how large the title gets.
+      expect(f.id).toBe("failure:turn-a");
+      // The store's display bound (mobile/src/state/conversation.ts) cuts the
+      // rendered title separately; applying it here does not disturb the id.
+      const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+      const rendered = truncateItem(f, bound);
+      if (rendered.kind !== "failure") throw new Error("expected a failure row");
+      expect(new TextEncoder().encode(rendered.title).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
+      expect(rendered.id).toBe("failure:turn-a");
     });
   });
 
@@ -1497,30 +1562,34 @@ describe("projectThread", () => {
     // A live "warning" notification is the only way an ItemModel ever carries
     // type "warning" (reducer.ts's case "warning" fold; there is no wire
     // ThreadItem.warning field, so hydrateThread alone can never produce one) -
-    // these tests drive that fold directly rather than a static fixture. Each
-    // row asserts the same contract - every non-blank part appears - for a
-    // different combination of parts present: title+hint alone (folded.text
-    // is blank, so warningFallbackText must still surface them);
-    // message+hint (item.text || warningFallbackText(item) || item.output
-    // used to pick the message and never look at the hint once item.text was
-    // non-blank); and title+message+hint together (warningFallbackText used
-    // to compose only [item.text, item.warning.hint], dropping the title
-    // entirely once there was also a message - this canonical projected
-    // activity row has no separate title slot the way the live warning row
-    // does, so the title was silently lost).
-    it.each<[string, Record<string, unknown>, string[]]>([
-      ["a message-less frame", { title: "Sandbox blocked", hint: "retry later" }, ["Sandbox blocked", "retry later"]],
+    // these tests drive that fold directly rather than a static fixture. A
+    // warning projects to the same attention row the live applier emits (kind
+    // "failure", title as its own field, message+hint joined as detail), not
+    // the generic unknown-activity fallback: the row changed kind the moment a
+    // reread replaced the live one. Each case asserts the same contract - every
+    // non-blank part appears, as title or in the detail - for a different
+    // combination of parts present, including the generic "Warning" title when
+    // the frame carries none.
+    it.each<[string, Record<string, unknown>, string, string[]]>([
+      [
+        "a message-less frame",
+        { title: "Sandbox blocked", hint: "retry later" },
+        "Sandbox blocked",
+        ["Sandbox blocked", "retry later"],
+      ],
       [
         "a message with a hint, no title",
         { message: "disk is nearly full", hint: "retry later" },
+        "Warning",
         ["disk is nearly full", "retry later"],
       ],
       [
         "a title together with a message and hint",
         { title: "Sandbox blocked", message: "disk is nearly full", hint: "retry later" },
+        "Sandbox blocked",
         ["Sandbox blocked", "disk is nearly full", "retry later"],
       ],
-    ])("composes a warning's parts together instead of dropping any of them (%s)", (_case, warningParams, expectedSubstrings) => {
+    ])("projects a warning as the live attention row, composing every part (%s)", (_case, warningParams, expectedTitle, expectedSubstrings) => {
       const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])], {
         evener: evenerThread({ activeTurnId: "t1" }),
       });
@@ -1534,11 +1603,52 @@ describe("projectThread", () => {
         2000,
       );
       const c = projectConversation(model);
-      const a = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
-      expect(a?.kind).toBe("activity");
-      if (a?.kind === "activity") {
-        for (const substring of expectedSubstrings) expect(a.detail.output).toContain(substring);
+      const row = c.items.find((entry) => entry.id === "item_warning_live_t1_0");
+      expect(row?.kind).toBe("failure");
+      if (row?.kind === "failure") {
+        expect(row.title).toBe(expectedTitle);
+        const shown = `${row.title}\n${row.detail}`;
+        for (const substring of expectedSubstrings) expect(shown).toContain(substring);
       }
+    });
+
+    // item.warning rides an untyped wire param map, so title can be any JSON
+    // value at runtime despite ItemModel declaring it string — WarningItem.tsx
+    // and transcriptProjector.ts's itemSummary both guard with hasWarningText
+    // before touching it. The reducer's fold normalizes a live frame's
+    // non-string title away, but a hand-built or future model can still carry
+    // one, so warningItem guards it too and must fall back to the generic
+    // "Warning" label rather than hand a non-string to a React Native <Copy>
+    // child.
+    it("falls back to the generic Warning title for a non-string title on the canonical path", () => {
+      const t = thread([turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])]);
+      const base = hydrateThread({ thread: t }, "ref-1", 0);
+      const turnModel = base.turns[0]!;
+      const model = {
+        ...base,
+        turns: [
+          {
+            ...turnModel,
+            items: [
+              ...turnModel.items,
+              {
+                id: "warning-raw",
+                turnId: "t1",
+                type: "warning",
+                text: "careful",
+                status: "completed",
+                warning: { title: 42 as unknown as string, hint: "slow down" },
+              },
+            ],
+          },
+        ],
+      };
+      const row = projectConversation(model).items.find((entry) => entry.id === "warning-raw");
+      expect(row).toMatchObject({
+        kind: "failure",
+        title: "Warning",
+        detail: "careful — slow down",
+      });
     });
   });
 
@@ -2057,4 +2167,283 @@ it("keeps failures of unknown activity types individually visible", () => {
       .filter((value) => value.kind === "activity")
       .map((value) => value.id),
   ).toEqual(["a", "b"]);
+});
+
+// --- what the live model carries into the rows (D23c-2b) ---------------------
+
+it("projects a hand-stamped warning item as the live attention row", () => {
+  // A warning only ever reaches the model through the reducer's own
+  // `case "warning"` fold, which stamps ItemModel.warning beside the text —
+  // warnings are not transcript-persisted, so no snapshot carries one. This
+  // fixture hand-stamps the untyped warning map, exercising warningItem's
+  // direct model reading beside the live-fold fixtures in the cluster above.
+  const model = hydrateThread(
+    { thread: thread([turn("t", [item({ id: "item_warning_live_t_0", type: "warning", text: "Retrying the provider", status: "completed" })])]) },
+    "ref-1",
+    0,
+  );
+  const warning = model.turns[0]?.items[0];
+  if (!warning) throw new Error("expected the warning item");
+  warning.warning = { title: "Provider warning", hint: "attempt 2 of 3" };
+  expect(projectConversation(model).items).toMatchObject([
+    {
+      kind: "failure",
+      id: "item_warning_live_t_0",
+      title: "Provider warning",
+      detail: "Retrying the provider — attempt 2 of 3",
+    },
+  ]);
+});
+
+// A warning with nothing in it is not a row. The web's own warning renderer
+// returns null for exactly this case (WarningItem: no title, no text, no
+// hint), and a blank critical notice on the phone is a red herring with no
+// content to explain itself.
+it("drops a warning that carries nothing at all", () => {
+  const projected = projectThread(
+    thread([turn("t", [item({ id: "w", type: "warning", text: "", status: "completed" })])]),
+  );
+  expect(projected.items).toEqual([]);
+});
+
+// Whitespace title/hint join into nothing (they never reach the raw-frame
+// fallback below), but a whitespace-only `message` is itself a message-less
+// frame by the reducer's own EffectiveMessage-equivalent (reducer.ts's
+// warningMessage: trims to "", same as absent) — so the reducer already
+// folded item.text to the bounded raw frame (rawWarningFrame) before this
+// projection ever sees it, and the row renders that, not nothing. The title
+// and hint reach the model only through the reducer's own live `warning`
+// fold, so the fixture folds one.
+it.each([
+  ["a whitespace title", { title: "   " }],
+  ["a whitespace hint", { hint: "\n\t" }],
+  ["whitespace everywhere", { title: " ", hint: "  " }],
+])("renders the raw frame for a live warning whose message/title/hint are all whitespace (%s)", (_case, warning) => {
+  const params = { threadId: "thread-1", ref: "ref-1", message: "  ", ...warning };
+  const model = applyNotification(
+    hydrateThread(
+      {
+        thread: thread([turn("t", [], { status: "inProgress" })], {
+          evener: evenerThread({ activeTurnId: "t" }),
+        }),
+      },
+      "ref-1",
+      0,
+    ),
+    { method: "warning", params } as never,
+    1000,
+  );
+  expect(projectConversation(model).items).toEqual([
+    expect.objectContaining({ kind: "failure", title: "Warning", detail: JSON.stringify(params) }),
+  ]);
+});
+
+it("carries a warning that has no title of its own", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({ id: "w", type: "warning", text: "something happened", status: "completed" }),
+      ]),
+    ]),
+  );
+  expect(projected.items).toMatchObject([
+    { kind: "failure", title: "Warning", detail: "something happened" },
+  ]);
+});
+
+it("reads a reasoning row from the per-summaryIndex chunks the model keeps", () => {
+  const model = hydrateThread(
+    { thread: thread([turn("t", [item({ id: "r", type: "reasoning", text: "seed", status: "inProgress" })], { status: "inProgress" })]) },
+    "ref-1",
+    0,
+  );
+  const reasoning = model.turns[0]?.items[0];
+  if (!reasoning) throw new Error("expected the reasoning item");
+  // The reducer accumulates one chunk list per summary index; the row joins
+  // them in order, one paragraph each.
+  reasoning.reasoningSummaries = [["first ", "thought"], ["second thought"]];
+  expect(projectConversation(model).items).toMatchObject([
+    {
+      kind: "activity",
+      family: "reasoning",
+      state: "running",
+      detail: { output: "first thought\n\nsecond thought" },
+    },
+  ]);
+});
+
+it("falls back to a reasoning item's own text when no chunks were kept", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [item({ id: "r", type: "reasoning", status: "completed" })]),
+    ]),
+  );
+  expect(projected.items).toMatchObject([
+    { kind: "activity", family: "reasoning", detail: { output: "" } },
+  ]);
+});
+
+// A question row on screen and the wire's askPending must agree: #1731 round
+// 4 made ThreadModel.askPending the single source for "is anything pending",
+// and liveAskQuestions (which askQuestionsByCall/liveAsksFor call) now gates
+// its whole item scan on it, so an answerable ask_user call in the
+// transcript renders as a question row if and only if askPending is true.
+it("a question row on screen implies askPending is true — the wire is the single source", () => {
+  const askArgs =
+    '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+  const askItem = item({
+    id: "ask-1",
+    type: "commandExecution",
+    toolName: "ask_user",
+    status: "completed",
+    argumentsJson: askArgs,
+  });
+  const pending = projectThread(
+    thread([turn("t", [askItem])], { evener: evenerThread({ askPending: true }) }),
+  );
+  expect(pending.items.some((row) => row.kind === "question")).toBe(true);
+  expect(pending.askPending).toBe(true);
+
+  // The identical transcript with the wire saying nothing is pending renders
+  // no question row at all — the item scan never runs.
+  const resolved = projectThread(
+    thread([turn("t", [askItem])], { evener: evenerThread({ askPending: false }) }),
+  );
+  expect(resolved.items.some((row) => row.kind === "question")).toBe(false);
+});
+
+// liveAsksFor memoizes askQuestionsByCall's scan by model.turns alone (its
+// own doc comment: "no memory of its own... reuses ONE scan for every
+// caller that shares that exact array"). A frame that changes ONLY
+// askPending (a status frame with no item of its own,
+// conversation.ts's changesRows) hands back the SAME turns reference with a
+// different askPending — the memo must not serve the stale answer it cached
+// under the old flag. liveAsksFor reads only turns and askPending, so a
+// minimal ThreadModel-shaped fixture stands in for the rest (this file's own
+// thread()/turn() build the WIRE shape hydrateThread consumes, not this).
+it("liveAsksFor re-derives when askPending changes even though turns did not", () => {
+  const askArgs =
+    '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+  const turns: TurnModel[] = [
+    {
+      id: "t",
+      status: "completed",
+      items: [
+        {
+          id: "ask-1",
+          turnId: "t",
+          type: "commandExecution",
+          toolName: "ask_user",
+          status: "completed",
+          callId: "call-1",
+          argumentsJSON: askArgs,
+        } as ItemModel,
+      ],
+    },
+  ];
+  const notAsking = { turns, askPending: false } as unknown as ThreadModel;
+  expect(liveAsksFor(notAsking).size).toBe(0);
+  // Same turns reference, askPending now true.
+  const asking = { ...notAsking, askPending: true };
+  expect(asking.turns).toBe(notAsking.turns);
+  expect(liveAsksFor(asking).size).toBe(1);
+  // And back to false again re-derives to empty rather than serving the
+  // "asking" answer just cached under the same turns reference.
+  const resolvedAgain = { ...notAsking, askPending: false };
+  expect(liveAsksFor(resolvedAgain).size).toBe(0);
+});
+
+it("renders no question row when the ask arguments do not parse", () => {
+  const projected = projectThread(
+    thread(
+      [
+        turn("t", [
+          item({
+            id: "ask-bad",
+            type: "commandExecution",
+            toolName: "ask_user",
+            status: "completed",
+            argumentsJson: "{{not valid json",
+          }),
+        ]),
+      ],
+      { evener: evenerThread({ askPending: true }) },
+    ),
+  );
+  expect(projected.items.some((row) => row.kind === "question")).toBe(false);
+});
+
+// --- rowsForTurn's cache (turnRowCache), directly: model-level fixtures ------
+// (TurnModel/ItemModel, not the wire-level Thread fixtures the rest of this
+// file uses) because the point is object IDENTITY across two projectTimeline
+// calls, which hydrateThread never preserves — every hydrate call builds
+// fresh turn objects. Local builders, not shared, mirroring
+// deriveAskQuestions.test.ts's own precedent for this same reason.
+
+describe("rowsForTurn's per-turn cache", () => {
+  function askItem(callId: string): ItemModel {
+    return {
+      id: `item_${callId}`,
+      turnId: "t1",
+      type: "commandExecution",
+      toolName: "ask_user",
+      callId,
+      status: "completed",
+      argumentsJSON: JSON.stringify({
+        questions: [{ header: "H", question: "Q", options: [{ label: "A", detail: "d" }] }],
+      }),
+    } as ItemModel;
+  }
+
+  function askRefs(callId: string): AskQuestionRef[] {
+    return [
+      {
+        key: `${callId}:0`,
+        callId,
+        header: "H",
+        question: "Q",
+        options: [{ label: "A", detail: "d" }],
+        multiSelect: false,
+      },
+    ];
+  }
+
+  // The cache is keyed on the turn object (a WeakMap), but a turn's own
+  // question row depends on `asks` too — whether ITS OWN ask_user calls are
+  // still answerable (project.ts's TurnRows.askState comment: "the calls this
+  // turn consumed and whether they were answerable, so the rows are reused
+  // only while that still holds"). Two projectTimeline calls over the SAME
+  // turn object, with call_1 answerable the first time and resolved the
+  // second, must not reuse the first call's question row.
+  it("does not reuse a cached question row once the turn's own ask becomes resolved", () => {
+    const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+
+    const answerable = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+    const firstPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, answerable);
+    expect(firstPass.some((row) => row.kind === "question")).toBe(true);
+
+    const resolved = new Map<string, AskQuestionRef[]>(); // call_1 no longer answerable
+    const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, resolved);
+    expect(secondPass.some((row) => row.kind === "question")).toBe(false);
+  });
+
+  // The inverse: a genuinely unrelated `asks` map (no entry the turn's own
+  // askState even names) is exactly the case the cache SHOULD reuse for —
+  // measured here so the cache's own hit path stays covered, not just its
+  // invalidation path.
+  it("reuses the cached row set when the turn's own asks are unaffected", () => {
+    const sharedTurn: TurnModel = { id: "t1", status: "completed", items: [askItem("call_1")] } as TurnModel;
+
+    const asksA = new Map<string, AskQuestionRef[]>([["call_1", askRefs("call_1")]]);
+    const firstPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asksA);
+
+    // A different Map instance, unrelated call included, but call_1 reads
+    // exactly the same as before — the cache must still answer "answerable".
+    const asksB = new Map<string, AskQuestionRef[]>([
+      ["call_1", askRefs("call_1")],
+      ["call_unrelated", askRefs("call_unrelated")],
+    ]);
+    const secondPass = projectTimeline({ turns: [sharedTurn] } as unknown as ThreadModel, asksB);
+    expect(secondPass).toEqual(firstPass);
+  });
 });

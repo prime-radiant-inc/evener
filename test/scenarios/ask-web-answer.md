@@ -45,12 +45,13 @@ gesture.
   ```
 - **Isolate.** This card has no OAuth requirement (it authenticates via the exported
   `OPENAI_API_KEY` above, not stored OAuth state), so it gets the normal Setup-checklist
-  treatment: a throwaway `$HOME` keeps auth-token, `credentials.toml`, and session history
-  off the real `~/.evener` and `~/.local/state/evener` entirely.
+  treatment: a throwaway `$HOME` plus the shared isolation helper keeps auth-token,
+  `credentials.toml`, and session history off the real `~/.evener` and
+  `~/.local/state/evener`, and clears the `EVENER_PROVIDERS_CONFIG`/
+  `EVENER_CREDENTIALS_CONFIG` redirects so no real provider is loaded.
   ```bash
-  export HOME="$run/home"
-  mkdir -p "$HOME"
-  unset XDG_STATE_HOME
+  . scripts/lib/e2e-lib.sh
+  e2e_isolate_home "$run"
   ```
 - Start the hub on a kernel-assigned port and read the port back from its own log line.
   **Never pass `--state-dir`/`EVENER_STATE_DIR`** to the hub or any daemon in this scenario —
@@ -68,7 +69,7 @@ gesture.
     sleep 0.1
   done
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.evener/auth-token")
+  TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
   curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"   # → 401 means it answered
   export EVENER_E2E_RUN="$run"   # how the sibling ask cards find this hub
   ```

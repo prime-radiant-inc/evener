@@ -230,7 +230,10 @@ describe("keybinding draft recovery", () => {
 		f.corrupt();
 		const model = f.create();
 		await model.refresh();
-		expect(model.getSnapshot().keybindings.storageUnavailable).toBe(true);
+		expect(model.getSnapshot().keybindings).toMatchObject({
+			storageUnavailable: true,
+			draftUnreadable: true,
+		});
 		await expect(model.saveKeybindings(rules)).rejects.toThrow();
 		expect(f.patches()).toEqual([]);
 	});

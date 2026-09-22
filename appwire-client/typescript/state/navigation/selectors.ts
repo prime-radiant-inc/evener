@@ -19,14 +19,19 @@ import {
 } from "./types";
 
 /** Relative display age for a session's updated_at, mirroring the rail's
- * long-standing row contract (now/m/h/d). Computed at adapter time like the
- * v1 path did, so staleness semantics are unchanged: a new value arrives
- * with new data. */
-export function relativeAge(updatedAt?: string): string | undefined {
+ * long-standing row contract (now/m/h/d).
+ *
+ * The instant it measures against is an argument, not an ambient read: a
+ * caller that renders a live label must pass a ticking `now`, or the label
+ * freezes at whatever the adapter observed when the summary last changed -
+ * an idle session never changes, so it would sit at "now" until a refresh.
+ * The default keeps every snapshot caller (and the package's own tests)
+ * unchanged. */
+export function relativeAge(updatedAt?: string, now: number = Date.now()): string | undefined {
   if (!updatedAt) return undefined;
   const timestamp = Date.parse(updatedAt);
   if (!Number.isFinite(timestamp)) return undefined;
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
   if (seconds < 60) return "now";
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;

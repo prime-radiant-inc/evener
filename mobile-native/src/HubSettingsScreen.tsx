@@ -6,6 +6,7 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
@@ -29,7 +30,6 @@ import {
 	isReady,
 	useConnectionDisplay,
 	useLiveReadiness,
-	useReconnectRecovery,
 	useRenderClient,
 	whenReady,
 } from "./connectionDisplay";
@@ -40,7 +40,19 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
-export function HubSettingsScreen({ route, navigation }: Props) {
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the last
+// client a retry's gap renders through, the recovered-overview read - belongs
+// to the hub it was built for, and none of it may survive a hub the route now
+// names. React Navigation can update a mounted instance's params (setParams on
+// a focused screen is this app's own idiom - see
+// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
+// re-key remounts it whole.
+export function HubSettingsScreen(props: Props) {
+	return <HubSettingsScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function HubSettingsScreenBody({ route, navigation }: Props) {
 	const { activeProfile, client, state, fatal, retry } = useConnection();
 	const display = useConnectionDisplay(route.params.hubId, state, fatal);
 	const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
@@ -176,16 +188,28 @@ function HubSettings({
 			void upgrade.reconcileAfterReconnect();
 		}, [canUseConnection, model, upgrade]),
 	);
-	// createHubOverviewStore has no connectionChanged of its own (no push
-	// notification exists to tell it a flap happened - hubOverview.ts's
-	// module doc), so a passive flap needs its own recovery: refresh both it
-	// and the upgrade controller on every transition back to "ready", the way
-	// useFocusEffect above already does once on focus.
-	const recoverAfterReconnect = useCallback(() => {
+	// useFocusEffect covers a screen the user comes back to; a passive
+	// reconnect never refocuses it, and the client a manual retry replaces
+	// this one with is still connecting when the focus effect re-runs, so
+	// that read fails with nothing left to re-run it once the connection is
+	// ready. The overview store keeps the last successful load through a
+	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
+	// data stays usable meanwhile; this is the recovery read: one refresh and
+	// one upgrade reconcile per transition back to ready. The seed counts a
+	// mount that is already ready as refreshed: the focus read above is the
+	// read it owes, and a ready "transition" that never happened must not
+	// fire a second refresh and reconcile on top of it.
+	const refreshedAtReady = useRef(connectionState === "ready");
+	useEffect(() => {
+		if (connectionState !== "ready") {
+			refreshedAtReady.current = false;
+			return;
+		}
+		if (refreshedAtReady.current) return;
+		refreshedAtReady.current = true;
 		void model.getState().refresh();
 		void upgrade.reconcileAfterReconnect();
-	}, [model, upgrade]);
-	useReconnectRecovery(connectionState, recoverAfterReconnect);
+	}, [connectionState, model, upgrade]);
 	const data = state.data;
 	const hub = data?.hub;
 	return (
@@ -217,6 +241,10 @@ function HubSettings({
 						state={upgradeState}
 						hubName={hubName}
 						runningIdentity={hub}
+						// The start persists its checkpoint before the RPC leaves
+						// (hubUpgrade.ts), so while the connection is away it must
+						// not be pressable; the reads it leaves enabled are the
+						// recovery path.
 						disabled={!ready}
 						onStart={whenReady(canUseConnection, () => {
 							void upgrade.start();

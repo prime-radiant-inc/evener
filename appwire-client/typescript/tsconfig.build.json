@@ -119,6 +119,9 @@
     "keybindingValidation.ts",
     "keybindingsStore.ts",
     "readyGenerationFence.ts",
-    "draftCheckpointPort.ts"
+    "draftCheckpointPort.ts",
+    "settingsHubGeneration.ts",
+    "checkpointedDraftEditor.ts",
+    "transcriptDisplayStore.ts"
   ]
 }

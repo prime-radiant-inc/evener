@@ -1,27 +1,21 @@
-// The write-path tests below verify each write's effect against the raw
-// SQLite row directly (they predate the read methods this storage now also
-// has, landed as a separate PR); the read-path tests verify through the
-// port's own getOutbox/getOptimistic/listOptimistic/getRecovery/
-// nextDispatchable/listTargetRefs/restoreProvenAbsent instead.
+// Persistence assertions inspect raw SQLite rows where the stored encoding is
+// the contract; read assertions go through the storage port's public methods.
 //
-// Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
-// describe("MutationOutboxIndexedDB", ...) block - these assertions mirror
-// its per-method contracts against a real (non-mock) SQLite engine, the way
-// draftRepository.test.ts already runs the native draft storage against
-// node:sqlite's DatabaseSync rather than expo-sqlite (unavailable outside a
-// device/simulator).
+// The web IndexedDB adapter's conformance tests are the behavioral oracle;
+// this suite exercises the same contracts against node:sqlite's real engine,
+// since expo-sqlite is unavailable outside a device or simulator.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "@evener/appwire-client/state/mutation";
-import { MutationOutboxSQLite, type MutationOutboxDatabase, type Row } from "./mutationOutboxStorage";
+import { MutationOutboxSQLite, type Row } from "./mutationOutboxStorage";
+import type { SqliteSync } from "./sqliteSync";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
-// The default id source (finding 4, round 2): expo-crypto's synchronous
-// randomUUID/getRandomValues, mocked the way nativeOrganization.test.ts mocks
-// the same module, so a test can prove the adapter never dereferences a bare
-// Web Crypto global React Native does not guarantee.
+// The default id source is expo-crypto's synchronous randomUUID/getRandomValues,
+// mocked so this suite proves the adapter never dereferences a bare Web Crypto
+// global that React Native does not guarantee.
 let expoCryptoCalls = 0;
 vi.mock("expo-crypto", () => ({
 	randomUUID: () => `expo-crypto-${++expoCryptoCalls}`,
@@ -29,22 +23,13 @@ vi.mock("expo-crypto", () => ({
 }));
 
 let directory: string;
-let database: DatabaseSync;
+let database: SqliteDoubleDatabase;
+let port: SqliteSync;
 let storage: MutationOutboxSQLite;
-
-function databaseAdapter(): MutationOutboxDatabase {
-	return {
-		execSync: (sql) => database.exec(sql),
-		runSync: (sql, ...params) => database.prepare(sql).run(...params),
-		getFirstSync: <T>(sql: string, ...params: (string | number)[]) =>
-			(database.prepare(sql).get(...params) as T | undefined) ?? null,
-		getAllSync: <T>(sql: string, ...params: (string | number)[]) => database.prepare(sql).all(...params) as T[],
-	};
-}
 
 function openStorage() {
 	let next = 0;
-	storage = new MutationOutboxSQLite(databaseAdapter(), {
+	storage = new MutationOutboxSQLite(port, {
 		createMutationId: () => `mutation-${++next}`,
 		now: () => 1234,
 	});
@@ -58,7 +43,9 @@ function rawRow(table: string, clientMutationId: string): Row | undefined {
 
 beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "evener-mutation-outbox-"));
-	database = new DatabaseSync(join(directory, "outbox.sqlite"));
+	const opened = openSqliteSyncDouble(join(directory, "outbox.sqlite"));
+	database = opened.database;
+	port = opened.port;
 	openStorage();
 });
 
@@ -77,6 +64,16 @@ function intent(text: string, targetRef = TARGET): MutationIntent {
 		payload: { ref: targetRef, input: [{ type: "text", text }] },
 		attachments: [],
 		optimisticDisplay: { text },
+	};
+}
+
+function interruptIntent(targetRef = TARGET): MutationIntent {
+	return {
+		targetRef,
+		method: "turn/interrupt",
+		payload: { ref: targetRef },
+		attachments: [],
+		optimisticDisplay: { method: "turn/interrupt" },
 	};
 }
 
@@ -106,16 +103,74 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
 });
 
-test("enqueueIntent persists an absent optimistic display as JSON null so settlement can retire it", async () => {
+// RoboRev PR #1873 Medium, the fresh review: MutationIntent.instanceId - the
+// fused fencing identity the web's identity fix (4059723ab4) added, where
+// every durable row carries its enqueue-time instance and the cleanup fences
+// instanceId ?? threadId - was dropped by the SQLite adapter: no column, no
+// row conversion, no insert value. A reload (the row read back through
+// fromRow) or a state transition lost the identity, so a native row fell
+// back to its threadId even when the enqueue had captured the real instance.
+test("instanceId round-trips through a reload and the recovery handoff", async () => {
+	const record = await storage.enqueueIntent({ ...intent("fenced instance"), instanceId: "instance-at-click" });
+	// The durable row carries the column the reload reads.
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
+
+	// A fresh adapter over the same database - what an app restart is - reads
+	// the identity back through the row conversion.
+	openStorage();
+	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+		instanceId: "instance-at-click",
+	});
+
+	// The recovery handoff spreads the record it read, so the identity rides
+	// the transition instead of falling back to the thread id.
+	const recovery = await storage.transferToRecovery(record.clientMutationId, "rejected", "turn is not active");
+	expect(recovery).toMatchObject({ instanceId: "instance-at-click" });
+	expect(rawRow("mutation_recovery", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
+});
+
+test("enqueueIntent persists an absent optimistic display as JSON null and reads it as undefined", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("without an optimistic display"),
 		optimisticDisplay: undefined,
 	});
 
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ optimistic_display: "null" });
+	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ optimisticDisplay: undefined });
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
+});
+
+test("enqueueIntent persists attachments, composer text, and the submitting client identity", async () => {
+	const identifiedStorage = new MutationOutboxSQLite(port, {
+		createMutationId: () => "identified-mutation",
+		now: () => 1234,
+		getOwnClientId: () => "client-one",
+	});
+	const attachment = {
+		presentationId: "presentation-1",
+		marker: 1,
+		name: "photo.png",
+		mediaType: "image/png",
+	};
+
+	const record = await identifiedStorage.enqueueIntent({
+		...intent("with attachment"),
+		attachments: [attachment],
+		composerText: "with attachment [image 1]",
+	});
+
+	expect(record).toMatchObject({
+		attachments: [attachment],
+		composerText: "with attachment [image 1]",
+		originClientId: "client-one",
+	});
+	await expect(identifiedStorage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+		attachments: [attachment],
+		composerText: "with attachment [image 1]",
+		originClientId: "client-one",
+	});
 });
 
 test("enqueueIntent rejects an empty or whitespace targetRef before allocating a sequence", async () => {
@@ -130,7 +185,7 @@ test("enqueueIntent rejects an empty or whitespace targetRef before allocating a
 // reject outright and roll back the sequence it just allocated - not
 // advance the sequence while quietly leaving the first payload in place.
 test("enqueueIntent rejects a duplicate clientMutationId and rolls back its sequence allocation", async () => {
-	const collidingIdStorage = new MutationOutboxSQLite(databaseAdapter(), {
+	const collidingIdStorage = new MutationOutboxSQLite(port, {
 		createMutationId: () => "mutation-collide",
 		now: () => 1234,
 	});
@@ -147,6 +202,70 @@ test("enqueueIntent rejects a duplicate clientMutationId and rolls back its sequ
 	});
 });
 
+// #1957: the uniqueness invariant is cross-store, not table-local. The outbox
+// INSERT above rejects a collision within the outbox, but a record that has
+// moved on to optimistic or recovery still owns its clientMutationId - a later
+// enqueue that generates the same id must reject too, or the next settlement
+// (settleReceipt/settleApplied keyed on the id) would treat the two active
+// records as one mutation and retire the older one.
+test("enqueueIntent rejects a clientMutationId already held by the optimistic store and rolls back its sequence allocation", async () => {
+	const colliding = new MutationOutboxSQLite(port, {
+		createMutationId: () => "mutation-shared",
+		now: () => 1234,
+	});
+	const accepted = await colliding.enqueueIntent({
+		...intent("accepted elsewhere"),
+		optimisticDisplay: { input: [{ type: "text", text: "accepted elsewhere" }] },
+	});
+	await expect(colliding.settleReceipt(accepted.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", "mutation-shared")).toBeDefined();
+
+	await expect(colliding.enqueueIntent(intent("collides with the accepted record", "local:b"))).rejects.toThrow();
+
+	// The older accepted record survives untouched, the colliding enqueue left
+	// nothing behind, and the sequence it allocated rolled back with it.
+	expect(rawRow("mutation_optimistic", "mutation-shared")).toBeDefined();
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all("local:b")).toHaveLength(0);
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+});
+
+test("enqueueIntent rejects a clientMutationId already held by the recovery store and rolls back its sequence allocation", async () => {
+	const colliding = new MutationOutboxSQLite(port, {
+		createMutationId: () => "mutation-shared",
+		now: () => 1234,
+	});
+	const refused = await colliding.enqueueIntent(intent("refused elsewhere"));
+	await colliding.transferToRecovery(refused.clientMutationId, "rejected", "turn is not active");
+	expect(rawRow("mutation_recovery", "mutation-shared")).toBeDefined();
+
+	await expect(colliding.enqueueIntent(intent("collides with the recovery record", "local:b"))).rejects.toThrow();
+
+	expect(rawRow("mutation_recovery", "mutation-shared")).toMatchObject({ recovery_kind: "rejected" });
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE target_ref = ?").all("local:b")).toHaveLength(0);
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+});
+
+test("enqueueInterruptAndCancel rejects a clientMutationId already active elsewhere and rolls back the whole Stop write", async () => {
+	let nextId = "mutation-waiting";
+	const store = new MutationOutboxSQLite(port, { createMutationId: () => nextId, now: () => 1234 });
+	const waiting = await store.enqueueIntent(intent("still waiting"));
+	nextId = "mutation-shared";
+	const refused = await store.enqueueIntent(intent("refused elsewhere", "local:elsewhere"));
+	await store.transferToRecovery(refused.clientMutationId, "rejected");
+
+	// The Stop's interrupt would collide with the recovery record's id, so the
+	// whole transaction - the cancel scan, the stop-epoch bump and the sequence
+	// allocation - must roll back rather than half-apply.
+	await expect(store.enqueueInterruptAndCancel(interruptIntent(TARGET))).rejects.toThrow();
+
+	expect(rawRow("mutation_outbox", waiting.clientMutationId)).toMatchObject({ state: "submitting" });
+	expect(database.prepare("SELECT * FROM mutation_outbox WHERE method = 'turn/interrupt'").all()).toHaveLength(0);
+	expect(database.prepare("SELECT stop_epoch, last_sequence FROM mutation_sequence WHERE target_ref = ?").get(TARGET)).toMatchObject({
+		stop_epoch: 0,
+		last_sequence: 1,
+	});
+});
+
 test("enqueueIntent defaults the mutation id through expo-crypto's SecureRandomSource, never a bare Web Crypto global", async () => {
 	const originalCrypto = globalThis.crypto;
 	// Simulate a host with no Web Crypto global at all - the case React Native
@@ -154,7 +273,7 @@ test("enqueueIntent defaults the mutation id through expo-crypto's SecureRandomS
 	// @ts-expect-error - deliberately removing the global for this assertion.
 	delete globalThis.crypto;
 	try {
-		const defaultIdStorage = new MutationOutboxSQLite(databaseAdapter(), { now: () => 1234 });
+		const defaultIdStorage = new MutationOutboxSQLite(port, { now: () => 1234 });
 		const persisted = await defaultIdStorage.enqueueIntent(intent("no bare crypto global", "local:no-crypto"));
 		expect(persisted.clientMutationId).toMatch(/^expo-crypto-/);
 	} finally {
@@ -171,26 +290,21 @@ test("intentSequence is gap-free and per target ref", async () => {
 	expect(other.intentSequence).toBe(1);
 });
 
-// Round 4 Medium (mutationOutboxStorage.ts:152-163): the original allocation
-// read last_sequence on its own statement, separate from the write that
-// persists the next value, so two enqueue operations could both compute the
-// same intentSequence. SQLite serializes actual writers on separate handles
-// (the direct two-handle attempt reports `database is locked` while the first
-// savepoint still owns its read), so this deterministic reentrant call forces
-// the same statement interleaving on one real SQLite connection.
+// This deterministic reentrant call exercises the statement interleaving that
+// could otherwise make two enqueue operations compute the same sequence.
 test("enqueueIntent's sequence allocation never collides when enqueue operations interleave", async () => {
 	let otherNext = 0;
 	const storageB = new MutationOutboxSQLite(
-		databaseAdapter(),
+		port,
 		{ createMutationId: () => `other-${++otherNext}`, now: () => 5678 },
 	);
 
 	let sequenceAllocations = 0;
 	let recordB: ReturnType<typeof storageB.enqueueIntent> | undefined;
-	const racingAdapter: MutationOutboxDatabase = {
-		...databaseAdapter(),
+	const racingAdapter: SqliteSync = {
+		...port,
 		getFirstSync: <T>(sql: string, ...params: (string | number)[]) => {
-			const result = databaseAdapter().getFirstSync<T>(sql, ...params);
+			const result = port.getFirstSync<T>(sql, ...params);
 			sequenceAllocations += 1;
 			// The old allocator's first getFirstSync is its standalone sequence
 			// read. Re-enter with a second storage instance before that allocator
@@ -256,6 +370,43 @@ test("markUnknown sets the given state and its onlyAttempted guard refuses an un
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
 });
 
+// Oracle: "markUnknown's state parameter names exactly blockedUnknown"
+// (mutationOutboxIndexedDB.cancel.test.ts:519, the web's 79ecf2839
+// narrowing) - the native adapter never received. The compile-time guard
+// against writing "canceled" or "submitting" through the uncertain-outcome
+// path: "canceled" is the user's durable decision (only an explicit user
+// Retry releases it), and "submitting" is the settle/reopen paths' verdict,
+// never this one's. The two misuse bindings are type-level only and never
+// execute.
+test("markUnknown's state parameter names exactly blockedUnknown", async () => {
+	const record = await storage.enqueueIntent(intent("typed row"));
+	await expect(storage.markUnknown(record.clientMutationId, "blockedUnknown")).resolves.toBe(true);
+
+	const legal: Parameters<MutationOutboxSQLite["markUnknown"]>[1] = "blockedUnknown";
+	// @ts-expect-error markUnknown cannot name "canceled"
+	const misusedCanceled: Parameters<MutationOutboxSQLite["markUnknown"]>[1] = "canceled";
+	// @ts-expect-error markUnknown cannot name "submitting"
+	const misusedSubmitting: Parameters<MutationOutboxSQLite["markUnknown"]>[1] = "submitting";
+	expect([legal, misusedCanceled, misusedSubmitting].filter((value) => value === "blockedUnknown")).toEqual([
+		"blockedUnknown",
+	]);
+	// Nothing but the one legal call ever ran: the row is exactly where the
+	// call above left it.
+	await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+});
+
+// The runtime half of the same guard: a caller with no types at all (a JS
+// bridge, a deserialized argument) must not be able to create a "canceled"
+// row through the uncertain-outcome path either. The refusal is loud, the
+// same contract-violation style as enqueueIntent's "targetRef is required".
+test("markUnknown refuses a runtime state other than blockedUnknown", async () => {
+	const record = await storage.enqueueIntent(intent("runtime guarded"));
+	const untyped = storage.markUnknown.bind(storage) as unknown as (id: string, state: string) => Promise<boolean>;
+	await expect(untyped(record.clientMutationId, "canceled")).rejects.toThrow();
+	await expect(untyped(record.clientMutationId, "submitting")).rejects.toThrow();
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ state: "submitting" });
+});
+
 // Oracle: "a pending receipt atomically hands input display from transport
 // outbox to durable optimistic state" (mutationOutbox.test.ts:235).
 test("settleReceipt moves a pending, input-carrying record into the optimistic table", async () => {
@@ -267,6 +418,42 @@ test("settleReceipt moves a pending, input-carrying record into the optimistic t
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeUndefined();
 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted", composer_text: null });
+});
+
+// RoboRev PR #1873 Medium: the accepted optimistic copy is built
+// field-by-field (never a spread, so recovery evidence cannot leak into it),
+// and it dropped the enqueue-time instance. The copy carries it now, the way
+// every other record shape does - the identity survives the outbox ->
+// optimistic transition a pending receipt makes.
+test("settleReceipt's accepted optimistic copy keeps the enqueue-time instance", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("accepted with identity"),
+		instanceId: "instance-at-click",
+		optimisticDisplay: { input: [{ type: "text", text: "accepted with identity" }] },
+	});
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ instance_id: "instance-at-click" });
+
+	openStorage();
+	await expect(storage.getOptimistic(record.clientMutationId)).resolves.toMatchObject({
+		state: "accepted",
+		instanceId: "instance-at-click",
+	});
+});
+
+test("settleReceipt clears attempt evidence from the accepted optimistic record", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("attempted before receipt"),
+		optimisticDisplay: { input: [{ type: "text", text: "attempted before receipt" }] },
+	});
+	await storage.markAttempted(record.clientMutationId);
+
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ attempted: 0 });
+	const accepted = await storage.getOptimistic(record.clientMutationId);
+	expect(accepted).toMatchObject({ state: "accepted" });
+	expect(accepted).not.toHaveProperty("attempted");
 });
 
 // Oracle: "a pending receipt settles a receipt-only control without creating
@@ -311,12 +498,9 @@ test("settleReceipt consults recovery when the outbox no longer holds the record
 	});
 });
 
-// insert() used to update only state/attempted on a primary-key conflict, so
-// a transition landing on a row that already occupies that id would keep the
-// old payload/display. Seeds a stale row directly (this table's id space
-// never legitimately repeats through the port's own methods today, since a
-// record's stored content is fixed at enqueueIntent) to prove the write this
-// call makes replaces every column, the way the oracle's `put` does.
+// A transition landing on an existing id must replace the complete row, so a
+// stale payload/display cannot survive a receipt handoff. Seed a stale row
+// directly because the port's own methods keep a record's id content fixed.
 test("settleReceipt's optimistic insert fully replaces a stale row rather than only refreshing state", async () => {
 	const record = await storage.enqueueIntent({
 		...intent("fresh display"),
@@ -435,7 +619,7 @@ test("a failed recovery transfer leaves the outbox record durable with no recove
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
 });
 
-// --- D25d-1b: the read path -------------------------------------------------
+// --- Read path --------------------------------------------------------------
 
 test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {
 	await storage.enqueueIntent(intent("a", "local:a"));
@@ -503,19 +687,20 @@ test("nextDispatchable returns the lowest-sequence submitting record, blocked by
 	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: second.clientMutationId });
 });
 
-test("restoreProvenAbsent reopens a blockedUnknown record the authoritative snapshot omits, and leaves one it names alone", async () => {
+test("restoreProvenAbsent scopes reopening to the target and preserves authoritative records", async () => {
 	const omitted = await storage.enqueueIntent(intent("omitted"));
-	const named = await storage.enqueueIntent(intent("named", "local:thread-2"));
+	const named = await storage.enqueueIntent(intent("named"));
+	const unrelated = await storage.enqueueIntent(intent("unrelated", "local:thread-2"));
 	await storage.markUnknown(omitted.clientMutationId, "blockedUnknown");
 	await storage.markUnknown(named.clientMutationId, "blockedUnknown");
+	await storage.markUnknown(unrelated.clientMutationId, "blockedUnknown");
 
 	await expect(storage.restoreProvenAbsent(TARGET, new Set([named.clientMutationId]))).resolves.toEqual([
 		omitted.clientMutationId,
 	]);
 	await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
-
-	await expect(storage.restoreProvenAbsent("local:thread-2", new Set([named.clientMutationId]))).resolves.toEqual([]);
 	await expect(storage.getOutbox(named.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+	await expect(storage.getOutbox(unrelated.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
 });
 
 // Falsifies restoreProvenAbsent's atomicity: a trigger fails the UPDATE for
@@ -538,4 +723,249 @@ test("a failed restore leaves every blockedUnknown record on the target unreopen
 	await expect(storage.restoreProvenAbsent(TARGET, new Set())).rejects.toThrow("restore failed");
 	expect(rawRow("mutation_outbox", first.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
 	expect(rawRow("mutation_outbox", second.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+});
+
+// --- Stop's combined durable write (the port's enqueueInterruptAndCancel) ----
+//
+// Oracle: cmd/evener-hub/frontend/src/stores/mutationOutboxIndexedDB.cancel.test.ts
+// - the same storage-level contracts against the real SQLite engine: the
+// Stop's click is the cancel moment, the cancellations and the interrupt
+// record land together or not at all, and a canceled row is terminal.
+
+// Oracle: "enqueueInterruptAndCancel cancels every non-attempted row for the
+// ref and commits the interrupt with them"
+// (mutationOutboxIndexedDB.cancel.test.ts:96).
+test("enqueueInterruptAndCancel cancels every non-attempted row for the ref and commits the interrupt with them", async () => {
+	const queued = await storage.enqueueIntent(intent("queued"));
+	const blocked = await storage.enqueueIntent(intent("blocked"));
+	await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
+	const inFlight = await storage.enqueueIntent(intent("in flight"));
+	await storage.markAttempted(inFlight.clientMutationId);
+	const attemptedBlocked = await storage.enqueueIntent(intent("attempted blocked"));
+	await storage.markAttempted(attemptedBlocked.clientMutationId);
+	await storage.markUnknown(attemptedBlocked.clientMutationId, "blockedUnknown");
+	const otherRef = await storage.enqueueIntent(intent("other ref", "local:thread-2"));
+
+	const interrupt = await storage.enqueueInterruptAndCancel(interruptIntent());
+
+	expect(interrupt).toMatchObject({
+		method: "turn/interrupt",
+		state: "submitting",
+		attempted: false,
+		// The ref's sequence continues: the interrupt is the ref's fifth intent.
+		intentSequence: 5,
+	});
+	expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+	expect((await storage.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+	// Attempted rows may be on the wire; cancellation cannot unsend them.
+	expect(await storage.getOutbox(inFlight.clientMutationId)).toMatchObject({ state: "submitting", attempted: true });
+	expect(await storage.getOutbox(attemptedBlocked.clientMutationId)).toMatchObject({
+		state: "blockedUnknown",
+		attempted: true,
+	});
+	expect((await storage.getOutbox(otherRef.clientMutationId))?.state).toBe("submitting");
+});
+
+// Oracle: "an aborted enqueueInterruptAndCancel commit leaves no interrupt
+// record and no cancellations" (mutationOutboxIndexedDB.cancel.test.ts:129).
+// The SQLite fault lands where the write order puts it: the cancellations
+// run first, so failing the interrupt INSERT proves they roll back too.
+test("a failed enqueueInterruptAndCancel leaves no interrupt record and no cancellations", async () => {
+	const queued = await storage.enqueueIntent(intent("queued"));
+	database.exec(
+		"CREATE TRIGGER reject_interrupt_insert BEFORE INSERT ON mutation_outbox WHEN NEW.method = 'turn/interrupt' \
+BEGIN SELECT RAISE(ABORT, 'stop failed'); END",
+	);
+
+	await expect(storage.enqueueInterruptAndCancel(interruptIntent())).rejects.toThrow("stop failed");
+
+	expect(rawRow("mutation_outbox", queued.clientMutationId)).toMatchObject({ state: "submitting" });
+	const remaining = database
+		.prepare("SELECT method FROM mutation_outbox WHERE target_ref = ?")
+		.all(TARGET) as { method: string }[];
+	expect(remaining.map((row) => row.method)).toEqual(["turn/queue"]);
+	// The sequence the failed write allocated - and the stop-epoch bump it
+	// made - roll back with everything else: a leftover bump would fence
+	// every later enqueue against a Stop that never landed.
+	expect(
+		database.prepare("SELECT last_sequence, stop_epoch FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
+	).toMatchObject({ last_sequence: 1, stop_epoch: 0 });
+});
+
+test("enqueueInterruptAndCancel rejects an empty or whitespace targetRef before writing anything", async () => {
+	await expect(storage.enqueueInterruptAndCancel(interruptIntent("   "))).rejects.toThrow("targetRef is required");
+	expect(database.prepare("SELECT * FROM mutation_outbox").all()).toEqual([]);
+	expect(database.prepare("SELECT * FROM mutation_sequence").all()).toEqual([]);
+});
+
+// Oracle: "a canceled row never reopens, even across a reload"
+// (mutationOutboxIndexedDB.cancel.test.ts:146). The native Stop always carries
+// its interrupt, so the reopen proof is restoreProvenAbsent leaving the
+// canceled rows - and the interrupt's own submitting row - alone.
+test("a canceled row never reopens, even across a fresh storage instance", async () => {
+	const queued = await storage.enqueueIntent(intent("queued"));
+	const blocked = await storage.enqueueIntent(intent("blocked"));
+	await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+
+	// Reconciliation proves nothing about these rows; restoreProvenAbsent is
+	// the one reopen path, and it must leave them canceled.
+	await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual([]);
+
+	// A fresh adapter over the same database - what an app restart is - agrees.
+	openStorage();
+	await expect(storage.restoreProvenAbsent(TARGET, new Set())).resolves.toEqual([]);
+	expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+	expect((await storage.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+});
+
+// Oracle: "a canceled head row does not park the queue, but a blockedUnknown
+// head still does" (mutationOutboxIndexedDB.cancel.test.ts:545).
+test("nextDispatchable skips canceled rows without parking the queue, and the interrupt still dispatches", async () => {
+	await storage.enqueueIntent(intent("canceled head"));
+	const interrupt = await storage.enqueueInterruptAndCancel(interruptIntent());
+	// A Stop whose own interrupt never went out would stop nothing: the
+	// canceled rows ahead of it do not park the interrupt behind them.
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: interrupt.clientMutationId });
+
+	await storage.settleApplied(interrupt.clientMutationId);
+	const later = await storage.enqueueIntent(intent("later send"));
+	// The canceled row was provably never sent, so the later intent may go.
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: later.clientMutationId });
+
+	await storage.settleApplied(later.clientMutationId);
+	// Delivery-uncertain rows keep the FIFO closed: skipping them could
+	// reorder a send the daemon may already have applied.
+	const blockedHead = await storage.enqueueIntent(intent("blocked head"));
+	await storage.markUnknown(blockedHead.clientMutationId, "blockedUnknown");
+	await storage.enqueueIntent(intent("queued behind"));
+	await expect(storage.nextDispatchable(TARGET)).resolves.toBeUndefined();
+});
+
+// Oracle: "a canceled row cannot be marked attempted or reclassified back to
+// blockedUnknown" (mutationOutboxIndexedDB.cancel.test.ts:506).
+test("a canceled row cannot be marked attempted or reclassified back to blockedUnknown", async () => {
+	const queued = await storage.enqueueIntent(intent("queued"));
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+
+	// Cancellation is terminal: only an explicit Retry releases the row, and a
+	// late uncertain-outcome write must not make it reopenable again.
+	await expect(storage.markAttempted(queued.clientMutationId)).resolves.toBe(false);
+	await expect(storage.markUnknown(queued.clientMutationId, "blockedUnknown")).resolves.toBe(false);
+	expect(await storage.getOutbox(queued.clientMutationId)).toMatchObject({ state: "canceled", attempted: false });
+});
+
+// Oracle: "an in-flight enqueue whose barrier predates another tab's stop
+// commits canceled, not submitting" (mutationOutboxIndexedDB.cancel.test.ts:186).
+// The submitter reads the ref's stop epoch at its click, the Stop commits
+// while the submission is still in flight, and the write that lands after
+// that cancel must commit born-"canceled".
+test("an in-flight enqueue whose barrier predates the stop commits canceled, not submitting", async () => {
+	const capture = await storage.readStopEpoch(TARGET);
+	expect(capture).toBe(0);
+
+	const interrupt = await storage.enqueueInterruptAndCancel(interruptIntent());
+
+	const raced = await storage.enqueueIntent(intent("raced the stop"), { stopEpoch: capture });
+	expect(raced).toMatchObject({ state: "canceled", attempted: false });
+	// The FIFO head is the stop's own interrupt, never the canceled row behind it.
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: interrupt.clientMutationId });
+});
+
+// Oracle: "an enqueue after the stop captures the bumped epoch and still
+// sends" (mutationOutboxIndexedDB.cancel.test.ts:207).
+test("an enqueue after the stop captures the bumped epoch and still sends", async () => {
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+	const capture = await storage.readStopEpoch(TARGET);
+	expect(capture).toBe(1);
+
+	// The user clicked send after the stop: the barrier the click captured is
+	// the post-stop epoch, nothing intervenes, and the row goes live. A caller
+	// passing no barrier at all (a host that never captured) is unchanged.
+	const after = await storage.enqueueIntent(intent("sent after the stop"), { stopEpoch: capture });
+	const barrierless = await storage.enqueueIntent(intent("no barrier"));
+	expect(after.state).toBe("submitting");
+	expect(barrierless.state).toBe("submitting");
+});
+
+// Oracle: "the stop epoch survives later enqueues, a reload, and both stop
+// paths bump it" (mutationOutboxIndexedDB.cancel.test.ts:227). The port
+// declares one stop path natively (the combined write); the epoch must ride
+// the sequence row every allocation rewrites, not just the ones that bump it.
+test("the stop epoch survives later enqueues and a fresh storage instance", async () => {
+	// Two instances share one id space, the way every storage in this file
+	// shares one database: distinct instances mint distinct ids.
+	let next = 0;
+	const instance = () =>
+		new MutationOutboxSQLite(port, {
+			createMutationId: () => `mutation-${++next}`,
+			now: () => 1234,
+		});
+
+	const first = instance();
+	await first.enqueueInterruptAndCancel(interruptIntent());
+	await first.enqueueIntent(intent("after the stop"));
+	await first.enqueueIntent(intent("and another"));
+	await expect(first.readStopEpoch(TARGET)).resolves.toBe(1);
+
+	const reloaded = instance();
+	await expect(reloaded.readStopEpoch(TARGET)).resolves.toBe(1);
+	await reloaded.enqueueInterruptAndCancel(interruptIntent());
+	await expect(reloaded.readStopEpoch(TARGET)).resolves.toBe(2);
+});
+
+// SQLite-specific, no IndexedDB analog: a database the pre-barrier adapter
+// created has no stop_epoch column on mutation_sequence. The constructor
+// migrates it in place - the additive default-0 column is the whole
+// migration - and the existing sequence counter survives it.
+test("a pre-barrier mutation_sequence table migrates in place without losing its sequence", async () => {
+	database.exec("DROP TABLE mutation_sequence");
+	database.exec("CREATE TABLE mutation_sequence (target_ref TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL)");
+	database.prepare("INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, 7)").run(TARGET);
+
+	openStorage();
+
+	await expect(storage.readStopEpoch(TARGET)).resolves.toBe(0);
+	const after = await storage.enqueueIntent(intent("after the migration"));
+	expect(after.intentSequence).toBe(8);
+	expect(
+		database.prepare("SELECT last_sequence, stop_epoch FROM mutation_sequence WHERE target_ref = ?").get(TARGET),
+	).toMatchObject({ last_sequence: 8, stop_epoch: 0 });
+});
+
+// RoboRev PR #1873 Medium, the same additive-migration style as stop_epoch's:
+// the record tables predate the instance_id column (the adapter previously
+// dropped the identity entirely), and ALTER TABLE has no IF NOT EXISTS, so
+// the constructor checks each table's columns and adds the nullable column -
+// the whole migration, no data rewrite. Rows written before the field existed
+// read as instanceId-undefined, so their identity falls back to the
+// threadId - exactly what a model with no instanceId presents.
+test("pre-instanceId record tables migrate in place and their existing rows read as identity-less", async () => {
+	database.exec("DROP TABLE mutation_outbox");
+	database.exec(`CREATE TABLE mutation_outbox (client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+		origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, method TEXT NOT NULL,
+		payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
+		composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, recovery_kind TEXT, recovery_reason TEXT)`);
+	database
+		.prepare(
+			`INSERT INTO mutation_outbox (client_mutation_id, version, origin_client_id, target_ref, thread_id, method,
+				payload, attachments, optimistic_display, composer_text, intent_sequence, created_at, state, attempted)
+			 VALUES ('mutation-pre-instance', 1, NULL, ?, 'thread-1', 'turn/queue', '{}', '[]', 'null', NULL, 1, 1234, 'submitting', 0)`,
+		)
+		.run(TARGET);
+	// The seeded row occupies the ref's sequence 1, so the allocation the
+	// post-migration enqueue makes must continue past it - the same
+	// sequence-survival assertion the pre-barrier migration test makes.
+	database.prepare("INSERT INTO mutation_sequence (target_ref, last_sequence) VALUES (?, 1)").run(TARGET);
+
+	openStorage();
+
+	const existing = await storage.getOutbox("mutation-pre-instance");
+	expect(existing?.instanceId).toBeUndefined();
+	expect(rawRow("mutation_outbox", "mutation-pre-instance")).toMatchObject({ instance_id: null });
+
+	const after = await storage.enqueueIntent({ ...intent("after the migration"), instanceId: "instance-new" });
+	expect(after.intentSequence).toBe(2);
+	expect(rawRow("mutation_outbox", after.clientMutationId)).toMatchObject({ instance_id: "instance-new" });
 });

@@ -78,6 +78,16 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+export type {
+  DiscardedDraftFields,
+  DraftDiscardableFields,
+  PersistedDraftFields,
+} from "./checkpointedDraftEditor";
+export {
+  assertDraftDiscardable,
+  discardCheckpointedDraft,
+  persistCheckpointedDraft,
+} from "./checkpointedDraftEditor";
 // chunkViewBackingForTests is deliberately absent here; the white-box test hook
 // is published through the non-shipped testing/reducerHooks.ts instead.
 export { pendingTextJoined } from "./chunkview";
@@ -103,9 +113,11 @@ export {
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
+  fromEnvironment,
   groupByProvider,
   isEndpointConflict,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   styleInfoText,
@@ -142,19 +154,28 @@ export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./e
 export {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorEndpointConflict,
+  ErrorInstanceRemoveApplied,
+  ErrorInstanceRenamePersisted,
+  ErrorInvalidHostField,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
+  hostFieldError,
   isHubLaunchError,
+  isInstanceRemoveApplied,
+  isInstanceRenamePersisted,
   isStaleCursorError,
   mutationErrorData,
   RequestTimeoutError,
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
@@ -214,6 +235,7 @@ export type {
   KeybindingDraftCheckpoint,
   KeybindingDraftStorage,
   KeybindingsClient,
+  KeybindingsDraft,
   KeybindingsStore,
   KeybindingsStoreActions,
   KeybindingsStoreDeps,
@@ -223,6 +245,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
+  decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,
@@ -300,7 +323,7 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey } from "./reducer";
+export type { NotificationRoutingKey, TurnHistoryMergeResult } from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -312,6 +335,7 @@ export {
   joinedReasoningParagraphs,
   joinWarningParts,
   mergeOlderItemPage,
+  mergeTurnHistory,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
@@ -320,6 +344,8 @@ export {
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type { SettingsHubGeneration } from "./settingsHubGeneration";
+export { createSettingsHubGeneration } from "./settingsHubGeneration";
 export { canReadSharedNotes } from "./sharedNotesAvailability";
 export type {
   SlashEmbedding,
@@ -395,7 +421,7 @@ export {
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
-export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,
@@ -461,6 +487,21 @@ export {
   toWireDefaults,
   visibleCategoryInventory,
 } from "./transcriptDisplayConfig";
+export type {
+  HubDefaultsByLayout,
+  TranscriptDisplayChange,
+  TranscriptDisplayClient,
+  TranscriptDisplayStore,
+  TranscriptDisplayStoreActions,
+  TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreFields,
+  TranscriptDisplayStoreState,
+  TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
+} from "./transcriptDisplayStore";
+export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
 export type {
   ProjectedAnchor,
   ProjectedEntry,

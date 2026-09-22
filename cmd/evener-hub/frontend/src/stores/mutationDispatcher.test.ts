@@ -897,3 +897,135 @@ test("a client replacement during attempt commit retains evidence and recovers t
   inspector.close();
   writer.close();
 });
+
+// docs/design/stop-cancellation-outbox.md §4's honest boundary, §9.6: the
+// cancel lands durably at click time; the dispatcher's own re-read protocol is
+// what keeps a canceled row off the wire. The spies below only interleave a
+// REAL cancel write at the race point - dispatcher and storage stay real.
+describe("Stop cancellation races", () => {
+  test("a row canceled between the dispatchable listing and the pre-transport re-read is never sent", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "cancel-before-reread", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const client = new FakeClient("ready");
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId) }));
+    // The Stop lands in the gap between the drain's list read and its
+    // extant-state re-read of the same record.
+    const realNext = outbox.nextDispatchable.bind(outbox);
+    let clicked = false;
+    vi.spyOn(outbox, "nextDispatchable").mockImplementation(async (targetRef) => {
+      const loaded = await realNext(targetRef);
+      if (loaded && !clicked) {
+        clicked = true;
+        await outbox.cancelUnattempted(targetRef);
+      }
+      return loaded;
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(client.calls).toEqual([]);
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "canceled", attempted: false });
+    outbox.close();
+  });
+
+  test("a row canceled between the re-read and markAttempted is never attempted or sent", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "cancel-before-attempt", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const client = new FakeClient("ready");
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId) }));
+    // The Stop lands after the re-read judged the record submitting but before
+    // the attempt evidence commits: markAttempted must refuse the canceled row.
+    const realGet = outbox.getOutbox.bind(outbox);
+    let clicked = false;
+    vi.spyOn(outbox, "getOutbox").mockImplementation(async (clientMutationId) => {
+      const record = await realGet(clientMutationId);
+      if (record?.state === "submitting" && !clicked) {
+        clicked = true;
+        await outbox.cancelUnattempted(record.targetRef);
+      }
+      return record;
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(client.calls).toEqual([]);
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({ state: "canceled", attempted: false });
+    outbox.close();
+  });
+
+  test("a row attempted before the click stays in flight and settles; the queued row behind it is canceled and never sent", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "cancel-mid-flight", ["mutation-a", "mutation-b"]);
+    const inFlight = await outbox.enqueueIntent(queueIntent("ref-a", "already sending"));
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
+    const client = new FakeClient("ready");
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId) }));
+    // The click lands with mutation-a's attempt evidence already committed:
+    // cancellation cannot unsend it, and must not claim to.
+    const realMark = outbox.markAttempted.bind(outbox);
+    let clicked = false;
+    vi.spyOn(outbox, "markAttempted").mockImplementation(async (clientMutationId) => {
+      const marked = await realMark(clientMutationId);
+      if (marked && !clicked) {
+        clicked = true;
+        await outbox.cancelUnattempted("ref-a");
+      }
+      return marked;
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(queueCalls(client)).toEqual([expect.objectContaining({ clientMutationId: inFlight.clientMutationId })]);
+    // The in-flight row settled on its own receipt; the queued row is
+    // durably canceled and was never attempted.
+    expect(await outbox.getOutbox(inFlight.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOutbox(queued.clientMutationId)).toMatchObject({ state: "canceled", attempted: false });
+    outbox.close();
+  });
+
+  test("an attempted row that meets an uncertain outcome after the click lands blockedUnknown, not canceled", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "cancel-then-uncertain", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent());
+    const client = new FakeClient("ready");
+    client.on("turn/queue", (params) => {
+      throw new WireError("outcome unknown", -32004, {
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "unknown",
+        retryDisposition: "blocked",
+      });
+    });
+    const realMark = outbox.markAttempted.bind(outbox);
+    let clicked = false;
+    vi.spyOn(outbox, "markAttempted").mockImplementation(async (clientMutationId) => {
+      const marked = await realMark(clientMutationId);
+      if (marked && !clicked) {
+        clicked = true;
+        await outbox.cancelUnattempted("ref-a");
+      }
+      return marked;
+    });
+    const blocked: string[] = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onBlockedMutation: (targetRef) => blocked.push(targetRef),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // In-flight/uncertain is the honest report for an attempted row: the
+    // cancellation skipped it (attempt evidence was committed first) and the
+    // uncertain outcome classifies it exactly as if no Stop had happened.
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({
+      state: "blockedUnknown",
+      attempted: true,
+    });
+    expect(blocked).toEqual(["ref-a"]);
+    outbox.close();
+  });
+});

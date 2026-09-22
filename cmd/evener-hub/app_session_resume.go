@@ -58,7 +58,31 @@ func withSessionResume[R any](
 // we must NOT resurrect it just to kill it (kata qp94 carve-out). An unknown
 // ref or any non-session-unavailable failure is still returned unchanged.
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
-	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
+	if err := shutdownCleanupError(cfg, params.Ref); err != nil {
+		return err
+	}
+	discoveryUncertain := false
+	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
+		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil)
+		if err != nil {
+			return err
+		}
+		if decision.stopped {
+			// Match the force-stop shortcut: report the stopped session only
+			// after the roster re-lists, so the live/stopped projection does
+			// not stay stale until the next watcher pass.
+			refreshAfterForceStop(ctx, cfg)
+			return nil
+		}
+		discoveryUncertain = decision.discoveryUncertain
+	}
+	action := func() (struct{}, error) {
+		// A Resume can retain failed child cleanup while shutdown waits for
+		// alias ownership, after the pre-check above already passed. Recheck
+		// under ownership before the shutdown action.
+		if err := shutdownCleanupError(cfg, params.Ref); err != nil {
+			return struct{}{}, err
+		}
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return struct{}{}, err
@@ -67,8 +91,27 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 			return struct{}{}, err
 		}
 		return struct{}{}, source.ShutdownThread(ctx, params)
-	})
+	}
+	var err error
+	if discoveryUncertain {
+		// Strict discovery failed for a session already confirmed exited, so
+		// the confirmed-stopped check could not prove the absence of a claim.
+		// The resume-required refusal must not gate this fall-through:
+		// shutdown never resurrects the session, and its goal — a stopped
+		// daemon — is what durable authority already asserts. The tolerant
+		// source attempt resolves the uncertainty from the other side under
+		// deletion-fence ownership.
+		_, err = withShutdownDiscoveryUncertainOwnership(ctx, cfg, params.Ref, "", action)
+	} else {
+		_, err = withSessionActionOwnership(ctx, cfg, params.Ref, "", action)
+	}
 	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
+		// The fallback treats an unavailable session as successfully stopped;
+		// a cleanup failure retained since the under-ownership recheck must
+		// not become that success.
+		if err := shutdownCleanupError(cfg, params.Ref); err != nil {
+			return err
+		}
 		if cfg.Roster != nil {
 			if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
 				return appwire.Unavailable(err.Error())
@@ -80,6 +123,56 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return nil
 	}
 	return err
+}
+
+// withShutdownDiscoveryUncertainOwnership runs a shutdown source attempt when
+// strict rendezvous discovery failed for a session already confirmed exited.
+// It keeps deletion fencing and alias ownership but omits the session-action
+// recovery gate: a ResumeRequired refusal is spurious here because shutdown
+// manufactures no recovery obligation and an already-exited session reported
+// by the source is the desired end state, not an error to mask. It rechecks
+// resume admission under the reacquired ownership: the uncertain decision
+// released the whole reservation group before this reacquire, so an explicit
+// Resume can register in that window and be mid-launch here — it would finish
+// launching after shutdown reported the session stopped, or have the daemon
+// it just started shut down by the source action.
+func withShutdownDiscoveryUncertainOwnership[R any](ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, action func() (R, error)) (R, error) {
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", func() (R, error) {
+		if err := shutdownResumeActiveError(cfg, ref); err != nil {
+			var zero R
+			return zero, err
+		}
+		return action()
+	})
+}
+
+// shutdownResumeActiveError refuses shutdown while an explicit Resume is
+// registered on the session's ownership group. The uncertain-discovery path
+// rechecks it under reacquired ownership, the way shutdownCleanupError already
+// rechecks retained child cleanup: the admission decision released the whole
+// reservation group before the tolerant attempt reacquired the request's
+// alias, so a Resume registered in that window is already mid-launch and must
+// not be overlapped by the tolerant action.
+func shutdownResumeActiveError(cfg hubcore.WebConfig, ref string) error {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" && cfg.ResumeLocks != nil {
+		if cfg.ResumeLocks.HasActiveResume(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)) {
+			return sessionResumeRequiredError()
+		}
+	}
+	return nil
+}
+
+// shutdownCleanupError refuses shutdown while any Resume in the session's
+// ownership group has unconfirmed child cleanup. It runs before ownership and
+// again under it, because a Resume can report the failure while shutdown
+// waits for the alias.
+func shutdownCleanupError(cfg hubcore.WebConfig, ref string) error {
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" && cfg.ResumeLocks != nil {
+		if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)); err != nil {
+			return appwire.Unavailable(err.Error())
+		}
+	}
+	return nil
 }
 
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {

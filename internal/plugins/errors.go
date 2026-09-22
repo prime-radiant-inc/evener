@@ -14,4 +14,14 @@ var (
 	// directory the store manages, whose contents the store rewrites without
 	// asking whatever a marketplace is sourced from.
 	ErrMarketplaceSourceInStore = errors.New("the source must be a directory outside the plugin store")
+	// ErrMarketplaceUnregisteredCloneRemains marks RemoveMarketplace's
+	// applied-with-litter outcome: the unregister save has already landed
+	// (the marketplace is gone from ListMarketplaces) but its clone could
+	// not be removed from disk. A caller distinguishes this from a plain
+	// refusal by errors.Is against this instead of assuming a non-nil error
+	// means the marketplace is still registered.
+	ErrMarketplaceUnregisteredCloneRemains = errors.New("marketplace unregistered, but its clone could not be removed")
+	// ErrMarketplaceSourceUnsupported rejects a source kind this build does not
+	// accept; it is wire input, not a store failure, and carries no path.
+	ErrMarketplaceSourceUnsupported = errors.New("unsupported marketplace source")
 )

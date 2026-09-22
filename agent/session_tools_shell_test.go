@@ -624,10 +624,11 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 				t.Fatalf("shell returned error: %s", res.Output)
 			}
 			var out struct {
-				JobID  string `json:"job_id"`
-				Status string `json:"status"`
-				Reason string `json:"reason"`
-				Mode   string `json:"mode"`
+				JobID         string `json:"job_id"`
+				Status        string `json:"status"`
+				Reason        string `json:"reason"`
+				Mode          string `json:"mode"`
+				WaitElapsedMS int64  `json:"wait_elapsed_ms"`
 			}
 			if err := json.Unmarshal(toolResultJSON(res), &out); err != nil {
 				t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
@@ -640,6 +641,16 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			}
 			if !strings.Contains(res.Output, out.JobID) {
 				t.Fatalf("promoted shell model output lost job_id %q under constrained registry limits: %q", out.JobID, res.Output)
+			}
+			// #501: the promoted footer must state how long the foreground wait
+			// actually blocked. The wait bound clamps to 1000ms and the fake
+			// clock advanced exactly one second past it, so the model must see
+			// the real one-second wait rather than the command's intended sleep.
+			if out.WaitElapsedMS != 1000 {
+				t.Fatalf("promoted shell output wait_elapsed_ms = %d, want 1000", out.WaitElapsedMS)
+			}
+			if !strings.Contains(res.Output, "after 1s") {
+				t.Fatalf("promoted shell model output does not state the elapsed wait: %q", res.Output)
 			}
 			_, _ = s.jobManager.stop(out.JobID)
 			waitForShellDone(t, s.jobManager, out.JobID)
@@ -1390,13 +1401,14 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 	reason := "foreground_timeout"
 	output := "partial output\n"
 	got := formatShellResult(shellToolResult{
-		JobID:    "job_promoted",
-		Type:     "shell",
-		Status:   string(jobstore.StatusRunning),
-		Reason:   &reason,
-		Mode:     "background",
-		TimedOut: true,
-		Output:   &output,
+		JobID:         "job_promoted",
+		Type:          "shell",
+		Status:        string(jobstore.StatusRunning),
+		Reason:        &reason,
+		Mode:          "background",
+		TimedOut:      true,
+		WaitElapsedMS: 120000,
+		Output:        &output,
 	})
 	for _, want := range []string{
 		"still running",
@@ -1404,6 +1416,10 @@ func TestFormatShellResultPromotionFooter(t *testing.T) {
 		`read_transcript(transcript_ref="job:job_promoted")`,
 		"notification",
 		"do not relaunch or poll",
+		// #501: the footer must state the measured wait, so the model's pacing
+		// arithmetic uses the real 120s foreground wait, not the 600s the
+		// command intended to sleep.
+		"the foreground wait ended after 2m, not the command",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("promotion footer = %q, want it to contain %q", got, want)

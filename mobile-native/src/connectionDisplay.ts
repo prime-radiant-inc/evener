@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
@@ -141,29 +141,3 @@ export function useRenderClient(
 	return state === "ready" ? client : lastClient.current;
 }
 
-/** Whether a transition from `previous` to `current` is a return to "ready"
- * after having been away - never true for the render that STARTS "ready"
- * (that one is the screen's own mount fetch, not a recovery). */
-export function reconnected(
-	previous: ConnectionState,
-	current: ConnectionState,
-): boolean {
-	return current === "ready" && previous !== "ready";
-}
-
-/** Fires `onReconnect` the moment `state` moves back to "ready", for a store
- * with no `connectionChanged` of its own to wire (createHubOverviewStore -
- * see hubOverview.ts's module doc: "callers decide when to fetch() or
- * refresh()", and there is no push notification that could tell it a flap
- * happened). Mirrors the `hasBeenReady`/`away` bookkeeping
- * createStoreLifecycle keeps for stores that do have one. */
-export function useReconnectRecovery(
-	state: ConnectionState,
-	onReconnect: () => void,
-): void {
-	const previous = useRef(state);
-	useEffect(() => {
-		if (reconnected(previous.current, state)) onReconnect();
-		previous.current = state;
-	}, [state, onReconnect]);
-}

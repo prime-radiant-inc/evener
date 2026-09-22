@@ -141,6 +141,23 @@ async function advance(ms: number) {
   });
 }
 
+// Drive real IndexedDB turns until a condition arrives: fake timers own this
+// suite's setTimeout, so a waitFor poll budget is not an honest clock for a
+// chain whose every step is a real storage round trip (a parked-save replay
+// through enqueue and dispatch, §4's click-time stop-epoch capture included).
+// Each probe read is a real round trip that lets pending work complete; the
+// turn bound is a tripwire that fails loudly, never the mechanism awaited —
+// threads.test.ts's flushIndexedDBUntil rule.
+async function flushIndexedDBUntil(done: () => boolean, maxTurns = 60): Promise<void> {
+  const probe = new MutationOutboxIndexedDB();
+  try {
+    for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
+  } finally {
+    probe.close();
+  }
+  if (!done()) throw new Error(`never arrived after ${maxTurns} IndexedDB turns`);
+}
+
 test("an actual blur retains the last pane's subscription through the deadline", async () => {
   const { fake, user } = clockClient();
   const model = testModel();
@@ -313,7 +330,11 @@ test("a definite refusal stays visible and keeps its draft across close and reop
   const panel = render(<LivePanel sessionRef={model.ref} />);
   await user.type(editor(), "failed sentinel");
   await user.tab();
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
+  await flushIndexedDBUntil(() => screen.queryByTestId("shared-notes-error") !== null);
   expect(await screen.findByTestId("shared-notes-error")).toBeTruthy();
   panel.unmount();
   render(<LivePanel sessionRef={model.ref} />);
@@ -1100,7 +1121,11 @@ test("older B success followed by C rejection keeps C visible and recoverable", 
   release();
   await waitFor(() => expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("B"));
   expect(editor().value).toBe("C");
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
+  await flushIndexedDBUntil(() => screen.queryByTestId("shared-notes-error") !== null);
   await screen.findByTestId("shared-notes-error");
   expect(editor().value).toBe("C");
   expect(screen.queryByTestId("shared-notes-saved")).toBeNull();
@@ -1160,8 +1185,12 @@ test("a second blur while a save is in flight replays the latest draft instead o
   await user.clear(editor());
   await user.type(editor(), "second draft");
   await user.tab();
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
   release();
+  await flushIndexedDBUntil(() => seen.length === 2);
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
@@ -1214,7 +1243,14 @@ test("a B-save parking behind an in-flight A-save persists instead of overwritin
   await user.tab();
   await advance(10_000);
   release();
-  await waitFor(() => expect(seen).toHaveLength(2));
+  // The replay chain spans more real storage rounds than a waitFor poll
+  // budget honestly covers; drive its actual completions instead.
+  await flushIndexedDBUntil(
+    () =>
+      seen.length === 2 &&
+      threadsStore.getState().threads.get(modelA.ref)?.humanNote === "draft A2" &&
+      threadsStore.getState().threads.get(modelB.ref)?.humanNote === "draft B2",
+  );
   expect(seen[0]).toMatchObject({ ref: modelA.ref, note: "draft A2" });
   expect(seen[1]).toMatchObject({ ref: modelB.ref, note: "draft B2" });
   expect(threadsStore.getState().threads.get(modelA.ref)?.humanNote).toBe("draft A2");
@@ -1249,7 +1285,11 @@ test("a failed save retries on the next blur with the latest draft", async () =>
   await user.clear(editor());
   await user.type(editor(), "first draft");
   await user.tab();
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
+  await flushIndexedDBUntil(() => screen.queryAllByText(/first save boom/i).length > 0);
   await screen.findAllByText(/first save boom/i);
   // A newer draft typed after the failure retries on the next explicit save
   // (the failure itself never requeues into the same drain): the next blur
@@ -1259,6 +1299,7 @@ test("a failed save retries on the next blur with the latest draft", async () =>
   await user.type(editor(), "second draft");
   await user.tab();
   await advance(10_000);
+  await flushIndexedDBUntil(() => seen.length === 2);
   await waitFor(() => expect(seen).toHaveLength(2));
   expect(seen[1]).toMatchObject({ ref: model.ref, note: "second draft" });
   expect(threadsStore.getState().threads.get(model.ref)?.humanNote).toBe("second draft");
@@ -1289,7 +1330,13 @@ test("a persistently failing save does not hot-loop the same drain", async () =>
   await user.clear(editor());
   await user.type(editor(), "doomed draft");
   await user.tab();
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
+  await flushIndexedDBUntil(
+    () => screen.queryAllByText(/always boom/i).length > 0 && screen.queryByTestId("shared-notes-saving") === null,
+  );
   await screen.findAllByText(/always boom/i);
   // The failed drain settles after exactly one attempt: no requeue means no
   // request/toast/saving storm, and the loop is free for the next explicit
@@ -1337,7 +1384,11 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   await user.clear(editor());
   await user.type(editor(), "draft A2");
   await user.tab();
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
+  await flushIndexedDBUntil(() => screen.queryAllByText(/A save boom/i).length > 0);
   await screen.findAllByText(/A save boom/i);
   // ...then the panel switches to B, whose blur starts a fresh loop. B
   // persists and reports Saved; A's draft stays in A's textarea for an
@@ -1353,6 +1404,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   await user.type(editor(), "draft B2");
   await user.tab();
   await advance(10_000);
+  await flushIndexedDBUntil(() => screen.queryByTestId("shared-notes-saved") !== null);
   await screen.findByTestId("shared-notes-saved");
   // A attempted once (no hot-loop retry); B attempted once and landed.
   expect(seen.map((p) => (p as { ref: string }).ref)).toEqual(["local:aaaa", "local:bbbb"]);
@@ -1464,8 +1516,12 @@ test("an earlier success still reports Saved when a sibling fails later in the d
   await advance(10_000);
   release();
   // B's failure surfaces while the panel shows B, and A still landed...
-  await waitFor(() => expect(seen).toHaveLength(2));
-  await screen.findAllByText(/B save boom/i);
+  await flushIndexedDBUntil(
+    () =>
+      seen.length === 2 &&
+      screen.queryAllByText(/B save boom/i).length > 0 &&
+      threadsStore.getState().threads.get(modelA.ref)?.humanNote === "draft A2",
+  );
   expect(threadsStore.getState().threads.get(modelA.ref)?.humanNote).toBe("draft A2");
   // ...then switching back to A paints Saved: the outcome recorded for A is
   // success, and B's failure belongs to B's session, not A's status line.
@@ -1499,8 +1555,11 @@ test("a failed blur-save surfaces an error and keeps the draft", async () => {
   await user.clear(editor());
   await user.type(editor(), "draft note");
   await user.tab();
+  // The enqueue now also reads the three active stores for the cross-store
+  // clientMutationId uniqueness check (#1957), one real storage round more than
+  // a waitFor poll budget honestly covers; drive the chain's own completions.
   await advance(10_000);
-
+  await flushIndexedDBUntil(() => screen.queryByTestId("shared-notes-error") !== null);
   await screen.findAllByText(/save note boom/i);
   expect(editor().value).toBe("draft note");
   expect(screen.getByTestId("shared-notes-error")).toBeTruthy();

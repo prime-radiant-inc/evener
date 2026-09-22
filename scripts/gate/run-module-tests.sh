@@ -32,6 +32,10 @@ set -uo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
+# The bounded process runner and process-tree stopper live in a sourceable
+# library so their failure modes can be exercised directly rather than
+# inspected as script text; see gatebounded_test.go.
+. "$script_dir/../lib/gate-bounded.sh"
 
 # The load-aware budgets, and the effective -p/-parallel flags they become,
 # live in scripts/lib/gate-budgets.sh so the wiring can be exercised directly
@@ -154,6 +158,17 @@ if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	exit 2
 fi
 
+# Deriving the enumeration flags runs `go run`, which compiles evener-dev before
+# it prints anything. That is heavier than the `go list` those flags feed, so it
+# gets its own, larger bound: enough for a cold build cache on a busy host, but
+# still finite, so a stalled cache fails with the diagnostic instead of hanging
+# the gate before its own timeout can speak.
+LIST_BUILD_FLAGS_TIMEOUT=${EVENER_LIST_BUILD_FLAGS_TIMEOUT:-300}
+if [[ ! "$LIST_BUILD_FLAGS_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_LIST_BUILD_FLAGS_TIMEOUT must be a positive integer in seconds (got %q)\n' "$LIST_BUILD_FLAGS_TIMEOUT" >&2
+	exit 2
+fi
+
 # The gate's test-selection surface lives in one shared file so the coverage
 # ratchet can measure exactly what this gate proves; see gate-surface-lib.sh.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
@@ -161,18 +176,33 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 
 root_skip="$fuzz_test_skip"
 
-flags="$*"
-module_test_flags() {
-	local m="$1" flag selected=""
+# The caller's argv, preserved as an array and expanded quoted everywhere it
+# reaches a command: evener-dev decides which flags the enumeration also needs, a
+# value with a space must reach go test whole, and no value may be pathname-
+# expanded. It is never flattened back to a string.
+#
+# The argv and the effective GOFLAGS are validated by evener-dev's shared,
+# value-aware parser (check-gate-flags) once logdir exists, below: this gate
+# appends its own -run/-skip and package list after the caller's flags, and a -C
+# in either the argv or GOFLAGS would move the enumeration and the tests out of
+# the module directory the gate anchored. Doing that in shell would be a second
+# parser that gets `-run -args` and Go's GOFLAGS quoting wrong.
+gate_args=("$@")
+repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
+
+# module_test_flags_array sets the global test_flags array for module m: the
+# caller's argv, or, for the root module under ROOT_FULL, the argv with short
+# mode removed. Both are arrays, not strings, so a value with a space cannot be
+# split when go test is invoked. The short removal is done by evener-dev's
+# value-aware parser (root_test_flags, computed below), so a value that spells
+# -short is kept and -short=true/-test.short are removed.
+module_test_flags_array() {
+	local m="$1"
 	if [ "$m" != "." ] || [ "$ROOT_FULL" -eq 0 ]; then
-		printf '%s' "$flags"
+		test_flags=(${gate_args[@]+"${gate_args[@]}"})
 		return
 	fi
-	for flag in $flags; do
-		[ "$flag" = "-short" ] && continue
-		selected="$selected $flag"
-	done
-	printf '%s' "${selected# }"
+	test_flags=(${root_test_flags[@]+"${root_test_flags[@]}"})
 }
 
 logdir=""
@@ -192,29 +222,6 @@ forget_pid() {
 			[ "${active_pids[$i]}" = "$pid" ] && active_pids[$i]=""
 		done
 	fi
-}
-
-process_descendants() {
-	local parent="$1" child
-	for child in $(ps -axo pid=,ppid= 2>/dev/null | awk -v parent="$parent" '$2 == parent {print $1}'); do
-		process_descendants "$child"
-		printf '%s\n' "$child"
-	done
-}
-
-stop_process_tree() {
-	local pid="$1" descendant
-	local -a descendants=()
-	for descendant in $(process_descendants "$pid"); do
-		descendants+=("$descendant")
-	done
-	if [ "${#descendants[@]}" -gt 0 ]; then
-		for descendant in "${descendants[@]}"; do
-			[ -n "$descendant" ] && kill -TERM "$descendant" 2>/dev/null || :
-		done
-	fi
-	kill -TERM "$pid" 2>/dev/null || :
-	wait "$pid" 2>/dev/null || :
 }
 
 stop_children() {
@@ -274,54 +281,88 @@ failed_modules=()
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
-root_package_list_timeout_diagnostic() {
-	local package_list_log="$1" worktree gocache gomodcache
+# run_bounded_timeout_diagnostic <what> <bound> <module> <log-file> — the
+# cache-stall diagnostic run_bounded (scripts/lib/gate-bounded.sh) calls on a
+# timeout. It names the module the step ran in and a retry command anchored at
+# the repository root, so a timeout in the flag derivation or in any module's
+# enumeration reads the same way.
+run_bounded_timeout_diagnostic() {
+	local what="$1" bound="$2" module="$3" log_file="$4" worktree gocache gomodcache retry
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: go list ./... timed out after %ss.\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
-	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
+	retry="$repo_root/scripts/gate/run-module-tests.sh"
+	printf 'run-module-tests.sh: %s timed out after %ss.\n' "$what" "$bound" >&2
+	printf 'run-module-tests.sh: worktree: %s (module %s)\n' "$worktree" "$module" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
-	printf 'run-module-tests.sh: retained package-list log: %s\n' "$package_list_log" >&2
+	printf 'run-module-tests.sh: retained log: %s\n' "$log_file" >&2
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
-	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
-		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
+	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q %q -short -count=1\n' \
+		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$retry" >&2
 }
 
-run_root_package_list() {
-	local package_list="$1" package_list_stderr list_pid started_at list_status
-	package_list_stderr="${package_list}.stderr"
-	( go list ./... >"$package_list" 2>"$package_list_stderr" ) &
-	list_pid="$!"
-	started_at=$SECONDS
-	while kill -0 "$list_pid" 2>/dev/null; do
-		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
-			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic "$package_list_stderr"
-			return 1
-		fi
-		sleep 0.1
-	done
-	if wait "$list_pid"; then
-		return 0
-	else
-		list_status=$?
-		cat "$package_list_stderr" >&2
-		return "$list_status"
+# run_list_build_flags runs the repository-local helper by its checkout-relative
+# path from the repository root, so it always resolves from this checkout rather
+# than an import path that a GOWORK=off or unrelated workspace could redirect.
+# GOFLAGS is cleared for this one invocation: the helper only reads its
+# arguments, so the build here must not let a relative GOFLAGS path
+# (-modfile=alt.mod, -overlay=overlay.json) resolve against the repository root
+# and disagree with the module directory the enumeration and tests run in.
+run_list_build_flags() {
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} )
+}
+
+# run_check_gate_flags runs the shared Go validator from the repository root: it
+# parses the caller's argv and the effective GOFLAGS with the value-aware walker
+# and Go's own GOFLAGS quoting, and fails on a terminator (-args, --) or a -C
+# this gate cannot honour. GOFLAGS is cleared for this one build (the value is
+# passed as an argument), so the same relative-path concern cannot apply here.
+run_check_gate_flags() {
+	local goflags="$1"
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev check-gate-flags --goflags "$goflags" -- ${gate_args[@]+"${gate_args[@]}"} )
+}
+
+# run_root_test_flags runs the value-aware short-mode stripper from the
+# repository root, for the root module under ROOT_FULL.
+run_root_test_flags() {
+	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev root-test-flags -- ${gate_args[@]+"${gate_args[@]}"} )
+}
+
+# derive_list_flags sets list_flags to the caller's flags that the `go list`
+# enumeration also needs, one per line from evener-dev in name=value form, so a
+# value with a space cannot be split and an empty value cannot vanish. It runs
+# only on the enumeration paths (root and sharded agent), under its own bound:
+# this `go run` compiles evener-dev first, and a stalled GOCACHE/GOMODCACHE must
+# not hang the gate before its own timeout diagnostic can speak.
+derive_list_flags() {
+	local module="$1" out_file list_flag
+	out_file="$logdir/$(printf '%s' "$module" | tr '/.' '__').list-build-flags"
+	if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev list-build-flags' "$module" "$out_file" run_list_build_flags; then
+		printf 'run-module-tests.sh: could not derive the package-selection flags for go list\n' >&2
+		return 1
 	fi
+	list_flags=()
+	while IFS= read -r list_flag; do
+		[ -n "$list_flag" ] && list_flags+=("$list_flag")
+	done <"$out_file"
+	return 0
 }
 
 run_module() {
-	local m="$1" extra="$2" test_flags
-	test_flags="$(module_test_flags "$m")"
-	# Word-split flags and extra intentionally so callers can pass multiple flags.
+	local m="$1" extra="$2"
+	local -a test_flags
+	module_test_flags_array "$m"
+	# extra is the gate's own -p/-parallel words; it carries no caller value and
+	# no space, so it is word-split deliberately. test_flags is the caller's argv
+	# and is always expanded quoted.
 	# shellcheck disable=SC2086
 	if [ "$m" = "." ]; then
 		local -a packages=()
 		local pkg package_list
 		package_list="$logdir/root.packages"
-		run_root_package_list "$package_list" || return $?
+		derive_list_flags "$m" || return $?
+		run_enumeration "$m" "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
@@ -334,10 +375,10 @@ run_module() {
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
-		# ROOT_FULL removes short mode through module_test_flags while retaining
-		# the regular Test/Example name filter. Fuzz-owned targets and sanity
-		# functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
+		# ROOT_FULL removes short mode through module_test_flags_array while
+		# retaining the regular Test/Example name filter. Fuzz-owned targets and
+		# sanity functions stay under the explicit make fuzz gate.
+		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
 		return
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
@@ -356,18 +397,25 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
+		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		derive_list_flags "$m" || return $?
 		local subpkgs=()
-		local pkg
+		local pkg agent_list
+		agent_list="$logdir/agent.packages"
+		# Same bound and exit-status check as the root enumeration: a failed or
+		# hung go list must not pass as "no subpackages" over an already-green
+		# shard run.
+		run_enumeration "$m" "$agent_list" || return $?
 		while IFS= read -r pkg; do
+			[ -n "$pkg" ] || continue
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done < <(go list ./...)
+		done <"$agent_list"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi
-	/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
+	/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
@@ -417,6 +465,31 @@ finish_stream() {
 		failed_modules+=("$name")
 	fi
 }
+
+# Validate the caller's argv and the effective GOFLAGS before anything runs --
+# including the frontend stream below -- with evener-dev's shared Go parser
+# rather than a second one in shell. A rejected or timed-out validation must not
+# leave a started stream for cleanup to stop.
+effective_goflags="$(go env GOFLAGS 2>/dev/null || printf '%s' "${GOFLAGS:-}")"
+if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev check-gate-flags' 'gate' "$logdir/gate-flags" run_check_gate_flags "$effective_goflags"; then
+	printf 'run-module-tests.sh: refusing to run: the caller flags or GOFLAGS are not usable by this gate\n' >&2
+	exit 2
+fi
+
+# ROOT_FULL drops short mode for the root module through the same value-aware
+# parser, computed once here: a value that spells -short survives, and every
+# short spelling (-short, -short=true, -test.short) is removed.
+root_test_flags=()
+if [ "$ROOT_FULL" -eq 1 ]; then
+	root_flags_log="$logdir/root-test-flags"
+	if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev root-test-flags' 'gate' "$root_flags_log" run_root_test_flags; then
+		printf 'run-module-tests.sh: could not derive the root module flags\n' >&2
+		exit 2
+	fi
+	while IFS= read -r root_flag; do
+		root_test_flags+=("$root_flag")
+	done <"$root_flags_log"
+fi
 
 # Start the frontend gate first so it runs across both Go waves. It is joined
 # after wave 2, so its cost is hidden unless it outlives the Go work.

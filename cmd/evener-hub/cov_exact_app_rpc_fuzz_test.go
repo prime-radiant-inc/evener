@@ -267,7 +267,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			instDir := t.TempDir()
 			tomlPath := filepath.Join(instDir, "providers.toml")
 			writeMinimalProvidersToml(t, tomlPath)
-			instCtl := newTestInstancesController(t, tomlPath, instDir, t.TempDir())
+			instCtl := newTestInstancesController(t, tomlPath, instDir, t.TempDir(), nil)
 			instServer := appserver.NewServer(appserver.ServerConfig{})
 			registerInstanceHandlers(instServer, instCtl)
 			for _, c := range []struct {
@@ -470,6 +470,6 @@ func instServerForExactSetDefaultError(t *testing.T) *appserver.Server {
 	path := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, path)
 	server := appserver.NewServer(appserver.ServerConfig{})
-	registerInstanceHandlers(server, newTestInstancesController(t, path, dir, t.TempDir()))
+	registerInstanceHandlers(server, newTestInstancesController(t, path, dir, t.TempDir(), nil))
 	return server
 }

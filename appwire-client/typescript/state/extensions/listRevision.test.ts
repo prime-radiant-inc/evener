@@ -184,6 +184,29 @@ describe("the two conventions", () => {
     revisions.publish(read, write("read"));
     expect(published).toEqual(["saved", "read"]);
   });
+
+  test("a failure publisher uses the write's revision and still rethrows", async () => {
+    const revisions = createListRevision();
+    const { published, write } = recorder();
+    let rejectRequest!: (error: Error) => void;
+    const writing = writeRevisioned(
+      revisions,
+      () =>
+        new Promise<string>((_resolve, reject) => {
+          rejectRequest = reject;
+        }),
+      () => null,
+      () => write("applied"),
+    );
+    const newer = revisions.next();
+    const failure = new Error("clone remains");
+    rejectRequest(failure);
+
+    await expect(writing).rejects.toBe(failure);
+    expect(published).toEqual([]);
+    revisions.retract(newer);
+    expect(published).toEqual(["applied"]);
+  });
 });
 
 describe("hasLive", () => {

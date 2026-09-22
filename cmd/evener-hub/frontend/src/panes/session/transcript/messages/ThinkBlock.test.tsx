@@ -9,6 +9,7 @@ import { afterEach, expect, test } from "vitest";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import loaderStyles from "../../../../widgets/loader/loader.module.css";
 import rawStreamingStyles from "../streamingtext.module.css";
 import { TurnBlock } from "../TurnBlock";
 import { itemRendererFor } from "../types";
@@ -111,6 +112,24 @@ test("contentFree with no chunks yet shows the label alone, never a fabricated t
   render(<ThinkBlock item={item({ reasoningSummaries: [] })} turn={turn} live={true} contentFree={true} />);
   expect(screen.getByText("Thinking…")).toBeTruthy();
   expect(screen.queryByText(/tokens/)).toBeNull();
+});
+
+// The live and settled rows pull their bulb glyph into the icon rail via the
+// .label/.summary gutter pull (thinkblock.module.css); the content-free row's
+// status glyph is the Loader grid, so it reaches the same seat through the
+// Loader's rail variant. Asserted as the variant class on the row's one
+// role="status" element (the Loader root) - the same module-class technique
+// the streaming assertions above use.
+test("contentFree seats its status glyph in the icon rail like the live and settled rows seat theirs", () => {
+  render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["abcdefghijklmnop"]] })}
+      turn={turn}
+      live={true}
+      contentFree={true}
+    />,
+  );
+  expect(screen.getByRole("status").className).toContain(loaderStyles.rail);
 });
 
 // --- redacted: critical reasoning on a broken turn, no thought text ---------

@@ -721,6 +721,40 @@ test("Enter on an unknown slash command sends the raw query - the escape hatch f
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
+// RoboRev Low (PR 1393 fresh review, 0708b9b): the slash fallthrough fired the
+// raw text at the focused session with `void` - on a recovery-fenced local
+// session the store's shared admission refuses the send, and the unhandled
+// rejection closed the palette and silently lost the typed input. The
+// fallthrough must keep the composer's failure contract for a refused send:
+// surface why the text went nowhere (the fenced admission's own refusal among
+// the reasons) and keep the palette open so the input survives.
+test("Enter on an unknown slash command against a fenced session toasts the refusal and keeps the palette open", async () => {
+  const user = userEvent.setup();
+  focusSession("local:ref_a");
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for.
+  act(() => {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:ref_a", Symbol()),
+    }));
+  });
+  render(
+    <>
+      <CommandPalette />
+      <Toast />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+
+  await user.keyboard("{Enter}");
+
+  // The refusal surfaces as the recovery-unavailable toast, the palette stays
+  // open with the typed text, and the rejection never escapes unhandled.
+  expect(await screen.findByText("Send isn't available until this session is resumed")).toBeTruthy();
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
+});
+
 // 2026-08-14: a picked session-scoped command - built-in OR plugin catalog -
 // no longer runs from the palette at all (nor, for a plugin command, sends
 // its qualified form immediately). Both now resolve to the SAME single

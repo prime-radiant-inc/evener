@@ -261,6 +261,11 @@ func TestSweepCrashedSessionScratchReportsUnusableBase(t *testing.T) {
 	oldTemp, oldCache := sessionScratchTempDir, sessionScratchUserCacheDir
 	sessionScratchTempDir = func() string { return missing }
 	sessionScratchUserCacheDir = func() (string, error) { return "", errors.New("no cache dir") }
+	// The sweep also walks every world-usable host temp base a session temp
+	// container may live in, so "no usable base" has to make those unusable too.
+	// The assertion (a sweep with nothing it can read reports failure) is
+	// unchanged; only the fixture covers the second base class.
+	t.Cleanup(SetWorldTempBasesForTesting([]string{missing}))
 	t.Cleanup(func() {
 		sessionScratchTempDir = oldTemp
 		sessionScratchUserCacheDir = oldCache

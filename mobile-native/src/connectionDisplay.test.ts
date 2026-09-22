@@ -6,10 +6,8 @@ import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import {
 	connectionDisplay,
 	isReady,
-	reconnected,
 	useConnectionDisplay,
 	useLiveReadiness,
-	useReconnectRecovery,
 	useRenderClient,
 	whenReady,
 } from "./connectionDisplay";
@@ -194,28 +192,6 @@ it("useRenderClient: a hub change drops the previous hub's client instead of fal
 	// Without the reset this would fall back to hub-1's client; hub-2 has
 	// nothing adopted yet and must get nothing instead.
 	expect(hook.result.current).toBeNull();
-});
-
-it("reconnected: true only for a move back to ready from something else", () => {
-	expect(reconnected("reconnecting", "ready")).toBe(true);
-	expect(reconnected("closed", "ready")).toBe(true);
-	expect(reconnected("ready", "ready")).toBe(false);
-	expect(reconnected("ready", "reconnecting")).toBe(false);
-	expect(reconnected("idle", "connecting")).toBe(false);
-});
-
-it("useReconnectRecovery: fires on a reconnect, not on the initial ready render, not on a non-ready transition", () => {
-	let state: ConnectionState = "ready";
-	const onReconnect = vi.fn();
-	const hook = renderHook(() => useReconnectRecovery(state, onReconnect));
-	hook.rerender();
-	expect(onReconnect).not.toHaveBeenCalled();
-	state = "reconnecting";
-	hook.rerender();
-	expect(onReconnect).not.toHaveBeenCalled();
-	state = "ready";
-	hook.rerender();
-	expect(onReconnect).toHaveBeenCalledTimes(1);
 });
 
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
