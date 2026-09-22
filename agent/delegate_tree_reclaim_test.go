@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -858,7 +859,7 @@ func TestDelegateIdleRelease_StaleArmDoesNotDisplaceNewerGeneration(t *testing.T
 	// it instead of displacing the newer generation's window.
 	staleFired := false
 	stale := fake.AfterFunc(time.Hour, func() { staleFired = true })
-	displaced := c.swapIdleReleaseTimer("dlg_x", stale, 1, 99)
+	displaced := c.swapIdleReleaseTimer("dlg_x", stale, 1, 99, new(atomic.Bool))
 	if displaced == nil {
 		t.Fatal("stale arm displaced nothing; the swap must hand a timer back for stopping")
 	}
@@ -918,6 +919,93 @@ func TestDelegateIdleRelease_CloseSweepsGraceTimers(t *testing.T) {
 	c.mu.Unlock()
 	if installed {
 		t.Fatal("closing left a grace-timer handle installed")
+	}
+}
+
+// TestDelegateIdleRelease_OlderSameGenerationArmDoesNotDisplaceRetry pins the
+// arm-sequence clause: a same-generation arm paused between creating its
+// timer and installing it must not displace a newer retry of the same
+// generation — if the paused timer has already fired, the displacement would
+// stop the live retry and install a spent handle, leaving the delegate with no
+// grace window at all.
+func TestDelegateIdleRelease_OlderSameGenerationArmDoesNotDisplaceRetry(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	timersBefore := fake.BlockedCount()
+	// The newer same-generation retry installs first.
+	newer := fake.AfterFunc(time.Hour, func() {})
+	if displaced := c.swapIdleReleaseTimer("dlg_x", newer, 7, 2, new(atomic.Bool)); displaced != nil {
+		t.Fatalf("first install displaced a timer, want none outstanding")
+	}
+	// The older arm, paused between arming and installing, completes last. It
+	// must get its own timer back — the live retry stays installed.
+	older := fake.AfterFunc(time.Hour, func() {})
+	if displaced := c.swapIdleReleaseTimer("dlg_x", older, 7, 1, new(atomic.Bool)); displaced != older {
+		t.Fatal("an older same-generation arm displaced the live retry; the swap must hand the stale timer back for stopping")
+	}
+	older.Stop()
+	if got := fake.BlockedCount() - timersBefore; got != 1 {
+		t.Fatalf("%d waiters parked after the stale arm stopped, want the newer retry alone", got)
+	}
+	c.mu.Lock()
+	installed := c.idleReleaseTimers["dlg_x"]
+	c.mu.Unlock()
+	if installed.arm != 2 || installed.timer != newer {
+		t.Fatalf("installed handle = %+v, want the newer retry (arm 2)", installed)
+	}
+}
+
+// TestDelegateIdleRelease_ArmAfterCloseIsRejected pins the closing clause:
+// the close's timer sweep empties the map exactly once, so an arm that
+// reaches the swap after the sweep must be rejected — installing would arm a
+// callback (and pin the *Session it captures) that no later close stops.
+func TestDelegateIdleRelease_ArmAfterCloseIsRejected(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	c.mu.Lock()
+	c.closing = true
+	c.mu.Unlock()
+	timersBefore := fake.BlockedCount()
+	timer := fake.AfterFunc(time.Hour, func() {})
+	if displaced := c.swapIdleReleaseTimer("dlg_x", timer, 7, 1, new(atomic.Bool)); displaced != timer {
+		t.Fatal("a post-close arm installed; the swap must hand the timer back for stopping")
+	}
+	timer.Stop()
+	if got := fake.BlockedCount() - timersBefore; got != 0 {
+		t.Fatalf("%d waiters remain after the post-close arm stopped", got)
+	}
+	c.mu.Lock()
+	_, installed := c.idleReleaseTimers["dlg_x"]
+	c.mu.Unlock()
+	if installed {
+		t.Fatal("a post-close arm installed a handle the close's sweep will never reach")
+	}
+}
+
+// TestDelegateIdleRelease_FiredArmIsNeverInstalled pins the spent-arm clause:
+// the immediate-dispatch path (or any real preemption longer than the delay)
+// can run the whole callback before the install step, and the callback's own
+// retire found no entry to drop — installing would pin the spent closure for
+// the life of the process, the exact leak the retirement exists to remove.
+func TestDelegateIdleRelease_FiredArmIsNeverInstalled(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	timersBefore := fake.BlockedCount()
+	spent := new(atomic.Bool)
+	spent.Store(true)
+	timer := fake.AfterFunc(time.Hour, func() {})
+	if displaced := c.swapIdleReleaseTimer("dlg_x", timer, 7, 1, spent); displaced != timer {
+		t.Fatal("an already-fired arm installed; the swap must hand the spent timer back for stopping")
+	}
+	timer.Stop()
+	c.mu.Lock()
+	_, installed := c.idleReleaseTimers["dlg_x"]
+	c.mu.Unlock()
+	if installed {
+		t.Fatal("a spent timer was installed as the delegate's outstanding window")
+	}
+	if got := fake.BlockedCount() - timersBefore; got != 0 {
+		t.Fatalf("%d waiters remain after the fired arm stopped", got)
 	}
 }
 

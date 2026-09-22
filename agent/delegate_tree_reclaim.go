@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -707,18 +708,24 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 // most recent finalize, never from an earlier one.
 //
 // At most one grace timer per delegate is ever armed: the arm swaps the
-// At most one grace timer per delegate is ever armed: the arm swaps the
 // delegate's outstanding handle and stops the replaced one, so the finalize
 // tail's timer and each refusal's retry collapse into a single timer instead
-// of stacking one per refusal; an arm paused between creating its timer and
-// installing it cannot displace a newer generation's install (the stale timer
-// is stopped instead, or its callback would decline on the generation guard
-// and leave the newer generation with no grace timer at all); and the fired
-// callback retires its own entry, so a spent handle never pins the arm's
-// closure — and the *Session it captures — for the life of the process. The
-// handle lives on the controller keyed by delegate — a cold restore replaces
-// the *Session, and the new generation's arm must still retire the window the
-// previous runtime armed, which a session-keyed map could not find. It is
+// of stacking one per refusal. An arm paused between creating its timer and
+// installing it cannot displace a newer generation's install, and a same-
+// generation arm cannot displace a newer retry of its own generation — the
+// displaced live timer would leave the delegate with no grace window at all
+// when the displacer has already fired (the stale timer is stopped instead).
+// An arm whose callback already ran before the install step is never
+// installed: a spent timer must not become the delegate's outstanding handle,
+// because its own retire found no entry to drop and nothing else would retire
+// it. A closing controller rejects every arm — the close's sweep empties the
+// map exactly once, so a post-sweep install would arm a callback the teardown
+// already promised to stop. The fired callback retires its own entry, so a
+// spent handle never pins the arm's closure — and the *Session it captures —
+// for the life of the process. The handle lives on the controller keyed by
+// delegate: a cold restore replaces the *Session, and the new generation's
+// arm must still retire the window the previous runtime armed, which a
+// session-keyed map could not find. It is
 // deliberately NOT joined by any WaitGroup a session's Close joins: Close's
 // bounded joins must never wait out a grace period, and a timer that fires
 // after the session or tree has closed is harmless — the stale-generation
@@ -734,7 +741,14 @@ func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 		delay = *override
 	}
 	arm := s.delegateController.nextIdleReleaseArmID()
+	fired := new(atomic.Bool)
 	timer := s.sclock().AfterFunc(delay, func() {
+		// Mark this arm's handle spent before anything else: a callback that
+		// runs before its arm finishes installing must leave the install step
+		// nothing to install — the already-fired timer would otherwise be
+		// installed as the delegate's outstanding handle and pin this closure
+		// (and the *Session it captures) until some later arm displaced it.
+		fired.Store(true)
 		// A fired callback retires its own installed handle so the entry
 		// cannot outlive the arm it belongs to.
 		s.delegateController.retireIdleReleaseTimer(s.owningDelegateID, arm)
@@ -750,7 +764,7 @@ func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 	// replaced, or this arm's own timer when a newer generation already
 	// installed — the stale arm's callback would decline on the generation
 	// guard, leaving the newer generation with no timer at all.
-	if displaced := s.delegateController.swapIdleReleaseTimer(s.owningDelegateID, timer, finalizedGeneration, arm); displaced != nil {
+	if displaced := s.delegateController.swapIdleReleaseTimer(s.owningDelegateID, timer, finalizedGeneration, arm, fired); displaced != nil {
 		displaced.Stop()
 	}
 }
@@ -770,18 +784,29 @@ type idleReleaseTimerHandle struct {
 // Every arm site — the finalize tail and each transient-refusal retry —
 // funnels through this swap, so a delegate holds at most one armed grace
 // timer. Arming and installing are two steps, so an older arm paused between
-// them can resume after a newer generation installed its own: a stale arm
-// must not displace it — the stale callback would decline on the generation
-// guard and leave the newer generation with no grace timer at all — so the
-// stale timer is the one stopped instead.
-func (c *delegateTreeController) swapIdleReleaseTimer(delegateID string, handle clock.Timer, generation, arm uint64) clock.Timer {
+// them can resume after something newer installed its own: a stale arm must
+// not displace it — a newer generation's callback would decline on the
+// generation guard, and a same-generation arm's displacement of a newer retry
+// leaves the delegate with no live window when the displacer has already
+// fired — so the stale timer is the one stopped instead. An arm whose callback
+// already ran never installs, and a closing controller rejects every arm: the
+// close's sweep empties the map once, and a post-sweep install would arm a
+// callback nothing would stop.
+func (c *delegateTreeController) swapIdleReleaseTimer(delegateID string, handle clock.Timer, generation, arm uint64, fired *atomic.Bool) clock.Timer {
 	if c == nil {
 		return nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closing {
+		return handle
+	}
+	if fired != nil && fired.Load() {
+		return handle
+	}
 	installed := c.idleReleaseTimers[delegateID]
-	if installed.timer != nil && installed.generation > generation {
+	if installed.timer != nil && (installed.generation > generation ||
+		(installed.generation == generation && installed.arm > arm)) {
 		return handle
 	}
 	c.idleReleaseTimers[delegateID] = idleReleaseTimerHandle{timer: handle, generation: generation, arm: arm}
