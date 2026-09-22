@@ -473,6 +473,9 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		upgrade: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 			return runUpgrade(args, stdout, stderr)
 		},
+		install: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+			return runInstall(args, stdin, stdout, stderr)
+		},
 		plugin: runPlugin,
 		hub: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// The hub's attach subcommand bridges AppWire over this process's
@@ -512,6 +515,7 @@ type cliCommandRunners struct {
 	launchCheck func([]string, io.Reader, io.Writer, io.Writer) error
 	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
 	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
+	install     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
 	hub         func([]string, io.Reader, io.Writer, io.Writer) error
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
@@ -535,6 +539,8 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener openai", runners.openAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
+	case "install":
+		return true, "evener install", runners.install(args[1:], stdin, stdout, stderr)
 	case "plugin":
 		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	case "hub":

@@ -1,0 +1,99 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"strings"
+	"testing"
+)
+
+func TestRunInstallBuildsSafeSSHCommand(t *testing.T) {
+	old := runRemoteInstallCommand
+	t.Cleanup(func() { runRemoteInstallCommand = old })
+
+	var gotArgs []string
+	var gotScript []byte
+	runRemoteInstallCommand = func(_ context.Context, args []string, stdin io.Reader, stdout, _ io.Writer) error {
+		gotArgs = append([]string(nil), args...)
+		gotScript, _ = io.ReadAll(stdin)
+		_, _ = io.WriteString(stdout, "remote output\n")
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := runInstall([]string{
+		"--version", "snapshot",
+		"--prefix", "/tmp/evener;do-not-run",
+		"user@example.com",
+	}, strings.NewReader(""), &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runInstall() error = %v", err)
+	}
+	if len(gotArgs) != 7 || gotArgs[0] != "-T" || gotArgs[1] != "-o" || gotArgs[2] != "BatchMode=yes" || gotArgs[3] != "-o" || gotArgs[4] != "ConnectTimeout=10" || gotArgs[5] != "user@example.com" {
+		t.Fatalf("SSH args = %#v", gotArgs)
+	}
+	if !strings.Contains(gotArgs[6], "EVENER_INSTALL_VERSION=snapshot") {
+		t.Fatalf("remote command omitted version: %q", gotArgs[5])
+	}
+	if !strings.Contains(gotArgs[6], "PREFIX='/tmp/evener;do-not-run'") {
+		t.Fatalf("remote command did not quote prefix: %q", gotArgs[6])
+	}
+	if strings.Contains(gotArgs[6], "PREFIX=/tmp/evener;do-not-run") {
+		t.Fatalf("remote command leaves prefix injectable: %q", gotArgs[6])
+	}
+	if len(gotScript) == 0 || !bytes.Contains(gotScript, []byte("checksums.txt")) {
+		t.Fatalf("remote installer payload was not streamed: %q", gotScript)
+	}
+	if !strings.Contains(stdout.String(), "Installing Evener on user@example.com") || !strings.Contains(stdout.String(), "remote output") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestDispatchInstallCommand(t *testing.T) {
+	called := false
+	runners := cliCommandRunners{
+		install: func(args []string, _ io.Reader, _, _ io.Writer) error {
+			called = len(args) == 1 && args[0] == "host"
+			return nil
+		},
+	}
+	handled, label, err := dispatchCLICommandWith([]string{"install", "host"}, strings.NewReader(""), io.Discard, io.Discard, runners)
+	if err != nil || !handled || label != "evener install" || !called {
+		t.Fatalf("dispatch install: handled=%v label=%q err=%v called=%v", handled, label, err, called)
+	}
+}
+
+func TestRunInstallRejectsUnsafeTarget(t *testing.T) {
+	old := runRemoteInstallCommand
+	t.Cleanup(func() { runRemoteInstallCommand = old })
+	called := false
+	runRemoteInstallCommand = func(context.Context, []string, io.Reader, io.Writer, io.Writer) error {
+		called = true
+		return nil
+	}
+
+	for _, target := range []string{"", "-oProxyCommand=bad", "user@host name", "user@host\nname"} {
+		err := runInstall([]string{target}, strings.NewReader(""), io.Discard, io.Discard)
+		if err == nil {
+			t.Errorf("runInstall(%q) error = nil, want rejection", target)
+		}
+	}
+	if called {
+		t.Fatal("SSH runner called for an unsafe target")
+	}
+}
+
+func TestRunInstallPropagatesSSHFailure(t *testing.T) {
+	old := runRemoteInstallCommand
+	t.Cleanup(func() { runRemoteInstallCommand = old })
+	runRemoteInstallCommand = func(context.Context, []string, io.Reader, io.Writer, io.Writer) error {
+		return errors.New("exit status 255")
+	}
+
+	err := runInstall([]string{"user@example.com"}, strings.NewReader(""), io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "remote install on user@example.com") {
+		t.Fatalf("runInstall() error = %v, want contextual SSH error", err)
+	}
+}
