@@ -887,7 +887,16 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
         context === undefined
           ? mergePageItem(olderItem, newerItem)
           : reconcileDuplicatesByFields(existing, current, context);
-      if (context) recordMergedToolItem(context, mergedItem, olderItem, newerItem);
+      // The provenance records in LIST order, not freshness order (review
+      // round 21): a side's leaves must read, in the tool fold's reversed
+      // candidate walk, in the same precedence the per-field resolution
+      // used — the later duplicate that won a field is found first.
+      // Freshness order here would leave an older call alias ahead of the
+      // duplicate that won its output, and a result fragment omitting the
+      // field would fold the stale alias's value back in. The fresh/older
+      // side each leaf lands on is the leaf's own, unchanged — only the
+      // walk order within a side moves.
+      if (context) recordMergedToolItem(context, mergedItem, existing, current);
       reconciled.splice(index, 1);
       current = mergedItem;
     }

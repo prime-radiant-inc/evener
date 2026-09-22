@@ -10234,6 +10234,107 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "k", text: "retained b" }),
       ]);
     });
+
+    // Review round 21, provenance order: the per-field reconciliation
+    // keeps the later duplicate's corrected output, but the provenance
+    // recorded the fold in item-level freshness order — the stale alias
+    // ahead of the duplicate that won the field — so the tool-result
+    // fold's reversed candidate walk read the stale source first, and a
+    // result fragment omitting output folded the STALE output back in.
+    // The provenance must record in list order: a side's leaves read, in
+    // the fold's walk, in the same precedence the resolution used.
+    it("a corrected call output survives the result fold after reconciliation", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                // A status-only retained CALL fragment: it supplies a
+                // status but no output of its own.
+                markItemTextOmitted({
+                  id: "item_tool_9",
+                  turnId: "rt",
+                  type: "commandExecution",
+                  callId: "c9",
+                  text: "",
+                  status: "completed",
+                  transcriptKey: "kk",
+                  position: { entry: 50, item: 0 },
+                }),
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page reissues the fragment's keyless alias — carrying the
+      // STALE output — followed by a keyed sibling carrying the
+      // corrected one, and a result fragment for the call that OMITS
+      // output. The reconciliation keeps the corrected output; the
+      // result fold must not read the stale alias first and restore it.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "item_tool_9",
+                  turnId: "pq",
+                  type: "commandExecution",
+                  callId: "c9",
+                  output: "stale output",
+                  exitCode: 1,
+                  status: "failed",
+                  position: { entry: 50, item: 0 },
+                },
+                {
+                  id: "item_tool_8",
+                  turnId: "pq",
+                  type: "commandExecution",
+                  callId: "c9",
+                  output: "corrected output",
+                  exitCode: 0,
+                  status: "completed",
+                  transcriptKey: "kk",
+                  position: { entry: 51, item: 0 },
+                },
+                {
+                  id: "item_tool_result_1",
+                  turnId: "pq",
+                  type: "commandExecution",
+                  callId: "c9",
+                  status: "completed",
+                  position: { entry: 52, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ callId: "c9", output: "corrected output", exitCode: 0 }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
