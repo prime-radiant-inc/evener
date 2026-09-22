@@ -235,7 +235,16 @@ func forwardHostMethod(ctx context.Context, client *appwire.Client, host, method
 // settings pane would render.
 func awaitHostAttached(ctx context.Context, t *testing.T, client *appwire.Client, name string) appwire.HostRow {
 	t.Helper()
-	attachCtx, cancel := context.WithTimeout(ctx, hostAttachTimeout)
+	return awaitHostAttachedWithin(ctx, t, client, name, hostAttachTimeout)
+}
+
+// awaitHostAttachedWithin is awaitHostAttached with the bound left to the
+// caller: the deploy live check's attach carries a cross-compile and push inside
+// the same synchronous RPC, so it needs a longer tripwire than the read-only
+// check's four minutes. The retry and failure semantics are otherwise identical.
+func awaitHostAttachedWithin(ctx context.Context, t *testing.T, client *appwire.Client, name string, timeout time.Duration) appwire.HostRow {
+	t.Helper()
+	attachCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var lastAttachErr error
 	for {
@@ -250,10 +259,10 @@ func awaitHostAttached(ctx context.Context, t *testing.T, client *appwire.Client
 		}
 		if attachCtx.Err() != nil {
 			if rowErr != nil {
-				t.Fatalf("step evener/host/attach: host %q did not report attached within %s and its row could not be read: %v (last attach error: %v)", name, hostAttachTimeout, rowErr, lastAttachErr)
+				t.Fatalf("step evener/host/attach: host %q did not report attached within %s and its row could not be read: %v (last attach error: %v)", name, timeout, rowErr, lastAttachErr)
 			}
 			t.Fatalf("step evener/host/attach: host %q did not report attached within %s: lastAttachError=%q midAttach=%v attached=%v (last attach call error: %v)",
-				name, hostAttachTimeout, row.Host.LastAttachErr, row.Host.MidAttach, row.Host.Attached, lastAttachErr)
+				name, timeout, row.Host.LastAttachErr, row.Host.MidAttach, row.Host.Attached, lastAttachErr)
 		}
 		select {
 		case <-attachCtx.Done():
