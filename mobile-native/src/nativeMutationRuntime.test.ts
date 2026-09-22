@@ -3,7 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ThreadReadResponse } from "@evener/appwire-client";
-import { MutationOutboxSQLite, type MutationOutboxDatabase } from "./mutationOutboxStorage";
+import type { MutationOutboxDatabase } from "./mutationOutboxStorage";
 import {
 	getNativeMutationRuntime,
 	nativeMutationTargetKey,
@@ -221,6 +221,32 @@ test("resume-required reads hold even never-attempted work until a later valid r
 	await runtime.stop();
 });
 
+test("restart-required reads hold even never-attempted work until a later valid read", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// The thread's status carries the restart decision on its own, with no
+	// resumeRequired flag riding along, so only the status branch can hold.
+	const firstLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(
+		await runtime.reconcileAuthoritativeRead(
+			firstLease!,
+			readResponse("ref-1", { status: "restartRequired" }),
+		),
+	).toBe("blocked");
+	expect(client.calls).toHaveLength(0);
+
+	const secondLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(await runtime.reconcileAuthoritativeRead(secondLease!, readResponse("ref-1"))).toBe("reconciled");
+	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	await runtime.stop();
+});
+
 test("a reconnect re-gates a target until its next authoritative read", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {
@@ -285,6 +311,61 @@ test("a blocked outcome invalidates an older pending read lease", async () => {
 	expect(await runtime.reconcileAuthoritativeRead(olderLease!, readResponse("ref-1"))).toBe("stale");
 	await runtime.connectionReady();
 	expect(client.calls).toHaveLength(1);
+	await runtime.stop();
+});
+
+test("a read lease invalidated during the storage await is rejected after the await", async () => {
+	let releaseResponse!: (error: unknown) => void;
+	const pendingResponse = new Promise<never>((_resolve, reject) => {
+		releaseResponse = reject;
+	});
+	let requestStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		requestStarted = resolve;
+	});
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	let calls = 0;
+	client.on("turn/start", (params) => {
+		calls += 1;
+		if (calls === 1) {
+			requestStarted();
+			return pendingResponse as never;
+		}
+		return appliedReceipt(params);
+	});
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const initialLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(initialLease!, readResponse("ref-1"));
+	await started;
+
+	// A second read begins reconciling while its lease is still current; the
+	// in-flight attempt then reports an unknown blocked outcome while that
+	// reconcile is suspended inside its storage await, invalidating the lease
+	// mid-flight.
+	const midAwaitLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	const midAwait = runtime.reconcileAuthoritativeRead(midAwaitLease!, readResponse("ref-1"));
+	releaseResponse(
+		new WireError("journal unavailable", -32014, {
+			evenerErrorInfo: "mutationOutcomeUnknown",
+			clientMutationId: "mutation-1",
+			mutationOutcome: "unknown",
+			retryDisposition: "blocked",
+			cause: "persistenceUnavailable",
+		}),
+	);
+	expect(await midAwait).toBe("stale");
+	expect(client.calls).toHaveLength(1);
+
+	// The fence holds until a later authoritative read, and the retry keeps
+	// the original mutation id.
+	const laterLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(laterLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(2));
+	expect(client.calls[1]?.params).toMatchObject({ clientMutationId: "mutation-1" });
 	await runtime.stop();
 });
 
@@ -464,7 +545,7 @@ test("submit durably records while disconnected and dispatches after readiness",
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => `mutation-${++nextId}`,
 	});
-	const client = new FakeClient("closed");
+	const client = new FakeClient("connecting");
 	runtime.registerTarget("hub-1", "ref-1", client);
 	await runtime.start();
 
@@ -493,8 +574,8 @@ test("cleanup of an old registration cannot remove a replacement for the same ta
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => "mutation-1",
 	});
-	const firstClient = new FakeClient("closed");
-	const replacementClient = new FakeClient("closed");
+	const firstClient = new FakeClient("connecting");
+	const replacementClient = new FakeClient("connecting");
 	const unregisterFirst = runtime.registerTarget("hub-1", "ref-1", firstClient);
 	const unregisterReplacement = runtime.registerTarget(
 		"hub-1",
@@ -528,8 +609,8 @@ test("same raw ref stays isolated by hub across dispatch and restart", async () 
 	const runtime = new NativeMutationRuntime(sharedDatabase, {
 		createMutationId: () => `mutation-${++nextId}`,
 	});
-	const firstClient = new FakeClient("closed");
-	const secondClient = new FakeClient("closed");
+	const firstClient = new FakeClient("connecting");
+	const secondClient = new FakeClient("connecting");
 	runtime.registerTarget("hub-a", "shared-ref", firstClient);
 	runtime.registerTarget("hub-b", "shared-ref", secondClient);
 
@@ -578,8 +659,8 @@ test("a ready target dispatches while another target remains unresolved", async 
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => `mutation-${++nextId}`,
 	});
-	const firstClient = new FakeClient("closed");
-	const secondClient = new FakeClient("closed");
+	const firstClient = new FakeClient("connecting");
+	const secondClient = new FakeClient("connecting");
 	runtime.registerTarget("hub-a", "ref-a", firstClient);
 	runtime.registerTarget("hub-b", "ref-b", secondClient);
 	await runtime.start();
@@ -625,7 +706,7 @@ test("stop fences the next queued send while an in-flight request settles", asyn
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => `mutation-${++nextId}`,
 	});
-	const client = new FakeClient("closed");
+	const client = new FakeClient("connecting");
 	runtime.registerTarget("hub-1", "ref-1", client);
 	let releaseFirst!: () => void;
 	const firstStarted = new Promise<void>((resolve) => {
@@ -663,7 +744,7 @@ test("stop fences the next queued send while an in-flight request settles", asyn
 
 	releaseFirst();
 	await vi.waitFor(async () => {
-		 expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
 	});
 	expect(client.calls).toHaveLength(1);
 	expect(await runtime.storage.getOutbox("mutation-2")).toMatchObject({ state: "submitting" });
@@ -691,7 +772,7 @@ test("an interval retries a ready transport failure with the same mutation id", 
 		},
 		clearInterval: (intervalId) => cleared.push(intervalId),
 	});
-	const client = new FakeClient("closed");
+	const client = new FakeClient("connecting");
 	runtime.registerTarget("hub-1", "ref-1", client);
 	const attempts: string[] = [];
 	let firstAttempt!: () => void;
@@ -745,6 +826,79 @@ test("an interval retries a ready transport failure with the same mutation id", 
 	expect(cleared).toEqual([1, 2]);
 });
 
+test("the storage's cross-store id rejection never fences the runtime's same-id retry", async () => {
+	// The id source is adversarial on purpose: #2043's guard exists for a
+	// generator that repeats an id, and every enqueue below asks for
+	// "mutation-1" until a healthy "mutation-2" proves the runtime survived
+	// the rejections.
+	const ids = ["mutation-1", "mutation-1", "mutation-1", "mutation-2"];
+	let nextId = 0;
+	const intervals: Array<() => void> = [];
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => ids[nextId++]!,
+		setInterval: (callback) => {
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: () => undefined,
+	});
+	const client = new FakeClient("ready");
+	const attempts: string[] = [];
+	let firstAttempt!: () => void;
+	const firstAttemptStarted = new Promise<void>((resolve) => {
+		firstAttempt = resolve;
+	});
+	client.on("turn/start", (params) => {
+		const { clientMutationId } = params as { clientMutationId: string };
+		attempts.push(clientMutationId);
+		if (attempts.length === 1) {
+			firstAttempt();
+			return Promise.reject(new Error("transport timeout")) as never;
+		}
+		return appliedReceipt(params);
+	});
+	await registerAndStart(runtime, client);
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+
+	await runtime.submit(request("send"));
+	await firstAttemptStarted;
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+			state: "submitting",
+			attempted: true,
+		});
+	});
+
+	// A fresh enqueue colliding with the still-active first record is
+	// rejected by the storage's cross-store guard, and its sequence
+	// allocation rolls back with it.
+	await expect(runtime.submit(request("send"))).rejects.toThrow(/already active/);
+
+	// The retry of the active record re-dispatches the stored row: no new
+	// enqueue, so the guard never applies, and the id on the wire repeats.
+	await vi.waitFor(() => {
+		intervals[0]?.();
+		expect(attempts).toEqual(["mutation-1", "mutation-1"]);
+	});
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+	});
+
+	// The applied record now owns its id from the optimistic store, so the
+	// same adversarial id is still rejected cross-store, not just table-local.
+	await expect(runtime.submit(request("send"))).rejects.toThrow(/already active/);
+
+	// The runtime is unharmed: a fresh id enqueues, dispatches, and the
+	// rolled-back allocations left intentSequence gap-free.
+	await runtime.submit(request("send"));
+	await vi.waitFor(() => expect(attempts).toHaveLength(3));
+	expect(attempts[2]).toBe("mutation-2");
+	const settled = await runtime.storage.getOptimistic("mutation-2");
+	expect(settled).toMatchObject({ state: "accepted", intentSequence: 2 });
+	await runtime.stop();
+});
+
 test("submit resolves at the durable enqueue boundary", async () => {
 	let release!: (value: unknown) => void;
 	const pendingResponse = new Promise<unknown>((resolve) => {
@@ -769,10 +923,16 @@ test("submit resolves at the durable enqueue boundary", async () => {
 
 	const submission = runtime.submit(request("send"));
 	await started;
-	const boundary = await Promise.race([
-		submission.then(() => "enqueued" as const),
-		new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 100)),
-	]);
+	// The wire response stays held, so a submit that waited for the outcome
+	// would never settle and this await would hang. Resolving here proves the
+	// durable enqueue boundary alone released submit, while the record is
+	// still in flight with no outcome processed.
+	await submission;
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+		state: "submitting",
+		attempted: true,
+	});
+
 	release({
 		receipt: {
 			clientMutationId: "mutation-1",
@@ -783,10 +943,10 @@ test("submit resolves at the durable enqueue boundary", async () => {
 		},
 		turn: { id: "turn-1" },
 	} as never);
-	await submission;
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+	});
 	await runtime.stop();
-
-	expect(boundary).toBe("enqueued");
 });
 
 test("each enqueue gets a fresh mutation id", async () => {
