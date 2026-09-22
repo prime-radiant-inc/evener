@@ -4855,8 +4855,18 @@ describe("ConversationStore", () => {
     };
     await store.getState().openProjected(service, sink, "ref-1");
 
+    // #1919 follow-up reshape: the fragment is now in-window by construction
+    // — the real service projects a page's turns into display rows, so the
+    // page's fragment items arrive as rows too, keeping the fragment inside
+    // the retained-turn keep-window with its full payload. (The test's
+    // pre-fix shape — payload items with no retained rows at all — is
+    // out-of-window under the retained-turn bound and moved to the
+    // counterpart test below.)
     service.olderItems = {
-      items: [],
+      items: [
+        { kind: "assistant", id: "old-only", markdown: "older-only item", streaming: false, transcriptKey: "old-only" },
+        { kind: "assistant", id: "old-shared", markdown: "older text", streaming: false, transcriptKey: "shared-item" },
+      ],
       turnsPage: turnsPage([
         wireTurnFragment(
           "t-fragment-old",
@@ -4891,6 +4901,12 @@ describe("ConversationStore", () => {
       threadId: "thread-1",
       instanceId: "instance-1",
       usage: null,
+      // The fresh read's own window rows, so its fragment stays in-window
+      // and the page fragment's fallback supply is merged, not trimmed.
+      items: [
+        { kind: "assistant", id: "fresh-shared", markdown: "fresh text", streaming: false, transcriptKey: "shared-item" },
+        { kind: "assistant", id: "fresh-only", markdown: "fresh-only item", streaming: false, transcriptKey: "fresh-only" },
+      ],
       turns: [
         {
           id: "t-fragment-fresh",
@@ -4940,6 +4956,134 @@ describe("ConversationStore", () => {
     expect(conv.olderCursor).toBe("cursor-2");
     expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
   });
+
+    // #1919 follow-up counterpart: the same page fragment, out-of-window —
+    // its payload items back no retained display row. The bound's contract
+    // there: the page turn survives as compact identity + usage (so
+    // sessionTokens keeps covering everything actually loaded) but supplies
+    // nothing — no fallback items — and claims no transcript overlap, so
+    // the fresh read's own wire cursor stands.
+    it("out-of-window page fragment: the turn survives compact with its usage but supplies no items or cursor", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const opened = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        turns: [{ id: "t-latest", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page's fragment carries payloads, but none of its items project
+      // to a retained display row — the projector-filtered/evicted class.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([
+          wireTurnFragment(
+            "t-fragment-old",
+            [
+              {
+                id: "old-only",
+                transcriptKey: "old-only",
+                turnId: "t-fragment-old",
+                type: "agentMessage",
+                text: "older-only item",
+                position: { entry: 1, item: 0 },
+                status: "completed",
+              },
+              {
+                id: "old-alt",
+                transcriptKey: "old-alt",
+                turnId: "t-fragment-old",
+                type: "agentMessage",
+                text: "older text",
+                position: { entry: 2, item: 0 },
+                status: "completed",
+              },
+            ],
+            { inputTokens: 500, outputTokens: 20 },
+          ),
+        ], "cursor-2"),
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      const fresh = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        usage: null,
+        items: [
+          { kind: "assistant", id: "fresh-a", markdown: "fresh a", streaming: false, transcriptKey: "fresh-a" },
+          { kind: "assistant", id: "fresh-b", markdown: "fresh b", streaming: false, transcriptKey: "fresh-b" },
+        ],
+        turns: [
+          {
+            id: "t-fragment-fresh",
+            status: "completed",
+            items: [
+              {
+                id: "fresh-a",
+                transcriptKey: "fresh-a",
+                turnId: "t-fragment-fresh",
+                type: "agentMessage",
+                text: "fresh a",
+                position: { entry: 3, item: 0 },
+                status: "completed",
+              },
+              {
+                id: "fresh-b",
+                transcriptKey: "fresh-b",
+                turnId: "t-fragment-fresh",
+                type: "agentMessage",
+                text: "fresh b",
+                position: { entry: 4, item: 0 },
+                status: "completed",
+              },
+            ],
+          },
+          { id: "t-latest", status: "completed", items: [], usage: { inputTokens: 60, outputTokens: 40 } },
+        ],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: fresh,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().rehydrate(service, sink);
+
+      const conv = store.getState().conversation!;
+      const compact = conv.turns.find((turn) => turn.id === "t-fragment-old");
+      // The page turn survives the bound as compact identity + usage...
+      expect(compact?.items).toEqual([]);
+      expect(compact?.usage).toEqual({ inputTokens: 500, outputTokens: 20 });
+      // ...and supplies nothing: the fresh fragment keeps only its own
+      // items, with no "old-only" fallback folded in.
+      const merged = conv.turns.find((turn) => turn.id === "t-fragment-fresh");
+      expect(merged?.items.map((item) => item.transcriptKey)).toEqual(["fresh-a", "fresh-b"]);
+      // A trimmed turn claims no transcript overlap, so the fresh read's
+      // own wire cursor stands.
+      expect(conv.olderCursor).toBe("cursor-1");
+      // Accounting completeness: the compact turn's usage still counts.
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
+
+      // A second rehydrate still preserves the compact page turn: its id
+      // left pageOwnedTurnIds with the same bound, so preservation now runs
+      // through the compact-survivor side of the gate.
+      await store.getState().rehydrate(service, sink);
+      const conv2 = store.getState().conversation!;
+      const compact2 = conv2.turns.find((turn) => turn.id === "t-fragment-old");
+      expect(compact2?.items).toEqual([]);
+      expect(compact2?.usage).toEqual({ inputTokens: 500, outputTokens: 20 });
+      expect(sessionTokens(conv2)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
+    });
 
   describe("D18 B3 round 5: conversation's wire cursor and turn ownership never derive from the store's capped cursor or item eviction", () => {
     it("initial: conversation.olderCursor and turns come straight from the hydrated model", async () => {
@@ -5062,6 +5206,12 @@ describe("ConversationStore", () => {
     // in hand contributes nothing to pageOwnedIds, but its turn is real and
     // must still survive - which is exactly why pageOwnedTurnIds is tracked
     // separately from pageOwnedIds.
+    //
+    // #1919 follow-up: the page turn now also carries payload items that
+    // back no retained row (the projector-filtered class), so the test pins
+    // the retained-turn bound's other half too: the turn and its usage
+    // survive the rehydrate, with the payloads bounded to the compact
+    // identity + usage shape.
     it("evicted/filtered page: a turn survives a rehydrate even when none of that page's items did", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
@@ -5083,10 +5233,38 @@ describe("ConversationStore", () => {
 
       // The older page's only item duplicates one already in hand (F10's own
       // dedupe drops it entirely - pageOwnedIds gets nothing), but its turn
-      // is genuinely new.
+      // is genuinely new, and its payload items project to no retained row.
       service.olderItems = {
         items: [{ kind: "user", id: "existing", text: "existing" }],
-        turnsPage: turnsPage([wireTurn("t1", 500, 20)], "cursor-2"),
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "t1",
+              [
+                {
+                  id: "t1-gone-0",
+                  transcriptKey: "t1-gone-0",
+                  turnId: "t1",
+                  type: "agentMessage",
+                  text: "filtered payload 0",
+                  position: { entry: 5, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "t1-gone-1",
+                  transcriptKey: "t1-gone-1",
+                  turnId: "t1",
+                  type: "agentMessage",
+                  text: "filtered payload 1",
+                  position: { entry: 6, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "cursor-2",
+        ),
         nextCursor: "cursor-2",
       };
       await store.getState().loadOlder(service);
@@ -5109,6 +5287,12 @@ describe("ConversationStore", () => {
       const conv = store.getState().conversation!;
       // Order is not asserted (see the "rehydrate preserves..." test above).
       expect(conv.turns.map((t) => t.id).sort()).toEqual(["t1", "t2"]);
+      // The turn and its usage survive... with the payloads bounded: none of
+      // its items back a retained row, so the retained-turn bound trims them
+      // to the compact identity + usage shape.
+      const surviving = conv.turns.find((turn) => turn.id === "t1")!;
+      expect(surviving.items).toEqual([]);
+      expect(surviving.usage).toEqual({ inputTokens: 500, outputTokens: 20 });
       expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
     });
   });
@@ -5294,6 +5478,154 @@ describe("ConversationStore", () => {
       // The store's paging cursor follows the fresh signal — a failed page
       // must not pin the stale pre-race cursor through the rehydrate.
       expect(store.getState().olderCursor).toBeNull();
+    });
+  });
+
+  // #1919 follow-up (retained-turn bound): loadOlder's page turns used to be
+  // exempt from every retention bound — once any older page loaded, the store
+  // retained every page turn's FULL item payloads for the conversation's
+  // lifetime behind the 500-row RETAINED_ITEM_CAP, so memory and the
+  // per-refresh merge/sum cost grew with the whole loaded transcript. The
+  // bound: a retained turn keeps full payloads only while it is inside the
+  // keep-window (its items intersect the retained display rows); outside it,
+  // the turn survives as compact identity + usage so sessionTokens' turn-summed
+  // fallback still covers everything actually loaded.
+  describe("#1919 follow-up: retained page-turn payloads are bounded to the display keep-window", () => {
+    it("repeated loadOlder + rehydrate with display-row eviction keeps retained turn payloads bounded while every loaded turn's usage still counts", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+
+      const ROW_PAGES = 12;
+      const ROWS_PER_PAGE = 8;
+      const PAYLOAD_ITEMS_PER_TURN = 20;
+      const PAGES = 40;
+
+      // A live conversation's fresh read window: `rows` display rows plus one
+      // live turn's usage. The fresh window GROWS across the loop the way a
+      // live conversation does, so the 500-row cap evicts the oldest retained
+      // rows — the early pages' — exactly as live churn does on device.
+      const freshConversation = (rows: number) =>
+        makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: rows }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 5, outputTokens: 1 } },
+          ],
+          olderCursor: "wire",
+        });
+      const freshRead = (rows: number) => ({
+        conversation: freshConversation(rows),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "wire",
+      });
+
+      service.readProjectionResult = freshRead(40);
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Each page turn carries a usage stamp plus a heavy item payload: items
+      // that project onto the page's display rows (while those rows are
+      // retained) and payload-only items the projector filters or the dedupe
+      // drops — the pinned evicted/filtered-page shapes. Pages past
+      // ROW_PAGES carry no display rows at all: their turns are the
+      // evicted/filtered class, and on current main they are exactly the
+      // payloads that accumulate without bound.
+      const pageTurn = (i: number): Turn =>
+        wireTurnFragment(
+          `pt-${i}`,
+          [
+            ...(i <= ROW_PAGES
+              ? Array.from({ length: ROWS_PER_PAGE }, (_, j) => ({
+                  id: `w-${i}-${j}`,
+                  transcriptKey: `w-${i}-${j}`,
+                  turnId: `pt-${i}`,
+                  type: "agentMessage",
+                  text: `page ${i} row item ${j}`,
+                  position: { entry: 1000 - i * 16 - j, item: 0 },
+                  status: "completed",
+                }))
+              : []),
+            ...Array.from(
+              { length: PAYLOAD_ITEMS_PER_TURN - (i <= ROW_PAGES ? ROWS_PER_PAGE : 0) },
+              (_, j) => ({
+                id: `x-${i}-${j}`,
+                transcriptKey: `x-${i}-${j}`,
+                turnId: `pt-${i}`,
+                type: "agentMessage",
+                text: `page ${i} payload-only item ${j}`,
+                position: { entry: 2000 - i * 16 - j, item: 0 },
+                status: "completed",
+              }),
+            ),
+          ],
+          { inputTokens: 100, outputTokens: 10 },
+        );
+
+      for (let i = 1; i <= PAGES; i++) {
+        service.olderItems = {
+          items:
+            i <= ROW_PAGES
+              ? Array.from({ length: ROWS_PER_PAGE }, (_, j) => ({
+                  kind: "user" as const,
+                  id: `w-${i}-${j}`,
+                  text: `w-${i}-${j}`,
+                }))
+              : [],
+          turnsPage: turnsPage([pageTurn(i)], `cursor-${i}`),
+          nextCursor: `cursor-${i}`,
+        };
+        const result = await store.getState().loadOlder(service);
+        expect(result.status).toBe("loaded");
+
+        // The fresh window grows 40 rows per refresh once the row-carrying
+        // pages are done, so the cap evicts the early pages' rows (rehydrate
+        // 22 evicts pt-1's, rehydrate 24 evicts every page row) while the
+        // row-less pages keep paging — merged input never overflows the cap,
+        // so F8's honest stop never fires and the loop keeps loading.
+        const freshRows = i <= ROW_PAGES ? 40 : 40 + 40 * (i - ROW_PAGES);
+        service.readProjectionResult = freshRead(freshRows);
+        await store.getState().rehydrate(service, sink);
+      }
+
+      const conv = store.getState().conversation!;
+      const retainedPayloadItems = conv.turns.reduce(
+        (total, turn) => total + turn.items.length,
+        0,
+      );
+      // The bound: only turns whose items intersect the retained display
+      // window may keep payloads. By the final iteration every page row has
+      // been evicted and every row-less page turn is outside the window, so
+      // the retained payload set must be well under the worst in-window
+      // shape (ROW_PAGES turns x 20 items) — on the unbounded main it is the
+      // whole loaded transcript (PAGES turns x 20 items = 800).
+      expect(retainedPayloadItems).toBeLessThanOrEqual(ROW_PAGES * PAYLOAD_ITEMS_PER_TURN);
+      // Accounting completeness is the bound's other half: EVERY loaded turn
+      // keeps identity... (order is not asserted; the merge places freely)
+      expect(
+        conv.turns.some((turn) => turn.id === `pt-${PAGES}`),
+      ).toBe(true);
+      expect(new Set(conv.turns.map((turn) => turn.id)).size).toBe(PAGES + 1);
+      // ...and usage, so the turn-summed fallback still covers everything
+      // actually loaded: PAGES page turns plus the live turn.
+      expect(sessionTokens(conv)).toEqual({
+        inputTokens: 5 + 100 * PAGES,
+        outputTokens: 1 + 10 * PAGES,
+        scope: "loaded",
+      });
+      // The first page's rows were evicted by the cap, so its turn is the
+      // trimmed shape: identity + usage survive, display-fallback payloads
+      // do not.
+      const evictedPageTurn = conv.turns.find((turn) => turn.id === "pt-1")!;
+      expect(evictedPageTurn.items).toEqual([]);
+      expect(evictedPageTurn.usage).toEqual({ inputTokens: 100, outputTokens: 10 });
+      // The display window itself stayed capped through the churn.
+      expect(conv.items.length).toBeLessThanOrEqual(500);
     });
   });
 

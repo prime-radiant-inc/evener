@@ -38,6 +38,7 @@ import type {
   ItemModel,
   MutationReceipt,
   ThreadItem,
+  TurnModel,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -861,14 +862,32 @@ export function createConversationStore() {
   // on every conversation transition (open/close/reset/openProjected).
   const pageOwnedIds = new Set<string>();
   // Track page-owned turn IDs separately from pageOwnedIds above. Turns are
-  // never capped or evicted the way display items are (a
-  // page's items can be entirely deduped away or trimmed by the item cap
-  // while its turns — the only source of a usage total when there is no
-  // thread-level cumulative usage — still belong in conversation.turns), so
-  // whether to preserve older turns on a rehydrate must not depend on
-  // whether any of that page's ROWS survived. Never pruned (turns are never
-  // evicted); cleared on every conversation transition, same as pageOwnedIds.
+  // never EVICTED the way display items are (a page's items can be entirely
+  // deduped away or trimmed by the item cap while its turns — the only source
+  // of a usage total when there is no thread-level cumulative usage — still
+  // belong in conversation.turns), so whether to preserve older turns on a
+  // rehydrate must not depend on whether any of that page's ROWS survived.
+  //
+  // #1919 follow-up (retained-turn bound): turns are no longer exempt from
+  // retention bounds — the old "never capped" exemption retained every
+  // page turn's FULL item payloads for the conversation's lifetime, so
+  // memory and per-refresh merge/sum cost grew with the whole loaded
+  // transcript. A retained turn now keeps its full payloads only inside the
+  // keep-window: while any of its items intersects the retained display
+  // rows (the 500-row cap's final set — the same boundary pruneEvictedIds
+  // settles item ownership against). Outside that window, boundRetainedTurns
+  // trims the turn to compact identity + usage: every loaded turn's id and
+  // usage must survive for sessionTokens' turn-summed fallback to keep
+  // covering what was actually loaded, so ONLY the display-fallback
+  // payloads (text, output, images) are dropped. pageOwnedTurnIds is pruned
+  // with the same bound by that pass — it holds only the page turns still
+  // inside the window. A page turn whose payloads were trimmed moves to
+  // pageOwnedCompactTurnIds below: the compact identity+usage survivors
+  // still gate rehydrate preservation, because their usage is accounting
+  // data, not display data. Both sets clear together on every conversation
+  // transition, same as pageOwnedIds.
   const pageOwnedTurnIds = new Set<string>();
+  const pageOwnedCompactTurnIds = new Set<string>();
   // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
   // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
   // last accepted live notification for that item. liveOwnerRev is a global
@@ -1234,6 +1253,45 @@ export function createConversationStore() {
     }
   }
 
+  // #1919 follow-up: bound retained page-turn data. The keep-window is the
+  // retained display set itself — the final capped rows at the publish site
+  // (loadOlder's pageMerged, rehydrate's rehydrateCapped). A turn whose items
+  // intersect it keeps full payloads: those are exactly the turns a fresh
+  // reread's window can fragment-merge against, so trimming them would
+  // change mergeTurnHistory's fresh-wins/older-supplies behavior. A turn
+  // outside the window can no longer display anything or supply anything the
+  // window needs, so only its identity + usage metadata survive. The pass
+  // also settles pageOwnedTurnIds with the same bound: a page turn leaving
+  // the window moves to pageOwnedCompactTurnIds, which preserveTurnHistory
+  // reads together with pageOwnedTurnIds so the compact survivors still cross
+  // rehydrates (accounting completeness).
+  function boundRetainedTurns(
+    turns: TurnModel[],
+    retainedItems: MobileTimelineItem[],
+  ): TurnModel[] {
+    const retainedIdentities = new Set(
+      retainedItems.flatMap((item) => [...timelineIdentities(item)]),
+    );
+    let trimmed = false;
+    const bounded = turns.map((turn) => {
+      if (turn.items.length === 0) return turn;
+      // Item identity is the package's own rule (itemIdentityMatches:
+      // transcriptKey when both sides carry one, else id) — the same rule
+      // mergeTurnHistory matches fragments by, so a retained row keeps the
+      // turn that could supply it alive, clustered members included.
+      const inWindow = turn.items.some((item) =>
+        retainedIdentities.has(item.transcriptKey ?? item.id),
+      );
+      if (inWindow) return turn;
+      trimmed = true;
+      if (pageOwnedTurnIds.delete(turn.id)) {
+        pageOwnedCompactTurnIds.add(turn.id);
+      }
+      return { ...turn, items: [] };
+    });
+    return trimmed ? bounded : turns;
+  }
+
   return create<LiveConversationState>((rawSet, get) => {
     // R1: Wrap set so any write to pendingMutation or error increments the
     // corresponding monotonic revision counter — even ABA (same value). This
@@ -1281,6 +1339,7 @@ export function createConversationStore() {
         trailingReread = null;
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
+        pageOwnedCompactTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         set({
@@ -1350,6 +1409,7 @@ export function createConversationStore() {
         trailingReread = null;
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
+        pageOwnedCompactTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -1696,9 +1756,12 @@ export function createConversationStore() {
           // item ownership — a page whose items
           // were entirely deduped or evicted still owns turns that must not
           // be dropped, since they may be the only usage data a session
-          // without a thread-level cumulative total has.
+          // without a thread-level cumulative total has. That stays true
+          // after the retained-turn bound: a trimmed turn is still owned
+          // page history — its id has only moved to the compact set.
           const preserveTurnHistory =
-            sameInstance && pageOwnedTurnIds.size > 0;
+            sameInstance &&
+            (pageOwnedTurnIds.size > 0 || pageOwnedCompactTurnIds.size > 0);
           // Superseded: reread contains ID but current live revision > entry.
           // Preserve the current (live-updated) version in the reread position.
           const supersededIds = new Set<string>();
@@ -1900,10 +1963,17 @@ export function createConversationStore() {
             if (history.olderCoverage && history.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
+            // #1919 follow-up: bound the merged result AFTER the merge, so
+            // turns inside the keep-window keep everything the older
+            // fragments supplied, and only out-of-window payloads trim. The
+            // final retained rows (rehydrateCapped) are the window; the pass
+            // settles page turn ownership with the same bound.
+            mergedTurns = boundRetainedTurns(mergedTurns, rehydrateCapped);
           }
           if (replacesInstance) {
             pageOwnedIds.clear();
             pageOwnedTurnIds.clear();
+            pageOwnedCompactTurnIds.clear();
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
@@ -2099,13 +2169,18 @@ export function createConversationStore() {
             // (item IDs) below — a turn survives here even
             // when every one of its display rows is deduped away or evicted.
             for (const turn of result.turnsPage?.data ?? []) pageOwnedTurnIds.add(turn.id);
+            // #1919 follow-up: bound the retained turn payloads against the
+            // final retained rows (pageMerged), after the merge — the pass
+            // prunes pageOwnedTurnIds with the same bound, moving a page turn
+            // whose payloads left the keep-window to the compact set.
+            const boundedTurns = boundRetainedTurns(mergedTurns, pageMerged);
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
               // never the capped nextCursor above.
               // atCap only stops the STORE's own paging honestly (F8); it says
               // nothing about whether the daemon actually has more history, so
               // sessionTokens must not read it as "this is the whole session".
-              conversation: { ...currentConv, items: merged, turns: mergedTurns, olderCursor: result.nextCursor },
+              conversation: { ...currentConv, items: merged, turns: boundedTurns, olderCursor: result.nextCursor },
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false
@@ -2510,6 +2585,7 @@ export function createConversationStore() {
         trailingReread = null;
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
+        pageOwnedCompactTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
@@ -3386,6 +3462,7 @@ export function createConversationStore() {
         trailingReread = null;
         pageOwnedIds.clear();
         pageOwnedTurnIds.clear();
+        pageOwnedCompactTurnIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
