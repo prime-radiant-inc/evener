@@ -1096,21 +1096,37 @@ export interface TurnHistoryMergeResult {
   transcriptOverlap: boolean;
 }
 
-// The turn-level fragment membership of a turn-history merge: for each
-// returned turn id, the ids of every OLDER input turn that coalesced into
-// it. Coalescing is transitive — turnsMatch chains through shared item
-// identities, and mergePageItems folds item aliases into a final identity
-// neither original carried — so an older turn's content can land in an
-// output turn whose items match none of the older turn's identities.
-// Membership, not final-identity matching, is the authoritative answer to
-// "which returned turn carries this input turn's content" (the mobile
-// store's compact-turn ownership transfer reads it exactly that way). A
-// fold's output id can be absent from turns — the fold drops a group turn
-// it emptied of removable results, and a merge whose older side contributed
-// nothing returns the newer side unchanged — so a caller must treat a fold
-// whose output turn is missing as having no carrier.
+// The merge's own fragment membership, turn-level and item-level, so a
+// caller can follow content to where the merge actually put it:
+// - olderTurnFolds / newerTurnFolds map each returned turn id to the ids of
+//   that side's input turns that coalesced into it. Coalescing is
+//   transitive — turnsMatch chains through shared item identities, and
+//   mergePageItems folds item aliases into a final identity neither
+//   original carried — so an input turn's content can land in an output
+//   turn whose items match none of its identities, and only the LAST
+//   fragment of a group survives under its own id (a page fragment can
+//   bridge two turns of the same side, so neither of the two survives
+//   under its own). Membership, not final-identity matching, is the
+//   authoritative answer to "which returned turn carries this input turn's
+//   content" (the mobile store's compact-turn ownership transfer reads it
+//   exactly that way, older side at rehydrate and newer side at loadOlder).
+//   A fold's output id can be absent from turns — the fold drops a group
+//   turn it emptied of removable results, and a merge whose older side
+//   contributed nothing returns the newer side unchanged — so a caller
+//   must treat a fold whose output turn is missing as having no carrier.
+// - itemFoldSources names, for every item the merge BUILT through an
+//   identity-match fold, the original input items it combined (itself for
+//   items no fold touched). A merged item can settle on an identity one of
+//   its inputs never carried, so participation — which inputs folded into
+//   an item — is the authoritative test of what it descends from, not the
+//   final identity (the strip pass of the mobile store's retained-turn
+//   bound reads it exactly that way). The tool-result fold records no
+//   membership: it rewrites calls in place from candidates by callId, which
+//   is a different mechanism with its own participation rule.
 export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   olderTurnFolds: ReadonlyMap<string, readonly string[]>;
+  newerTurnFolds: ReadonlyMap<string, readonly string[]>;
+  itemFoldSources: (item: ItemModel) => readonly ItemModel[];
 }
 
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
@@ -1470,15 +1486,26 @@ function mergeTurnHistoryWithContext(
 ): TurnHistoryFoldDetail {
   const groups = coalesceTurnFragments(older, newer, context);
   const olderTurnFolds = new Map<string, readonly string[]>();
+  const newerTurnFolds = new Map<string, readonly string[]>();
   for (const group of groups) {
-    if (group.olderIndexes.length === 0) continue;
-    olderTurnFolds.set(
-      group.turn.id,
-      group.olderIndexes.flatMap((index): string[] => {
-        const id = older[index]?.id;
-        return id === undefined ? [] : [id];
-      }),
-    );
+    if (group.olderIndexes.length > 0) {
+      olderTurnFolds.set(
+        group.turn.id,
+        group.olderIndexes.flatMap((index): string[] => {
+          const id = older[index]?.id;
+          return id === undefined ? [] : [id];
+        }),
+      );
+    }
+    if (group.freshIndexes.length > 0) {
+      newerTurnFolds.set(
+        group.turn.id,
+        group.freshIndexes.flatMap((index): string[] => {
+          const id = newer[index]?.id;
+          return id === undefined ? [] : [id];
+        }),
+      );
+    }
   }
   let olderContributed = false;
   let olderCoverage = false;
@@ -1529,6 +1556,8 @@ function mergeTurnHistoryWithContext(
     olderCoverage,
     transcriptOverlap,
     olderTurnFolds,
+    newerTurnFolds,
+    itemFoldSources: itemFoldSourcesOf(context),
   };
 }
 
@@ -1544,7 +1573,34 @@ export function mergeTurnHistoryWithFolds(older: TurnModel[], newer: TurnModel[]
   return mergeTurnHistoryWithContext(older, newer, createToolItemMergeContext(newer, older));
 }
 
-export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+// The item-level view of the merge membership: the original input items a
+// merged item combined, itself for untouched items. Without a context no
+// fold recorded membership, so every item vouches only for itself.
+function itemFoldSourcesOf(context?: ToolItemMergeContext): (item: ItemModel) => readonly ItemModel[] {
+  return context === undefined
+    ? (item) => [item]
+    : (item) => {
+        const provenance = context.provenance.get(item);
+        if (provenance === undefined) return [item];
+        return [...membershipLeaves(provenance.older), ...membershipLeaves(provenance.fresh)];
+      };
+}
+
+// The older-page merge plus its own fragment membership, for callers that
+// must follow content through it (the mobile store's retained-turn bound:
+// the strip pass reads itemFoldSources, the compact-turn ownership transfer
+// reads newerTurnFolds — the retained side is the merge's "newer" input
+// here, and a page fragment can bridge two retained turns so only the
+// group's last fragment keeps its id). olderTurns are the hydrated page
+// inputs the membership refers to, so a caller can classify leaves by
+// reference against its own real-source set.
+export interface OlderItemPageMerge {
+  model: ThreadModel;
+  folds: TurnHistoryFoldDetail;
+  olderTurns: readonly TurnModel[];
+}
+
+export function mergeOlderItemPageWithFolds(model: ThreadModel, resp: ThreadTurnsListResponse): OlderItemPageMerge {
   // The page response carries no ref of its own (ThreadTurnsListResponse is
   // bare turns); the model it merges into already knows the serving session,
   // carried from hydrate on model.imageSessionId. A legacy model hydrated
@@ -1565,10 +1621,21 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
       : merged.turns;
 
   return {
-    ...model,
-    turns,
-    olderCursor: resp.nextCursor,
+    model: {
+      ...model,
+      turns,
+      olderCursor: resp.nextCursor,
+    },
+    // The no-op branch re-coalesces the same inputs under the same context,
+    // so the membership the first pass recorded still names the inputs the
+    // returned items fold from.
+    folds: { ...merged, turns },
+    olderTurns,
   };
+}
+
+export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  return mergeOlderItemPageWithFolds(model, resp).model;
 }
 
 // Removes one pending escalation by id, returning the same reference when the

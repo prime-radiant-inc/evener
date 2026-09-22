@@ -28,7 +28,7 @@ import {
   itemIdentityMatches,
   joinWarningParts,
   markItemTextOmitted,
-  mergeOlderItemPage,
+  mergeOlderItemPageWithFolds,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
@@ -1489,6 +1489,27 @@ export function createConversationStore() {
   // call with the same callId disqualifies it, because calls survive the
   // fold, the fold enriches that call with the same fields, and keeping the
   // host beside it would duplicate content the real call already carries.
+  //
+  // Review round 9, alias chains: a real page item can fold THROUGH
+  // remembered skeletons and settle on an identity no real source carries
+  // (a compact turn remembering two id aliases of one item, then a page
+  // supplying the item keyless under the first alias's bare id — the merge
+  // folds the real text through both skeletons and lands on the second
+  // alias's identity). The page item itself is consumed by the fold, so the
+  // final identity is the only handle the content has — deleting it lost
+  // the restored text outright. The merge's own item membership says which
+  // inputs folded into an item: it survives whenever one of them is a real
+  // source, by reference. Membership runs the OTHER way too — a fold whose
+  // inputs are all remembered skeletons (the round 6-7 placeholders) still
+  // has no real source in it and still strips.
+  function descendsFromRealSource(
+    item: ItemModel,
+    itemFoldSources: ((item: ItemModel) => readonly ItemModel[]) | undefined,
+    realSourceRefs: ReadonlySet<unknown>,
+  ): boolean {
+    if (itemFoldSources === undefined) return false;
+    return itemFoldSources(item).some((source) => realSourceRefs.has(source));
+  }
   function hostsRealToolResultFold(
     item: { id: string; callId?: string },
     realResultCallIds: ReadonlySet<string>,
@@ -1505,9 +1526,11 @@ export function createConversationStore() {
     turns: TurnModel[],
     injected: ItemModel[],
     realSources: ReadonlyArray<{ id: string; transcriptKey?: string; callId?: string }>,
+    itemFoldSources?: (item: ItemModel) => readonly ItemModel[],
   ): TurnModel[] {
     if (injected.length === 0) return turns;
     const injectedRefs = new Set(injected);
+    const realSourceRefs: ReadonlySet<unknown> = new Set(realSources);
     const realIdentities = realIdentityIndexOf(realSources);
     const realResultCallIds = new Set<string>();
     const realCallCallIds = new Set<string>();
@@ -1522,7 +1545,8 @@ export function createConversationStore() {
         (item) =>
           !injectedRefs.has(item) &&
           (itemIsRealSomewhere(item, realIdentities) ||
-            hostsRealToolResultFold(item, realResultCallIds, realCallCallIds)),
+            hostsRealToolResultFold(item, realResultCallIds, realCallCallIds) ||
+            descendsFromRealSource(item, itemFoldSources, realSourceRefs)),
       );
       if (kept.length === turn.items.length) return turn;
       changed = true;
@@ -1531,13 +1555,13 @@ export function createConversationStore() {
     return changed ? stripped : turns;
   }
 
-  // After a rehydrate merge, a compact turn may have folded away entirely
-  // (its skeletons matched a fresh fragment under a different id, and the
-  // fresh side won the fold). Its remembered identities and its page
-  // ownership move to the surviving turn that carries its content, so a
-  // future re-issue still folds and the preservation gate still sees the
-  // page history. At loadOlder the compact turn is the newer merge input, so
-  // its own id always survives the fold and nothing moves.
+  // After a merge, a compact turn may have folded away entirely — its
+  // skeletons matched a fresh fragment under a different id at rehydrate,
+  // or at loadOlder a page fragment bridged it into another retained turn,
+  // and the group's last fragment won the id. Its remembered identities and
+  // its page ownership move to the surviving turn that carries its content,
+  // so a future re-issue still folds and the preservation gate still sees
+  // the page history.
   function transferFoldedCompactedEntries(
     after: TurnModel[],
     folds?: ReadonlyMap<string, readonly string[]>,
@@ -2351,6 +2375,7 @@ export function createConversationStore() {
               mergedTurns,
               injectedFresh.injected,
               rehydrateRealSources,
+              history.itemFoldSources,
             );
             transferFoldedCompactedEntries(mergedTurns, history.olderTurnFolds);
             // #1919 follow-up: bound the merged result AFTER the merge, so
@@ -2577,27 +2602,35 @@ export function createConversationStore() {
               injectedPage.injected.length > 0
                 ? { ...currentConv, turns: injectedPage.turns }
                 : currentConv;
-            const mergedTurns = result.turnsPage
-              ? mergeOlderItemPage(mergeConv, result.turnsPage).turns
-              : currentConv.turns;
+            const pageMerge = result.turnsPage
+              ? mergeOlderItemPageWithFolds(mergeConv, result.turnsPage)
+              : null;
+            const mergedTurns = pageMerge ? pageMerge.model.turns : currentConv.turns;
             // The real sources for the strip pass: every item the retained
             // side held before the injection plus every item the page
-            // carries. An item matching none of them by the package's rule
-            // can only be remembered memory — a skeleton the merge left
-            // behind or a fold of skeletons alone (review rounds 6-7) —
-            // never content. Skeletons carry the reducer's omitted-text
+            // carries — the page ones read off the merge's own hydrated
+            // inputs, which is what the item membership refers to. An item
+            // matching none of them by the package's rule can only be
+            // remembered memory — a skeleton the merge left behind or a
+            // fold of skeletons alone (review rounds 6-7) — never content,
+            // unless the merge's item membership says a real source folded
+            // into it (round 9). Skeletons carry the reducer's omitted-text
             // semantics, so a fold with a page item keeps the page's text
             // natively; there is nothing to repair post-merge.
             const pageRealSources = [
               ...currentConv.turns.flatMap((turn) => turn.items),
-              ...(result.turnsPage?.data ?? []).flatMap((turn) => turn.items ?? []),
+              ...(pageMerge?.olderTurns ?? []).flatMap((turn) => turn.items),
             ];
             const strippedPageTurns = stripInjectedSkeletons(
               mergedTurns,
               injectedPage.injected,
               pageRealSources,
+              pageMerge?.folds.itemFoldSources,
             );
-            transferFoldedCompactedEntries(strippedPageTurns);
+            // The compact turns are the merge's NEWER (retained) side here;
+            // the retained-side folds name the carrier a bridged compact
+            // turn's content landed in.
+            transferFoldedCompactedEntries(strippedPageTurns, pageMerge?.folds.newerTurnFolds);
             // #1919 follow-up: bound the retained turn payloads against the
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn

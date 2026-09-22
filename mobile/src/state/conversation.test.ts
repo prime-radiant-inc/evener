@@ -8253,6 +8253,325 @@ describe("ConversationStore", () => {
         scope: "session",
       });
     });
+
+    // Review round 9, alias chains through the strip: a compact turn can
+    // remember TWO id aliases of one persisted item (restored under a
+    // different id, compacted again). When a later page supplies the item
+    // KEYLESS under the first alias's bare id, the merge folds the real page
+    // item through BOTH remembered skeletons and the merged item settles on
+    // the SECOND alias's identity — carried by no real source under the
+    // strip's exact rule. The restored text used to die with it: the page
+    // item itself was consumed by the fold. The strip must track real-source
+    // participation through the item merges, not reconstruct it from final
+    // identities.
+    it("a page's restored text folded through remembered aliases survives the strip", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering {id fa, transcriptKey kk}.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "fa",
+                  transcriptKey: "kk",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // The fresh read restores kk under a DIFFERENT id, in window: the
+      // injected merge folds the remembered alias into it and (with the
+      // turn folded away) transfers the memory to the carrier.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "fb",
+                  transcriptKey: "kk",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "alias restored",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "pt")).toBe(false);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kk", text: "alias restored" }),
+      ]);
+
+      // The window moves on without the kk row: the carrier compacts again,
+      // and its memory now remembers BOTH id aliases of kk.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([]);
+
+      // A page now supplies the item KEYLESS under fa's bare id. Both
+      // remembered aliases are injected and the merge folds the real page
+      // item through them, settling on fb's identity — the kk row keeps the
+      // turn in window, so the restored text must survive the strip.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "fa",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "restored fa",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const folded = store.getState().conversation?.turns.find((t) => t.id === "rt")?.items ?? [];
+      expect(folded).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "restored fa" }),
+      ]);
+    });
+
+    // Review round 9, pagination bridges: a loadOlder page can bridge a
+    // compact turn into ANOTHER retained turn through a shared transcript
+    // key — the page item identity-matches the compact turn's remembered
+    // keyless id AND the retained turn's keyed item — and the merged turn
+    // then carries the retained turn's id. The compact turn's own id does
+    // not always survive at loadOlder the way the transfer's comment
+    // assumed: matched only by final identities, the bridge left no carrier
+    // for the vanished turn's memory, and deleting it forgot the turn's
+    // still-unrestored identities. A later page reissuing one of those
+    // survived separately and double-counted usage. The transfer must read
+    // the retained side's fold membership from the page merge.
+    it("a page bridging a compact turn into another retained turn keeps its remaining identities foldable", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "user" as const, id: "kk", text: "kk row" },
+            ...Array.from({ length: 479 }, (_, j) => ({
+              kind: "user" as const,
+              id: `f-${j}`,
+              text: `f-${j}`,
+            })),
+          ],
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+            {
+              id: "tb",
+              status: "completed",
+              items: [
+                {
+                  id: "fb",
+                  transcriptKey: "kk",
+                  turnId: "tb",
+                  type: "agentMessage",
+                  text: "bravo",
+                  position: { entry: 80, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 50, outputTokens: 5 },
+            },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering TWO KEYLESS items (fa and fz).
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ta",
+              [
+                {
+                  id: "fa",
+                  turnId: "ta",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "fz",
+                  turnId: "ta",
+                  type: "agentMessage",
+                  text: "zed",
+                  position: { entry: 71, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ta")?.items).toEqual([]);
+
+      // The bridge page: a fragment re-issuing fa under its bare id now
+      // carrying transcript key kk — which also matches tb's retained item.
+      // The merge folds ta into tb's group and settles on tb's identity.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "fa",
+                  transcriptKey: "kk",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "bridge",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 300, outputTokens: 30 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const bridged = store.getState().conversation!;
+      expect(bridged.turns.some((turn) => turn.id === "ta")).toBe(false);
+      expect(bridged.turns.find((turn) => turn.id === "tb")?.items).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "bravo" }),
+      ]);
+
+      // A later page re-issues fz. It must fold into tb — the turn the
+      // bridge merged ta's memory into — instead of surviving beside it
+      // and double-counting usage.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "tz",
+              [
+                {
+                  id: "fz",
+                  turnId: "tz",
+                  type: "agentMessage",
+                  text: "zed page",
+                  position: { entry: 71, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c3",
+        ),
+        nextCursor: "c3",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.some((turn) => turn.id === "tz")).toBe(false);
+      expect(after.turns.find((turn) => turn.id === "tb")?.items).toEqual([
+        expect.objectContaining({ id: "fz", text: "zed page" }),
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "bravo" }),
+      ]);
+      expect(sessionTokens(after)).toEqual({
+        inputTokens: 51,
+        outputTokens: 6,
+        scope: "loaded",
+      });
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
