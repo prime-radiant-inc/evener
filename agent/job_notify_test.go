@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -1164,6 +1165,25 @@ func TestJobNotificationFromRecordLabelFields(t *testing.T) {
 				t.Fatalf("notification intent = %q, want the caller's rationale", n.Intent)
 			}
 		})
+	}
+}
+
+func TestEmitJobStartedStampsIntent(t *testing.T) {
+	t.Parallel()
+	var got events.EventData
+	jm := &jobManager{emit: func(_ events.EventKind, data events.EventData, _ *provenance.Causal) {
+		got = data
+	}}
+	jm.emitJobStarted(
+		jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_A", Type: jobstore.JobShell},
+		&runningJob{rec: &jobstore.JobRecord{JobID: "job_A", Type: jobstore.JobShell, Intent: "caller's rationale"}},
+	)
+	started, ok := got.(events.JobStartedData)
+	if !ok {
+		t.Fatalf("emitted data = %T, want events.JobStartedData", got)
+	}
+	if started.Intent != "caller's rationale" {
+		t.Fatalf("job-started payload intent = %q, want the record's intent", started.Intent)
 	}
 }
 

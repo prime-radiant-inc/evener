@@ -1173,6 +1173,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	background := false
 	command := ""
 	parentDelegateID := e.ParentDelegateID
+	intent := ""
 	if run != nil {
 		if run.rec != nil {
 			if run.rec.Type != "" {
@@ -1182,6 +1183,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			command = run.rec.Command
 			parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
 			task = envvars.FirstNonEmpty(run.rec.Task, task)
+			intent = run.rec.Intent
 			originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
 			originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
 			originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
@@ -1198,6 +1200,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
 		Task:             task,
+		Intent:           intent,
 		TranscriptRef:    shellTranscriptRef(e.JobID),
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,

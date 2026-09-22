@@ -395,6 +395,7 @@ func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
 			JobID:         "job_1",
 			JobType:       "shell",
 			Status:        "running",
+			Intent:        "reproduce the failure",
 			RootSessionID: "root",
 			TreeRevision:  9,
 		},
@@ -404,6 +405,10 @@ func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
 	}
 	if !hasAppNotification(out, appwire.NotifyEvenerJobStarted) {
 		t.Fatalf("missing %q in %+v", appwire.NotifyEvenerJobStarted, out)
+	}
+	started := notificationParams[appwire.EvenerJobParams](t, out, appwire.NotifyEvenerJobStarted)
+	if started.Job.Intent != "reproduce the failure" {
+		t.Fatalf("started push intent = %q, want the payload's intent forwarded", started.Job.Intent)
 	}
 	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifyEvenerJobsTreeUpdated)
 	if params.ThreadID != "root" || params.Ref != "local:root" || params.Revision != 9 {
