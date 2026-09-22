@@ -587,10 +587,17 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	c.mu.Lock()
+	var idleTimers []idleReleaseTimerHandle
 	if !c.closing {
 		c.closing = true
 		c.evidenceVersion++
+		idleTimers = c.takeIdleReleaseTimersLocked()
 	}
+	defer func() {
+		for _, handle := range idleTimers {
+			handle.timer.Stop()
+		}
+	}()
 	pending := c.stop
 	pendingCancelPlan := delegateCancelPlan{}
 	joinedMembers := make(map[string]struct{})
@@ -859,12 +866,17 @@ func (c *delegateTreeController) joinStopReconcileDriver(ctx context.Context) (b
 
 func (c *delegateTreeController) closeStoreAfterStopReconcileDriver(ctx context.Context) error {
 	c.mu.Lock()
+	var idleTimers []idleReleaseTimerHandle
 	if !c.closing {
 		c.closing = true
 		c.evidenceVersion++
+		idleTimers = c.takeIdleReleaseTimersLocked()
 	}
 	driver := c.stopDriver
 	c.mu.Unlock()
+	for _, handle := range idleTimers {
+		handle.timer.Stop()
+	}
 	joined, driverErr := c.joinExactStopReconcileDriver(ctx, driver)
 	if !joined {
 		return driverErr

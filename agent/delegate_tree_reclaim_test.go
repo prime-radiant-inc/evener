@@ -814,6 +814,113 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	}
 }
 
+// TestDelegateIdleRelease_CrossSessionArmReplacesPriorWindow pins the
+// controller-side keying: a cold restore installs a new *Session for the same
+// delegate, and the restored runtime's finalize must retire the window the
+// previous runtime armed. Arming from two distinct sessions for one delegate
+// leaves exactly one armed timer — the first session's handle stopped, not
+// merely superseded at fire time — where a session-keyed map would leave both
+// armed.
+func TestDelegateIdleRelease_CrossSessionArmReplacesPriorWindow(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	session := func() *Session {
+		return &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
+	}
+	timersBefore := fake.BlockedCount()
+	session().scheduleIdleRuntimeRelease(1)
+	if got := fake.BlockedCount() - timersBefore; got != 1 {
+		t.Fatalf("first arm parked %d grace timers, want 1", got)
+	}
+	session().scheduleIdleRuntimeRelease(2)
+	if got := fake.BlockedCount() - timersBefore; got != 1 {
+		t.Fatalf("cross-session arm parked %d grace timers, want the single replaced one", got)
+	}
+}
+
+// TestDelegateIdleRelease_StaleArmDoesNotDisplaceNewerGeneration pins the
+// generation check in the timer swap: arming a timer and installing it are two
+// steps, so an older retry paused between them can resume after a newer
+// generation's finalize installed its own. The stale install must be
+// rejected — the stale callback would decline on the generation guard and
+// leave the newer generation with no grace timer at all — and the stale timer
+// is the one stopped.
+func TestDelegateIdleRelease_StaleArmDoesNotDisplaceNewerGeneration(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
+	timersBefore := fake.BlockedCount()
+	s.scheduleIdleRuntimeRelease(2)
+
+	// The paused older retry (generation 1) completes its arm after the newer
+	// generation installed its own. Its callback is the spy: it must never
+	// fire, because the swap hands the stale timer back and the caller stops
+	// it instead of displacing the newer generation's window.
+	staleFired := false
+	stale := fake.AfterFunc(time.Hour, func() { staleFired = true })
+	displaced := c.swapIdleReleaseTimer("dlg_x", stale, 1, 99)
+	if displaced == nil {
+		t.Fatal("stale arm displaced nothing; the swap must hand a timer back for stopping")
+	}
+	if displaced != stale {
+		t.Fatal("the swap handed the newer generation's timer back for stopping; a stale arm must not displace it")
+	}
+	displaced.Stop()
+	fake.Advance(time.Hour + time.Second)
+	fake.Drain()
+	if staleFired {
+		t.Fatal("a stale generation's arm displaced the newer generation's grace timer; the stale callback fired an hour later")
+	}
+	if got := fake.BlockedCount() - timersBefore; got != 0 {
+		t.Fatalf("stale-arm probe left %d grace timers parked, want none after the advance", got)
+	}
+}
+
+// TestDelegateIdleRelease_FiredTimerLeavesNoHandle pins the entry retirement:
+// a fired callback drops its own installed handle, so the map never
+// accumulates spent timer objects — each pinning its callback closure and the
+// *Session it captures — for the life of the process.
+func TestDelegateIdleRelease_FiredTimerLeavesNoHandle(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
+	s.scheduleIdleRuntimeRelease(1)
+	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
+	fake.Drain()
+	c.mu.Lock()
+	_, installed := c.idleReleaseTimers["dlg_x"]
+	c.mu.Unlock()
+	if installed {
+		t.Fatal("fired grace timer left its handle installed; a spent timer must not pin its closure for the life of the process")
+	}
+}
+
+// TestDelegateIdleRelease_CloseSweepsGraceTimers pins the shutdown sweep: a
+// closing controller stops and drops every installed grace-timer handle, so
+// the tree's teardown leaves no armed waiter and no retained closure behind.
+func TestDelegateIdleRelease_CloseSweepsGraceTimers(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	fake := agenttest.NewFakeClock()
+	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
+	timersBefore := fake.BlockedCount()
+	s.scheduleIdleRuntimeRelease(1)
+	if got := fake.BlockedCount() - timersBefore; got != 1 {
+		t.Fatalf("arm parked %d grace timers, want 1", got)
+	}
+	if err := c.closeRuntimeTree(context.Background()); err != nil {
+		t.Fatalf("closeRuntimeTree: %v", err)
+	}
+	if got := fake.BlockedCount() - timersBefore; got != 0 {
+		t.Fatalf("closing left %d grace timers parked on the clock, want the sweep to stop them", got)
+	}
+	c.mu.Lock()
+	_, installed := c.idleReleaseTimers["dlg_x"]
+	c.mu.Unlock()
+	if installed {
+		t.Fatal("closing left a grace-timer handle installed")
+	}
+}
+
 // TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle
 // release pre-gate must refuse on the same session-local residue retirement
 // refuses on — a delegate-delivery parcel the pump has not consumed, restore
@@ -915,9 +1022,8 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	runtime.subagents.mu.Unlock()
 
 	// Every refusal re-armed a retry; one advance past the grace fires the
-	// finalize-armed timer and every re-armed retry in deadline order, and the
-	// first to run releases the now-quiescent runtime while the rest stand
-	// down on the already-released runtime.
+	// single outstanding retry the re-arms converged on, and it releases the
+	// now-quiescent runtime.
 	fake.Advance(delegateIdleReleaseDelayDefault + time.Second)
 	// TRIPWIRE: every residue plant is cleared and the grace timers have all
 	// fired, so the release only needs a goroutine handoff; 15s bounds a
