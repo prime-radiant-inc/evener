@@ -44,9 +44,16 @@ import type {
 } from "../conversation/project";
 import {
   activityState,
+  capItems as sharedCapItems,
   clusterActivities,
   itemAttachments,
+  MAX_ITEM_BYTES,
   projectItemAttachments,
+  projectTimeline,
+  RETAINED_ITEM_CAP,
+  TRUNCATION_MARKER,
+  truncateItem as sharedTruncateItem,
+  truncateText,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -483,65 +490,21 @@ function createDrainScheduler(): DrainScheduler {
 // LiveActivityState (Coordinate B) implements LiveActivitySink directly.
 // Do not fabricate "applied" — use the real applyLiveNotification outcome.
 
-// --- limits and truncation helpers (centralized) ----------------------------
-
-export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
-export const TRUNCATION_MARKER = "… truncated";
-export const RETAINED_ITEM_CAP = 500;
-
-// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
-// once whenever the limit is large enough to hold the marker. Iterates
-// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
-// split and no U+FFFD replacement chars are produced. The result never
-// exceeds maxBytes.
+// --- limits and truncation helpers -------------------------------------------
+// MAX_ITEM_BYTES/RETAINED_ITEM_CAP/truncateText are the single copy in
+// project.ts (imported above), re-exported here so this module's own test
+// file and any other reader can name them from this store too. Only
+// exceedsByteLimit (the truncation-freeze check) is this store's own —
+// project.ts has no equivalent, since it tracks no per-item ownership state
+// to freeze.
 const textEncoder = new TextEncoder();
-const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
-
-export function truncateText(text: string, maxBytes: number): string {
-  const encoded = textEncoder.encode(text);
-  if (encoded.length <= maxBytes) return text;
-  // The byte limit is the hard contract: every caller judges an item by
-  // exceedsByteLimit against the same limit, and the truncation freeze
-  // assumes an already-truncated item sits within it. No caller requires the
-  // marker — truncation is tracked by item identity, never by the suffix — so
-  // a limit too small to hold the marker yields the longest prefix that fits,
-  // with no marker, rather than a marker that busts the limit.
-  const fitsMarker = maxBytes >= markerBytes.length;
-  const marker = fitsMarker ? TRUNCATION_MARKER : "";
-  const markerLength = fitsMarker ? markerBytes.length : 0;
-  const targetBytes = Math.max(0, maxBytes - markerLength);
-  // Iterate code points (for...of iterates Unicode scalar values) to find
-  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
-  // avoids splitting surrogate pairs and never produces U+FFFD.
-  let byteLen = 0;
-  let cutIdx = 0;
-  for (const cp of text) {
-    const cpBytes = textEncoder.encode(cp).length;
-    if (byteLen + cpBytes > targetBytes) break;
-    byteLen += cpBytes;
-    cutIdx += cp.length;
-  }
-  // Trim code points until the result + marker fits within maxBytes.
-  // (May need to trim if a multibyte code point straddles the boundary.)
-  let truncated = text.slice(0, cutIdx);
-  let truncatedBytes = textEncoder.encode(truncated);
-  while (
-    truncatedBytes.length + markerLength > maxBytes &&
-    truncated.length > 0
-  ) {
-    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
-    const codePoints = [...truncated];
-    codePoints.pop();
-    truncated = codePoints.join("");
-    truncatedBytes = textEncoder.encode(truncated);
-  }
-  return truncated + marker;
-}
 
 // Check if text exceeds the byte limit (for setting truncated flag in projections).
 export function exceedsByteLimit(text: string, maxBytes: number): boolean {
   return textEncoder.encode(text).length > maxBytes;
 }
+
+export { MAX_ITEM_BYTES, RETAINED_ITEM_CAP, TRUNCATION_MARKER, truncateText };
 
 // Check if an activity detail's arguments/output/error exceed the byte limit
 // — the same rule applies to a top-level activity detail and to each of a
@@ -563,70 +526,25 @@ function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
 // private set. This allows genuine marker suffixes in content without
 // freezing delta appends.
 
-// Apply truncation to an activity detail's text-bearing fields (arguments,
-// output, error). Shared by an activity's own top-level detail and each of
-// its clustered members' details, so both are bounded the same way.
-function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
-  return {
-    ...detail,
-    arguments: detail.arguments
-      ? truncateText(detail.arguments, MAX_ITEM_BYTES)
-      : detail.arguments,
-    output: detail.output
-      ? truncateText(detail.output, MAX_ITEM_BYTES)
-      : detail.output,
-    error: detail.error
-      ? truncateText(detail.error, MAX_ITEM_BYTES)
-      : detail.error,
-  };
+// Apply truncation to an item's text-bearing fields. Delegates to project.ts's
+// shared truncateItem so every row kind it bounds (user, assistant, notice,
+// failure, question, activity) is bounded here too — this store used to
+// truncate only "assistant" and "activity", so a pasted user message, a
+// daemon notice, a tool failure's stack, and a question's own text were never
+// bounded by the live path at all. The bound callback is a plain
+// truncateText call, not the caching one project.ts's own callers use — this
+// store already tracks per-item truncation ownership itself (the comment
+// above), so a second cache here would just be dead weight.
+export function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
+  return sharedTruncateItem(item, (text) => truncateText(text, MAX_ITEM_BYTES));
 }
 
-// Apply truncation to an item's text-bearing fields (arguments, output, error,
-// markdown). Returns a new item with truncated fields. Native transcript
-// projection expands a clustered activity's members directly, so each
-// member's own detail is truncated too — not just the cluster's top-level
-// detail (the first member's).
-function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
-  switch (item.kind) {
-    case "assistant":
-      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
-    case "attachments":
-      // Only the display name is bounded — it is plain display text the
-      // renderer inserts into accessibility labels and modal copy. src is a
-      // data URI or a resolved fetch URL, and cutting it yields something the
-      // renderer cannot decode, so it passes through verbatim.
-      return {
-        ...item,
-        items: item.items.map((attachment) => ({
-          ...attachment,
-          name: attachment.name
-            ? truncateText(attachment.name, MAX_ITEM_BYTES)
-            : attachment.name,
-        })),
-      };
-    case "activity":
-      return {
-        ...item,
-        detail: truncateActivityDetail(item.detail),
-        ...(item.members
-          ? {
-              members: item.members.map((member) => ({
-                ...member,
-                detail: truncateActivityDetail(member.detail),
-              })),
-            }
-          : {}),
-      };
-    default:
-      return item;
-  }
-}
-
-// Enforce the 500-item retained cap. Always retains the NEWEST items (end
-// of array) so the live tail is preserved for interactive scrolling.
+// Enforce the 500-item retained cap. Delegates to project.ts's shared
+// capItems, which also drops a leading attachment whose source item did not
+// survive the cut (this store's own cap used to just slice, leaving orphaned
+// attachments behind).
 function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  if (items.length <= RETAINED_ITEM_CAP) return items;
-  return items.slice(items.length - RETAINED_ITEM_CAP);
+  return sharedCapItems(items);
 }
 
 export interface ConversationState {
@@ -2047,22 +1965,28 @@ export function createConversationStore() {
             for (const id of truncatedItemIds) {
               if (currentIds.has(id)) priorFrozen.add(id);
             }
-            const pageMerged = capItems([...deduped, ...currentConv.items]);
+            const mergedInput = [...deduped, ...currentConv.items];
+            const pageMerged = capItems(mergedInput);
             reconcileTruncationFrom(pageMerged, priorFrozen);
             const merged = truncateAndRecord(pageMerged);
             // Prune ownership maps for evicted IDs (IDs not in the final merged
             // set). This prevents stale freeze/page/live entries from
             // affecting future page loads or re-introductions.
             pruneEvictedIds(merged);
-            // F8: If we're at the cap and the merge trimmed older items,
-            // disable further paging honestly — set cursor to null so
-            // we don't repeatedly load rows that will be discarded.
-            // capItems keeps the newest RETAINED_ITEM_CAP rows, so the older
-            // page this call prepended is exactly what the cap discards: once
-            // at cap, no further page can retain a row. The cap therefore ends
-            // paging, and hasEarlierItems must say so — a cursor of null with
-            // the flag still true offers a load that early-returns "ignored".
-            const atCap = merged.length >= RETAINED_ITEM_CAP;
+            // F8: When the merge trimmed rows — the pre-cap merged set
+            // overflowed the retained cap, so capItems discarded the overflow
+            // from the oldest end — disable further paging honestly: set
+            // cursor to null so we don't repeatedly load rows that will be
+            // discarded. The overflow, never the final row count, is the
+            // signal: capItems also drops a leading orphaned attachment whose
+            // source fell off the cut, so a trimmed merge can end below
+            // RETAINED_ITEM_CAP (a 501-row merge that drops one orphan ends at
+            // 499) while it discarded its whole page, and a merge that ends at
+            // exactly the cap may have discarded nothing at all. Paging
+            // therefore ends exactly when the cap discarded rows, and
+            // hasEarlierItems must say so — a cursor of null with the flag
+            // still true offers a load that early-returns "ignored".
+            const atCap = mergedInput.length > RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
             set({
               conversation: { ...currentConv, items: merged },
@@ -2946,11 +2870,394 @@ export function createConversationStore() {
 
           default: {
             // Everything without a row applier above is the reducer's alone.
+            const askPendingMoved =
+              conv.askPending !== state.conversation.askPending;
+            if (askPendingMoved && boundSink === null) {
+              // A compatibility open() binds no activity sink, so the
+              // rehydrate the sink-bound path takes below is a no-op here —
+              // yet the sheet still moves (pendingQuestions reads the model
+              // through liveAsksFor). Reconcile only the asks whose
+              // rendering moved, against the folded model's canonical
+              // projection (F6 — question rows come only from the canonical
+              // projection). A settled ask may live in a tool cluster and a
+              // raised one may have been a cluster member, so each moved
+              // ask re-renders the contiguous row window around it —
+              // clusters split and merge exactly as projectTimeline builds
+              // them — while every row outside those windows passes through
+              // verbatim. Live-owned rows that exist only in items (a
+              // no-active-turn warning the reducer never folds into the
+              // model) survive, where a whole-array reprojection would
+              // silently drop them, and a verbatim row's truncation freeze
+              // is carried through (carriedFrozen) so a later delta cannot
+              // append after its marker, while the canonical replacements
+              // are judged fresh. The result still goes through the same
+              // treatment open() installs (cap → reconcile truncation
+              // ownership → truncate) plus the ownership prune a live
+              // merge does. Bounded to the askPending move: a frame that
+              // does not move askPending does not touch items at all — no
+              // storm, and no read required.
+              const canonical = projectTimeline(conv);
+              const canonicalCallIds = new Set<string>();
+              for (const crow of canonical) {
+                if (crow.kind !== "question") continue;
+                const callId = crow.questions[0]?.callId;
+                if (callId !== undefined) canonicalCallIds.add(callId);
+              }
+              // The asks whose rendering moved: stale question rows that
+              // resolved (or left the model), and canonical question rows
+              // with no still-live row of their own.
+              const movedAskIds = new Set<string>();
+              const keptCallIds = new Set<string>();
+              for (const row of conv.items) {
+                if (row.kind !== "question") continue;
+                const callId = row.questions[0]?.callId;
+                if (callId !== undefined && canonicalCallIds.has(callId)) {
+                  keptCallIds.add(callId);
+                } else {
+                  movedAskIds.add(row.id);
+                }
+              }
+              for (const crow of canonical) {
+                if (crow.kind !== "question") continue;
+                const callId = crow.questions[0]?.callId;
+                if (callId === undefined || !keptCallIds.has(callId)) {
+                  movedAskIds.add(crow.id);
+                }
+              }
+              if (movedAskIds.size > 0) {
+                // Every form under which a row's model item can appear:
+                // its wire id, its timeline identity (the transcript key
+                // when the wire item carried one), each clustered
+                // member's id and identity, and an attachment row's
+                // source. Region and segment matching work on these
+                // aliases because the two sides disagree on the form — a
+                // live-built row carries the wire transcript key while a
+                // canonical row may know the item only under its id, and
+                // a stale question row may sit under the key its settled
+                // replacement will never use.
+                const rowAliases = (row: MobileTimelineItem): Set<string> => {
+                  const aliases = new Set<string>([
+                    row.id,
+                    timelineIdentity(row),
+                  ]);
+                  if (row.kind === "activity" && row.members) {
+                    for (const member of row.members) {
+                      aliases.add(member.id);
+                      aliases.add(activityIdentity(member));
+                    }
+                  }
+                  const source = attachmentSourceIdentity(row);
+                  if (source !== null) aliases.add(source);
+                  return aliases;
+                };
+                // The identities of one moved ask's neighborhood: seeded
+                // with the ask item and closed over the rows' aliases and
+                // cluster membership on both sides, so the window covers
+                // exactly the rows the move can re-cluster. A live-owned
+                // warning row shares no alias with the neighborhood and
+                // stays outside.
+                const regionOf = (seed: string): Set<string> => {
+                  const region = new Set([seed]);
+                  const absorb = (
+                    rows: MobileTimelineItem[],
+                  ): boolean => {
+                    let grew = false;
+                    for (const row of rows) {
+                      let hit = false;
+                      for (const id of rowAliases(row)) {
+                        if (region.has(id)) {
+                          hit = true;
+                          break;
+                        }
+                      }
+                      if (!hit) continue;
+                      for (const id of rowAliases(row)) {
+                        const before = region.size;
+                        region.add(id);
+                        if (region.size !== before) grew = true;
+                      }
+                    }
+                    return grew;
+                  };
+                  let grew = true;
+                  while (grew) {
+                    const grewItems = absorb(conv.items);
+                    const grewCanonical = absorb(canonical);
+                    grew = grewItems || grewCanonical;
+                  }
+                  return region;
+                };
+                type RegionWindow = {
+                  start: number;
+                  end: number;
+                  region: Set<string>;
+                };
+                const windows: RegionWindow[] = [];
+                const insertions: Array<{
+                  rows: MobileTimelineItem[];
+                  after: number;
+                }> = [];
+                for (const askId of movedAskIds) {
+                  const region = regionOf(askId);
+                  const inRegion = (row: MobileTimelineItem): boolean => {
+                    for (const id of rowAliases(row)) {
+                      if (region.has(id)) return true;
+                    }
+                    return false;
+                  };
+                  const itemIdx: number[] = [];
+                  conv.items.forEach((row, idx) => {
+                    if (inRegion(row)) itemIdx.push(idx);
+                  });
+                  if (itemIdx.length === 0) {
+                    // The ask has no row at all (a newly pending ask the
+                    // row appliers cannot build — F6): insert its
+                    // canonical rows positionally below.
+                    const rows: MobileTimelineItem[] = [];
+                    let after = -1;
+                    canonical.forEach((crow, idx) => {
+                      if (inRegion(crow)) {
+                        rows.push(crow);
+                        after = idx;
+                      }
+                    });
+                    if (rows.length > 0) insertions.push({ rows, after });
+                    continue;
+                  }
+                  windows.push({
+                    start: Math.min(...itemIdx),
+                    end: Math.max(...itemIdx),
+                    region,
+                  });
+                }
+                windows.sort((a, b) => a.start - b.start);
+                const mergedWindows: RegionWindow[] = [];
+                for (const w of windows) {
+                  const last = mergedWindows[mergedWindows.length - 1];
+                  if (last !== undefined && w.start <= last.end + 1) {
+                    for (const id of w.region) last.region.add(id);
+                    last.end = Math.max(last.end, w.end);
+                  } else {
+                    mergedWindows.push({
+                      start: w.start,
+                      end: w.end,
+                      region: new Set(w.region),
+                    });
+                  }
+                }
+                const rebuilt: MobileTimelineItem[] = [];
+                const carriedFrozen = new Set<string>();
+                // Verbatim rows — outside windows, live rows inside them —
+                // carry their (and their members') existing truncation
+                // freeze through the reconciliation; canonical
+                // replacements are judged fresh from their raw content.
+                const carryFreeze = (row: MobileTimelineItem): void => {
+                  for (const id of ownTimelineIdentities(row)) {
+                    if (truncatedItemIds.has(id)) carriedFrozen.add(id);
+                  }
+                };
+                let windowIdx = 0;
+                for (let idx = 0; idx < conv.items.length; idx++) {
+                  const w = mergedWindows[windowIdx];
+                  if (w !== undefined && w.start === idx) {
+                    // Walk the window in display order: rows the model
+                    // still backs (a region alias, or a canonical
+                    // counterpart) group into segments, and a live-only
+                    // row — one the canonical projection cannot re-render,
+                    // like a no-active-turn warning the reducer never
+                    // folds (#2037) — is preserved verbatim and splits the
+                    // window: the canonical replacement re-clusters each
+                    // side instead of merging across it.
+                    type Piece =
+                      | { kind: "segment"; identities: Set<string> }
+                      | { kind: "live"; row: MobileTimelineItem };
+                    const pieces: Piece[] = [];
+                    for (let wi = w.start; wi <= w.end; wi++) {
+                      const row = conv.items[wi];
+                      const inWindowRegion = [...rowAliases(row)].some(
+                        (id) => w.region.has(id),
+                      );
+                      const hasCounterpart = canonical.some(
+                        (crow) =>
+                          timelineIdentity(crow) === timelineIdentity(row),
+                      );
+                      if (!inWindowRegion && !hasCounterpart) {
+                        pieces.push({ kind: "live", row });
+                        continue;
+                      }
+                      let segment:
+                        | Extract<Piece, { kind: "segment" }>
+                        | undefined =
+                        pieces.length > 0 &&
+                        pieces[pieces.length - 1].kind === "segment"
+                          ? (pieces[
+                              pieces.length - 1
+                            ] as Extract<Piece, { kind: "segment" }>)
+                          : undefined;
+                      if (segment === undefined) {
+                        segment = {
+                          kind: "segment",
+                          identities: new Set<string>(),
+                        };
+                        pieces.push(segment);
+                      }
+                      for (const id of rowAliases(row)) {
+                        segment.identities.add(id);
+                      }
+                    }
+                    const segments = pieces.filter(
+                      (p): p is Extract<Piece, { kind: "segment" }> =>
+                        p.kind === "segment",
+                    );
+                    for (const piece of pieces) {
+                      if (piece.kind === "live") {
+                        carryFreeze(piece.row);
+                        rebuilt.push(piece.row);
+                        continue;
+                      }
+                      for (const crow of canonical) {
+                        const crowAliases = rowAliases(crow);
+                        if (
+                          ![...crowAliases].some((id) =>
+                            piece.identities.has(id),
+                          )
+                        ) {
+                          continue;
+                        }
+                        if (crow.kind === "activity" && crow.members) {
+                          const spans = segments.some(
+                            (s) =>
+                              s !== piece &&
+                              [...crowAliases].some((id) =>
+                                s.identities.has(id),
+                              ),
+                          );
+                          if (spans) {
+                            // A cluster spanning a live boundary splits:
+                            // this segment re-clusters the members it
+                            // owns.
+                            const mine = crow.members.filter(
+                              (m) =>
+                                piece.identities.has(m.id) ||
+                                piece.identities.has(activityIdentity(m)),
+                            );
+                            rebuilt.push(
+                              ...clusterActivities(
+                                mine.map((m) => ({
+                                  family: m.family,
+                                  item: {
+                                    kind: "activity" as const,
+                                    id: m.id,
+                                    label: m.label,
+                                    family: m.family,
+                                    state: m.state,
+                                    detail: m.detail,
+                                    ...(m.transcriptKey
+                                      ? { transcriptKey: m.transcriptKey }
+                                      : {}),
+                                    ...(m.position
+                                      ? { position: m.position }
+                                      : {}),
+                                  },
+                                })),
+                              ),
+                            );
+                          } else {
+                            rebuilt.push(crow);
+                          }
+                        } else {
+                          // Emit once — in the segment that owns the
+                          // row's own identity, else the first one it
+                          // intersects.
+                          const ownId = timelineIdentity(crow);
+                          const owner = segments.find((s) =>
+                            s.identities.has(ownId),
+                          );
+                          const firstMatch = segments.find((s) =>
+                            [...crowAliases].some((id) =>
+                              s.identities.has(id),
+                            ),
+                          );
+                          if ((owner ?? firstMatch ?? piece) === piece) {
+                            rebuilt.push(crow);
+                          }
+                        }
+                      }
+                    }
+                    idx = w.end;
+                    windowIdx++;
+                    continue;
+                  }
+                  carryFreeze(conv.items[idx]);
+                  rebuilt.push(conv.items[idx]);
+                }
+                insertions.sort((a, b) => a.after - b.after);
+                for (const ins of insertions) {
+                  const laterIdentities = new Set<string>();
+                  for (let c = ins.after + 1; c < canonical.length; c++) {
+                    for (const id of rowAliases(canonical[c])) {
+                      laterIdentities.add(id);
+                    }
+                  }
+                  let insertAt = -1;
+                  for (let k = 0; k < rebuilt.length; k++) {
+                    const row = rebuilt[k];
+                    let hit = laterIdentities.has(row.id);
+                    if (!hit) {
+                      for (const id of rowAliases(row)) {
+                        if (laterIdentities.has(id)) {
+                          hit = true;
+                          break;
+                        }
+                      }
+                    }
+                    if (hit) {
+                      insertAt = k;
+                      break;
+                    }
+                  }
+                  if (insertAt === -1) rebuilt.push(...ins.rows);
+                  else rebuilt.splice(insertAt, 0, ...ins.rows);
+                }
+                const reprojectedCapped = capItems(rebuilt);
+                reconcileTruncationFrom(reprojectedCapped, carriedFrozen);
+                const reprojected = truncateAndRecord(reprojectedCapped);
+                pruneEvictedIds(reprojected);
+                set({ conversation: { ...conv, items: reprojected } });
+                break;
+              }
+              // askPending moved but no ask row moved either way (no
+              // question rows in items or in the canonical projection):
+              // fall through to the model-only publish — items untouched.
+            }
             publishModel();
             // An item/* transition the cases above do not handle needs the
             // canonical projection; only those resync, not every unknown
             // family, to avoid reread storms from unrelated notifications.
-            if (n.method.startsWith("item/") && state.ref !== null) {
+            // An askPending change needs it for the same reason and one
+            // more: question rows come only from the canonical projection
+            // (F6 — ask_user is never single-item projected), while the
+            // sheet reads the model directly (questionAnswers.ts's
+            // pendingQuestions, through liveAsksFor), so a model-only flip
+            // would otherwise leave the sheet and the timeline disagreeing —
+            // a stale question row beside an empty sheet, or a pending ask
+            // with no row. askPending rides every thread/status/changed
+            // frame but only moves when an ask raises or resolves, so
+            // resyncing on the change cannot storm.
+            // An askPending change needs it for the same reason and one
+            // more: question rows come only from the canonical projection
+            // (F6 — ask_user is never single-item projected), while the
+            // sheet reads the model directly (questionAnswers.ts's
+            // pendingQuestions, through liveAsksFor), so a model-only flip
+            // would otherwise leave the sheet and the timeline disagreeing —
+            // a stale question row beside an empty sheet, or a pending ask
+            // with no row. askPending rides every thread/status/changed
+            // frame but only moves when an ask raises or resolves, so
+            // resyncing on the change cannot storm.
+            if (
+              state.ref !== null &&
+              (n.method.startsWith("item/") || askPendingMoved)
+            ) {
               requestRehydrate(state.ref);
             }
             break;
