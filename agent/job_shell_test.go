@@ -211,7 +211,7 @@ func TestRunShellPipelineExitStatus(t *testing.T) {
 		wantStatus string
 		wantExit   int
 	}{
-		{name: "failure in first stage is reported", command: "false | tail -1", wantStatus: string(jobstore.StatusFailed), wantExit: 1},
+		{name: "failure in first stage is reported", command: "false | tail -1", wantStatus: string(jobstore.StatusCommandExitedNonzero), wantExit: 1},
 		{name: "successful pipeline remains successful", command: "printf 'ok\\n' | tail -1", wantStatus: string(jobstore.StatusCompleted), wantExit: 0},
 	}
 

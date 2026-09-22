@@ -249,6 +249,7 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	wantStatuses := []jobstore.Status{
 		jobstore.StatusRunning, jobstore.Status("idle"), jobstore.Status("settling"),
 		jobstore.Status("stopping"), jobstore.Status("closed"), jobstore.StatusCompleted,
+		jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
 		jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled,
 		jobstore.StatusStopped,
 	}
