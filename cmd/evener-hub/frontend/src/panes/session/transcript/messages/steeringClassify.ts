@@ -21,11 +21,16 @@ export interface ParsedNotification {
   type: "delegate" | "job" | "watch" | "watch-send" | "observer-callback";
   title: string;
   tone: NotificationTone;
-  secondary: string; // job_type · exit N · reason (quiet plumbing stays in raw)
+  // The head line's label: intent (preferred) or description; a failure head
+  // shows the intent alone.
+  secondary: string;
   jobId?: string;
   jobType?: string;
   delegateId?: string;
   watchId?: string;
+  // The caller's stated one-line rationale for the run (the shell tool call's
+  // `intent` argument, carried on the wire as the block's intent attribute).
+  intent?: string;
   description?: string;
   status?: string;
   reason?: string;
@@ -470,6 +475,7 @@ function notificationSecondary(
   attrs: Record<string, string>,
   tone: NotificationTone,
   description: string,
+  intent: string,
   analysis: JobNotificationAnalysis,
   notificationType?: string,
   prose?: string,
@@ -490,15 +496,27 @@ function notificationSecondary(
     // synthesized trigger), with the card prose carrying the full sentence.
     return timerSecondaryFromProse(reason, prose) ?? reason;
   }
+  // A FAILED job's head line is "Job failed <intent>": the caller's stated
+  // rationale for the run, and nothing else. The exit code and reason live in
+  // the expanded card's metadata, and the description gloss stays off the line
+  // because pre-intent blocks shipped the raw command as their description
+  // attr (the producer's old display-label fallback, agent/job_notify.go) —
+  // a shape the parser cannot tell from a real gloss, so the error head
+  // trusts the intent attribute alone.
+  if (tone === "error") return intent;
   const bits: string[] = [];
   const type = (attrs.job_type ?? "").trim();
-  if (description) bits.push(description);
+  if (intent) bits.push(intent);
+  else if (description) bits.push(description);
   else if (type && type !== "job") bits.push(type);
+  // The exit/reason bits only ever join a WARNING head now (a stopped job's
+  // reason, a failed watch-delivery diagnostic): a plain failure tones error
+  // and returns above.
   if (analysis.disposition === "failure" && analysis.exitCode !== undefined && analysis.exitCode !== 0) {
     bits.push(`exit ${analysis.exitCode}`);
   }
   const reason = (attrs.reason ?? "").trim();
-  if (reason && (tone === "error" || tone === "warning")) bits.push(reason);
+  if (reason && tone === "warning") bits.push(reason);
   return bits.join(" · ");
 }
 
@@ -634,6 +652,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   const communicate =
     attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
+  const intent = decodeNotificationEntities(attrs.intent ?? "").trim();
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
   const analysis = analyzeJobNotification(attrs, communicate);
   // The parser's type, not the attr echo: a watch_id-reclassified delivery
@@ -644,10 +663,19 @@ function parseJobNotification(block: string): ParsedNotification | null {
     type,
     title: titleForJobNotification(attrs, type, type === "watch" ? bodyText : undefined),
     tone,
-    secondary: notificationSecondary(attrs, tone, description, analysis, type, type === "watch" ? bodyText : undefined),
+    secondary: notificationSecondary(
+      attrs,
+      tone,
+      description,
+      intent,
+      analysis,
+      type,
+      type === "watch" ? bodyText : undefined,
+    ),
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
     watchId: attrs.watch_id?.trim() || undefined,
+    intent: intent || undefined,
     description: description || undefined,
     status: attrs.status?.trim() || undefined,
     reason: attrs.reason?.trim() || undefined,
