@@ -603,6 +603,12 @@ type testConfig struct {
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
 
+	// scratchUpsertAttempt runs immediately before each manifest upsert in
+	// installScratchRetentionFor and registerScratchConsumerRoles, after any
+	// lock-contention retry decision, so tests can inject deterministic
+	// contention around exact attempts.
+	scratchUpsertAttempt func()
+
 	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
 	// before each UpdateScratchBindings attempt, so a test can make the first
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.

@@ -597,6 +597,124 @@ func TestScratchRefreshNeverContendsPoolOwnedHandle(t *testing.T) {
 	}
 }
 
+// TestScratchRefreshClearsStaleContendedMarkBesidePooledHandle pins the
+// round-9 cleanup half of the disjointness invariant: a contention mark a
+// pre-round-9 refresh could write beside a pooled handle is inert (the
+// guard requires no handle), but it breaks the maps' disjoint shape, so the
+// install path drops it when it finds the slot pool-owned instead of leaving
+// the wedged-looking state behind forever.
+func TestScratchRefreshClearsStaleContendedMarkBesidePooledHandle(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHMARKCLR1"
+	const bindingID = "b-mark-clear"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+	key := canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{
+		Dir:  slots[sandbox.ScratchKindSandbox].Dir,
+		Kind: sandbox.ScratchKindSandbox,
+	})
+	if err != nil {
+		t.Fatalf("pool-owned fixture handle: %v", err)
+	}
+	// The wedged-looking state: the pool's own reacquired handle AND a stale
+	// contention mark for the same directory, with the consumer's rows
+	// missing so the refresh re-installs them (installRows).
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: handle},
+		bindings:  map[string]sandbox.ScratchBinding{},
+		consumers: map[string]sandbox.ScratchConsumerBinding{},
+		contended: map[string]struct{}{key: {}},
+		adopted:   map[string]string{},
+	})
+
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("refresh of %q: %v", consumerID, err)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("no pool was published")
+	}
+	pool.mu.Lock()
+	_, marked := pool.contended[key]
+	pooled := pool.handles[key]
+	pool.mu.Unlock()
+	if marked {
+		t.Fatal("the refresh left a contention mark beside the pooled handle; the stale mark breaks the maps' disjoint shape")
+	}
+	if pooled == nil {
+		t.Fatal("the refresh dropped the pool's own reacquired handle")
+	}
+}
+
+// TestScratchUpsertRetriesLockContention pins the round-9 third-writer retry:
+// the manifest upserts that publish a consumer's roles fail fast on the
+// manifest lock like every writer, and that refusal is transient — never a
+// durability verdict — so the upsert retries it with backoff instead of
+// failing the publication (or letting the swap path record it sticky). The
+// contention is injected deterministically: a helper holds the lock
+// verifiably across the first upsert attempt and verifiably releases before
+// the retry.
+func TestScratchUpsertRetriesLockContention(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	attempts := 0
+	s.cfg.testOnly.scratchUpsertAttempt = func() {
+		attempts++
+		switch attempts {
+		case 1:
+			close(takeLock)
+			<-lockTaken
+		case 2:
+			close(releaseLock)
+			<-lockReleased
+		}
+	}
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("mint publication lost to transient lock contention: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("the upsert took %d attempts, want exactly 2: one refused by the holder, one retried after its release", attempts)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == s.id && consumer.CurrentBindingID != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the retried upsert never published the consumer role: %+v", manifest.Consumers)
+	}
+}
+
 // TestScratchRefreshInstallWindowBlocksManifestUpdates pins the round-2
 // serialization: the revision recheck and the row install hold the manifest's
 // durable update lock, so a manifest update cannot commit between them —
@@ -687,7 +805,10 @@ func TestScratchRefreshFoldSkipsDetachedPool(t *testing.T) {
 			return
 		}
 		hooked.Store(true)
-		releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
+		// The production detach path: serialized on the pool mutex, so the
+		// fold the pass is about to run declines under the same mutex and
+		// the pass retries against the now-current pointer.
+		s.detachRetainedScratch()
 	}
 	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
 		t.Fatalf("refresh of %q: %v", consumerID, err)
@@ -798,6 +919,18 @@ func TestScratchRefreshRetriesInstallHoldContention(t *testing.T) {
 	// Only after the loser is paused does the holder take the install hold
 	// and keep it for the loser's whole remaining window.
 	<-loserPaused
+	// EVERGREEN, because it reads like one: this holder-side hook waits on
+	// loserDone while the holder's refresh still owns the manifest's update
+	// lock, which looks like a deadlock — the loser "blocked" on the lock the
+	// holder is waiting on. It cannot be one: the manifest's update lock is
+	// fail-fast BY DESIGN (a contended writer is refused with
+	// ErrScratchRetentionLockHeld, never parked), so the loser is never
+	// blocked on the lock while the holder waits here. The loser burns its
+	// bounded refused passes — every open and install attempt is refused
+	// outright, each costing microseconds — fails loudly after the bound,
+	// and closes loserDone, which the loserErr and loserAttempts assertions
+	// below prove happened. A deadlock here would hang this test on every
+	// run; it instead finishes in well under a second everywhere it runs.
 	s.cfg.testOnly.scratchRefreshAfterRecheck = func(sessionID string) {
 		if sessionID == holderConsumer {
 			close(holderHeld)

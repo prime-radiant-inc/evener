@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 const (
@@ -552,6 +553,27 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 // replaces a whole stale record.
 func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
 	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer})
+}
+
+// RetryScratchLockContention runs fn and retries while fn fails with the
+// manifest's transient lock refusal, spacing attempts with a growing backoff
+// so a concurrent writer's fsync-scale hold can clear between them: a
+// lock-held refusal is by construction a microsecond-to-millisecond race,
+// never a durability verdict, so a same-inputs retry is always safe — the
+// writers re-read and rebase onto the fresh manifest under the lock. The
+// bound keeps a sustained refusal a real, reported failure: exhaustion
+// returns the refusal to the caller, never a silent success.
+func RetryScratchLockContention(fn func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		if err = fn(); !errors.Is(err, ErrScratchRetentionLockHeld) {
+			return err
+		}
+		if attempt >= 4 {
+			return err
+		}
+		time.Sleep(time.Duration(1<<attempt) * time.Millisecond)
+	}
 }
 
 // UpsertScratchBindingOnly publishes one binding record under the manifest lock

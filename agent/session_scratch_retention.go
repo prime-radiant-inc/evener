@@ -53,7 +53,12 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 			return nil
 		}
 		consumer := scratchConsumerPreservingRoles(manifest, sessionID, stored.BindingID)
-		return sandbox.UpsertScratchBinding(owner, stored, consumer)
+		return sandbox.RetryScratchLockContention(func() error {
+			if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
+				hook()
+			}
+			return sandbox.UpsertScratchBinding(owner, stored, consumer)
+		})
 	}
 	bindingID, err := identifier.NewSessionID()
 	if err != nil {
@@ -77,7 +82,12 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		return nil //nolint:nilerr // binding already installed; nothing to register
 	}
 	consumer := scratchConsumerPreservingRoles(manifest, sessionID, published.BindingID)
-	return sandbox.UpsertScratchBinding(owner, published, consumer)
+	return sandbox.RetryScratchLockContention(func() error {
+		if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
+			hook()
+		}
+		return sandbox.UpsertScratchBinding(owner, published, consumer)
+	})
 }
 
 func findScratchBinding(manifest sandbox.ScratchManifest, bindingID string) (sandbox.ScratchBinding, bool) {
@@ -345,7 +355,12 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 			consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, id)
 		}
 	}
-	return sandbox.UpsertScratchBinding(owner, binding, consumer)
+	return sandbox.RetryScratchLockContention(func() error {
+		if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
+			hook()
+		}
+		return sandbox.UpsertScratchBinding(owner, binding, consumer)
+	})
 }
 
 // roleScratchBindingID resolves one role environment's own binding id from the
@@ -852,9 +867,29 @@ func (s *Session) installConsumerRefresh(pool *retainedScratchPool, consumer san
 		// mark beside the pooled handle would wedge every later adoption
 		// against the pool's own lease (round 5).
 		if _, held := pool.handles[key]; held {
+			// A stale mark a pre-round-9 refresh could have written beside
+			// the handle is inert — the guard requires no handle — but it
+			// breaks the maps' disjoint shape, so drop it here.
+			delete(pool.contended, key)
 			continue
 		}
 		pool.contended[key] = struct{}{}
+	}
+	if s.retainedScratch.Load() != pool {
+		// Belt beyond the serialized detach (detachRetainedScratch): an
+		// unsynchronized swap of the published pointer cannot interleave
+		// with this fold's check-then-install anymore, but any swap path
+		// that bypasses the serializer still lands here. Roll this pass's
+		// handles back out so the caller keeps ownership of exactly what it
+		// reacquired, decline the fold, and let the pass retry against the
+		// current pointer — never report a successful install into a pool
+		// that was already dead.
+		for key, handle := range handles {
+			if pool.handles[key] == handle {
+				delete(pool.handles, key)
+			}
+		}
+		return false
 	}
 	return true
 }
@@ -1231,41 +1266,6 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 	return true, nil
 }
 
-// retainedScratchSlotContended reports whether the pool holds no reacquired
-// handle for dir because its lease is held elsewhere in this process — the
-// racing-idle-release window. A slot the pool holds a handle for is never
-// contended, whatever a stale contention record beside it says: the handle is
-// the transferable reacquire the marker claims is missing, so the guard reads
-// the slot as adoptable. A dispose-then-adopt replacement must never run
-// against a genuinely contended slot: the adoption cannot take the lease (no
-// handle), and with the fresh allocation already disposed the session would end
-// up running on the retained directory unowned, beside its in-process holder.
-// The replacement is skipped instead, the fresh allocation stays, and the next
-// restore re-probes the settled contention (refreshRetainedScratchConsumer)
-// and resumes in the retained directory with the lease in hand. An engineered
-// absence — no handle, no contention — is NOT skipped here; that refusal
-// semantics is pinned elsewhere and stays.
-func (s *Session) retainedScratchSlotContended(dir string) bool {
-	pool := s.retainedScratch.Load()
-	if pool == nil {
-		return false
-	}
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-	key := canonicalScratchDir(dir)
-	if _, held := pool.handles[key]; held {
-		// A reacquired handle makes the slot pool-owned — transferable —
-		// whatever a stale contention record beside it says: the marker and
-		// a pooled handle describe mutually exclusive states, and the handle
-		// wins. This is also the heal for pools wedged by the pre-round-5
-		// refresh: the next restore adopts the pooled handle instead of
-		// skipping the slot forever.
-		return false
-	}
-	_, contended := pool.contended[key]
-	return contended
-}
-
 // adoptResumedRootScratch adopts sessionID's retained allocation onto env on
 // the resume path. Resume provisions the sandbox before this runs, and
 // EnableSandbox always mints a fresh session scratch; that fresh mint is a
@@ -1292,8 +1292,8 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 	if env == nil {
 		return nil
 	}
-	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
-	if !ok || s.retainedScratchSlotContended(dir) || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
+	dir, ok, contended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindSandbox)
+	if !ok || contended || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
 		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 			return err
 		}
@@ -1306,8 +1306,8 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 			return reprovisionDiscardedSandboxScratch(env, err)
 		}
 	}
-	unsandboxed, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindUnsandboxed)
-	if !ok || s.retainedScratchSlotContended(unsandboxed) || filepath.Clean(unsandboxed) == filepath.Clean(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
+	unsandboxed, ok, unsandboxedContended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindUnsandboxed)
+	if !ok || unsandboxedContended || filepath.Clean(unsandboxed) == filepath.Clean(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
 		return nil
 	}
 	env.DisposeUnsandboxedScratch()
@@ -1352,32 +1352,47 @@ func reprovisionDiscardedSandboxScratch(env *execenv.LocalExecutionEnvironment, 
 	return cause
 }
 
-// retainedConsumerScratchDir returns the directory sessionID's current binding
-// owns for kind, or ok=false when there is no prepared pool, no consumer, or no
-// lease-owning slot of that kind.
-func (s *Session) retainedConsumerScratchDir(sessionID, kind string) (string, bool) {
+// retainedConsumerScratchSlot snapshots sessionID's lease-owning slot
+// directory for kind together with its contention status under ONE
+// pool-mutex hold, so the dispose-then-adopt decisions read a coherent row:
+// a refresh republishing rows between a separate directory lookup and a
+// separate contention check could otherwise pair the new row with the old
+// contention verdict. Contended means the slot's lease is held elsewhere in
+// this process — the racing idle-release teardown — with no reacquired handle
+// in the pool: a slot the pool holds a handle for is NEVER contended, whatever
+// a stale contention mark beside it says, because the handle is the
+// transferable reacquire the marker claims is missing. A dispose-then-adopt
+// replacement must never run against a genuinely contended slot — the
+// adoption cannot take the lease, and with the fresh allocation already
+// disposed the session would run on the retained directory unowned beside its
+// in-process holder. The caller skips the replacement instead, keeps the
+// fresh scratch, and the next refresh re-probes the settled contention and
+// resumes in the retained directory with the lease in hand.
+func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir string, ok, contended bool) {
 	pool := s.retainedScratch.Load()
 	if pool == nil {
-		return "", false
+		return "", false, false
 	}
 	pool.mu.Lock()
-	consumer, ok := pool.consumers[sessionID]
-	if !ok || consumer.CurrentBindingID == "" {
-		pool.mu.Unlock()
-		return "", false
+	defer pool.mu.Unlock()
+	consumer, hasConsumer := pool.consumers[sessionID]
+	if !hasConsumer || consumer.CurrentBindingID == "" {
+		return "", false, false
 	}
-	binding, ok := pool.bindings[consumer.CurrentBindingID]
-	if !ok {
-		pool.mu.Unlock()
-		return "", false
+	binding, hasBinding := pool.bindings[consumer.CurrentBindingID]
+	if !hasBinding {
+		return "", false, false
 	}
-	slot, ok := binding.Slots[kind]
-	if !ok || !slot.OwnsLease {
-		pool.mu.Unlock()
-		return "", false
+	slot, hasSlot := binding.Slots[kind]
+	if !hasSlot || !slot.OwnsLease {
+		return "", false, false
 	}
-	pool.mu.Unlock()
-	return slot.Dir, true
+	key := canonicalScratchDir(slot.Dir)
+	if _, held := pool.handles[key]; held {
+		return slot.Dir, true, false
+	}
+	_, marked := pool.contended[key]
+	return slot.Dir, true, marked
 }
 
 // settleFailedRestoreScratch settles the per-session scratch a failed delegate
@@ -1517,6 +1532,33 @@ func releaseRetainedScratchPool(pool *retainedScratchPool) {
 		return
 	}
 	pool.mu.Lock()
+	handles := pool.handles
+	pool.handles = map[string]*sandbox.SessionScratch{}
+	pool.adopted = map[string]string{}
+	pool.mu.Unlock()
+	for _, handle := range handles {
+		_ = handle.Retain()
+	}
+}
+
+// detachRetainedScratch unpublishes and releases the retained-scratch pool.
+// The detach itself — the compare-and-swap that unpublishes the pointer —
+// runs under the pool mutex, so a concurrent refresh's fold, which installs
+// and revalidates publication under the same mutex, can never land rows in a
+// pool that was already dead: the fold either completes entirely inside the
+// pool's published lifetime or declines and retries against the current
+// pointer. Handles are still released outside the mutex so a concurrent
+// adoption never observes a half-cleared map.
+func (s *Session) detachRetainedScratch() {
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		return
+	}
+	pool.mu.Lock()
+	if !s.retainedScratch.CompareAndSwap(pool, nil) {
+		pool.mu.Unlock()
+		return
+	}
 	handles := pool.handles
 	pool.handles = map[string]*sandbox.SessionScratch{}
 	pool.adopted = map[string]string{}

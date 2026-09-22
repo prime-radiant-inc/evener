@@ -276,7 +276,7 @@ func (s *Session) releaseRetirementScratch() {
 	for _, env := range abandoned {
 		env.RetainSessionScratch()
 	}
-	releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
+	s.detachRetainedScratch()
 }
 
 // releaseTerminalScratchRetention writes the terminal tombstone for this
@@ -300,7 +300,7 @@ func (s *Session) releaseTerminalScratchRetention() {
 	// session has already been torn down earlier in the terminal close, so no
 	// consumer can adopt a pooled handle after this point. Retain() releases each
 	// lease without deleting the directory, preserving the retention semantics.
-	releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
+	s.detachRetainedScratch()
 	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("scratch retention release failed: %v", err)})
 	}
