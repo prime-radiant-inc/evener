@@ -148,3 +148,101 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 		t.Fatalf("restartHub: %v (a matching snapshot commit must verify)", err)
 	}
 }
+
+// TestFirstAttachBootstrapPinsSnapshotBuild proves the START path carries the
+// snapshot pin too. A cold bootstrap (a stopped host, or a deploy that found no
+// hub present) launches the on-disk binary and, before this, verified it by
+// version alone; for a snapshot channel a version cannot tell two builds apart,
+// so a start could attach to a commit this controller never installed. The start
+// now takes the same pin as the restart: a mismatched or absent backend_git_sha
+// is not yet healthy (ErrRestart), and the controller's commit verifies. The
+// start path's own facts make it reachable — the binary it launches is the one
+// on disk, but "on disk" was accepted by the version-equality rule, which is
+// exactly what a snapshot version cannot prove.
+func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
+	savedChannel, savedSHA := buildinfo.Channel, buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitSHA = savedChannel, savedSHA })
+	buildinfo.Channel, buildinfo.GitSHA = "snapshot", "expectedsha"
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "a different backend_git_sha is not a healthy start",
+			body:    `{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
+			wantErr: true,
+		},
+		{
+			name:    "an empty backend_git_sha is not a healthy start",
+			body:    `{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
+			wantErr: true,
+		},
+		{
+			name:    "the controller's commit verifies the start",
+			body:    `{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
+			wantErr: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			launched := false
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				joined := strings.Join(argv, " ")
+				switch {
+				case strings.HasSuffix(joined, "uname -s"):
+					return []byte("Linux\n"), nil
+				case strings.HasSuffix(joined, "uname -m"):
+					return []byte("x86_64\n"), nil
+				case strings.HasSuffix(joined, "id -u"):
+					return []byte("1000\n"), nil
+				case strings.Contains(joined, "XDG_STATE_HOME"):
+					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+				case strings.Contains(joined, "launch-check"):
+					return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+				case strings.Contains(joined, "api/health"):
+					if !launched {
+						return nil, errors.New("curl: (7) Failed to connect")
+					}
+					return []byte(tc.body), nil
+				case strings.Contains(joined, "list-units"):
+					return nil, nil // no supervisor: the ad hoc start path
+				case strings.Contains(joined, "lsof -ti :9180"):
+					return []byte(noListenerMarker + "\n"), nil
+				case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+					return []byte("/opt/evener/bin/evener\n"), nil
+				case strings.Contains(joined, "nohup"):
+					launched = true
+					return nil, nil
+				default:
+					return nil, fmt.Errorf("unexpected remote command: %v", argv)
+				}
+			}, startFn: goodStartFn(t)}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{
+				controllerVersionOverride: "newsha",
+				sleep:                     func(context.Context, time.Duration) error { return nil },
+			})
+
+			ch, err := m.Ensure(context.Background(), "alpha")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Ensure = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				if !errors.Is(err, ErrRestart) {
+					t.Fatalf("Ensure err = %v, want ErrRestart so the start is retried", err)
+				}
+				if !strings.Contains(err.Error(), "backend_git_sha") {
+					t.Fatalf("error does not name the build identity it rejected: %v", err)
+				}
+				return
+			}
+			if !launched {
+				t.Fatal("the ad hoc start was never issued")
+			}
+			if err := ch.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		})
+	}
+}

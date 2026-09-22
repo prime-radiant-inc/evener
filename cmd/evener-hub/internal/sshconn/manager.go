@@ -1546,7 +1546,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if err != nil {
 			return nil, err
 		}
-		if err := deployedBuildNotStamped(host.Name, facts, expected); err != nil {
+		if err := deployedBuildNotStamped(host.Name, facts, expected, true); err != nil {
 			return nil, err
 		}
 	}
@@ -1619,7 +1619,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// errControllerDirty is: retrying re-pushes the same artifact, so it can never
 	// converge.
 	if deploy || restart {
-		if err := deployedBuildNotStamped(host.Name, facts, expected); err != nil {
+		if err := deployedBuildNotStamped(host.Name, facts, expected, deploy); err != nil {
 			return nil, err
 		}
 	}
@@ -1684,7 +1684,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 			if runErr != nil && !sup.restartStatusIsAdvisory() {
 				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 			}
-			if err := m.waitStartedHealthy(ctx, host, expected); err != nil {
+			if err := m.waitStartedHealthy(ctx, host, expected, snapshotPinGitSHA()); err != nil {
 				return err
 			}
 			m.clearPendingRestart(host.Name)
@@ -1704,7 +1704,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	if runErr != nil {
 		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
 	}
-	if err := m.waitStartedHealthy(ctx, host, expected); err != nil {
+	if err := m.waitStartedHealthy(ctx, host, expected, snapshotPinGitSHA()); err != nil {
 		return err
 	}
 	m.clearPendingRestart(host.Name)
@@ -1851,12 +1851,21 @@ func (m *Manager) reReadLaunchContract(ctx context.Context, host hostreg.Host, f
 // controller did not stamp, the version auto-match guarantee this component exists
 // for; retrying re-pushes the same artifact, so the refusal is terminal rather
 // than the retryable ErrDeploy (the same reason errControllerDirty is).
-func deployedBuildNotStamped(hostName string, facts Preflight, expected string) error {
+//
+// deployed names what this pass actually did, so the refusal is true for both call
+// sites: a deploy installed this controller's build, while a restart-only attempt
+// launched the build already on disk and must not be told a deploy wrote anything.
+// The gate itself is unchanged — a restart-only mismatch is still refused.
+func deployedBuildNotStamped(hostName string, facts Preflight, expected string, deployed bool) error {
 	if !facts.LaunchCheckKnown || facts.Version == expected {
 		return nil
 	}
-	return fmt.Errorf("%w: host %q still reports version %q after this controller deployed its build, want %q; the deployed artifact was not built from this controller's tree, so the host cannot be pinned to the controller's build — supply an artifact built from this controller's tree, or a build source",
-		errDeployUnstamped, hostName, facts.Version, expected)
+	what := "restarted onto a build that is not the controller's"
+	if deployed {
+		what = "deployed its build"
+	}
+	return fmt.Errorf("%w: host %q still reports version %q after this controller %s, want %q; the build the host now holds was not built from this controller's tree, so the host cannot be pinned to the controller's build — supply an artifact built from this controller's tree, or a build source",
+		errDeployUnstamped, hostName, facts.Version, what, expected)
 }
 
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and

@@ -100,7 +100,9 @@ func installerRefusal(t *testing.T, host hostreg.Host, help, channel, dirty stri
 // Options.BuildBinary" — an internal field an operator cannot act on — so the
 // slice's promise that the refusals name the hub's flags held only for the
 // terminal version refusal. With Options.DeployHelp supplied, both installer
-// refusals carry the hub's flags instead.
+// refusals carry the hub's flags instead. The release-with-no-stamped-tag
+// refusal is the one that used to end in a hardcoded "use the atomic push path"
+// and ignore the seam; it now carries the same clause as its siblings.
 func TestInstallerRefusalsNameSuppliedDeployHelp(t *testing.T) {
 	const help = "set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path>"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -113,6 +115,7 @@ func TestInstallerRefusalsNameSuppliedDeployHelp(t *testing.T) {
 		{"a dirty controller", "", "true"},
 		{"a channel with no publishable artifact", "nightly", ""},
 		{"an empty channel (buildinfo's dev)", "", ""},
+		{"a release build with no stamped tag", "release", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := installerRefusal(t, host, help, tc.channel, tc.dirty)
@@ -135,6 +138,7 @@ func TestInstallerRefusalsKeepTheLibraryRemedy(t *testing.T) {
 	for _, tc := range []struct{ channel, dirty string }{
 		{"", "true"},
 		{"nightly", ""},
+		{"release", ""},
 	} {
 		err := installerRefusal(t, host, "", tc.channel, tc.dirty)
 		if !strings.Contains(err.Error(), want) {

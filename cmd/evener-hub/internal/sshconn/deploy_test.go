@@ -2011,3 +2011,52 @@ func requireNoAttach(t *testing.T, fr *fakeRunner) {
 		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a build the controller did not deploy)", len(starts))
 	}
 }
+
+// TestEnsureRestartOnlyMismatchNamesTheRestart pins the message half of the
+// post-phase identity gate for the restart-only attempt. A host whose running hub
+// is merely stale (its on-disk build already matches, so no deploy runs) is
+// replaced by restartHub; if the on-disk file the restart would launch is then
+// re-read and is not the controller's build, the gate must still refuse — but the
+// message must name the restart that happened, not a deploy that never ran.
+func TestEnsureRestartOnlyMismatchNamesTheRestart(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The on-disk binary already matches, so ensureDecision chooses no
+				// deploy and falls to the stale-process restart.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			}
+			// The re-read after the restart finds the on-disk file is not the
+			// controller's build.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+		},
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The running hub is the stale process a restart replaces.
+				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			}
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	requireUnstampedRefusal(t, err)
+	requireNoAttach(t, fr)
+	if !strings.Contains(err.Error(), "restarted onto") {
+		t.Fatalf("refusal does not name the restart that happened: %v", err)
+	}
+	if strings.Contains(err.Error(), "deployed its build") {
+		t.Fatalf("restart-only refusal claims a deploy that did not happen: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "cat >") {
+			t.Fatalf("a restart-only attempt pushed a binary: %v", argv)
+		}
+	}
+}

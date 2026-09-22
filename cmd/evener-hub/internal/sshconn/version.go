@@ -643,7 +643,7 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, pending
 	// on either side proves nothing, and the restart stays pending.
 	var waitErr error
 	if pending.start {
-		waitErr = m.waitStartedHealthy(ctx, host, expected)
+		waitErr = m.waitStartedHealthy(ctx, host, expected, snapshotPinGitSHA())
 	} else {
 		waitErr = m.waitHealthy(ctx, host, expected, snapshotPinGitSHA(), pending.replaced)
 	}
@@ -1165,11 +1165,17 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 // predecessor identity is unknown must fail closed (see waitHealthy), or an old
 // process whose health body carries no started_at would satisfy it.
 //
-// A start passes no snapshot pin: the parent spec states the build-identity
-// requirement for the post-restart probe (waitHealthy), and a start has no
-// deferred deploy to re-verify.
-func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
-	return m.waitForHealthyHub(ctx, host, expectedVersion, "", hubIdentity{}, false)
+// expectedGitSHA is the snapshot pin described by snapshotPinGitSHA, resolved by
+// the caller exactly as waitHealthy takes it. A start passes one too: the binary
+// it launches is the one on disk, but "on disk" was accepted by the
+// version-equality rule, and a snapshot version cannot tell two builds apart —
+// so a start on a stopped host (a deploy that found no hub present, or a first
+// attach to a host already running a foreign snapshot build of the same version)
+// would otherwise attach to a commit this controller did not install. The pin is
+// the only build evidence a start can offer; an empty pin leaves a non-snapshot
+// start on the version-equality rule unchanged.
+func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
+	return m.waitForHealthyHub(ctx, host, expectedVersion, expectedGitSHA, hubIdentity{}, false)
 }
 
 // waitForHealthyHub is the shared poll behind waitHealthy and
@@ -1214,7 +1220,7 @@ func (m *Manager) waitForHealthyHub(ctx context.Context, host hostreg.Host, expe
 			// The version matched but the build identity did not: two snapshot
 			// builds share a version, so this is exactly the mismatch the
 			// version-equality rule cannot see. The hub is not the deployed commit.
-			return fmt.Errorf("%w: host %q hub on :%s reports version %q but backend_git_sha %q, want %q; the running hub is not the snapshot build that was deployed",
+			return fmt.Errorf("%w: host %q hub on :%s reports version %q but backend_git_sha %q, want %q; the running hub is not the snapshot build this controller carries",
 				ErrRestart, host.Name, port, last.version, lastGitSHA, expectedGitSHA)
 		}
 		return fmt.Errorf("%w: host %q hub on :%s reports version %q, want %q after restart", ErrRestart, host.Name, port, last.version, expectedVersion)
@@ -1415,12 +1421,17 @@ func installableEvenerBasename(p string) bool {
 // with the same portable POSIX-sh resolver deployTarget uses (symlinks resolved,
 // plain readlink — no `readlink -f`, which BSD readlink rejects) and compares it
 // to the canonical configured target: evener_path when set, else the canonical
-// `command -v evener`. A hardcoded basename would refuse every valid custom
-// target (say /opt/evener/current/evener-hub) that configuration accepts and
-// that a host may already be running — restart is not where the run target's
-// basename is judged (checkRunTarget, deploy.go, is); a basename is also not
-// sufficient, since an unrelated binary can share one. A mismatch is ErrRestart
-// with no kill.
+// `command -v evener`. A basename is not sufficient on its own, since an
+// unrelated binary can share one. A mismatch is ErrRestart with no kill.
+//
+// This does not judge the run target's basename, and it must not: a host already
+// running an executable whose basename is not `evener` (say
+// /opt/evener/current/evener-hub) can attach, and restarting that process is not
+// where the basename is judged. checkRunTarget (deploy.go) is: it refuses every
+// basename other than `evener` before the target is probed, pushed, or installed
+// on the deploy path, because install.sh ships the runtime binary as `evener` and
+// cannot produce a hub at any other name. So a non-`evener` basename means "cannot
+// be deployed to", not "cannot be attached to or restarted".
 func (m *Manager) hubExecutableMatches(ctx context.Context, host hostreg.Host, exe string) error {
 	resolved, err := m.resolveExecutableName(ctx, host, exe)
 	if err != nil {

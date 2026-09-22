@@ -710,7 +710,7 @@ func installerRefFor(channel, releaseTag, dirty, remedy string) (string, error) 
 	case "release":
 		tag := strings.TrimSpace(releaseTag)
 		if tag == "" {
-			return "", fmt.Errorf("%w: this controller is a release build but carries no stamped release tag (buildinfo.ReleaseTag); refusing to pass the Git SHA %q as a release tag — use the atomic push path", ErrDeploy, buildinfo.Version())
+			return "", fmt.Errorf("%w: this controller is a release build but carries no stamped release tag (buildinfo.ReleaseTag); refusing to pass the Git SHA %q as a release tag; %s", ErrDeploy, buildinfo.Version(), remedy)
 		}
 		return tag, nil
 	case "snapshot":
