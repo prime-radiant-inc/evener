@@ -252,22 +252,29 @@ export function markItemIdentityOnly(item: ItemModel): ItemModel {
 // the marker exists precisely because shape alone cannot prove intent. An
 // unmarked item is identity-only only when it says so structurally: its
 // text is omitted (never a textSource winner) and every field it carries
-// is one a skeleton could carry — the wire's own sparse identity-only
-// fragment, counting only fields that actually carry a value: hydration
-// creates every field as an enumerable property, undefined-valued when the
-// wire omitted it, so key presence alone would disqualify the wire's own
-// sparse fragments (review round 16) — and a payload-free newer fragment
-// would then count as fresh participation, letting stale content win
-// duplicate reconciliation by source precedence. A real item with omitted
-// text is NOT identity-only: tool items routinely omit text while carrying
-// their current output, arguments, images, and status.
+// is one the merge would NOT keep from it — each by its own rule (review
+// rounds 16 and 23): the nullish-fallback fields fall through on undefined
+// AND null, the rank-merged status on undefined, and the spread-merged
+// fields by property presence, where an own undefined is an explicit CLEAR
+// the merge keeps — content, not absence. Hydration never creates those
+// clears (it sets a field only when the wire carried one) while it always
+// creates the nullish-fallback fields undefined-valued — which is why key
+// presence alone cannot decide either way. A real item with omitted text is
+// NOT identity-only: tool items routinely omit text while carrying their
+// current output, arguments, images, and status.
 const itemIdentityOnlyFields = new Set(["id", "turnId", "type", "text", "transcriptKey", "position", "callId"]);
 function itemIsIdentityOnly(item: ItemModel): boolean {
   if ((item as ItemModel & { [ITEM_IDENTITY_ONLY]?: boolean })[ITEM_IDENTITY_ONLY] === true) return true;
   if (itemTextPresence(item) !== "omitted") return false;
-  return Object.keys(item).every(
-    (field) => itemIdentityOnlyFields.has(field) || (item as unknown as Record<string, unknown>)[field] === undefined,
-  );
+  return Object.keys(item).every((field) => {
+    if (itemIdentityOnlyFields.has(field)) return true;
+    const value = (item as unknown as Record<string, unknown>)[field];
+    if (freshSuppliedNullishFallbackFields.has(field)) return value === undefined || value === null;
+    if (field === "status") return value === undefined;
+    // Spread-merged by property presence: an own undefined is an explicit
+    // clear, which the merge keeps — content.
+    return false;
+  });
 }
 
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the

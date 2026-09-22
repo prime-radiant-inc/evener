@@ -10427,6 +10427,188 @@ describe("ConversationStore", () => {
       ]);
       expect(merged[0]?.transcriptEntryIndex).toBeUndefined();
     });
+
+    // Review round 23, clears are content: the identity-only check read
+    // every undefined-valued property as absence, but the spread-merged
+    // fields follow property PRESENCE — a fragment's own undefined is an
+    // explicit CLEAR the merge keeps, so it is content. With no status or
+    // other payload, the clearing fragment was classified identity-only,
+    // the fresh-supplied walk skipped it entirely, and the reconciliation
+    // restored the later duplicate's stale index. (The round-22 test
+    // misses this: its fragment carries a status.)
+    it("a clear-only fragment is not identity-only", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                // A retained fragment carrying ONLY an explicit clear —
+                // its text omitted, no status, no payload field.
+                markItemTextOmitted({
+                  id: "f9",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "",
+                  transcriptKey: "kk",
+                  transcriptEntryIndex: undefined,
+                  position: { entry: 50, item: 0 },
+                }),
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page reissues the fragment's keyless alias — carrying a STALE
+      // entry index — followed by a keyed sibling carrying the restored
+      // text and ANOTHER index. The alias fold keeps the clear; the
+      // reconciliation must keep it too.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "f9",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale text",
+                  transcriptEntryIndex: 5,
+                  position: { entry: 50, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "g2",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "restored text",
+                  transcriptEntryIndex: 7,
+                  status: "completed",
+                  transcriptKey: "kk",
+                  position: { entry: 51, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      const merged = after.turns.find((turn) => turn.id === "rt")?.items ?? [];
+      expect(merged).toEqual([expect.objectContaining({ transcriptKey: "kk", text: "restored text" })]);
+      expect(merged[0]?.transcriptEntryIndex).toBeUndefined();
+    });
+
+    // Review round 23, the unchanged reread: when the retained side
+    // contributes nothing, the merge returns the freshly hydrated items
+    // directly — new objects with no recorded fold — so an identical
+    // reread right after an alias fold replaced the carrier that held
+    // the recorded ancestry. The bound then trimmed the turn whose only
+    // visible row named the folded-from alias. The retained ancestry
+    // transfers to the identity-matching fresh items on that path. Both
+    // reads hydrate through the wire: the fresh items match the folded
+    // carrier field for field, which is exactly what makes the retained
+    // side contribute nothing.
+    it("an identical reread keeps the retained alias ancestry", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const read = () => ({
+        conversation: makeConversation({
+          items: [{ kind: "user" as const, id: "fa", text: "fa row" }],
+          turns: hydrateThread(
+            {
+              thread: makeThread({
+                turns: [
+                  makeTurn({
+                    id: "rt",
+                    items: [
+                      {
+                        id: "fb",
+                        turnId: "rt",
+                        type: "agentMessage",
+                        text: "alias restored",
+                        status: "completed",
+                        transcriptKey: "kk",
+                        position: { entry: 70, item: 0 },
+                      },
+                    ],
+                  }),
+                ],
+              }),
+            },
+            "ref-1",
+            0,
+          ).turns,
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      });
+      service.readProjectionResult = read();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A row-less page reissues the alias under fa's bare id; the fold
+      // leaves the turn backed by the fa row through the recorded
+      // ancestry — the item's own identity names no row.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "fa",
+                  transcriptKey: "kk",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "page fa",
+                  position: { entry: 70, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const folded = store.getState().conversation?.turns.find((t) => t.id === "rt")?.items ?? [];
+      expect(folded).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "alias restored" }),
+      ]);
+
+      // An IDENTICAL reread — no live delta between, nothing for the
+      // retained side to contribute — must keep the turn through the
+      // ancestry the fold recorded, not lose it to the fresh objects.
+      service.readProjectionResult = read();
+      await store.getState().rehydrate(service, sink);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items ?? []).toEqual([
+        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "alias restored" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

@@ -858,7 +858,7 @@ export function createConversationStore() {
     n: AnyNotification,
   ): MobileConversation {
     const next = applyNotification(conversation, n, Date.now());
-    carryFoldIdentitiesThroughNotification(conversation, next);
+    carryFoldIdentities(conversation.turns, next.turns);
     return next;
   }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
@@ -1433,20 +1433,19 @@ export function createConversationStore() {
     }
   }
 
-  // The package's notification folds replace item objects — a streaming
-  // delta appends, a settlement folds completed fields, a full-view settle
-  // replaces the whole item set — and the identity-string ancestry is
-  // keyed by object. Each replacement is built off the model item the
-  // package found by identity, so it carries the same identity the entry
-  // was recorded under: re-key the ancestry to the replacements, or a
-  // live update silently orphans the fold memory and the next bound pass
-  // trims the turn whose row is still visible (review round 16).
-  function carryFoldIdentitiesThroughNotification(
-    before: MobileConversation,
-    after: MobileConversation,
-  ): void {
+  // Replacements re-key the identity-string ancestry, which is keyed by
+  // object. Each replacement is built off the model item its producer
+  // found by identity — the package's notification folds (a streaming
+  // delta, a settlement, a full-view settle; review round 16) and the
+  // merge's no-op path, which returns the freshly hydrated items directly
+  // when the retained side contributes nothing (review round 23) — so it
+  // carries the same identity the entry was recorded under: re-key the
+  // ancestry to the replacements, or the fold memory is silently orphaned
+  // and the next bound pass trims the turn whose row is still visible.
+  // Fill-only: an item that already carries an entry keeps it.
+  function carryFoldIdentities(before: readonly TurnModel[], after: readonly TurnModel[]): void {
     const remembered = new Map<string, ReadonlySet<string>>();
-    for (const turn of before.turns) {
+    for (const turn of before) {
       for (const item of turn.items) {
         const identities = mergedItemFoldIdentities.get(item);
         if (identities === undefined) continue;
@@ -1457,7 +1456,7 @@ export function createConversationStore() {
       }
     }
     if (remembered.size === 0) return;
-    for (const turn of after.turns) {
+    for (const turn of after) {
       for (const item of turn.items) {
         if (mergedItemFoldIdentities.get(item) !== undefined) continue;
         const identities = remembered.get(item.transcriptKey ?? item.id) ?? remembered.get(item.id);
@@ -2493,6 +2492,13 @@ export function createConversationStore() {
               rehydrateRealSources,
               history.itemFoldSources,
             );
+            // The merge's no-op path returns the freshly hydrated items
+            // directly when the retained side contributes nothing — new
+            // objects no fold recorded — so an unchanged reread would
+            // silently drop the ancestry the retained items they replace
+            // carried: re-key it to the identity-matching fresh items
+            // before recording (review round 23).
+            carryFoldIdentities(currentConvForMerge.turns, mergedTurns);
             recordItemFoldSources(mergedTurns, history.itemFoldSources, history.toolResultFoldSources);
             transferFoldedCompactedEntries(mergedTurns, history.olderTurnFolds);
             // #1919 follow-up: bound the merged result AFTER the merge, so
