@@ -93,34 +93,25 @@ func canonicalStateDir(dir string) string {
 	if dir == "" {
 		return dir
 	}
-	// Anchor relative paths BEFORE resolving anything: a relative
-	// EvalSymlinks result stays relative, and anchoring it afterward — or
-	// anchoring through filepath.Abs — can preserve a lexical symlinked
-	// working directory, because os.Getwd prefers PWD whenever it matches
-	// ".", so a shell that cd'd through a symlink hands us the lexical form.
-	// The component walk below resolves every existing component of the
-	// anchored path, lexical or not.
-	//
-	// filepath.Abs would also Clean ".." lexically, which is wrong across a symlink:
-	// the kernel resolves `link/../state` against the physical parent of
-	// link's target, while Clean folds it to link's lexical parent. Anchor
-	// without cleaning and walk the components top-down instead, resolving
-	// symlinks as they accumulate so ".." pops the resolved parent. The walk
-	// ends at the first component that does not exist, joining the missing
-	// tail back unchanged, and always terminates: the root resolves.
-	anchored := dir
-	if !filepath.IsAbs(anchored) {
-		cwd, gerr := os.Getwd()
-		if gerr != nil {
-			// No faithful anchor is available; the cleaning Abs is the
-			// best remaining answer.
-			abs, aerr := filepath.Abs(dir)
-			if aerr != nil {
-				return dir
-			}
-			return resolveStatePathComponents(abs)
+	// Anchor relative paths BEFORE resolving anything — the
+	// anchorRelativeStateDir implementations carry the per-platform
+	// anchoring rationale — then walk the components top-down, resolving
+	// symlinks as they accumulate so ".." pops the resolved parent. The
+	// walk ends at the first component that does not exist, joining the
+	// missing tail back unchanged, and always terminates: the root
+	// resolves.
+	if filepath.IsAbs(dir) {
+		return resolveStatePathComponents(dir)
+	}
+	anchored, ok := anchorRelativeStateDir(dir)
+	if !ok {
+		// No faithful anchor is available; the cleaning Abs is the
+		// best remaining answer.
+		abs, aerr := filepath.Abs(dir)
+		if aerr != nil {
+			return dir
 		}
-		anchored = cwd + string(filepath.Separator) + dir
+		return resolveStatePathComponents(abs)
 	}
 	return resolveStatePathComponents(anchored)
 }
