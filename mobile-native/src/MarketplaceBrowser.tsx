@@ -73,10 +73,12 @@ export function MarketplaceBrowser({
   /** Records an applied removal with the screen. `notice` is
    * appliedRemovalNotice's answer - the cleanup warning, or null when only
    * the list read failed - and becomes the screen-level warning; the name
-   * joins the guard only while `asOf` - the registration the write removed -
-   * is still the one the hub's truth carries; the return value says whether
-   * `owner` was still the current client, false meaning a replaced client's
-   * late result is dropped whole. */
+   * joins the guard whatever the hub's truth currently carries: the fence
+   * holds until an authoritative read establishes that truth - absence or
+   * a replacement registration clears it, and only a stale row still
+   * carrying `asOf` - the registration the write removed - keeps it; the
+   * return value says whether `owner` was still the current client, false
+   * meaning a replaced client's late result is dropped whole. */
   onAppliedRemoval(
     name: string,
     notice: string | null,
@@ -185,9 +187,10 @@ export function MarketplaceBrowser({
   function remove() {
     if (!marketplace || busy || appliedRemovalNames.has(marketplace.name)) return;
     const name = marketplace.name;
-    // The registration this write targets: the outcome fences the name only
-    // while the hub's truth still carries this registration, never the one
-    // a re-add put in its place.
+    // The registration this write targets: the outcome fences the name until
+    // an authoritative read establishes what the hub now carries - absence
+    // or a replacement registration clears the fence, and only a stale row
+    // still carrying this registration's own identity keeps it.
     const target = marketplace.lastUpdated;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [

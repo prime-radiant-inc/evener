@@ -38,12 +38,15 @@ import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 /** The applied marketplace removals one client's writes reported, keyed by
- * name to the hub's last-seen `lastUpdated` for that registration: names the
- * hub says are already gone, held with the client whose write said so because
- * a fresh browser must not offer Remove again for any of them. The recorded
- * identity is what tells a stale row - the same registration the removal
- * applied to - from a re-add, which the hub stamps with a fresh lastUpdated
- * on every registration (internal/plugins/marketplaces.go). */
+ * name to the hub's last-seen `lastUpdated` for that registration: names a
+ * write said the hub already removed, held with the client whose write said
+ * so because a fresh browser must not offer Remove again for any of them.
+ * The fence covers the name from the applied outcome until the authoritative
+ * reads establish what the hub now carries: a list omitting the name (the
+ * removal reconciled) or carrying a different `lastUpdated` (a re-add, which
+ * the hub stamps with a fresh lastUpdated on every registration -
+ * internal/plugins/marketplaces.go) clears it, and only a stale row still
+ * carrying the removed registration's own identity keeps it. */
 type AppliedRemovalGuard = {
   client: ConversationClientLike | null;
   entries: ReadonlyMap<string, MarketplaceEntry["lastUpdated"] | null>;
@@ -78,12 +81,6 @@ export function PluginsScreen({
   // (currentClient's checks below).
   const currentClient = useRef<ConversationClientLike | null>(null);
   currentClient.current = client ?? null;
-  // The latest registration identities the browser reported as authoritative,
-  // held so a late record can reconcile against them (markAppliedRemoval
-  // below).
-  const authoritativeIdentities = useRef<
-    ReadonlyMap<string, MarketplaceEntry["lastUpdated"]> | null
-  >(null);
   const [marketplaceWarning, setMarketplaceWarning] = useState<{
     client: ConversationClientLike;
     text: string;
@@ -100,7 +97,6 @@ export function PluginsScreen({
   const visibleMarketplaceWarning =
     marketplaceWarning?.client === client ? marketplaceWarning.text : null;
   useEffect(() => {
-    authoritativeIdentities.current = null;
     setAppliedRemovalGuard((current) =>
       current.client === (client ?? null)
         ? current
@@ -124,7 +120,6 @@ export function PluginsScreen({
       const currentEntries = new Map(
         marketplaces.map((item) => [item.name, item.lastUpdated] as const),
       );
-      authoritativeIdentities.current = currentEntries;
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
         let changed = false;
@@ -141,12 +136,13 @@ export function PluginsScreen({
     [],
   );
   // The browser's recording path for an applied removal: fences the name
-  // while the hub's truth still carries the exact registration the write
-  // removed (the list already omitting it, or carrying a newer one, means
-  // the removal is reconciled or the name re-registered - guard nothing),
-  // raises the warning (nothing, when only the list read failed), and
-  // answers whether `owner` was still current - false means the outcome
-  // came from a client this screen has replaced.
+  // whatever the hub's truth currently carries, until an authoritative read
+  // establishes it - a list omitting the name (the removal reconciled) or
+  // carrying a newer registration (a re-add) clears the fence there, and
+  // only a stale row still carrying the removed registration's own identity
+  // keeps it - raises the warning (nothing, when only the list read
+  // failed), and answers whether `owner` was still current - false means
+  // the outcome came from a client this screen has replaced.
   const markAppliedRemoval = useCallback(
     (
       name: string,
@@ -157,7 +153,6 @@ export function PluginsScreen({
       if (currentClient.current !== owner) return false;
       setAppliedRemovalGuard((current) => {
         if (current.client !== owner) return current;
-        if (authoritativeIdentities.current?.get(name) !== asOf) return current;
         const entries = new Map(current.entries);
         entries.set(name, asOf);
         return { client: owner, entries };
