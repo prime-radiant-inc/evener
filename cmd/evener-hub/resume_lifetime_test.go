@@ -26,6 +26,38 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// chdirTemp changes the process working directory to dir for the rest of the
+// test and restores it on cleanup. It is testing.T.Chdir without the
+// os.Open(".") that the standard implementation performs before chdir.
+//
+// That open is the reason this package could not reuse Go's test cache: the
+// test log records it as "open .", and cmd/go resolves a relative open against
+// the directory the test binary started in — cmd/evener-hub — then folds a full
+// hashOpen of that directory into the cache key (every direct entry's name and
+// stat, see computeTestInputsID). The frontend subtree the web gate rebuilds
+// between `make test` runs is one such entry, so its mtime churn invalidated
+// the key for the whole package and re-ran every hub test each run. Changing
+// directory with a saved path leaves the isolation (cwd is outside the repo,
+// exactly as before) without that enumeration.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	// Keep PWD consistent with the new working directory, as testing.T.Chdir
+	// does, so os.Getwd and anything reading PWD agree.
+	t.Setenv("PWD", dir)
+	t.Cleanup(func() {
+		if err := os.Chdir(old); err != nil {
+			t.Fatalf("restore working directory to %s: %v", old, err)
+		}
+	})
+}
+
 // The registration models an active launch at its ownership boundary; real hub
 // RPC dispatch and forceStopThread must cancel it and await cleanup before the
 // scripted external process controller may inspect or signal a ready daemon.
@@ -412,7 +444,7 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 	for _, reason := range []string{"disconnect", "stop"} {
 		t.Run(reason, func(t *testing.T) {
 			root := t.TempDir()
-			t.Chdir(root)
+			chdirTemp(t, root)
 			t.Setenv(envvars.XDGStateHome.Name, filepath.Join(root, "state-home"))
 			runDir := filepath.Join(root, "run")
 			if err := os.MkdirAll(runDir, 0o700); err != nil {
@@ -612,7 +644,7 @@ func TestLongRunningResumeCleanupErrorIsNotNested(t *testing.T) {
 
 func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	root := t.TempDir()
-	t.Chdir(root)
+	chdirTemp(t, root)
 	t.Setenv(envvars.XDGStateHome.Name, filepath.Join(root, "state-home"))
 	runDir, recoveryRoot := filepath.Join(root, "run"), filepath.Join(root, "recovery")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
