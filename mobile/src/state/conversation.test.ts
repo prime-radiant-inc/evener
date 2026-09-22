@@ -9146,6 +9146,132 @@ describe("ConversationStore", () => {
       ]);
     });
 
+    // RoboRev panel follow-up (#2152): the round-8/16 pins cover a result
+    // arriving beside an identity the compact turn also remembers. A
+    // result-ONLY fragment shares none of that. The callId fold collapses a
+    // call/result pair into one item before the turn ever compacts, so the
+    // compact memory holds the call skeleton alone and the result's own
+    // identity is remembered nowhere. The identity-only collision scan then
+    // found no collision, injected no skeleton, and the fragment survived as
+    // its own turn carrying the result — a second turn for content the
+    // compact host already accounts, with its usage stamp counting beside
+    // the host's in sessionTokens' turn-summed fallback. callId is a
+    // collision dimension of its own between remembered tool skeletons and
+    // incoming tool call/result items: the skeleton injects, and the result
+    // merges into the host through the package's existing callId fold
+    // exactly like the shared-identity paths.
+    it("a result-only fragment sharing a remembered call's callId folds into the compact host", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering a tool CALL skeleton (callId call-1).
+      // The wire's reload projection folds a call and its result into one
+      // item, so a compacted pair can only ever be remembered on the call
+      // side — the result identity lives in no remembered skeleton.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "inProgress",
+                  transcriptKey: "kc",
+                  position: { entry: 99, item: 0 },
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // A later page re-serves the RESULT as its own turn: fresh keyless
+      // item identity — no shared item id, no shared transcript key — with
+      // only the callId colliding. The page also re-serves the result's
+      // display row (the projector's own shape), so the folded host keeps a
+      // window seat and the fold is observable in the retained payloads.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "item_tool_result_2", text: "result row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "item_tool_result_2",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  output: "ok",
+                  exitCode: 0,
+                  status: "completed",
+                  position: { entry: 101, item: 0 },
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const conv = store.getState().conversation!;
+      // The skeleton injected and the package's own callId fold merged the
+      // result into the remembered call: the host — not a second content
+      // turn — carries the result's fields.
+      expect(conv.turns.find((t) => t.id === "pt")?.items).toEqual([
+        expect.objectContaining({
+          id: "item_tool_1",
+          callId: "call-1",
+          output: "ok",
+          exitCode: 0,
+          status: "completed",
+        }),
+      ]);
+      // The fragment no longer survives as a separate content turn: the fold
+      // emptied it. Its usage stamp stays on the emptied shell — the fold's
+      // own emptied-turn rule keeps a turn that carries canonical metadata,
+      // the same accounting-completeness rule that keeps compact turns
+      // alive — so the stamp counts exactly once, never alongside a second
+      // copy of the result's content.
+      const pq = conv.turns.find((t) => t.id === "pq");
+      expect(pq?.items).toEqual([]);
+      expect(pq?.usage).toEqual({ inputTokens: 700, outputTokens: 70 });
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 1201, outputTokens: 91, scope: "loaded" });
+    });
+
     // Review round 11, alias reconciliation at rehydrate: the same
     // duplicate-identity hole the superseded-alias fold opens at loadOlder
     // opens at rehydrate too — the turn carries its restored item under one

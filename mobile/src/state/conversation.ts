@@ -1483,15 +1483,37 @@ export function createConversationStore() {
   // above by testing both fields — a false collision only injects skeletons
   // the package then fails to match and the strip removes, so the common
   // no-collision case costs one lookup per remembered identity and never
-  // over-folds.
-  function compactedTurnsCollidingWith(identities: Set<string>): Set<string> {
+  // over-folds. RoboRev panel follow-up (#2152): callId is a collision
+  // dimension of its own between remembered TOOL skeletons and incoming tool
+  // call/result items. A result-only fragment re-serves the RESULT of a call
+  // the compact turn remembers — the callId fold already collapses that pair
+  // into one item pre-compaction, so the turn remembers only the call
+  // skeleton and NO remembered identity names the result. Without this
+  // dimension the fragment survives as its own turn beside the host. Both
+  // sides are tool-classified by the package's own id rule: the callId fold
+  // only ever folds tool calls with tool results, so a non-tool item sharing
+  // a callId string is not a fold candidate, and a false collision still only
+  // injects skeletons the package fails to match and the strip removes.
+  // The incoming side's tool call ids for that second dimension: a compact
+  // turn's remembered tool skeleton collides when an incoming tool call or
+  // tool result item shares its callId, because the package's callId fold is
+  // the machinery that would merge them.
+  function addIncomingToolCallId(item: { id: string; callId?: string }, callIds: Set<string>): void {
+    if (item.callId === undefined) return;
+    if (isToolCallItemId(item.id) || isToolResultItemId(item.id)) callIds.add(item.callId);
+  }
+
+  function compactedTurnsCollidingWith(identities: Set<string>, toolCallIds: ReadonlySet<string>): Set<string> {
     const colliding = new Set<string>();
     if (compactedTurnItems.size === 0) return colliding;
     for (const [turnId, skeletons] of compactedTurnItems) {
       for (const skeleton of skeletons) {
         if (
           identities.has(skeleton.transcriptKey ?? skeleton.id) ||
-          identities.has(skeleton.id)
+          identities.has(skeleton.id) ||
+          (skeleton.callId !== undefined &&
+            (isToolCallItemId(skeleton.id) || isToolResultItemId(skeleton.id)) &&
+            toolCallIds.has(skeleton.callId))
         ) {
           colliding.add(turnId);
           break;
@@ -2434,15 +2456,17 @@ export function createConversationStore() {
             // so the package's own turnsMatch/coalescing does the folding
             // exactly as the unbounded main would have.
             const freshIdentities = new Set<string>();
+            const freshToolCallIds = new Set<string>();
             for (const turn of conversation.turns) {
               for (const item of turn.items) {
                 freshIdentities.add(item.transcriptKey ?? item.id);
                 freshIdentities.add(item.id);
+                addIncomingToolCallId(item, freshToolCallIds);
               }
             }
             const injectedFresh = injectCompactedSkeletons(
               currentConvForMerge.turns,
-              compactedTurnsCollidingWith(freshIdentities),
+              compactedTurnsCollidingWith(freshIdentities, freshToolCallIds),
             );
             const history = mergeTurnHistoryWithFolds(injectedFresh.turns, conversation.turns);
             mergedTurns = history.turns;
@@ -2728,15 +2752,17 @@ export function createConversationStore() {
             // as the unbounded main would have. The retained copy stays the
             // newer merge input, so its usage still wins the fold.
             const pageIdentities = new Set<string>();
+            const pageToolCallIds = new Set<string>();
             for (const turn of result.turnsPage?.data ?? []) {
               for (const item of turn.items ?? []) {
                 pageIdentities.add(item.transcriptKey ?? item.id);
                 pageIdentities.add(item.id);
+                addIncomingToolCallId(item, pageToolCallIds);
               }
             }
             const injectedPage = injectCompactedSkeletons(
               currentConv.turns,
-              compactedTurnsCollidingWith(pageIdentities),
+              compactedTurnsCollidingWith(pageIdentities, pageToolCallIds),
             );
             const mergeConv: MobileConversation =
               injectedPage.injected.length > 0
