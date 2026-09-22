@@ -62,7 +62,7 @@ func TestFormatJobNotificationEmitsIntent(t *testing.T) {
 	t.Parallel()
 	withIntent := formatJobNotificationBlock(jobNotification{
 		JobID: "job_X", JobType: "shell", Intent: "Running the mid-turn kill reproduction.",
-		Status: "failed", Reason: "exit_nonzero",
+		Status: "command_exited_nonzero", Reason: "exit_nonzero",
 	}, notificationExcerpt{}, true)
 	if !strings.Contains(withIntent, `intent="Running the mid-turn kill reproduction."`) {
 		t.Errorf("notification missing intent attribute:\n%s", withIntent)
@@ -73,6 +73,24 @@ func TestFormatJobNotificationEmitsIntent(t *testing.T) {
 	}, notificationExcerpt{}, true)
 	if strings.Contains(bare, "intent=") {
 		t.Errorf("empty intent must not emit an attribute:\n%s", bare)
+	}
+}
+
+// The block carries the split vocabulary verbatim: the event/status attrs
+// name the command's outcome (command_exited_nonzero / command_killed), and
+// the renderer has no status-specific branching to drift — the title words
+// are the web parser's job.
+func TestFormatJobNotificationCarriesCommandOutcomeStatuses(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		block := formatJobNotificationBlock(jobNotification{
+			JobID: "job_X", JobType: "shell", Status: status, Reason: "exit_nonzero",
+		}, notificationExcerpt{}, true)
+		for _, want := range []string{`job_id="job_X"`, `event="` + status + `"`, `status="` + status + `"`} {
+			if !strings.Contains(block, want) {
+				t.Errorf("status %s block missing %q:\n%s", status, want, block)
+			}
+		}
 	}
 }
 
