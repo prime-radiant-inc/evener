@@ -30,6 +30,7 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPageWithFolds,
+  mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
   sessionControls,
@@ -2489,83 +2490,119 @@ export function createConversationStore() {
             // Review round 3: the wire-cursor gate must read only RETAINED
             // transcript evidence — memory must not let discarded history
             // override the fresh wire cursor. Rounds 3/7/8 answered that
-            // with a skeleton-free re-merge that dropped compact-only turns
-            // from its inputs. RoboRev round 30: the re-merge lost the ALIAS
-            // relationships the real merge saw through the injected
-            // skeletons. A compact turn's item can return keyed under a NEW
-            // bare id (the hub reissues under a new wire id while the
-            // transcript key stands), and a complete reread can then re-serve
-            // the same content KEYLESS under the ORIGINAL id: the real merge
-            // folds the restored item into the reread through the remembered
-            // alias, but the re-merge matched nothing, claimed the restored
-            // turn as uncovered history, and — an unchanged turn supplying
-            // overlap — let the stale retained cursor override the complete
-            // reread's absent one. The gate now reads the ACTUAL merge's own
-            // fold membership, with memory still claiming nothing: injected
-            // skeletons are never retained content (round 3), compact-only
-            // turns stay excluded outright (rounds 7-8, whether or not a
-            // collision injected anything), an unmatched turn still claims —
-            // its usage is retained history even when its items cannot be —
-            // and a turn's real items count as consumed only when the output
-            // item they folded into also carries a real item from the fresh
-            // side: an item that folded into skeletons alone, or into a
-            // retained-only chain, is still history the fresh read lacks.
+            // with a skeleton-free re-merge that drops compact-only turns
+            // from its inputs, and the package's own coverage semantics
+            // decide every claim that re-merge sees: canonical fields the
+            // fresh matches lack, unmatched empty turns' usage, warnings
+            // never claiming, per-item field survival. RoboRev round 30:
+            // the re-merge lost the ALIAS relationships the real merge saw
+            // through the injected skeletons — a compact turn's item can
+            // return keyed under a NEW bare id (the hub reissues under a
+            // new wire id while the transcript key stands), a complete
+            // reread can then re-serve the same content KEYLESS under the
+            // ORIGINAL id, and the re-merge, matching nothing, claimed the
+            // restored turn as uncovered history and let the stale
+            // retained cursor override the complete reread's absent one.
+            // Round 31: the re-merge stays the claim authority, and the
+            // real merge's own membership only EXCLUDES a turn it proved
+            // fully consumed through remembered aliases — every real item
+            // folded into an output a fresh source also reached, and every
+            // canonical field the fresh side of its group supplies. Such a
+            // turn is the reread's own content; anything less keeps the
+            // re-merge's verdict, so omitted usage, unmatched empty turns
+            // and warnings still claim exactly as the package computes.
+            // The re-merge itself never sees a skeleton (round 3), and
+            // compact-only turns stay excluded outright (rounds 7-8,
+            // whether or not a collision injected anything).
             const coverageFreshItemRefs = new Set(
               conversation.turns.flatMap((turn) => turn.items),
             );
             const coverageInjectedRefs = new Set(injectedFresh.injected);
-            const coverageFoldedTurnIds = new Set<string>();
-            for (const foldedIds of history.olderTurnFolds.values()) {
-              for (const foldedId of foldedIds) coverageFoldedTurnIds.add(foldedId);
-            }
-            // Which output item each retained real item folded into, and
-            // which output items carry a real source from either side. The
-            // merge's no-op path returns the fresh items by reference with
-            // no membership recorded (round 23): the retained side
-            // contributed nothing there, so the scan below reads no sources
-            // and the no-op branch settles the gate directly.
-            const coverageOutputCarriesFresh = new Set<ItemModel>();
-            const coverageOutputCarriesRetained = new Set<ItemModel>();
-            const coverageRetainedItemOutput = new Map<ItemModel, ItemModel>();
+            // The merge's no-op path returns the fresh items by reference
+            // with no membership recorded (round 23): the retained side
+            // contributed nothing there, so no turn can be alias-consumed
+            // and the re-merge settles the gate exactly as before.
             const coverageMergeNoOp = history.turns === conversation.turns;
+            const coverageOutputCarriesFresh = new Set<ItemModel>();
+            const coverageOutputFreshSources = new Map<ItemModel, ItemModel[]>();
+            const coverageRetainedItemOutput = new Map<ItemModel, ItemModel>();
             if (!coverageMergeNoOp) {
               for (const turn of history.turns) {
                 for (const item of turn.items) {
                   for (const source of history.itemFoldSources(item)) {
                     if (coverageFreshItemRefs.has(source)) {
                       coverageOutputCarriesFresh.add(item);
+                      const freshSources = coverageOutputFreshSources.get(item) ?? [];
+                      freshSources.push(source);
+                      coverageOutputFreshSources.set(item, freshSources);
                     } else if (!coverageInjectedRefs.has(source)) {
                       coverageRetainedItemOutput.set(source, item);
-                      if (source.type !== "warning") coverageOutputCarriesRetained.add(item);
                     }
                   }
                 }
               }
             }
-            const coverageTranscriptOverlap = [...coverageOutputCarriesFresh].some((item) =>
-              coverageOutputCarriesRetained.has(item),
+            // A retained turn's fresh matches in the REAL merge: the fresh
+            // turns of the group it folded into (an unmatched turn's group
+            // holds only itself, so it has none).
+            const coverageFreshTurnsById = new Map(
+              conversation.turns.map((turn) => [turn.id, turn]),
             );
-            let coverageOlder = false;
-            if (!coverageMergeNoOp) {
-              for (const turn of currentConvForMerge.turns) {
-                if (turn.items.length === 0 && compactedTurnItems.has(turn.id)) continue;
-                if (!coverageFoldedTurnIds.has(turn.id)) {
-                  coverageOlder = true;
-                  break;
-                }
-                if (turn.items.length === 0) continue;
-                if (
-                  turn.items.some((item) => {
-                    const output = coverageRetainedItemOutput.get(item);
-                    return output === undefined || !coverageOutputCarriesFresh.has(output);
-                  })
-                ) {
-                  coverageOlder = true;
-                  break;
-                }
+            const coverageTurnOutputId = new Map<string, string>();
+            for (const [outputId, olderTurnIds] of history.olderTurnFolds) {
+              for (const olderTurnId of olderTurnIds) {
+                coverageTurnOutputId.set(olderTurnId, outputId);
               }
             }
-            if (coverageOlder && coverageTranscriptOverlap) {
+            const coverageAliasConsumed = (turn: TurnModel): boolean => {
+              if (coverageMergeNoOp) return false;
+              // An empty turn can only have matched by turn id — the
+              // re-merge sees that match itself, and its group membership
+              // is what supplies the re-merge's overlap evidence.
+              if (turn.items.length === 0) return false;
+              for (const item of turn.items) {
+                if (coverageInjectedRefs.has(item)) continue;
+                const output = coverageRetainedItemOutput.get(item);
+                if (output === undefined || !coverageOutputCarriesFresh.has(output)) {
+                  return false;
+                }
+                // A DIRECT identity match with a fresh source of the same
+                // output: the re-merge sees it too, so the turn keeps its
+                // re-merge membership — its matched items are what supply
+                // the re-merge's transcript-overlap evidence.
+                const freshSources = coverageOutputFreshSources.get(output) ?? [];
+                if (freshSources.some((fresh) => itemIdentityMatches(item, fresh))) {
+                  return false;
+                }
+              }
+              const outputId = coverageTurnOutputId.get(turn.id);
+              if (outputId === undefined) return false;
+              const freshMatches = history.newerTurnFolds.get(outputId) ?? [];
+              // The package's turnCoverageFields: every field merges with
+              // ?? in mergePageTurn, so null and undefined both read as
+              // absent for them (absentForCoverage with nullishMerged).
+              for (const field of ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const) {
+                const retainedValue = turn[field];
+                if (retainedValue === undefined || retainedValue === null) continue;
+                const supplied = freshMatches.some((freshTurnId) => {
+                  const freshTurn = coverageFreshTurnsById.get(freshTurnId);
+                  return freshTurn !== undefined && freshTurn[field] !== undefined && freshTurn[field] !== null;
+                });
+                if (!supplied) return false;
+              }
+              return true;
+            };
+            const coverageOlderTurns = currentConvForMerge.turns.filter(
+              (turn) =>
+                !(turn.items.length === 0 && compactedTurnItems.has(turn.id)) &&
+                !coverageAliasConsumed(turn),
+            );
+            const coverage =
+              injectedFresh.injected.length > 0 ||
+              coverageOlderTurns.length !== currentConvForMerge.turns.length
+                ? mergeTurnHistory(coverageOlderTurns, conversation.turns)
+                : history;
+            if (coverage.olderCoverage && coverage.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
             // Strip the injected skeletons the merge did not fold away —
