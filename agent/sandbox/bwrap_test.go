@@ -198,7 +198,7 @@ func TestBuildBwrapArgvMasksDaemonSockets(t *testing.T) {
 func TestBuildBwrapArgvMasksSymlinkedSecret(t *testing.T) {
 	// Verifier finding F3: a symlinked credential dir must be masked at its real
 	// target (as a directory), not misclassified and aborted.
-	home := t.TempDir()
+	home := secretHomeDir(t)
 	realSSH := filepath.Join(home, "real-ssh")
 	if err := os.MkdirAll(realSSH, 0o700); err != nil {
 		t.Fatal(err)
