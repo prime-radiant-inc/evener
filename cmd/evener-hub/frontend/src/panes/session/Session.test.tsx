@@ -2444,6 +2444,92 @@ test("a dormant session's last held departure still announces its outcome", asyn
   expect(screen.queryByTestId("held-steer-stack")).toBeNull();
 });
 
+// The live gate's two fence marks (roborev #2140 round 4): a session whose
+// status still reads active/idle can be read-only - a snapshot marked
+// resumeRequired, or a restart-blocking recovery obligation. No ghost, no
+// announcements, no live-edge row while either fence stands.
+test("a resume-required live session renders no held ghost", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+        resumeRequired: true,
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await act(async () => {});
+
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+test("a recovery-fenced live session renders no held ghost", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  // The recovery fence's obligation (the same mark liveControls' press-time
+  // rule consults) - armed here the way CommandPalette.test arms it.
+  act(() => {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set("ref_a", Symbol()),
+    }));
+  });
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await act(async () => {});
+
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
 test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));

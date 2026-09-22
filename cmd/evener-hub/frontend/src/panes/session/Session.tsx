@@ -68,12 +68,13 @@ import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 
 // Spec §1: held-steer surfaces render only while the session is live -
-// never on notLoaded or read-only surfaces. The read-only family matches
-// the shared-notes surface's (humanNoteDrafts.ts): ended, closed,
+// never on notLoaded or read-only surfaces. The read-only status family
+// matches the shared-notes surface's (humanNoteDrafts.ts): ended, closed,
 // notLoaded, restartRequired. Awaiting stays live: a hold parked at a
-// boundary delivers with the next turn.
+// boundary delivers with the next turn. Two further read-only marks ride
+// outside status - a snapshot's resumeRequired and the recovery-fence
+// obligation - and are read where the live gate composes them below.
 const HELD_SURFACE_OFF_STATUSES = new Set(["ended", "closed", "notLoaded", "restartRequired"]);
-const heldSurfaceLive = (statusType: string): boolean => !HELD_SURFACE_OFF_STATUSES.has(statusType);
 
 export interface SessionPaneParams {
   ref: string;
@@ -317,7 +318,18 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // TranscriptBody itself uses - so the count and the row cannot drift and
   // jump-to-bottom/append-follow cannot land one row short. Live-gated per
   // spec §1: no ghost on notLoaded or read-only surfaces.
-  const heldVisible = model !== undefined && heldSurfaceLive(model.status.type) && heldSteers.length > 0;
+  // Spec §1's live gate, complete: the read-only status family, plus the two
+  // fence marks that can hold a session read-only while its status still
+  // reads active/idle - a snapshot's resumeRequired (cleared only by an
+  // explicit thread/resume) and the restart-blocking recovery obligation
+  // (restartPending above, the same fence liveControls' press-time rule
+  // consults).
+  const heldSurfaceLive =
+    model !== undefined &&
+    model.resumeRequired !== true &&
+    !restartPending &&
+    !HELD_SURFACE_OFF_STATUSES.has(model.status.type);
+  const heldVisible = heldSurfaceLive && heldSteers.length > 0;
   const trailingRow =
     askPending || heldVisible
       ? {
@@ -622,7 +634,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             (heldVisible flips false, the dormant empty surface takes
             over), so a region inside it would never observe the departure
             it must announce (spec §5). Live-gated per spec §1. */}
-        {heldSurfaceLive(model.status.type) && <HeldSteerAnnouncements ref={ref} />}
+        {heldSurfaceLive && <HeldSteerAnnouncements ref={ref} />}
         {showDormantSurface ? dormantSurface : transcript}
       </div>
     </PaneScaffold>
