@@ -12,11 +12,12 @@ import {
 	MutationOutbox,
 	type MutationAttachmentRef,
 	type MutationIntent,
-	type MutationOptimisticRecord,
 	type MutationOutboxRecord,
 	type MutationOutboxOptions,
 	type MutationStopBarrier,
 	type MutationOutboxStorage,
+		type MutationPersistencePort,
+		type MutationPersistenceSnapshot,
 	type MutationRecoveryRecord,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
@@ -44,12 +45,6 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
 	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 };
-
-export interface NativeMutationPersistenceSnapshot {
-	outbox: MutationOutboxRecord<MutationAttachmentRef>[];
-	optimistic: MutationOptimisticRecord<MutationAttachmentRef>[];
-	recovery: MutationRecoveryRecord<MutationAttachmentRef>[];
-}
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
 
@@ -107,7 +102,9 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 
 export type NativeMutationRequest = ConversationMutationRequest;
 
-export class NativeMutationRuntime implements ConversationMutationSubmitter {
+export class NativeMutationRuntime
+	implements ConversationMutationSubmitter, MutationPersistencePort<MutationAttachmentRef>
+{
 	readonly storage: NativeStorage;
 	readonly #outbox: MutationOutbox;
 	readonly #dispatcher: MutationDispatcher;
@@ -167,11 +164,24 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		await this.#outbox.stop();
 	}
 
-	async readTargetRecords(targetRef: string): Promise<NativeMutationPersistenceSnapshot> {
+	// The shared durable-read contract (MutationPersistencePort): the
+	// snapshot is the package's own shape, so the runtime feeds
+	// createMutationProjectionFence and the shared projection machinery
+	// with no adapter, and a field added to the shared snapshot breaks
+	// this class's compilation instead of silently diverging in a
+	// parallel native copy. Native recovery reads stay scoped to the
+	// composite hub/conversation target - the storage's listRecovery
+	// requires the exact key - so the port's all-targets form (ref
+	// omitted) has no native backing: it fails loudly rather than
+	// returning a snapshot that silently drops recovery rows, and the
+	// fence machinery already degrades a rejected read to a no-op
+	// refresh.
+	async read(ref?: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>> {
+		if (ref === undefined) throw new Error("targetRef is required for native persistence reads");
 		const [outbox, optimistic, recovery] = await Promise.all([
-			this.storage.listOutbox(targetRef),
-			this.storage.listOptimistic(targetRef),
-			this.storage.listRecovery(targetRef),
+			this.storage.listOutbox(ref),
+			this.storage.listOptimistic(ref),
+			this.storage.listRecovery(ref),
 		]);
 		return { outbox, optimistic, recovery };
 	}

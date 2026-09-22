@@ -1,6 +1,11 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import {
+	createMutationProjectionFence,
+	type MutationAttachmentRef,
+	type MutationPersistencePort,
+} from "@evener/appwire-client/state/mutation";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -102,7 +107,7 @@ test("a target stays gated until a matching authoritative read opens it", async 
 	await runtime.stop();
 });
 
-test("readTargetRecords and storage subscriptions expose a scoped rejection without changing origin identity", async () => {
+test("read and storage subscriptions expose a scoped rejection without changing origin identity", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => `mutation-${++nextId}`,
@@ -136,7 +141,7 @@ test("readTargetRecords and storage subscriptions expose a scoped rejection with
 		});
 	});
 
-	const snapshot = await runtime.readTargetRecords(targetKey);
+	const snapshot = await runtime.read(targetKey);
 	expect(snapshot.outbox).toEqual([]);
 	expect(snapshot.optimistic).toEqual([]);
 	expect(snapshot.recovery).toMatchObject([{ clientMutationId: "mutation-1", targetRef: targetKey }]);
@@ -167,14 +172,7 @@ test("discardRecovery notifies storage listeners after the durable deletion comp
 	await runtime.start();
 	const targetKey = nativeMutationTargetKey("hub-a", "ref-1");
 	const changes: string[][] = [];
-	let readAtNotify: ReturnType<typeof runtime.readTargetRecords> | undefined;
-	const unsubscribe = runtime.subscribeStorage((targetRefs) => {
-		changes.push([...targetRefs]);
-		// Read at notify time so the test can pin that the listener ran
-		// after the durable write: a notify that raced ahead of the DELETE
-		// would still observe the row here.
-		readAtNotify = runtime.readTargetRecords(targetKey);
-	});
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
 
 	await runtime.submit({ ...request("send"), hubId: "hub-a" });
 	const lease = runtime.beginAuthoritativeRead("hub-a", "ref-1", client);
@@ -186,7 +184,13 @@ test("discardRecovery notifies storage listeners after the durable deletion comp
 		});
 	});
 	expect(changes).toEqual([[targetKey], [targetKey]]);
-	readAtNotify = undefined;
+	// A second listener probes the durable state at notify time, so the
+	// test can pin that it ran after the storage write: a notify that
+	// raced ahead of the DELETE would still observe the row here.
+	let readAtNotify: ReturnType<typeof runtime.read> | undefined;
+	const unsubscribeProbe = runtime.subscribeStorage(() => {
+		readAtNotify = runtime.read(targetKey);
+	});
 
 	const discarded = await runtime.discardRecovery("mutation-1", targetKey);
 	expect(discarded).toBe(true);
@@ -195,6 +199,7 @@ test("discardRecovery notifies storage listeners after the durable deletion comp
 	expect(readAtNotify).toBeDefined();
 	expect((await readAtNotify)?.recovery).toEqual([]);
 	unsubscribe();
+	unsubscribeProbe();
 	await runtime.stop();
 });
 
@@ -237,6 +242,37 @@ test("a failed discard write stays silent and reports the failure", async () => 
 	await expect(runtime.discardRecovery("mutation-1", targetKey)).rejects.toThrow("journal unavailable");
 	expect(changes).toEqual([]);
 	unsubscribe();
+});
+
+test("the runtime is a MutationPersistencePort that feeds the shared projection fence", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	await runtime.submit(request("queue"));
+
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	// Compile-level conformance: no adapter - the runtime IS the shared
+	// port, so a field added to MutationPersistenceSnapshot breaks here
+	// instead of silently diverging in a parallel native copy.
+	const port: MutationPersistencePort<MutationAttachmentRef> = runtime;
+	const fence = createMutationProjectionFence<MutationAttachmentRef>();
+	const refresh = await fence.refresh(port, targetKey);
+	if (!refresh) throw new Error("the scoped refresh must produce a snapshot");
+	expect([...refresh.apply()]).toEqual([targetKey]);
+	expect(refresh.snapshot.outbox).toMatchObject([
+		{ clientMutationId: "mutation-1", targetRef: targetKey },
+	]);
+	expect(refresh.snapshot.optimistic).toEqual([]);
+	expect(refresh.snapshot.recovery).toEqual([]);
+
+	// The native recovery projection is scoped (the storage's listRecovery
+	// requires the composite hub/conversation key), so the port's
+	// all-targets form has no native backing: read() fails loudly rather
+	// than returning a snapshot that silently drops recovery rows, and the
+	// fence degrades the rejected read to a no-op refresh.
+	await expect(runtime.read()).rejects.toThrow(/targetRef is required/);
+	expect(await fence.refresh(port)).toBe(false);
 });
 
 test("an attempted non-authoritative read notifies the storage projection after blocking a record", async () => {
