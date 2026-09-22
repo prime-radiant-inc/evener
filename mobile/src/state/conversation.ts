@@ -1395,11 +1395,12 @@ export function createConversationStore() {
   // Inject the colliding turns' remembered skeletons into their side of the
   // merge, reporting the injected items so the result can be stripped. A
   // turn whose payloads came back (a same-id page fragment, an earlier fold)
-  // still injects the identities it is MISSING — a partial restoration must
-  // not forget the rest, or a later re-issue of a missing identity would
-  // survive beside it and double-count usage. Identities the turn already
-  // carries as real items are skipped: the real item supersedes its
-  // skeleton, and a duplicate would only collide with it in the merge.
+  // injects its remembered identities even where a real item already
+  // represents one of them — under ONE alias. A partial restoration must
+  // not forget the rest, and a re-issue under a remembered alias the
+  // restored item does not carry can only fold through the alias skeleton
+  // (round 10); the restored payload itself stays authoritative, and a
+  // skeleton nothing matches comes back out through the strip.
   function injectCompactedSkeletons(
     turns: TurnModel[],
     colliding: Set<string>,
@@ -1411,23 +1412,21 @@ export function createConversationStore() {
       if (!colliding.has(turn.id)) return turn;
       const skeletons = compactedTurnItems.get(turn.id);
       if (skeletons === undefined) return turn;
-      // Review round 4: a skeleton is "already represented" by the package's
-      // own rule (itemIdentityMatches: transcriptKey when both sides carry
-      // one, else id), not by a `transcriptKey ?? id` key comparison. An
-      // id-only skeleton whose item was restored carrying a transcript key
-      // IS the same item as the restored one (the id still matches), and
-      // injecting it beside the real item would let the skeleton's empty
-      // settle erase the retained copy's text on the next overlapping page —
-      // and the wire-text repair would then re-adopt the OLDER page's text
-      // over it (stale content).
-      const missing = skeletons.filter(
-        (skeleton) =>
-          !turn.items.some((item) => itemIdentityMatches(item, skeleton)),
-      );
-      if (missing.length === 0) return turn;
+      // Review round 10: every remembered skeleton injects, including ones
+      // the turn already carries a real item for under ONE alias. "Already
+      // represented" was true only under that alias: a restored item
+      // supersedes its skeleton's keyed identity, but a later reissue under
+      // the remembered BARE id matches neither the restored item nor the
+      // turn id, and skipping the alias let that reissue survive as its own
+      // turn and double-count usage. The alias skeleton is what folds it.
+      // The restored payload stays authoritative through the merge itself —
+      // a skeleton carries the reducer's omitted-text marker, so a fold
+      // with a real item keeps the real item's provided text (round 5) —
+      // and a skeleton nothing matches comes back out through the strip.
+      if (skeletons.length === 0) return turn;
       changed = true;
-      injected.push(...missing);
-      return { ...turn, items: [...turn.items, ...missing] };
+      injected.push(...skeletons);
+      return { ...turn, items: [...turn.items, ...skeletons] };
     });
     return changed ? { turns: replacement, injected } : { turns, injected: [] };
   }
@@ -1485,10 +1484,19 @@ export function createConversationStore() {
   // which can be an injected call SKELETON, leaving the enriched host the
   // only item holding the result's content under an identity no real source
   // carries. Stripping it deleted both representations of the result. A
-  // host that received a real result's fields therefore survives; a real
-  // call with the same callId disqualifies it, because calls survive the
-  // fold, the fold enriches that call with the same fields, and keeping the
-  // host beside it would duplicate content the real call already carries.
+  // host that received a real result's fields therefore survives — unless a
+  // real call with the same callId SURVIVES IN THE MERGED OUTPUT, because
+  // surviving calls keep their own identity, the fold enriches them with the
+  // same fields, and keeping the host beside one would duplicate content the
+  // surviving call already carries.
+  //
+  // Review round 10: the disqualifying check reads the merged OUTPUT, never
+  // the merge inputs. A real call among the inputs can be CONSUMED by an
+  // identity fold through remembered aliases before the tool fold rewrites
+  // the surviving call — then no real call with that callId is left in the
+  // output, the rewritten host is the sole carrier of the result's content,
+  // and an input-based check would reject it and delete the content all over
+  // again.
   //
   // Review round 9, alias chains: a real page item can fold THROUGH
   // remembered skeletons and settle on an identity no real source carries
@@ -1513,13 +1521,13 @@ export function createConversationStore() {
   function hostsRealToolResultFold(
     item: { id: string; callId?: string },
     realResultCallIds: ReadonlySet<string>,
-    realCallCallIds: ReadonlySet<string>,
+    realOutputCallCallIds: ReadonlySet<string>,
   ): boolean {
     return (
       item.callId !== undefined &&
       isToolCallItemId(item.id) &&
       realResultCallIds.has(item.callId) &&
-      !realCallCallIds.has(item.callId)
+      !realOutputCallCallIds.has(item.callId)
     );
   }
   function stripInjectedSkeletons(
@@ -1533,11 +1541,21 @@ export function createConversationStore() {
     const realSourceRefs: ReadonlySet<unknown> = new Set(realSources);
     const realIdentities = realIdentityIndexOf(realSources);
     const realResultCallIds = new Set<string>();
-    const realCallCallIds = new Set<string>();
     for (const source of realSources) {
       if (source.callId === undefined) continue;
       if (isToolResultItemId(source.id)) realResultCallIds.add(source.callId);
-      else if (isToolCallItemId(source.id)) realCallCallIds.add(source.callId);
+    }
+    const realOutputCallCallIds = new Set<string>();
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        if (
+          item.callId !== undefined &&
+          isToolCallItemId(item.id) &&
+          itemIsRealSomewhere(item, realIdentities)
+        ) {
+          realOutputCallCallIds.add(item.callId);
+        }
+      }
     }
     let changed = false;
     const stripped = turns.map((turn) => {
@@ -1545,7 +1563,7 @@ export function createConversationStore() {
         (item) =>
           !injectedRefs.has(item) &&
           (itemIsRealSomewhere(item, realIdentities) ||
-            hostsRealToolResultFold(item, realResultCallIds, realCallCallIds) ||
+            hostsRealToolResultFold(item, realResultCallIds, realOutputCallCallIds) ||
             descendsFromRealSource(item, itemFoldSources, realSourceRefs)),
       );
       if (kept.length === turn.items.length) return turn;

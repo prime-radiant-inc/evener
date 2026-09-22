@@ -8572,6 +8572,322 @@ describe("ConversationStore", () => {
         scope: "loaded",
       });
     });
+
+    // Review round 10, superseded aliases: the injection skipped a
+    // remembered skeleton whenever the turn already carried a real item
+    // matching it — but a restored item supersedes its skeleton under ONE
+    // alias only. Compaction remembered {id ra, transcriptKey kr}; the
+    // fresh read restored kr under a DIFFERENT id; a later page then
+    // re-issued the item KEYLESS under the remembered bare id ra. The
+    // keyless reissue matches neither the restored item (keyed kr, another
+    // id) nor the turn id, so with the alias skeleton skipped the reissue
+    // survived as its own turn and its usage double-counted. The remembered
+    // alias must stay injectable for turn matching while the restored
+    // payload stays authoritative.
+    it("a keyless reissue before the restored turn compacts again folds instead of double-counting", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering {id ra, transcriptKey kr}.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "ra",
+                  transcriptKey: "kr",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // The fresh read restores kr under a DIFFERENT id, in window: the
+      // merge folds the remembered alias into it and the vanished turn's
+      // memory moves to the carrier.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kr", text: "kr row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rb",
+                  transcriptKey: "kr",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "restored alias",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "pt")).toBe(false);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kr", text: "restored alias" }),
+      ]);
+
+      // BEFORE the carrier compacts again, a page re-issues the item KEYLESS
+      // under the remembered bare id ra. The reissue matches neither the
+      // restored item's keyed identity nor the turn id — only the
+      // remembered alias can fold it.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "ra",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "reissued",
+                  position: { entry: 60, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.some((turn) => turn.id === "pq")).toBe(false);
+      expect(sessionTokens(after)).toEqual({
+        inputTokens: 501,
+        outputTokens: 21,
+        scope: "loaded",
+      });
+    });
+
+    // Review round 10, folded call chains: a real KEYLESS call reissue can
+    // fold through remembered call aliases into a final identity no real
+    // source carries, and the tool-result fold then rewrites that call with
+    // the page's real result — removing the result item. The strip's
+    // tool-host guard rejected the rewritten call because the PAGE carried
+    // a real call with that callId — but that call was consumed by the
+    // alias chain, so nothing else held the result's content. Both
+    // representations of the result vanished. The guard must ask whether a
+    // real call with that callId SURVIVES in the merged output, not whether
+    // one existed among the inputs.
+    it("remembered call aliases folding a page's keyless call keep its tool result", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn remembering a tool CALL skeleton under
+      // {id item_tool_1, transcriptKey kc, callId call-1}.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "inProgress",
+                  transcriptKey: "kc",
+                  position: { entry: 40, item: 0 },
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
+
+      // The fresh read restores the call under a DIFFERENT id, in window.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kc", text: "kc row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "item_tool_2",
+                  transcriptKey: "kc",
+                  turnId: "rt",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  argumentsJSON: '{"command":"make"}',
+                  text: "",
+                  status: "inProgress",
+                  position: { entry: 40, item: 0 },
+                },
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "pt")).toBe(false);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ id: "item_tool_2", transcriptKey: "kc" }),
+      ]);
+
+      // The window moves on without the kc row: the carrier compacts again,
+      // and its memory now remembers BOTH call aliases of kc.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([]);
+
+      // A page re-issues the call KEYLESS under the first alias's bare id —
+      // together with its RESULT. The identity fold consumes the page's
+      // call through both remembered aliases (the merged call ends on the
+      // second alias's id), and the tool fold removes the result item while
+      // carrying its fields onto that call. The kc row keeps the turn in
+      // window, so the result's content must survive on the folded call.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "kc", text: "kc row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "inProgress",
+                  position: { entry: 40, item: 0 },
+                },
+                {
+                  id: "item_tool_result_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  output: "ok",
+                  exitCode: 0,
+                  status: "completed",
+                  position: { entry: 41, item: 0 },
+                },
+              ],
+              { inputTokens: 700, outputTokens: 70 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const folded = store.getState().conversation?.turns.find((t) => t.id === "rt")?.items ?? [];
+      expect(folded).toEqual([
+        expect.objectContaining({
+          id: "item_tool_2",
+          transcriptKey: "kc",
+          callId: "call-1",
+          output: "ok",
+          exitCode: 0,
+          status: "completed",
+        }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {
