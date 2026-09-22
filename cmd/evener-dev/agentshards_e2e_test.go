@@ -96,6 +96,11 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	if strings.Contains(out+stderr.String(), "full logs:") {
 		t.Fatalf("green run reported retained logs:\n%s\n%s", out, stderr)
 	}
+	// A green survey prints no failure excerpt: the block exists to explain a
+	// failure, and the summary must not grow an empty one.
+	if stderr.Len() != 0 {
+		t.Fatalf("green run wrote a failure excerpt to stderr:\n%s", stderr)
+	}
 	if left := scratchLeftovers(t, tmp); len(left) != 0 {
 		t.Fatalf("green run left scratch behind: %v", left)
 	}
@@ -429,6 +434,12 @@ func TestAgentShardsReplayIsByVerdictNotMarker(t *testing.T) {
 	}
 }
 
+// TestAgentShardsRedSurveyFailsLoudly pins what a red survey prints. The
+// survey has no per-shard verdict to sort by, so its excerpt is the whole
+// diagnosis -- and a CI job summary sees only that excerpt, because the log it
+// points at is runner-local and dies with the runner. The failing test's own
+// assertion text therefore has to be in it (issue #2121): a marker line names
+// the test and never says why it failed.
 func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	cfg, stdout, stderr, tmp := e2eConfig(t)
 	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
@@ -440,12 +451,20 @@ func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	errOut := stderr.String()
 	for _, want := range []string{
 		"agent-shards: the survey pass failed — the suite is red",
+		"failing as instructed by SHARD_FIXTURE_FAIL",
 		"--- FAIL: TestFixtureBeta",
 		"full log: ",
 	} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("red-survey stderr missing %q:\n%s", want, errOut)
 		}
+	}
+	// The assertion is read as the block it explains, so it must print with
+	// its verdict rather than apart from it.
+	assertion := strings.Index(errOut, "failing as instructed by SHARD_FIXTURE_FAIL")
+	verdict := strings.Index(errOut, "--- FAIL: TestFixtureBeta")
+	if assertion > verdict {
+		t.Fatalf("the assertion printed after the verdict it explains:\n%s", errOut)
 	}
 	if len(scratchLeftovers(t, tmp)) != 1 {
 		t.Fatalf("red survey should retain its scratch for diagnosis")
