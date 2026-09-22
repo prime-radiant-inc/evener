@@ -432,6 +432,34 @@ describe("visibility", () => {
 });
 
 describe("durable recovery rows", () => {
+  // A promoted row's composed content lives in its optimisticDisplay - the
+  // wire params carry only the queue position - so a rejected/canceled
+  // promote must still render its words in the durable row (roborev #2140
+  // round 6), never a blank one.
+  test("a rejected promote renders its composed content, not a blank row", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/promoteQueuedAsSteer",
+      payload: { ref: "ref_a", index: 0, expectedInstanceId: "instance", expectedEntryId: "q1" },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/promoteQueuedAsSteer",
+        input: [{ type: "text", text: "promoted words" }],
+      },
+    });
+    const recovery = await storage.transferToRecovery(outbox.clientMutationId, "rejected", "turn is not active");
+    storage.close();
+    if (!recovery) throw new Error("failed to seed recovery");
+    await refreshPendingTurnsProjection("ref_a");
+    renderStrip(defaultProps({ onEditRecovery: vi.fn() }));
+
+    expect(await screen.findByText("promoted words")).toBeTruthy();
+  });
+
   test("a rejected record renders as an ordinary editable queued row", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

@@ -128,7 +128,17 @@ const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this sess
 const RECOVERY_ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available until this session is resumed";
 
 function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
-  const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
+  // A promoted row's composed content lives in its optimisticDisplay.input -
+  // its wire params carry only the queue position - so this reading prefers
+  // the display input and falls back to the payload input every other
+  // method populates (the same precedence pendingEntries' outboxInput gives
+  // pending rows).
+  const display = record.optimisticDisplay;
+  const displayInput =
+    display && typeof display === "object" && "input" in display && Array.isArray(display.input)
+      ? (display.input as InputItem[])
+      : undefined;
+  const input = displayInput ?? (Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : []);
   const text = input
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
