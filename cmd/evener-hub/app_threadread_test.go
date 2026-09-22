@@ -1195,13 +1195,13 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 // TestPastEntryThreadAdvertisesResumableCapabilities asserts a past/exited
 // local thread advertises exactly the capabilities that actually succeed once
 // qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
-// (compact, clear, change model, shutdown) plus the always-available ones
-// (send, fork, goal, rename, skill input) are true: a resumed daemon runs
-// current code and consumes skill selections, re-verified per mutation against
-// the live daemon. Steer, interrupt and queue are false because the hub cannot
-// carry them out for a thread with no daemon — it resumes on send alone, so a
-// cold set advertising them would promise a turn action nothing is there to
-// take.
+// (compact, clear, change model, shutdown, send and queue) plus the
+// always-available ones (fork, goal, rename, skill input) are true: a resumed
+// daemon runs current code and consumes skill selections, re-verified per
+// mutation against the live daemon. Steer and interrupt are false because the
+// hub cannot carry them out for a thread with no daemon: they act on a turn
+// that is already running, a cold session has none, and resuming one would
+// give the control nothing to act on.
 func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
@@ -1244,8 +1244,12 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 		SharedNotes:       true,
 		Rename:            true,
 		SkillInput:        true,
-		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
-		// active turn on a cold exited session.
+		Queue:             true,
+		// Steer and Interrupt stay false: they act on a turn that is already
+		// running, which a cold exited session does not have. Queue does not need
+		// one — the hub resumes for it and the queued message runs as the next
+		// turn (cmd/evener-hub/e2e_queue_prompt_exited_test.go drives that against
+		// a real hub and daemon).
 	}
 	if caps != want {
 		t.Fatalf("past thread capabilities:\n got  %+v\n want %+v", caps, want)
