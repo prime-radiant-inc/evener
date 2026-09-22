@@ -922,11 +922,13 @@ func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]strin
 // here. A header with no credential material — an empty expansion, or one
 // whose only authored material is a bare auth scheme word — is not
 // present: it drops with a warning naming it. A raw-empty value is spec
-// §10's removal of an inherited header and stays silent.
+// §10's removal of an inherited header and stays silent. The keys are
+// walked sorted, so the same config warns in the same order every time.
 func (r *Registry) expandCredentialHeaders(headers map[string]string, auth authExpansion) (map[string]string, []string) {
 	credHeaders := map[string]string{}
 	var warnings []string
-	for k, v := range headers {
+	for _, k := range slices.Sorted(maps.Keys(headers)) {
+		v := headers[k]
 		if v == "" {
 			continue
 		}

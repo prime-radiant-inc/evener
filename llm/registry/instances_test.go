@@ -3,6 +3,7 @@ package registry
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1026,6 +1027,129 @@ func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
 	}
 	if len(res.Warnings) != 0 {
 		t.Fatalf("warnings = %v; the literal is trusted without warnings", res.Warnings)
+	}
+}
+
+// The credential follows the scheme's own auth header: a header-auth
+// instance reads its credential from the auth_header entry — case-
+// insensitively, like every header name — and shares one expansion with
+// the header map, so the resolve, the header map, and the listing all see
+// the same source. Before this, only an Authorization entry could carry
+// the credential, so a working custom header resolved as no credential and
+// the probe path skipped the instance.
+func TestCustomAuthHeaderCarriesTheCredential(t *testing.T) {
+	for _, tt := range []struct{ name, authHeader, mapKey string }{
+		{"exact case", "X-Api-Key", "X-Api-Key"},
+		{"case-insensitive authoring", "x-api-key", "X-Api-Key"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			valueexpr.ResetForTest()
+			t.Cleanup(valueexpr.ResetForTest)
+			runs := 0
+			valueexpr.RunCommand = func(string) (string, error) {
+				runs++
+				return "minted-key", nil
+			}
+			config := "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"" + tt.authHeader + "\"\n" +
+				"credential_headers = { \"" + tt.mapKey + "\" = '''$(get-key)''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n"
+			r := fixtureLoad(t, nil, config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "credential_headers" || res.Credential.Value != "minted-key" {
+				t.Fatalf("credential = %+v; want the minted value from the custom auth header", res.Credential)
+			}
+			if got := res.CredentialHeaders[tt.mapKey]; got != "minted-key" {
+				t.Fatalf("credential header map carries %q; want the minted value", got)
+			}
+			if runs != 1 {
+				t.Fatalf("executor ran %d times; want 1 (one shared expansion)", runs)
+			}
+			// The listing reports the same source the resolution does.
+			for _, inst := range r.Instances() {
+				if inst.Name != "gw" {
+					continue
+				}
+				if inst.CredentialSource != "credential_headers" {
+					t.Fatalf("listing credential source = %q; want credential_headers", inst.CredentialSource)
+				}
+				return
+			}
+			t.Fatal("the gw instance is missing from the listing")
+		})
+	}
+}
+
+// A custom auth header's $VAR expression consumed the variable, so the
+// listing must not report that variable as shadowed: consumedEnvVars reads
+// the entry the scheme actually sends, and the config's own header won.
+func TestCustomAuthHeaderConsumedEnvVarNotShadowed(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Api-Key\"\n" +
+		"api_key_env = [\"GW_KEY\"]\n" +
+		"credential_headers = { \"X-Api-Key\" = \"$GW_KEY\" }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, map[string]string{"GW_KEY": "k-1"}, config)
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.CredentialSource != "credential_headers" {
+			t.Fatalf("credential source = %q; want credential_headers", inst.CredentialSource)
+		}
+		if inst.ShadowedEnvVar != "" {
+			t.Fatalf("shadowed env var = %q; the header consumed GW_KEY, so nothing was shadowed", inst.ShadowedEnvVar)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// Multiple failing credential headers warn in a deterministic order: the
+// header loop walks the keys sorted, so the same config resolves to the
+// same warning sequence every time instead of Go's random map order.
+func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
+	pairs := make([]string, 0, 6)
+	for _, k := range []string{"X-C", "X-A", "X-D", "X-B", "X-F", "X-E"} {
+		pairs = append(pairs, fmt.Sprintf("\"%s\" = \"$%s\"", k, strings.TrimPrefix(k, "X-")))
+	}
+	config := "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"k\"\n" +
+		"credential_headers = { " + strings.Join(pairs, ", ") + " }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "api_key" {
+		t.Fatalf("credential = %+v; want the api_key", res.Credential)
+	}
+	want := []string{
+		`credential header "X-A": A unset`,
+		`credential header "X-B": B unset`,
+		`credential header "X-C": C unset`,
+		`credential header "X-D": D unset`,
+		`credential header "X-E": E unset`,
+		`credential header "X-F": F unset`,
+	}
+	if !reflect.DeepEqual(res.Warnings, want) {
+		t.Fatalf("warnings out of order or wrong:\n got %v\nwant %v", res.Warnings, want)
 	}
 }
 

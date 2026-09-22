@@ -134,7 +134,7 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	// not fall through to the api_key_env candidates below. A present
 	// expression whose variables are unset means the row resolves nothing at
 	// all, which is also false.
-	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders) != "" {
+	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders, rec.authHeaderName()) != "" {
 		return false
 	}
 	for _, name := range r.effectiveAPIKeyEnv(rec) {
@@ -431,7 +431,7 @@ func consumedEnvVars(rec *record, source string) []string {
 		refs, _, _ := ScanConfigValue(rec.head.APIKey)
 		return refs
 	case "credential_headers":
-		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders[authHeaderKey(rec.head.CredentialHeaders)])
+		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders[authHeaderKey(rec.head.CredentialHeaders, rec.authHeaderName())])
 		return refs
 	default:
 		return nil
@@ -491,23 +491,34 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 	return r.credentialWithAuth(rec, r.authorization(rec), false)
 }
 
-// authHeaderKey resolves which credential-header key carries the
-// Authorization value: header names are case-insensitive on the wire, so
+// authHeaderName is the header the record's auth scheme writes the
+// credential to: the author's auth_header for header auth, Authorization
+// for every other scheme — the same choice the transport layer makes for
+// the wire, so the credential-carrying entry is the entry the scheme sends.
+func (rec *record) authHeaderName() string {
+	if rec.head.Transport.Auth == AuthHeader && rec.head.Transport.AuthHeader != "" {
+		return rec.head.Transport.AuthHeader
+	}
+	return "Authorization"
+}
+
+// authHeaderKey resolves which credential-header key carries the named
+// auth header's value: header names are case-insensitive on the wire, so
 // an author may write any case. The exact-case key wins — a present-but-
 // empty one is spec §10's removal and resolves as absence — and among case
 // variants the lexicographically first, so the choice is deterministic and
 // authorization, expandCredentialHeaders, and consumedEnvVars all read the
 // same entry.
-func authHeaderKey(headers map[string]string) string {
-	if v, ok := headers["Authorization"]; ok {
+func authHeaderKey(headers map[string]string, name string) string {
+	if v, ok := headers[name]; ok {
 		if v == "" {
 			return ""
 		}
-		return "Authorization"
+		return name
 	}
 	first := ""
 	for k, v := range headers {
-		if v == "" || !strings.EqualFold(k, "Authorization") {
+		if v == "" || !strings.EqualFold(k, name) {
 			continue
 		}
 		if first == "" || k < first {
@@ -534,7 +545,7 @@ type authExpansion struct {
 // run once per resolution, and reports which header key it expanded so the
 // header map and the credential always read the same entry.
 func (r *Registry) authorization(rec *record) authExpansion {
-	key := authHeaderKey(rec.head.CredentialHeaders)
+	key := authHeaderKey(rec.head.CredentialHeaders, rec.authHeaderName())
 	if key == "" {
 		return authExpansion{}
 	}
@@ -661,10 +672,10 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, suppressA
 			return cred, warns
 		}
 		if auth.expanded == "" {
-			return noneAuth("no credential (the Authorization credential header expands to an empty value)")
+			return noneAuth(fmt.Sprintf("no credential (the %s credential header expands to an empty value)", auth.key))
 		}
 		if auth.noMaterial {
-			return noneAuth("no credential (the Authorization credential header expands to nothing but an auth scheme word)")
+			return noneAuth(fmt.Sprintf("no credential (the %s credential header expands to nothing but an auth scheme word)", auth.key))
 		}
 		return Credential{Value: auth.expanded, Source: "credential_headers"}, nil
 	}
