@@ -65,6 +65,7 @@ const (
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
+	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
@@ -149,6 +150,30 @@ const (
 	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
 	// seam; every other remote path is attached-only. See HostAttachParams.
 	MethodEvenerHostAttach = "evener/host/attach"
+	// MethodEvenerHostAdd registers one sidecar host entry (component 08 slice
+	// 1: name + SSH address + key path). hub.toml stays authoritative for its
+	// own names; a duplicate of a live name is refused. See HostAddParams.
+	MethodEvenerHostAdd = "evener/host/add"
+	// MethodEvenerHostList returns every known host with truthful online state
+	// (component 08 slice 1). Attached rows report live channel facts; rows
+	// without a live channel render last-known state as offline. See
+	// HostListResponse.
+	MethodEvenerHostList = "evener/host/list"
+	// MethodEvenerHostStatus returns one host's row (component 08 slice 1): the
+	// same HostRow evener/host/list serves, for a single named host. Never
+	// dials. See HostStatusParams.
+	MethodEvenerHostStatus = "evener/host/status"
+	// MethodEvenerHostRemove deregisters one sidecar host entry (component 08
+	// slice 1): its supervisor stops, its channel drops, and the name is gone
+	// until re-added. hub.toml-declared names cannot be removed here. See
+	// HostRemoveParams.
+	MethodEvenerHostRemove = "evener/host/remove"
+	// MethodEvenerHostUpdate edits one live sidecar host entry in place: every
+	// field except the name is mutable, the name is the request's target, and
+	// the entry's advancement of the registry generation retires the host's
+	// channel. hub.toml-declared names are refused (edit the file). See
+	// HostUpdateParams.
+	MethodEvenerHostUpdate = "evener/host/update"
 )
 
 const (
@@ -998,9 +1023,10 @@ type ThreadCapabilities struct {
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises support for turn/queue (kata 111a). True when a turn
-	// is currently in flight and the session can accept enqueued user
-	// messages for processing after the active turn completes.
+	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// when the daemon wires a queue seam and the thread is not closed, not when
+	// a turn happens to be in flight. The client applies the status, so
+	// turn/queue is still meaningful only mid-turn.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
 	// for a evener session that can accept a goal; false for sources that do not
@@ -1019,9 +1045,12 @@ type ThreadCapabilities struct {
 	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
 	// SkillInput advertises support for canonical {type:"skill", name} input
-	// items on the input-bearing turn mutations. False everywhere until
-	// runtime consumption is wired per endpoint; ValidateSkillInputSupport
-	// keeps skill items rejected wherever this capability is false.
+	// items on the input-bearing turn mutations. A live daemon advertises it
+	// when all of those endpoints are wired; the hub's cold projections
+	// (past reads, close and gave-up frames, and list rows) advertise the same
+	// current-daemon floor, since each input-bearing mutation re-verifies
+	// against the live daemon. ValidateSkillInputSupport keeps skill items
+	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
 }
 
@@ -2537,14 +2566,14 @@ type ThreadStatusChangedParams struct {
 	AskPending *bool `json:"askPending,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
-	// count rides along above: it is otherwise snapshot-only, and three of its
-	// entries — Send, Steer, Queue — are defined by whether a turn is in
-	// flight. A client that read the thread while it was idle therefore holds
-	// steer=false/queue=false for the whole turn that follows, and renders a
-	// session it KNOWS is active with no Steer, no Stop and a dead Send until
-	// the page is reloaded (kata 06t8). A status transition is exactly when
-	// those flip, so the set refreshes there and nowhere else — no polling, no
-	// re-read of the transcript.
+	// count rides along above: it is otherwise snapshot-only, and Send is the
+	// entry defined by whether a turn is in flight (Steer, Interrupt and Queue
+	// advertise harness support and do not move with the status, #1363/#1375).
+	// A client that read the thread while it was idle therefore holds send=true
+	// for the whole turn that follows, and renders a session it KNOWS is active
+	// with a Send it must not offer until the page is reloaded (kata 06t8). A
+	// status transition is exactly when Send flips, so the set refreshes there
+	// and nowhere else — no polling, no re-read of the transcript.
 	//
 	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
 	// threads may omit capabilities their source does not advertise. A client
@@ -3109,8 +3138,14 @@ type InstanceEntry struct {
 	// ahead of them, and the entry omits any header it refuses.
 	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
 	CredentialHeader string `json:"credentialHeader,omitempty"`
-	// Implicit is true for an instance that exists from the environment
-	// alone: it has no entry in providers.toml, so it cannot be removed.
+	// Implicit is true for an instance with no authored entry in
+	// providers.toml: a curated provider that exists because the environment
+	// supplies it (an API-key variable, the ADC file) or because the user
+	// filed a credential for it through the UI (a stored key, a signed-in
+	// Codex record). It says nothing by itself about removal: an instance the
+	// environment supplies comes back with it, while one holding the user's
+	// credential is taken away by deleting that credential
+	// (cmd/evener-hub/app_instances.go's environmentBacked).
 	Implicit bool `json:"implicit"`
 	// Hidden marks a provider with no resolvable base URL in this
 	// environment (its *_BASE_URL variable is unset).
@@ -3126,7 +3161,16 @@ type InstanceEntry struct {
 	// store, spec §10); empty when no such variable is set, including when
 	// an env source is itself what resolves.
 	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
-	StoredEmail    string `json:"storedEmail,omitempty"`
+	// RenameLeavesRow is true when renaming this instance leaves an instance
+	// resolving under its old name, because the environment re-supplies what
+	// the rename moves: the row is environment-backed as the removal refusal
+	// computes it, or the old name is a curated provider id that re-derives
+	// without the user's moved credential (a set variable, the ADC file, or a
+	// keyless scheme). The hub computes it (renameLeavesRow) because a client
+	// cannot see ADC availability or the curated set; the rename note keys on
+	// it.
+	RenameLeavesRow bool   `json:"renameLeavesRow,omitempty"`
+	StoredEmail     string `json:"storedEmail,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the
@@ -3257,6 +3301,13 @@ type InstanceEditParams struct {
 	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
 	CredentialHeader      string            `json:"credentialHeader,omitempty"`
 	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// InstanceRemoveParams's is. The edit is applied to the row the client
+	// listed, so a name another client has re-pointed since - or replaced with a
+	// different instance - must not have its replacement edited or renamed.
+	// Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 	// OriginClientId is the client identity the hub echoes into the
 	// evener/auth/updated broadcast this edit triggers, so the originator
 	// recognizes its own echo by id instead of refetching as if another client
@@ -3571,6 +3622,40 @@ type MarketplaceEntry struct {
 // client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
+}
+
+// MarketplaceUnregisteredCloneRemainsData is the WireError.Data payload for
+// ErrorMarketplaceUnregisteredCloneRemains: the removal APPLIED (Applied
+// carries the updated marketplace list, with the target already gone) but
+// removing its clone from disk failed. Clients should reconcile from Applied
+// instead of treating the removal as rejected - the same rule
+// KeybindingsPostRenameData carries for keybindings. Re-listing to build
+// Applied is itself a fresh read that can fail on its own account, unrelated
+// to the removal that already landed; when it does, AppliedUnavailable is
+// true and Applied is the zero value - a client must not read that as "every
+// marketplace gone" and must not retry the removal as a fresh attempt either,
+// since it already applied.
+type MarketplaceUnregisteredCloneRemainsData struct {
+	EvenerErrorInfo    ErrorInfo               `json:"evenerErrorInfo"`
+	Applied            MarketplaceListResponse `json:"applied"`
+	AppliedUnavailable bool                    `json:"appliedUnavailable,omitempty"`
+}
+
+// MarketplaceRemoveAppliedData is the WireError.Data payload for
+// ErrorMarketplaceRemoveApplied: the removal APPLIED (the unregister save
+// landed and the clone cleanup that follows it completed) but the fresh read
+// that would carry the updated list to the caller failed. AppliedUnavailable
+// is true on this path - the failed read is the whole reason this outcome
+// exists - so a consumer reconciling the removal must not read the missing
+// list as "every marketplace gone", and must not retry: the removal already
+// applied, so a retry finds ErrMarketplaceNotFound. Applied is deliberately
+// absent (unlike MarketplaceUnregisteredCloneRemainsData, whose read can
+// succeed): no snapshot was read, and the wire carries no substitute for one.
+// The consumer binding is deliberately deferred to the marketplace
+// reconciliation successors (#1954 SDK, #1960 web).
+type MarketplaceRemoveAppliedData struct {
+	EvenerErrorInfo    ErrorInfo `json:"evenerErrorInfo"`
+	AppliedUnavailable bool      `json:"appliedUnavailable,omitempty"`
 }
 
 // MarketplaceAddParams is the params for evener/marketplace/add. Name is
@@ -3894,6 +3979,120 @@ type HostAttachResponse struct {
 	OS              string      `json:"os,omitempty"`
 	Arch            string      `json:"arch,omitempty"`
 	Features        *FeatureSet `json:"features,omitempty"`
+}
+
+// HostEntry is one host's effective configuration as a mutation carries it
+// (component 08 slice 2): the six mutable HostConfig fields under slice 1's
+// wire spellings — Address is the schema's `ssh`, EvenerPath the schema's
+// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the one
+// field slice 1 added that hub.toml's schema has no spelling for (the dial needs
+// a key path, and hostreg's Host says a file-declared host never sets one).
+//
+// Name is carried by the ADD entry, which has no other place to put the new
+// host's name. The update entry omits it: a rename is not a thing this wire
+// offers, and the update's target is HostUpdateParams.Name. Both paths accept
+// the same field set, so the dialog's inputs and a refusal's field name are the
+// same strings on both sides.
+type HostEntry struct {
+	Name       string   `json:"name,omitempty"`
+	Address    string   `json:"address"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+}
+
+// HostAddParams is the evener/host/add payload (component 08 slice 1, reshaped
+// by slice 2): one sidecar host entry. The nested entry is the design record's
+// own shape, so the guard fields the pipeline slice adds land on a wire this
+// slice already matches instead of reshaping it a second time. The handler
+// validates exactly like hub.toml loading and refuses a name hub.toml or the
+// live set already holds.
+type HostAddParams struct {
+	Entry HostEntry `json:"entry"`
+}
+
+// HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
+// name of the live sidecar entry to edit, and the entry that replaces it. Name
+// is the immutable target — it identifies which host to edit, and nothing in the
+// request can rename one. hub.toml-declared names are refused (edit the file);
+// unknown names are InvalidParams.
+type HostUpdateParams struct {
+	Name  string    `json:"name"`
+	Entry HostEntry `json:"entry"`
+}
+
+// HostUpdateResponse is evener/host/update's result: the updated row, which the
+// dialog's caller re-reads like every other mutation's result. An edit never
+// dials, so the row's live state is whatever the teardown left it.
+type HostUpdateResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRow is one host as evener/host/list and evener/host/status render it
+// (component 08 slice 2): the effective entry plus live state. A dialog prefills
+// from this row, and list/status remain the one source of truth for what a host
+// currently is. Origin names the entry's source: "hub.toml" for file-declared
+// entries, "sidecar" for UI-added ones. Attached reports a live channel right
+// now; offline rows carry the last-known facts below when any were recorded.
+// Optional entry fields and facts stay absent — never null — when unknown.
+type HostRow struct {
+	Name          string   `json:"name"`
+	Address       string   `json:"address,omitempty"`
+	User          string   `json:"user,omitempty"`
+	KeyPath       string   `json:"keyPath,omitempty"`
+	EvenerPath    string   `json:"evenerPath,omitempty"`
+	ConfigPath    string   `json:"configPath,omitempty"`
+	Addr          string   `json:"addr,omitempty"`
+	Roots         []string `json:"roots,omitempty"`
+	Origin        string   `json:"origin"`
+	Attached      bool     `json:"attached"`
+	ServerName    string   `json:"serverName,omitempty"`
+	ServerVersion string   `json:"serverVersion,omitempty"`
+	HubVersion    string   `json:"hubVersion,omitempty"`
+	OS            string   `json:"os,omitempty"`
+	Arch          string   `json:"arch,omitempty"`
+	LastAttachErr string   `json:"lastAttachError,omitempty"`
+	MidAttach     bool     `json:"midAttach"`
+	Removed       bool     `json:"removed"`
+}
+
+// HostListResponse is evener/host/list's result (component 08 slice 1): every
+// known host in name-sorted order — the registry's own order; the origin field
+// distinguishes hub.toml entries from sidecar ones. It never dials: attached
+// rows read the live channel, offline rows render last-known state.
+type HostListResponse struct {
+	Hosts []HostRow `json:"hosts"`
+}
+
+// HostStatusParams is the evener/host/status payload (component 08 slice 1):
+// the component-03 source ID of one known host. Unknown names are
+// InvalidParams. Never dials.
+type HostStatusParams struct {
+	Name string `json:"name"`
+}
+
+// HostStatusResponse is evener/host/status's result (component 08 slice 1):
+// the host's list row.
+type HostStatusResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRemoveParams is the evener/host/remove payload (component 08 slice 1):
+// the component-03 source ID of one sidecar host. hub.toml-declared names are
+// refused (edit the file); unknown names are InvalidParams. Removing an
+// attached host stops its supervisor and drops its channel.
+type HostRemoveParams struct {
+	Name string `json:"name"`
+}
+
+// HostRemoveResponse is evener/host/remove's result (component 08 slice 1):
+// the removed row, rendered detached. Removed stays removed: the name is gone
+// until re-added.
+type HostRemoveResponse struct {
+	Host HostRow `json:"host"`
 }
 
 // HostNotificationParams is the evener/host/notification payload (component

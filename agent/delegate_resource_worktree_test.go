@@ -425,9 +425,17 @@ func TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *test
 }
 
 func (r *wtRepo) seedStableIsolationLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
+	return r.seedStableIsolationLaneOpts(t, "")
+}
+
+// seedStableIsolationLaneOpts seeds a finished stable delegate whose isolation
+// lane is cut on branch ("" means the delegate id), so disposal-surface tests
+// can drive a lane whose git branch differs from its directory name — the
+// divergent-branch lifecycle canary shape.
+func (r *wtRepo) seedStableIsolationLaneOpts(t *testing.T, branch string) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	lanePath, _, baseSHA, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	lanePath, _, baseSHA, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, branch)
 	if err != nil {
 		t.Fatalf("create stable delegate worktree: %v", err)
 	}
@@ -443,6 +451,9 @@ func (r *wtRepo) seedStableIsolationLane(t *testing.T) (delegateID, lanePath, ba
 		LocalEnvPolicy:   "default",
 		Isolation:        "worktree",
 		Resumable:        true,
+	}
+	if branch != "" {
+		descriptor.WorktreeBranch = branch
 	}
 	lease := delegateLease{delegateID: delegateID, generation: 1}
 	r.s.delegateController.mu.Lock()

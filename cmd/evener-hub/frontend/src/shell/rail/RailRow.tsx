@@ -49,7 +49,7 @@ import {
 } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { selectDisplaySources } from "../../stores/navigation/selectors";
+import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
@@ -78,6 +78,7 @@ import {
   type WatchRailNode,
   watchCountLabel,
 } from "./railNodes";
+import { useRailNow } from "./railNow";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
 
@@ -425,7 +426,7 @@ function projectMenuItems(project: RailProject, actions: RailRowActions): MenuIt
 // reachable on hover without costing the list a line. The title always leads, so
 // a truncated title is still recoverable from it (the case this tooltip
 // originally existed for).
-function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: boolean): string {
+function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: boolean, age?: string): string {
   const parts = [session.title];
   // A signal row already prints its state; a quiet one doesn't, so only the
   // quiet case needs the word here. A row that has never run reports THAT
@@ -438,8 +439,9 @@ function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: b
   if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
   // A dormant row spends its right slot on "Not started" instead of the age,
   // so the age lands here - the same contract every other fact this row gives
-  // up is held to.
-  if (saysNotStarted && session.age !== undefined && session.age !== "") parts.push(session.age);
+  // up is held to. The caller supplies it from the summary's anchor, because a
+  // clock-derived value cannot be a field the model froze.
+  if (saysNotStarted && age !== undefined && age !== "") parts.push(age);
   return parts.join(" · ");
 }
 
@@ -526,6 +528,48 @@ function useHostOnline(hostId: string): boolean {
     const source = selectDisplaySources(state).find((candidate) => candidate.id === hostId);
     return source ? source.online : true;
   });
+}
+
+// The row's label span: the treeitem's accessible name (there is no separate
+// aria-label) and the holder of the title tooltip.
+function RailLabelSpan({ session, tooltip }: { session: RailSession; tooltip: string }): ReactNode {
+  return (
+    <span className={CLASS.label} title={tooltip}>
+      {session.title}
+    </span>
+  );
+}
+
+// A dormant row's tooltip carries the age its right slot gave up to "Not
+// started", and that age is a clock like the visible stamp - so THIS leaf, not
+// the memoized SessionRow, is the rail clock's other subscriber. Every other
+// row's tooltip is clock-free and renders through RailLabelSpan with no
+// subscription at all.
+function DormantLabel({ session, showsGloss }: { session: RailSession; showsGloss: boolean }): ReactNode {
+  const now = useRailNow();
+  return (
+    <RailLabelSpan
+      session={session}
+      tooltip={rowTooltip(session, showsGloss, true, relativeAge(session.updated_at, now))}
+    />
+  );
+}
+
+// RailAge is the row's live "last update" stamp: one of the rail clock's two
+// leaf subscribers (the other is a dormant row's label - see DormantLabel).
+// railNow.tsx owns why the label comes from `updated_at` rather than a field
+// the model precomputed. Sitting BELOW the memoized SessionRow - the boundary
+// ActivityTree.tsx draws with LiveMetaSegments - is what keeps a tick from
+// re-rendering every row that carries a stamp.
+function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
+  const now = useRailNow();
+  const label = relativeAge(updatedAt, now);
+  if (label === undefined || label === "") return null;
+  return (
+    <span data-testid="rail-row-time" className={CLASS.time}>
+      {label}
+    </span>
+  );
 }
 
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
@@ -621,9 +665,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             drops (rowTooltip). */}
         <span className={CLASS.titleLine}>
           <Signal wireState={effectiveState} />
-          <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
-            {session.title}
-          </span>
+          {notStarted ? (
+            <DormantLabel session={session} showsGloss={showsGloss} />
+          ) : (
+            <RailLabelSpan session={session} tooltip={rowTooltip(session, showsGloss, false)} />
+          )}
           <TrailingChevron info={info} />
           {/* Host label after the chevron (which hugs the title text), so a
               remote row says where it lives without pushing the title. The
@@ -702,12 +748,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             Not started
           </span>
         ) : (
-          session.age !== undefined &&
-          session.age !== "" && (
-            <span data-testid="rail-row-time" className={CLASS.time}>
-              {session.age}
-            </span>
-          )
+          <RailAge updatedAt={session.updated_at} />
         )}
         <span className={CLASS.actions}>
           <SessionMenuRow session={session} actions={actions} />

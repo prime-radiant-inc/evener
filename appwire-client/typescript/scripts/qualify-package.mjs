@@ -51,22 +51,24 @@ async function qualify() {
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
   const rootSmokeCalls = `assert.equal(typeof client.AppwireClient, "function");
+assert.deepEqual(client.mergeTurnHistory([], []).turns, []);
 assert.equal(client.rpcURLFromLocation({ protocol: "https:", host: "hub.example:9180" }), "wss://hub.example:9180/rpc");
 assert.equal(client.composeAskAnswers([]), "[answers]");
 const askItem = {
   id: "ask1", turnId: "t1", type: "commandExecution", toolName: "ask_user", status: "completed",
   argumentsJSON: '{"questions":[{"header":"DB","question":"Which store?","options":[{"label":"SQLite","detail":"one file"}]}]}',
 };
+const askModel = { turns: [{ items: [askItem] }], askPending: true };
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
-assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }], askPending: true })[0].key, "ask1:0");
+assert.equal(client.liveAskQuestions(askModel)[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
 const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
-const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }], askPending: true }), () => "batch1");
+const askBatches = client.reconcileBatches([], client.liveAskQuestions(askModel), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
-const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions({ turns: [{ items: [askItem] }], askPending: true })); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
+const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions(askModel)); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
@@ -296,11 +298,104 @@ assert.equal(client.displayBindingFor(keybindingRegistry.getState().bindings, cl
 client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp");
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
+// The settings-hub generation core over a scripted fence and a settings
+// fields store: a defaults read publishes under one generation, a
+// replacement generation fences the in-flight read and rewires notifications,
+// and ending the generation retires the payload - a write caught mid-flight
+// keeps its unknown outcome in writeUncertain.
+const settingsFence = client.createReadyGenerationFence(() => true);
+let settingsFields = { loaded: false, saving: false, hubLoading: false, writeUncertain: false, revision: 0 };
+const wiredGenerations = [];
+const settingsGeneration = client.createSettingsHubGeneration({
+  fence: settingsFence,
+  wireNotifications: (generation) => { wiredGenerations.push(generation); return () => wiredGenerations.pop(); },
+  retirePayload: () => { settingsFields = { ...settingsFields, loaded: false, saving: false, hubLoading: false, writeUncertain: settingsFields.writeUncertain || settingsFields.saving, revision: 0 }; },
+});
+settingsGeneration.beginReadyGeneration();
+const firstSettingsGeneration = settingsFence.generation;
+const landingRead = settingsFence.claimRead();
+settingsFields = { ...settingsFields, loaded: true, revision: 3 };
+settingsGeneration.beginReadyGeneration();
+assert.equal(settingsFence.readStillMine(firstSettingsGeneration, landingRead), false);
+assert.deepEqual(wiredGenerations, [settingsFence.generation]);
+settingsFields = { ...settingsFields, saving: true };
+settingsGeneration.endReadyGeneration();
+assert.equal(settingsFence.generation, -1);
+assert.deepEqual(wiredGenerations, []);
+assert.deepEqual(settingsFields, { loaded: false, saving: false, hubLoading: false, writeUncertain: true, revision: 0 });
+// The checkpointed draft editor over a scripted in-memory checkpoint port:
+// an edit persists a fresh checkpoint, the discardable gate refuses a
+// mid-write discard, discarding removes the record and clears the draft
+// fields, and a port save failure marks storageUnavailable AND draftError.
+let editorFields = { saving: false, writeUncertain: false, storageUnavailable: false, draftUnreadable: false, draft: null, draftConflict: false, draftError: null };
+const setEditorFields = (partial) => { editorFields = { ...editorFields, ...partial }; };
+let storedDraft = null;
+let draftSaveFailure = null;
+let mintedDraftIds = 0;
+const draftRepo = {
+  createId: () => "draft-" + (mintedDraftIds += 1),
+  save: (checkpoint) => { if (draftSaveFailure) throw draftSaveFailure; storedDraft = checkpoint; return true; },
+  discardClassified: () => { const removed = storedDraft !== null; storedDraft = null; return removed; },
+};
+const savedDraft = client.persistCheckpointedDraft(draftRepo, { value: "new draft" }, () => editorFields, setEditorFields, () => ({}), "draft save failed", "review the draft again");
+assert.deepEqual(savedDraft, { id: "draft-1", value: "new draft" });
+assert.deepEqual(storedDraft, { id: "draft-1", value: "new draft" });
+setEditorFields({ draft: { value: "new draft" }, draftConflict: true });
+setEditorFields({ saving: true });
+assert.throws(() => client.assertDraftDiscardable({ disposed: false }, () => editorFields, "drafts unavailable"), /drafts unavailable/);
+setEditorFields({ saving: false });
+client.discardCheckpointedDraft(draftRepo, () => editorFields, setEditorFields, () => ({}), "draft discard failed");
+assert.equal(storedDraft, null);
+assert.deepEqual(editorFields, { saving: false, writeUncertain: false, storageUnavailable: false, draftUnreadable: false, draft: null, draftConflict: false, draftError: null });
+draftSaveFailure = new Error("port unavailable");
+assert.throws(() => client.persistCheckpointedDraft(draftRepo, { value: "second draft" }, () => editorFields, setEditorFields, () => ({}), "draft save failed", "review the draft again"), /draft save failed/);
+assert.deepEqual(editorFields, { saving: false, writeUncertain: false, storageUnavailable: true, draftUnreadable: false, draft: null, draftConflict: false, draftError: "draft save failed" });
+// The transcript display store over a scripted client port: a malformed GET
+// publishes the read error and no state, a well-formed GET publishes both
+// layouts' confirmed defaults, a change contradicting the confirmed revision
+// is fenced while a newer one lands, and dropping hub support retires the
+// payload and fences later changes.
+assert.equal(client.transcriptDisplaySupport({ transcriptDisplaySettings: true }), "supported");
+const transcriptCalls = [];
+let transcriptReply = {};
+const transcriptStore = client.createTranscriptDisplayStore({
+  client: { request: async (method) => { transcriptCalls.push(method); return transcriptReply; }, onNotification: () => () => {} },
+});
+transcriptStore.setSupport("supported");
+transcriptStore.beginReadyGeneration();
+transcriptStore.getState().refreshHubDefaults().then(() => {
+  assert.equal(transcriptStore.getState().hubError, "Hub returned malformed transcript display defaults");
+  assert.equal(transcriptStore.getState().hubLoading, false);
+  assert.equal(transcriptStore.getState().loaded, false);
+  transcriptReply = {
+    desktop: client.toWireDefault({ revision: 3, config: client.makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }) }),
+    mobile: client.toWireDefault({ revision: 2, config: client.makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }) }),
+  };
+  return transcriptStore.getState().refreshHubDefaults();
+}).then(() => {
+  assert.deepEqual(transcriptCalls, ["evener/settings/transcriptDisplay/get", "evener/settings/transcriptDisplay/get"]);
+  assert.equal(transcriptStore.getState().hubError, null);
+  assert.deepEqual(transcriptStore.getState().hubErrors, {});
+  assert.equal(transcriptStore.getState().loaded, true);
+  assert.equal(transcriptStore.getState().hub.desktop.revision, 3);
+  assert.equal(transcriptStore.getState().hub.mobile.revision, 2);
+  const changedConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  transcriptStore.getState().applyHubChange({ layout: "mobile", revision: 1, config: changedConfig });
+  assert.equal(transcriptStore.getState().hub.mobile.revision, 2);
+  transcriptStore.getState().applyHubChange({ layout: "mobile", revision: 5, config: changedConfig });
+  assert.equal(transcriptStore.getState().hub.mobile.revision, 5);
+  transcriptStore.setSupport("unsupported");
+  transcriptStore.getState().applyHubChange({ layout: "desktop", revision: 9, config: changedConfig });
+  assert.equal(transcriptStore.getState().hubSupport, "unsupported");
+  assert.deepEqual(transcriptStore.getState().hub, {});
+  assert.equal(transcriptStore.getState().loaded, false);
+}).catch((error) => { console.error(error); process.exit(1); });
 `;
-  // The eleven storage-port methods neither outbox fixture exercises: the
+  // The twelve storage-port methods neither outbox fixture exercises: the
   // type-use program and the smoke script embed this one definition and add the
   // two calls each of them actually makes (enqueueIntent, listTargetRefs).
   const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  enqueueInterruptAndCancel: () => Promise.reject(new Error("inert")),
   getOptimistic: () => Promise.resolve(undefined),
   listOptimistic: () => Promise.resolve([]),
   getRecovery: () => Promise.resolve(undefined),
@@ -714,7 +809,7 @@ assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]
 const insecureUUID = client.createSecureUUID({});
 assert.match(insecureUUID, /^insecure-/);
 assert.deepEqual(
-  client.reconcilePendingEntries("ref", [], undefined, new Set(), identityA.isOwnMutationRecord),
+  client.reconcilePendingEntries("ref", [], undefined, new Map(), identityA.isOwnMutationRecord),
   [],
 );
 const draftState = { revision: 0, text: "", skillNames: [] };

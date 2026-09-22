@@ -578,3 +578,398 @@ func TestRetirementTimerRefusalRearmsIdleInterval(t *testing.T) {
 		t.Fatal("Run did not re-establish eligibility after the refusal")
 	}
 }
+
+// TestRetirementRetargetShortensArmedInterval proves a runtime deadline change
+// reaches the armed timer: Retarget(1m) on a controller armed for 1h re-arms to
+// the shortened interval from the same settled instant, and a tick at the new
+// deadline claims.
+func TestRetirementRetargetShortensArmedInterval(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	if d := clk.awaitArm(t); d != time.Hour {
+		t.Fatalf("first settled arm = %v, want the full 1h interval", d)
+	}
+
+	if err := h.ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	if d := clk.awaitArm(t); d != time.Minute {
+		t.Fatalf("arm after shorten = %v, want the 1m interval", d)
+	}
+	if got := h.ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("snapshot timeout = %v, want 1m", got)
+	}
+	clk.Advance(time.Minute)
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetBelowElapsedIdleFiresAtOnce proves shortening below
+// already-elapsed idle time does not wait out the new interval: the re-arm
+// clamps to now and the very next tick claims.
+func TestRetirementRetargetBelowElapsedIdleFiresAtOnce(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+	clk.Advance(30 * time.Minute)
+
+	if err := h.ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	if d := clk.awaitArm(t); d != 0 {
+		t.Fatalf("arm after below-elapsed shorten = %v, want 0 (deadline already passed)", d)
+	}
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetLengthenSurvivesStaleTick proves the lengthen path:
+// the re-arm reflects the longer remaining interval, and a stale tick from the
+// pre-lengthen timer — fired before the re-arm, delivered after — retires
+// nothing because the claim re-proves the deadline against the new timeout.
+func TestRetirementRetargetLengthenSurvivesStaleTick(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Minute, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+	clk.Advance(30 * time.Second)
+
+	if err := h.ctrl.Retarget(time.Hour); err != nil {
+		t.Fatalf("Retarget: %v", err)
+	}
+	wantRemaining := 59*time.Minute + 30*time.Second
+	if d := clk.awaitArm(t); d != wantRemaining {
+		t.Fatalf("arm after lengthen = %v, want %v", d, wantRemaining)
+	}
+	// Stale tick: the 1m timer's deadline (t0+1m) has not passed yet under the
+	// new deadline (t0+1h); the claim must re-prove and decline.
+	clk.fire(t)
+	h.assertNoCall(t, 100*time.Millisecond)
+	if d := clk.awaitArm(t); d != wantRemaining {
+		t.Fatalf("re-arm after stale tick = %v, want %v", d, wantRemaining)
+	}
+	clk.Advance(wantRemaining)
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetZeroDisarms proves retargeting to zero restores the
+// disabled state: the timer disarms, no later arm or claim happens, and the
+// snapshot reports the zero timeout.
+func TestRetirementRetargetZeroDisarms(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+
+	if err := h.ctrl.Retarget(0); err != nil {
+		t.Fatalf("Retarget(0): %v", err)
+	}
+	clk.awaitDisarm(t)
+	clk.assertNoArmWithin(t, 100*time.Millisecond)
+	if got := h.ctrl.Snapshot().Timeout; got != 0 {
+		t.Fatalf("snapshot timeout = %v, want 0", got)
+	}
+	clk.Advance(100 * time.Hour)
+	clk.fire(t) // stale in-flight tick from the disarmed timer
+	h.assertNoCall(t, 200*time.Millisecond)
+}
+
+// TestRetirementRetargetRejectsNegative proves a negative deadline is refused
+// without disturbing the armed interval: the error returns, the snapshot keeps
+// the old timeout, and the original deadline still claims.
+func TestRetirementRetargetRejectsNegative(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	h := startRetirementRun(t, ctrl, commitClaim(ctrl))
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := h.ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+
+	if err := h.ctrl.Retarget(-time.Minute); err == nil {
+		t.Fatal("Retarget accepted a negative timeout")
+	}
+	if got := h.ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("snapshot timeout = %v, want the unchanged 1h", got)
+	}
+	clk.assertNoArmWithin(t, 100*time.Millisecond)
+	clk.Advance(time.Hour)
+	clk.fire(t)
+	h.awaitCall(t)
+	h.awaitPhase(t, "retiring")
+}
+
+// TestRetirementRetargetRefusesWhilePreparing proves Retarget is fenced by the
+// admission phase like every other controller entry point: a preparing or
+// retiring controller refuses, and the refusal clears once the claim settles.
+func TestRetirementRetargetRefusesWhilePreparing(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	claim, _, err := ctrl.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("TryClaim(true): claim=%v err=%v", claim, err)
+	}
+	if got := ctrl.Snapshot().Phase; got != "preparing" {
+		t.Fatalf("phase = %q, want preparing", got)
+	}
+	if err := ctrl.Retarget(time.Minute); !errors.Is(err, ErrRetirementUnavailable) {
+		t.Fatalf("Retarget while preparing = %v, want ErrRetirementUnavailable", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("refused Retarget changed timeout to %v", got)
+	}
+	if err := ctrl.Abort(claim, "test_done"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if err := ctrl.Retarget(time.Minute); err != nil {
+		t.Fatalf("Retarget after abort: %v", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("snapshot timeout = %v, want 1m after abort", got)
+	}
+}
+
+// TestRetirementStampedRetargetUndo proves the write-token undo contract:
+// RetargetStamped reports the deadline it replaced and a token naming its own
+// write; UndoRetarget restores the replaced deadline only while that write is
+// still the newest — a later write, even one choosing the same deadline,
+// supersedes the token, because two writers can legitimately choose the same
+// value and identity, not equality, must decide which write the deadline
+// currently belongs to.
+func TestRetirementStampedRetargetUndo(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+
+	prev, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	if prev != time.Hour {
+		t.Fatalf("first stamped write reported prev = %v, want the constructed 1h", prev)
+	}
+	if token == 0 {
+		t.Fatal("first stamped write minted token 0, want a nonzero write token")
+	}
+	if !ctrl.UndoRetarget(token, prev) {
+		t.Fatal("UndoRetarget with the newest token = false, want true")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("timeout after undo = %v, want the restored 1h", got)
+	}
+
+	// An aliased second write chooses the deadline the first one set; the
+	// third write supersedes the second's token, and the second's undo must
+	// not reach past either.
+	prev2, token2, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("second stamped write: %v", err)
+	}
+	if prev2 != time.Hour {
+		t.Fatalf("second stamped write prev = %v, want 1h", prev2)
+	}
+	if token2 == token {
+		t.Fatalf("aliased second write minted the first write's token %d", token2)
+	}
+	_, token3, err := ctrl.RetargetStamped(2 * time.Minute)
+	if err != nil {
+		t.Fatalf("third stamped write: %v", err)
+	}
+	if ctrl.UndoRetarget(token2, prev2) {
+		t.Fatal("UndoRetarget with a superseded token = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != 2*time.Minute {
+		t.Fatalf("timeout after refused undo = %v, want the later write's 2m", got)
+	}
+	if !ctrl.UndoRetarget(token3, time.Minute) {
+		t.Fatal("UndoRetarget with the newest token = false, want true")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("timeout after undo = %v, want the restored 1m", got)
+	}
+}
+
+// TestRetirementUndoRetargetRefusesWhilePreparing proves the undo is fenced
+// by the admission phase like Retarget: a preparing controller never
+// restores, and the token survives the aborted claim so the same undo works
+// once the controller is resident again.
+func TestRetirementUndoRetargetRefusesWhilePreparing(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	_, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	claim, _, err := ctrl.TryClaim(true)
+	if err != nil || claim == nil {
+		t.Fatalf("TryClaim(true): claim=%v err=%v", claim, err)
+	}
+	if ctrl.UndoRetarget(token, time.Hour) {
+		t.Fatal("UndoRetarget while preparing = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("timeout after refused undo = %v, want the undo-untouched 1m", got)
+	}
+	if err := ctrl.Abort(claim, "test_done"); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if !ctrl.UndoRetarget(token, time.Hour) {
+		t.Fatal("UndoRetarget after abort = false, want true")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("timeout after undo = %v, want the restored 1h", got)
+	}
+}
+
+// TestRetirementAttachRootResetsDeadlineToConfigured proves a fresh root
+// starts from the configured deadline, not whatever the predecessor's
+// archive decision left armed: attaching the replacement root restores the
+// constructed timeout and mints a write of its own, so a predecessor-era
+// token can never undo past the reset.
+func TestRetirementAttachRootResetsDeadlineToConfigured(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	_, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	replacement := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(replacement); err != nil {
+		t.Fatalf("AttachRoot for the replacement: %v", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("replacement root deadline = %v, want the configured 1h", got)
+	}
+	if ctrl.UndoRetarget(token, time.Minute) {
+		t.Fatal("UndoRetarget with a predecessor-era token = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("deadline after refused undo = %v, want the configured 1h", got)
+	}
+}
+
+// TestRetirementAttachRootResetsDisabledDeadline proves the root-swap reset
+// also restores the disabled (zero) configured baseline: an archived
+// predecessor's shortened deadline must not outlive the Hub-wide disable the
+// replacement was configured with.
+func TestRetirementAttachRootResetsDisabledDeadline(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(0, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	root := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	if _, _, err := ctrl.RetargetStamped(time.Minute); err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	replacement := newQueuePersistTestSession(t, t.TempDir())
+	if err := ctrl.AttachRoot(replacement); err != nil {
+		t.Fatalf("AttachRoot for the replacement: %v", err)
+	}
+	if got := ctrl.Snapshot().Timeout; got != 0 {
+		t.Fatalf("replacement root deadline = %v, want the disabled 0", got)
+	}
+}
+
+// TestRetirementUndoRetargetRejectsUnguardedWrites proves the undo's own
+// write path is fenced like Retarget: token 0 never names a real write, and a
+// negative restore target is refused — neither may bypass the stamped-write
+// validation.
+func TestRetirementUndoRetargetRejectsUnguardedWrites(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	if ctrl.UndoRetarget(0, 5*time.Minute) {
+		t.Fatal("UndoRetarget with token 0 = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Hour {
+		t.Fatalf("timeout after token-0 undo = %v, want the unchanged 1h", got)
+	}
+	_, token, err := ctrl.RetargetStamped(time.Minute)
+	if err != nil {
+		t.Fatalf("RetargetStamped: %v", err)
+	}
+	if ctrl.UndoRetarget(token, -time.Minute) {
+		t.Fatal("UndoRetarget with a negative target = true, want false")
+	}
+	if got := ctrl.Snapshot().Timeout; got != time.Minute {
+		t.Fatalf("timeout after refused negative undo = %v, want the unchanged 1m", got)
+	}
+}

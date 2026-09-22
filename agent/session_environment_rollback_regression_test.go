@@ -25,12 +25,14 @@ type environmentSyncFailureFS struct {
 	afero.Fs
 	mu                         sync.Mutex
 	failure                    error
+	syncsBeforeFailure         int
 	rollbackFailure            error
 	seekFailure                error
 	writeFailure               error
 	writesBeforeFailure        int
 	transferBeforeWriteFailure int
 	onFailure                  func()
+	onWriteFailure             func()
 }
 
 type environmentSyncFailureFile struct {
@@ -48,6 +50,11 @@ func (fs *environmentSyncFailureFS) OpenFile(name string, flag int, mode os.File
 
 func (file *environmentSyncFailureFile) Sync() error {
 	file.fs.mu.Lock()
+	if file.fs.syncsBeforeFailure > 0 {
+		file.fs.syncsBeforeFailure--
+		file.fs.mu.Unlock()
+		return file.File.Sync()
+	}
 	failure := file.fs.failure
 	file.fs.failure = nil
 	onFailure := file.fs.onFailure
@@ -88,6 +95,7 @@ func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 		file.fs.writeFailure = nil
 	}
 	transfer := min(file.fs.transferBeforeWriteFailure, len(p))
+	hook := file.fs.onWriteFailure
 	file.fs.mu.Unlock()
 	if failure == nil {
 		return file.File.Write(p)
@@ -95,6 +103,9 @@ func (file *environmentSyncFailureFile) Write(p []byte) (int, error) {
 	n, err := file.File.Write(p[:transfer])
 	if err != nil {
 		return n, err
+	}
+	if hook != nil {
+		hook()
 	}
 	return n, failure
 }
@@ -1184,13 +1195,14 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	sendOneUserInput(t, sess, "first")
 
 	turnCtx, interrupt := interruptDrainTurnContext(t)
-	fs := attachEnvironmentFailureFS(t, sess)
-	// The buffered user-input record poisons the writer before the model is
-	// asked, and the interrupt then ends the turn with the bare cancellation
-	// the drain keys on.
-	armEnvironmentPartialWrite(fs)
+	// The input must be admitted before the model turn poisons the writer; the
+	// interrupt then ends that reachable turn with the bare cancellation the
+	// drain keys on.
 	steps[1] = func(llm.Request) llm.Response {
 		requests.Add(1)
+		// Poison the transcript during the scripted response, before the
+		// interrupt lets the drain claim its queued message.
+		poisonSessionTranscript(t, sess)
 		interrupt()
 		return finalResponse("ok")
 	}
@@ -1203,6 +1215,9 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(turnCtx, "poisons mid-turn", nil)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("model requests = %d, want the initial turn and the interrupted poisoning turn", got)
+	}
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("interrupted turn behind the poisoning = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
 	}
@@ -1399,9 +1414,9 @@ func TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns(t *testing.T) {
 	turnsBefore, historyBefore := sess.turns, len(sess.history)
 	sess.mu.Unlock()
 
-	fs := attachEnvironmentFailureFS(t, sess)
-	// The USER_INPUT record is the next write, and it stops partway.
-	armEnvironmentPartialWrite(fs)
+	// The USER_INPUT record is the next write, and it stops partway without a
+	// successful rollback, so the synced admission door poisons the writer.
+	attachEnvironmentPoisoningWrite(t, sess, errors.New("injected transcript write failure"), errors.New("injected transcript rollback failure"))
 	drainPendingEvents(sess)
 
 	_, err := sess.ProcessInput(t.Context(), "poisons its own input record", nil)
@@ -1489,9 +1504,10 @@ func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
 	fs.mu.Unlock()
 
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("buffered input whose sync fails"))
-	if err := sess.appendUserInputTurnRefusingPoison(turn); err != nil {
-		t.Fatalf("appendUserInputTurnRefusingPoison error = %v, want nil: the whole line is a record", err)
+	if err := sess.writeTranscript(turn); err != nil {
+		t.Fatalf("buffered transcript write error = %v, want nil: the whole line is a record", err)
 	}
+	sess.surfaceTranscriptWarnings()
 
 	sess.Close()
 	<-done

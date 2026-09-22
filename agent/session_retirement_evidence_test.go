@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -161,7 +162,14 @@ func TestRetirementSafetyDetachedLifetime(t *testing.T) {
 			if len(before) != 1 || before[0].pid != original.PID || before[0].done != original.Done {
 				t.Fatal("warning owner lost exact launch receipt")
 			}
-			claim, state, err = c.TryClaim(true)
+			// This is root's first successfully-processed turn, so it also
+			// launched the async session namer (launchInitialPromptNamer,
+			// session_namer.go). retirementClaimAfterFirstTurn waits for it
+			// before claiming, for the same reason assertRetirementEvidenceEligible
+			// does (#1879): a raw TryClaim this close to that turn can
+			// otherwise race the namer goroutine and see a spurious
+			// "autonomous" blocker.
+			claim, state, err = retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("independent detached lifetime blocked eligibility: %+v %v", state, err)
 			}
@@ -1361,15 +1369,100 @@ func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, cate
 	}
 }
 
+// retirementClaimAfterFirstTurn is the shared guard for a TryClaim call made
+// close to a session's first non-empty turn. That turn also launches the
+// async session namer (launchInitialPromptNamer / launchCompactionNamerGated,
+// session_namer.go) in its own goroutine, which is never joined before
+// ProcessInput returns and correctly holds an "autonomous" blocker
+// (session_retirement_evidence.go) until it settles. Waiting on every
+// registered sender before reading evidence is what
+// assertRetirementEvidenceEligible and TestRetirementSafetyDetachedLifetime's
+// own raw eligibility check both need to avoid racing that goroutine and
+// intermittently reporting a settled owner ineligible (#1879); this is the
+// one place that wait lives, so both call it, and both are exercised by the
+// same regression tests below.
+func retirementClaimAfterFirstTurn(root *Session, c *RetirementController) (*RetirementClaim, RetirementSnapshot, error) {
+	root.sendersWG.Wait()
+	return c.TryClaim(true)
+}
+
 func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 	t.Helper()
-	claim, state, err := c.TryClaim(true)
+	claim, state, err := retirementClaimAfterFirstTurn(c.root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("settled owner not eligible: %+v, %v", state, err)
 	}
 	if err := c.Abort(claim, ""); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer is the deterministic
+// regression for #1879: launchInitialPromptNamer (session_namer.go) starts
+// the session namer in its own goroutine and never joins it before the
+// triggering ProcessInput returns, while that goroutine correctly holds an
+// "autonomous" blocker (session_retirement_evidence.go) until it settles.
+// retirementClaimAfterFirstTurn is the one place assertRetirementEvidenceEligible
+// and TestRetirementSafetyDetachedLifetime's own raw eligibility check both
+// wait for it; this exercises that shared function directly, so reverting its
+// wait reproduces both #1879 occurrences (2 of the 4 named tests / round 1's
+// and round 2's CI failures) at once.
+//
+// The test runs in a synctest bubble so its first Wait reaches a stable
+// interleaving: the real namer is blocked on release, and the claim goroutine
+// is blocked in retirementClaimAfterFirstTurn's sendersWG.Wait. A version that
+// skips that wait runs TryClaim and fills resultCh before the first Wait
+// returns, proving the shared helper is the seam under test. After release, a
+// second Wait drains both goroutines before the eligible claim is checked.
+func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
+			return finalResponse("turn settled")
+		}))
+		c := retirementEvidenceController(t, root)
+		held, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseNamer) // never leak the namer goroutine on an earlier Fatal
+		namer := llm.NewClient()
+		namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
+			close(held)
+			<-release
+			return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
+		}})
+		updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
+		if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
+			t.Fatal(err)
+		}
+		<-held // the namer goroutine is provably still in flight right here
+
+		type outcome struct {
+			claim *RetirementClaim
+			state RetirementSnapshot
+			err   error
+		}
+		resultCh := make(chan outcome, 1)
+		go func() {
+			claim, state, err := retirementClaimAfterFirstTurn(root, c)
+			resultCh <- outcome{claim, state, err}
+		}()
+		synctest.Wait()
+		select {
+		case res := <-resultCh:
+			t.Fatalf("claim settled while the namer was still held in flight: %+v %v", res.state, res.err)
+		default:
+		}
+
+		releaseNamer()
+		synctest.Wait()
+		res := <-resultCh
+		if res.err != nil || res.claim == nil {
+			t.Fatalf("claim blocked eligibility after the namer released: %+v %v", res.state, res.err)
+		}
+		if err := c.Abort(res.claim, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {

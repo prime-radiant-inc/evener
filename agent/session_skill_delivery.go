@@ -267,6 +267,20 @@ func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome s
 	return s.recordSkillCarrierDurably(turn, turn)
 }
 
+// skillDeliveryMessage builds the model-facing carrier for a skill's
+// complete content. A non-empty note (the changed-on-disk explanation)
+// prefixes the body inside one machinery-flagged part: the carrier is a
+// TurnSystem notification the user never typed, and a single part keeps the
+// wire text byte-identical to the former note+"\n\n"+body concatenation on
+// every adapter — including ones that join separate text parts with a
+// separator (chatcompletions' textFromParts).
+func skillDeliveryMessage(note, body string) llm.Message {
+	if note == "" {
+		return llm.User(body)
+	}
+	return llm.UserMachinery(note + "\n\n" + body)
+}
+
 // finalizeSkillDeliveryFailure drops the obligation for an invocation whose
 // delivery failed permanently (reload failure, budget rejection). The failed
 // outcome is already recorded on its notification turn; the inventory keeps
@@ -345,7 +359,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				ErrorCode:        skillActivationErrorCode(err),
 			}
 			if err := s.recordSkillDeliveryNotification(
-				llm.User(systemNotificationf("Skill %q is no longer available from %s: %v", obligation.Identity.Name, obligation.Identity.Source, err)),
+				llm.UserMachinery(systemNotificationf("Skill %q is no longer available from %s: %v", obligation.Identity.Name, obligation.Identity.Source, err)),
 				outcome, obligation); err != nil {
 				return req, commit, err
 			}
@@ -369,6 +383,7 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 			Status:           "delivered",
 		}
 		content := item.Rendered.Content
+		var note string
 		if newIdentity != obligation.Identity {
 			// Changed disk content is reported explicitly; this notification
 			// supersedes the earlier provisional outcome, so it records the
@@ -379,11 +394,11 @@ func (s *Session) prepareSkillDelivery(ctx context.Context, profile *provider.Pr
 				previousControls := prior.Controls
 				outcome.PreviousControls = &previousControls
 			}
-			content = systemNotificationf("Skill %q changed on disk since its earlier activation; the complete current instructions follow.", obligation.Identity.Name) + "\n\n" + content
+			note = systemNotificationf("Skill %q changed on disk since its earlier activation; the complete current instructions follow.", obligation.Identity.Name)
 		}
 		corrected := obligation
 		corrected.Identity = newIdentity
-		if err := s.recordSkillDeliveryNotification(llm.User(content), outcome, corrected); err != nil {
+		if err := s.recordSkillDeliveryNotification(skillDeliveryMessage(note, content), outcome, corrected); err != nil {
 			// The body was not durably recorded, so the obligation must keep the
 			// identity the dispatch still has to satisfy; the next attempt
 			// re-prepares and re-records it.

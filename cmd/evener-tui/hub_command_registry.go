@@ -252,7 +252,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:             hubCommandSession,
 		UnavailableAction:  "interrupt",
 		UnavailableSummary: "Interrupt is not available for this session.",
-		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Interrupt }, "source does not advertise interrupt"),
+		Available:          interruptCommandAvailable,
 		// No ActiveTurnID gate here. turn/interrupt is session-scoped -- it
 		// names no turn (appwire v3) and the daemon decides on the session's own
 		// quiescence. Gating on an id the request does not carry can only refuse
@@ -515,7 +515,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 			panel := launchconfig.NewPluginsPanel()
 			m.pluginsPanel = &panel
 			if m.client != nil {
-				return tea.Batch(launchconfig.CmdMarketplaceList(m.client), launchconfig.CmdPluginList(m.client))
+				return tea.Batch(m.marketplaceListRead(), launchconfig.CmdPluginList(m.client))
 			}
 			return nil
 		},
@@ -552,7 +552,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		PaletteDetail: "exit evener-tui",
 		Scopes:        hubCommandDashboard | hubCommandSession,
 		Run: func(_ *hubModel, _ string) tea.Cmd {
-			return tea.Quit
+			return quitCmd()
 		},
 	},
 }
@@ -594,6 +594,24 @@ func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string)
 		}
 		return false, reason
 	}
+}
+
+// interruptCommandAvailable gates /interrupt on both the harness advertising
+// interrupt and a turn actually running, the rule sessionControls's stop uses
+// for Ctrl+C. ThreadCapabilities.Interrupt answers "can this harness stop a
+// turn", not "is one running" (#1375), so the raw bit alone offers the command
+// on an idle wired session -- where the daemon's quiescence precondition
+// (sessionIsQuiesced) rejects it with "no active turn". The status is applied
+// here rather than at dispatch so the palette and /help show it disabled with
+// the reason, not just fail on use.
+func interruptCommandAvailable(ctx hubCommandContext) (bool, string) {
+	if !ctx.caps.Interrupt {
+		return false, "source does not advertise interrupt"
+	}
+	if ctx.state != appwire.ThreadStatusActive {
+		return false, "no active turn"
+	}
+	return true, ""
 }
 
 func fetchCurrentHubSession(m *hubModel, _ string) tea.Cmd {

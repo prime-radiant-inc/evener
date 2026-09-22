@@ -40,6 +40,17 @@ const VIEWPORT = { width: 1400, height: 900 };
 // tolerance the fix's own jsdom suite uses for the same assertion.
 const BOTTOM_TOLERANCE_PX = 1;
 
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server module burst mid-boot while the page still
+// fires its load event. transcriptscrollguard.html boots through one entry
+// module, src/dev/transcriptscrollguard-entry.tsx, which assigns
+// window.waitForTranscriptSettled at module scope - a page whose load event
+// fired without that global never booted.
+const BOOT = {
+  bootExpression: "typeof window.waitForTranscriptSettled !== 'undefined'",
+  bootLabel: "the transcriptscrollguard entry global window.waitForTranscriptSettled",
+};
+
 async function main() {
   let guard;
   try {
@@ -76,7 +87,7 @@ async function main() {
     let landed = null;
     try {
       await applyViewport(send, VIEWPORT);
-      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`);
+      await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html`, BOOT);
       // Fonts FIRST, then settle: a late-arriving webfont changes row
       // geometry, so the settle loop must measure post-font geometry -
       // otherwise a font-driven shift could surface the pill before the

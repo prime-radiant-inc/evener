@@ -44,6 +44,17 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // A desktop viewport — the same width at which Session is normally exercised.
 const VIEWPORT = { width: 1400, height: 900 };
 
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server module burst mid-boot while the page still
+// fires its load event. retirementharness.html boots through one entry
+// module, src/dev/retirementharness-entry.tsx, which assigns
+// window.retirementHarness at module scope - a page whose load event fired
+// without that global never booted.
+const BOOT = {
+  bootExpression: "typeof window.retirementHarness !== 'undefined'",
+  bootLabel: "the retirementharness entry global window.retirementHarness",
+};
+
 // Environment variables injected by the Go fixture.
 const HUB_URL = process.env.RETIREMENT_HUB_URL ?? "";
 const RETIRE_URL = process.env.RETIREMENT_RETIRE_URL ?? "";
@@ -155,7 +166,7 @@ async function main() {
 
     try {
       await applyViewport(send, VIEWPORT);
-      await navigateTo(page, harnessUrl);
+      await navigateTo(page, harnessUrl, BOOT);
       await waitForFonts(send);
 
       // Wait for the harness to be ready (AppwireClient connected + thread
@@ -314,7 +325,10 @@ async function main() {
           // replacement's authoritative snapshot must supersede it: a ghost
           // turn surviving here means a late old-generation frame overwrote the
           // replacement.
-          lateFrame = { ghostTurnID: "turn_old_generation", survived: postRetire.turnIDs.includes("turn_old_generation") };
+          lateFrame = {
+            ghostTurnID: "turn_old_generation",
+            survived: postRetire.turnIDs.includes("turn_old_generation"),
+          };
           if (lateFrame.survived) {
             failures.push(
               `late old-generation frame overwrote the replacement: ${lateFrame.ghostTurnID} survived the resync`,

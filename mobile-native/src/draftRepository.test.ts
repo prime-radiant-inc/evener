@@ -1,25 +1,20 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
-import { type DraftDatabase, DraftRepository } from "./draftRepository";
 import { questionsIdentity } from "./questionAnswers";
+import { DraftRepository } from "./draftRepository";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
 let directory: string;
-let database: DatabaseSync;
+let database: SqliteDoubleDatabase;
 let repository: DraftRepository;
 
 function openRepository() {
-	database = new DatabaseSync(join(directory, "drafts.sqlite"));
-	const adapter: DraftDatabase = {
-		execSync: (sql) => database.exec(sql),
-		runSync: (sql, ...params) => database.prepare(sql).run(...params),
-		getFirstSync: <T>(sql: string, ...params: string[]) =>
-			(database.prepare(sql).get(...params) as T | undefined) ?? null,
-	};
-	repository = new DraftRepository(adapter);
+	const opened = openSqliteSyncDouble(join(directory, "drafts.sqlite"));
+	database = opened.database;
+	repository = new DraftRepository(opened.port);
 }
 
 beforeEach(() => {

@@ -7,6 +7,7 @@
 export {
   imagePlaceholder,
   normalizeText,
+  pendingEntryPreview,
   queueEntryPreviewText,
   skillMarkers,
   truncateForDisplay,

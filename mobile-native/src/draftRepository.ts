@@ -9,6 +9,7 @@ import {
 	decodeQuestionSelections,
 	type QuestionSelections,
 } from "./questionAnswers";
+import { type SqliteSync, withSavepoint } from "./sqliteSync";
 export interface DraftRecord {
 	draft: string;
 	unconfirmed: string | null;
@@ -21,15 +22,9 @@ export interface DraftDestination {
 	sessionRef: string;
 }
 
-export interface DraftDatabase {
-	execSync(sql: string): void;
-	runSync(sql: string, ...params: (string | null)[]): unknown;
-	getFirstSync<T>(sql: string, ...params: string[]): T | null;
-}
-
 export class DraftRepository {
 	readonly creation: CreationDraftRepository;
-	constructor(private readonly db: DraftDatabase) {
+	constructor(private readonly db: SqliteSync) {
 		this.creation = new CreationDraftRepository(db);
 		db.execSync(`CREATE TABLE IF NOT EXISTS draft_images (
       hub_id TEXT NOT NULL, session_ref TEXT NOT NULL, id TEXT NOT NULL,
@@ -186,8 +181,7 @@ export class DraftRepository {
 			JSON.stringify(record.unconfirmedImages ?? []),
 		);
 		const referenced = [...images, ...unconfirmedImages];
-		this.db.execSync("SAVEPOINT draft_write");
-		try {
+		withSavepoint(this.db, "draft_write", () => {
 			for (const image of additions) {
 				if (
 					!referenced.some(
@@ -246,11 +240,7 @@ export class DraftRepository {
 				destination.sessionRef,
 				...ids,
 			);
-			this.db.execSync("RELEASE draft_write");
-		} catch (error) {
-			this.db.execSync("ROLLBACK TO draft_write; RELEASE draft_write");
-			throw error;
-		}
+		});
 	}
 
 	private writeText(destination: DraftDestination, record: DraftRecord): void {

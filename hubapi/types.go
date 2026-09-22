@@ -57,9 +57,10 @@ type SessionCapabilities struct {
 	Clear       bool `json:"clear"`
 	Shutdown    bool `json:"shutdown"`
 	ChangeModel bool `json:"change_model"`
-	// Queue mirrors appwire.ThreadCapabilities.Queue (kata 111a). True when
-	// the daemon will accept turn/queue while a turn is in flight; gates the
-	// composer's queue affordance on the web UI.
+	// Queue mirrors appwire.ThreadCapabilities.Queue: true when the harness
+	// supports queuing work, not when a turn is in flight (kata 111a folded the
+	// status in; #1375 unfolded it, matching steer). The client applies the
+	// status, so the composer's queue affordance still requires a running turn.
 	Queue          bool   `json:"queue"`
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }

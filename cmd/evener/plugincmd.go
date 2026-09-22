@@ -140,6 +140,15 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 		}
 		name := fs.Arg(0)
 		if err := m.RemoveMarketplace(context.Background(), name); err != nil {
+			if errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
+				// The unregister already landed - name is gone from the
+				// registry - but its clone could not be removed from disk.
+				// `evener plugin gc` now sweeps a marketplace's leftover clone
+				// directory, so point the user at it; this still exits
+				// non-zero so a script does not read the litter as a clean
+				// success.
+				return fmt.Errorf("removed marketplace %q; its clone files could not be removed and remain on disk; run `evener plugin gc` to reclaim them: %w", name, plugins.ErrMarketplaceUnregisteredCloneRemains)
+			}
 			return err
 		}
 		_, _ = fmt.Fprintf(stdout, "Removed marketplace %q\n", name)
@@ -233,7 +242,7 @@ func printPluginUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "  upgrade       Upgrade installed plugins\n")
 	_, _ = fmt.Fprintf(w, "  auto-upgrade  Toggle a plugin's auto-upgrade flag (--off to disable)\n")
 	_, _ = fmt.Fprintf(w, "  check-now     Run one auto-upgrade pass now for every opted-in plugin\n")
-	_, _ = fmt.Fprintf(w, "  gc            Garbage collect unused plugin cache\n")
+	_, _ = fmt.Fprintf(w, "  gc            Garbage collect unused plugin cache and orphaned marketplace clones\n")
 	_, _ = fmt.Fprintf(w, "  doctor        Run plugin-store health checks\n")
 }
 
@@ -571,7 +580,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if len(removed) == 0 {
 			_, _ = fmt.Fprintf(stdout, "Nothing to remove.\n")
 		} else {
-			_, _ = fmt.Fprintf(stdout, "Removed %d cache dir(s):\n", len(removed))
+			_, _ = fmt.Fprintf(stdout, "Removed %d dir(s):\n", len(removed))
 			for _, p := range removed {
 				_, _ = fmt.Fprintf(stdout, "  %s\n", p)
 			}

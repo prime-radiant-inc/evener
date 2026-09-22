@@ -12,9 +12,10 @@
 // those it owns the page-level states activeSegment, selectedPlugin and
 // selectedMarketplace.
 
+import type { AppwireClientLike } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { connectionStore } from "../../../../stores/connection";
+import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -31,6 +32,13 @@ const CLASS = {
 
 type SegmentId = "installed" | "browse" | "marketplaces";
 
+type AppliedRemovalGuard = {
+  client: AppwireClientLike | null;
+  names: ReadonlyMap<string, number>;
+};
+
+const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
+
 /**
  * The settings section for #12. Every mutation across the segments goes
  * straight through stores/extensions.ts (each RPC response already carries
@@ -43,10 +51,48 @@ export function MarketplacesPluginsSection() {
   const plugins = useExtensionsStore((s) => s.plugins);
   const pluginsLoading = useExtensionsStore((s) => s.pluginsLoading);
   const pluginsError = useExtensionsStore((s) => s.pluginsError);
+  const marketplacesPublicationVersion = useExtensionsStore((s) => s.marketplacesPublicationVersion);
+  const connectionClient = useConnectionStore((s) => s.client);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
   const [selectedPlugin, setSelectedPlugin] = useState<{ plugin: string; marketplace: string } | null>(null);
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
+  // The registry removal can finish while the sheet is unmounted by the page's
+  // load-error gate. Keep its no-repeat marker at the page lifecycle, and tie
+  // it to the client that owns the catalog so a new hub starts unblocked.
+  const [appliedRemovalGuard, setAppliedRemovalGuard] = useState<AppliedRemovalGuard>(() => ({
+    client: connectionClient,
+    names: new Map(),
+  }));
+  const appliedRemovalNames =
+    appliedRemovalGuard.client === connectionClient
+      ? new Set(appliedRemovalGuard.names.keys())
+      : EMPTY_APPLIED_REMOVALS;
+
+  useEffect(() => {
+    setAppliedRemovalGuard((current) =>
+      current.client === connectionClient ? current : { client: connectionClient, names: new Map() },
+    );
+  }, [connectionClient]);
+
+  useEffect(() => {
+    if (appliedRemovalGuard.client !== connectionClient) return;
+    setAppliedRemovalGuard((current) => {
+      if (current.client !== connectionClient) return current;
+      const next = new Map([...current.names].filter(([, baseline]) => baseline >= marketplacesPublicationVersion));
+      return next.size === current.names.size ? current : { client: current.client, names: next };
+    });
+  }, [appliedRemovalGuard.client, connectionClient, marketplacesPublicationVersion]);
+
+  function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
+    if (connectionStore.getState().client !== owner) return;
+    setAppliedRemovalGuard((current) => {
+      if (current.client !== owner) return current;
+      const names = new Map(current.names);
+      names.set(name, publicationVersion);
+      return { client: owner, names };
+    });
+  }
 
   // Mirrors DirListSetting's own mount-effect shape (see that component's
   // comment): waits for the shared client to actually be ready before
@@ -120,6 +166,9 @@ export function MarketplacesPluginsSection() {
         onRenamed={setSelectedMarketplace}
         expandedMarketplaces={expandedMarketplaces}
         setExpandedMarketplaces={setExpandedMarketplaces}
+        appliedRemovalNames={appliedRemovalNames}
+        connectionClient={connectionClient}
+        onAppliedRemoval={markAppliedRemoval}
       />
     </section>
   );

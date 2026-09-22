@@ -18,6 +18,10 @@ import (
 type isolationLane struct {
 	delegateID string
 	path       string
+	// branch is the lane's git branch, resolved from its sidecar via
+	// Sidecar.BranchOrName(). Only the branch-acting paths populate it — a
+	// lane built for the touch+unlock tail or a relock never touches a branch.
+	branch string
 }
 
 // disposeDelegateLanesAtClose disposes the isolation delegate lanes this
@@ -122,6 +126,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 	if scErr != nil {
 		return "", false
 	}
+	lane.branch = sc.BranchOrName()
 
 	locked, reason, lockErr := lockStateOf(run, lanePath)
 	if lockErr != nil {
@@ -149,7 +154,7 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 				ahead = fmt.Sprintf("%d ahead", count)
 			}
 		}
-		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
+		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.branch, ahead, dirty), true
 	}
 
 	_, _, plans, closeErr := s.delegateController.closeStableWorktreeResumability(s, lane.delegateID, stableWorktreeDisposalReason, true)
@@ -163,6 +168,9 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 		return cleanupNote + " (resumability closed; retained residue)", true
 	}
 	if outcome == laneDeclined {
+		if cleanupNote != "" {
+			return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue: " + cleanupNote + ")", true
+		}
 		return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue because the cleanup lock could not be released or ownership changed)", true
 	}
 	return cleanupNote, false
@@ -376,6 +384,14 @@ func (s *Session) statLaneGitDir(lanePath string) (os.FileInfo, error) {
 // discards a dirty lane, which a non-force remove would refuse. The close path
 // never forces — a late dirty write there downgrades back to KEEP instead.
 func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st worktree.LockState, lane isolationLane, metaDir string, downgrade downgradePolicy, forceRemove bool) (outcome laneDisposalOutcome, note string) {
+	if lane.branch == "" {
+		// Defense in depth: a lane record that never resolved its branch (a
+		// future caller's omission) must not delete the sidecar and strand the
+		// real branch behind it. Touch nothing; the lane stays exactly as it
+		// is, like a lane whose lock could not be released.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
+		return laneDeclined, "its branch was never resolved"
+	}
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {
 	case worktree.ActUnlock:
@@ -424,7 +440,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 
 	// Delete the branch (unchanged lane: tip == base, no work lost) and the
 	// sidecar. Best-effort — the lane is already unrevivable.
-	if _, err := run("branch", "-D", lane.delegateID); err != nil {
+	if _, err := run("branch", "-D", lane.branch); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	}
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)

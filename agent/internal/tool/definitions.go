@@ -208,6 +208,10 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 					"enum":        []string{"worktree"},
 					"description": "Absent (default): the delegate runs in your current directory. \"worktree\": give the delegate its own managed git worktree lane (branched from your current HEAD), isolated from your checkout and every other lane; only valid when you are in a local git checkout. The delegate cannot create, switch, or remove worktrees itself; if it also carries a delegation_allowance it gets a dispose-only manage_worktree to retire its own sub-delegates' isolation lanes.",
 				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Short mnemonic name for the git branch of a worktree-isolated delegate's lane, so `git branch` and merges read clearly (e.g. \"parser-rename\"); the lane directory, sidecar, and dispose addressing keep the delegate id. Only valid with isolation:\"worktree\". Refused if invalid or if the branch already exists; absent names the branch with the opaque delegate id.",
+				},
 				"sandbox": map[string]any{
 					"type":        "string",
 					"enum":        []string{"off", "read-only", "workspace-write", "restricted"},

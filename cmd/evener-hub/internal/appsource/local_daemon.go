@@ -62,6 +62,11 @@ type LocalDaemonEntry struct {
 	// appwire.EvenerThread.AskPending so the TUI's per-row ask marker (Task 29)
 	// sees it when attaching through the hub.
 	PendingAsk bool
+	// PendingEscalation mirrors hubcore.LiveEntry.PendingEscalation — true
+	// while the daemon reports a blocked sandbox-exemption escalation. The
+	// unprobed fallback folds it out of Clear, matching the daemon's own
+	// clear gate (clearBlockedReasonLocked's unresolved-approval-work branch).
+	PendingEscalation bool
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -76,6 +81,14 @@ type LocalDaemonEntry struct {
 	// emits a watch-only diagnostics block for such an alias even though its
 	// other diagnostics (jobs) stay suppressed.
 	Watches []appwire.EvenerWatchInfo
+	// Capabilities carries the daemon's own Evener capability set when the
+	// roster's probe (or a spawned daemon's confirming read) captured one.
+	// threadFromEntry then mirrors the daemon's answer instead of the fallback
+	// approximation, so a list row agrees with the ThreadRead of the same
+	// session (#1840). CapabilitiesKnown false means no answer was captured
+	// and the fallback takes over.
+	Capabilities      appwire.ThreadCapabilities
+	CapabilitiesKnown bool
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -367,6 +380,21 @@ func (s *LocalDaemonSource) RetireDaemonAtEntry(ctx context.Context, entry rende
 	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
 		var callErr error
 		out, callErr = client.DaemonRetire(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
+// SetDaemonIdleTimeoutAtEntry forwards an idle-deadline change to an exact
+// daemon endpoint within the source's recovery cancellation scope. The hub has
+// already resolved this entry from its roster; the params — including the
+// rendered ownership identity — pass through verbatim, as do the daemon's
+// answer and errors.
+func (s *LocalDaemonSource) SetDaemonIdleTimeoutAtEntry(ctx context.Context, entry rendezvous.Entry, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+	var out appwire.DaemonIdleTimeoutSetResponse
+	err := s.withClient(ctx, entry, func(ctx context.Context, client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.DaemonIdleTimeoutSet(ctx, params)
 		return callErr
 	})
 	return out, err
@@ -1108,23 +1136,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:        ref,
-			InstanceID: instanceID,
-			Capabilities: appwire.ThreadCapabilities{
-				Send:         true,
-				Steer:        true,
-				Interrupt:    true,
-				Compact:      true,
-				Clear:        !item.ReadOnlyAlias,
-				ForkFromTurn: true,
-				Shutdown:     true,
-				ChangeModel:  true,
-				Queue:        status == appwire.ThreadStatusActive,
-				Goal:         true,
-				SharedNotes:  !item.ReadOnlyAlias,
-				Rename:       true,
-			},
-			AskPending: item.PendingAsk,
+			Ref:          ref,
+			InstanceID:   instanceID,
+			Capabilities: listRowCapabilities(item, status),
+			AskPending:   item.PendingAsk,
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
@@ -1165,6 +1180,76 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		}
 	}
 	return thread
+}
+
+// listRowCapabilities projects a local list row's capability set. A probed
+// row mirrors the daemon's own answer — the same set a ThreadRead of the
+// session serves, cut from the same probe as the row's status — so the same
+// session cannot read differently from ListThreads and from ThreadRead
+// (#1840). Fork is no exception: the daemon hardwires its bit false, and
+// the hub's applyHubForkCapability is the single owner that turns it on,
+// on every path that serves a local row.
+//
+// The hand literal below is the fallback for rows no probe answered: it
+// approximates the daemon's expected answer at the row's status, folding
+// what the daemon folds (appCapabilitiesLocked) rather than overstating a
+// session until a read hydrates it. The restart-required and read-only
+// alias branches in threadFromEntry still replace the whole set after this
+// projection.
+func listRowCapabilities(item LocalDaemonEntry, status string) appwire.ThreadCapabilities {
+	if item.CapabilitiesKnown {
+		return item.Capabilities
+	}
+	// Spell the daemon's own status gates once, positive, the way
+	// appCapabilitiesLocked does.
+	active := status == appwire.ThreadStatusActive
+	closed := status == appwire.ThreadStatusClosed
+	return appwire.ThreadCapabilities{
+		// The daemon refuses a plain send while a turn runs and once the
+		// session is closed; a session awaiting a user answer keeps it.
+		Send: !active && !closed,
+		// Steer, Interrupt and Queue advertise harness support and are
+		// withheld the way the daemon withholds them: closed removes all
+		// three (appCapabilitiesLocked's `!closed`), while `active` moves
+		// none of them (#1363, #1375). Gating only Queue left a closed
+		// entry advertising two actions the daemon it mirrors refuses.
+		Steer:     !closed,
+		Interrupt: !closed,
+		Compact:   !closed,
+		// Clear is the one !closed bit that also folds activity — the daemon
+		// gates it on !active for the same reason as Send — and folds
+		// unresolved approval work (clearBlockedReasonLocked): the roster
+		// carries the ask and escalation flags, so an unprobed row withholds
+		// Clear while either is pending. Queued work stays beyond the
+		// roster's view, the approximation's honest limit.
+		Clear:       !item.ReadOnlyAlias && !active && !closed && !item.PendingAsk && !item.PendingEscalation,
+		Shutdown:    true,
+		ChangeModel: !closed,
+		// The daemon advertises this whenever its vision-model seam is wired
+		// (every current daemon wires it at startup) and withholds it when
+		// closed, like its siblings here; the live-hub probe showed list rows
+		// understating it while the same session's read advertised it, the
+		// same drift class SkillInput had.
+		ChangeVisionModel: !closed,
+		// Folding `active` into Queue made ListThreads disagree with
+		// ThreadRead and the status frames for the same session.
+		Queue:       !item.ReadOnlyAlias && !closed,
+		Goal:        !closed,
+		SharedNotes: !item.ReadOnlyAlias && !closed,
+		Rename:      !closed,
+		// SkillInput follows the harness-support rule Steer, Interrupt
+		// and Queue follow (#1375, #1840): every current daemon wires all
+		// four input-bearing turn mutations, so a live local session's
+		// list row must not understate it until a read hydrates. It is
+		// deliberately not closed-gated, because the daemon's own
+		// advertisement is not either (appCapabilitiesLocked's
+		// skillInputSupportedLocked) — the actions that could carry a
+		// selection are the ones `!closed` withholds. The hub's mutation
+		// gates re-verify against the live daemon, so a daemon that
+		// genuinely lacks the support still refuses each selection
+		// honestly.
+		SkillInput: true,
+	}
 }
 
 func cloneLocalDaemonJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {

@@ -187,6 +187,42 @@ func (rp ResolvedPolicy) Enforced() bool { return rp.Mode != ModeOff }
 // nothing, so the file tools keep today's byte-identical os path.
 func (rp ResolvedPolicy) FileToolConfined() bool { return rp.Mode != ModeOff || rp.WriteBlocked }
 
+// FileToolCanRead reports whether the in-process file-tool layer may read
+// the absolute path under this policy — the question a caller naming a path
+// to the model must settle first (the pasted-image attachment note promises
+// read_file, and the promise must be true). It models the policy-level
+// grants: masked paths deny in every mode, ReadAnywhere allows everything
+// else, and ReadWorktreeOnly requires the path to fall under a read root.
+// The live-filesystem checks securepath layers on top (symlink-component
+// refusal, escape detection) are TOCTOU guards around these grants and stay
+// there. An unconfined policy reads with plain os and allows any path; a
+// relative path cannot be proved inside any root and reads false.
+func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
+	if !rp.FileToolConfined() {
+		return true
+	}
+	// Containment is lexical (pathUnder) and both sides must be absolute:
+	// a relative path cannot be proved inside any root, and a relative
+	// root grants nothing.
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	for _, masked := range rp.MaskedPaths {
+		if filepath.IsAbs(masked) && pathUnder(path, masked) {
+			return false
+		}
+	}
+	if rp.FileTool.Read == ReadAnywhere {
+		return true
+	}
+	for _, root := range rp.FileTool.ReadRoots {
+		if filepath.IsAbs(root) && pathUnder(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // FileToolEnforceable reports whether this OS has an in-process file-tool
 // enforcement implementation. Its race-safe primitives (openat2 /
 // RESOLVE_NO_SYMLINKS on Linux, the O_NOFOLLOW tail walk on darwin) exist only

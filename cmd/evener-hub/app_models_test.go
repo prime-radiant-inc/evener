@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -218,6 +219,35 @@ func TestAttachRecentModels_FiltersToAvailableModels(t *testing.T) {
 	want := []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.2", DisplayName: "GPT-5.2", SupportsTools: &supportsTools}}
 	if !reflect.DeepEqual(got.Recent, want) {
 		t.Fatalf("Recent = %+v, want %+v (retired-model absent from resp.Data must be dropped)", got.Recent, want)
+	}
+}
+
+// TestAttachRecentModels_ExcludesDelegateSessions pins the machinery filter
+// upstream of the availability filter: a delegate session's (provider, model)
+// pair is inherited or overridden at spawn, never chosen in the picker, so it
+// must not surface in the Recent group even when the pair is offered in
+// resp.Data — mirroring RecentProjectDirs' IsSubagent skip.
+func TestAttachRecentModels_ExcludesDelegateSessions(t *testing.T) {
+	past := hubcore.NewPastIndex("")
+	now := time.Now().UTC()
+	past.SeedForTest([]schema.SessionMeta{
+		{ID: "delegate", ProfileID: "lunaroute", Model: "glm-5.3-flash", IsSubagent: true, UpdatedAt: now.Add(-1 * time.Minute)},
+		{ID: "root-b", ProfileID: "zai", Model: "glm-5.3", UpdatedAt: now.Add(-2 * time.Minute)},
+		{ID: "root-a", ProfileID: "openai", Model: "gpt-5.2", UpdatedAt: now.Add(-3 * time.Minute)},
+	})
+	cfg := hubcore.WebConfig{Past: past}
+	resp := appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+		{Provider: "lunaroute", Model: "glm-5.3-flash", DisplayName: "GLM 5.3 Flash"},
+		{Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3"},
+		{Provider: "openai", Model: "gpt-5.2", DisplayName: "GPT-5.2"},
+	}}
+	got := attachRecentModels(cfg, resp)
+	want := []appwire.ModelDescriptor{
+		{Provider: "zai", Model: "glm-5.3", DisplayName: "GLM 5.3"},
+		{Provider: "openai", Model: "gpt-5.2", DisplayName: "GPT-5.2"},
+	}
+	if !reflect.DeepEqual(got.Recent, want) {
+		t.Fatalf("Recent = %+v, want %+v (a delegate session's pair must not surface)", got.Recent, want)
 	}
 }
 

@@ -96,3 +96,9 @@ parallel, or a writing delegate while you keep editing yourself. One writer at
 a time in a shared directory is fine. Worktree lanes need a local git checkout;
 retire a lane with `manage_worktree` dispose when the delegate's work is merged
 or abandoned.
+
+Name a worktree-isolated delegate's lane when you spawn it:
+`delegate(isolation:"worktree", name="parser-rename")` cuts the lane's git branch
+under that short mnemonic, so `git branch` and merge commands read clearly. The
+lane directory, its metadata, and every disposal address keep the opaque
+delegate id either way; without a `name`, the branch is the delegate id.

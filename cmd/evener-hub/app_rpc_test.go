@@ -935,7 +935,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 	}
 	sources := newHubSourceRegistry(cfg)
 
-	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
+	_, err = sourceForThreadWithDeletionFence(t.Context(), cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
@@ -11243,7 +11243,9 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 // TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
 // flows' recent-project source (issue #35): evener/projects/recent serves the
 // past index's distinct working dirs, most-recently-used first, defaulting to
-// the 15-option cap when the request carries no limit.
+// the 15-option cap when the request carries no limit. A managed worktree
+// lane (the newest session here) must never surface or consume one of those
+// slots: it is session machinery, not a project.
 func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	// RecentProjectDirs drops dirs that no longer exist on disk (issue #50),
 	// so every seeded WorkingDir must be a real directory.
@@ -11257,10 +11259,12 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	alpha := mkdir("alpha")
 	beta := mkdir("beta")
+	lane := mkdir("lane") // evener-managed worktree lane
 
 	past := hubcore.NewPastIndex("")
 	now := time.Now().UTC()
 	metas := []schema.SessionMeta{
+		{ID: "02wMz5Txv0ManagedLane1", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}},
 		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: beta}},
 		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}}, // older dup — dropped
@@ -11291,6 +11295,9 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	if resp.Data[0] != alpha || resp.Data[1] != beta {
 		t.Fatalf("recent dirs[0:2]=%v, want [%s %s] (most recently used first)", resp.Data[:2], alpha, beta)
+	}
+	if slices.Contains(resp.Data, lane) {
+		t.Fatalf("recent dirs contain managed worktree lane %q", lane)
 	}
 
 	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
@@ -12038,6 +12045,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
 	}
+	// The discriminator the web sheet keys on: the message alone is identical
+	// whether or not the error is wrapped in the evenerErrorInfo payload, so
+	// decode the wire data the client reads and pin it here.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
 	// The file is the new name either way, which is what the other clients
 	// are now out of date against.
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
@@ -12099,6 +12124,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
 		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
 	}
+	// Same discriminator as the credential-move sibling, on the reload-failed
+	// half: the rename stood, so the client is told so through the wire data,
+	// not inferred from a message it shares with a plain failure.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
 		t.Fatal("the rename did not reach providers.toml")
 	}
@@ -12114,6 +12157,55 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for evener/auth/updated after a rename whose final reload failed")
 	}
+}
+
+// The third rename half: writeAndReload's own reload fails and the rollback
+// write that follows it fails too, so providers.toml carries the new name with
+// no rollback to undo it. The rename is as persisted as the two cases above and
+// the client must be steered to the new name, not told a plain failed save -
+// the same ErrorInstanceRenamePersisted discriminator. The seam is
+// newInstanceRollbackFixture: setting failReload makes the next registry reload
+// fail and blocks the providers.toml temp path, which is exactly the double
+// failure writeAndReload reports as write-applied.
+func TestHubRPCInstanceEditRenamePersistsWhenTheInitialReloadAndRollbackFail(t *testing.T) {
+	f := newInstanceRollbackFixture(t)
+	client := dialHubRPC(t, f.hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	f.failReload.Store(true)
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit,
+		appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "restoring the previous config failed") {
+		t.Fatalf("evener/instance/edit = %v, want the reload-and-rollback double failure", err)
+	}
+	// The rename stood in providers.toml, so the client gets the discriminator
+	// rather than a plain failed save it would present as nothing happened.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
+	// The file is the new name: the rollback never landed, which is what makes
+	// this the persisted-rename case and not the ordinary refusal.
+	if _, ok := readConfigProviders(t, f.tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+
+	waitForAuthUpdatedBroadcast(t, client, "a rename whose initial reload and rollback both failed")
 }
 
 // TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
@@ -12661,6 +12753,13 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerHostRequest,
 		// Component 06's explicit attach trigger (component 08's Connect).
 		appwire.MethodEvenerHostAttach,
+		// Component 08's host registry surface (add/list/status/remove/update):
+		// controller-local, never dials.
+		appwire.MethodEvenerHostAdd,
+		appwire.MethodEvenerHostList,
+		appwire.MethodEvenerHostStatus,
+		appwire.MethodEvenerHostRemove,
+		appwire.MethodEvenerHostUpdate,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}

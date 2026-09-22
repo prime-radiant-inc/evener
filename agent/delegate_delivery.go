@@ -765,6 +765,17 @@ func (s *Session) requeueReplayableDelegateDeliveries(unprocessed []delegateDeli
 	}
 }
 
+// delegateDeliveryResiduePending reports whether this session's delegate
+// delivery pipeline still owes work: parcels queued for the pump, a pump
+// pass in flight, a wake owed, or a retry armed. Retirement refuses on it,
+// and the idle-release pre-gate refuses on it for the same reason: a
+// teardown through any of these would abandon a parcel mid-flight.
+func (s *Session) delegateDeliveryResiduePending() bool {
+	s.delegateDeliveryMu.Lock()
+	defer s.delegateDeliveryMu.Unlock()
+	return len(s.pendingDelegateDeliveries) != 0 || s.delegateDeliveryPumping || s.delegateDeliveryWake || s.delegateDeliveryRetry.active
+}
+
 func (s *Session) scheduleDelegateDeliveryRetryLocked() {
 	if s.delegateDeliveryRetry.active || s.delegateDeliveryWake || len(s.pendingDelegateDeliveries) == 0 {
 		return

@@ -74,6 +74,17 @@ const NARROW_DESKTOP_SEND_GEOMETRY = {
   xl: { width: 82.109375, height: 24 },
 };
 
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server module burst mid-boot while the page still
+// fires its load event. Every page this guard measures is overflowharness.html
+// in one fixture mode or another, booted through one entry module,
+// src/dev/overflowharness-entry.tsx, which assigns window.settled at module
+// scope - a page whose load event fired without that global never booted.
+const BOOT = {
+  bootExpression: "typeof window.settled !== 'undefined'",
+  bootLabel: "the overflowharness entry global window.settled",
+};
+
 // lite: window.measure() only, for a check that reads one geometry off the
 // settled page (the verb cluster) and needs none of the disclosure exception
 // probe, the Verbosity detail inspection or the trusted-focus pass.
@@ -86,7 +97,7 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
       "Emulation.setTouchEmulationEnabled",
       width < 900 ? { enabled: true, maxTouchPoints: 1 } : { enabled: false },
     );
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
 
     const host = await evaluate(send, "location.host");
     if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
@@ -206,7 +217,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
       "Emulation.setTouchEmulationEnabled",
       width < 900 ? { enabled: true, maxTouchPoints: 1 } : { enabled: false },
     );
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
     const host = await evaluate(send, "location.host");
     if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
     await evaluate(send, "window.settled");
@@ -254,7 +265,7 @@ async function verifyItemPaging(cdpEndpoint, url) {
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900 });
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
     return await evaluate(send, "window.verifyItemPaging()\n");
@@ -404,7 +415,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900 });
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
     await waitForFonts(page.send);
     const runtimeState = await send("Runtime.evaluate", {
       expression: `({ body: document.body.innerText, html: document.body.innerHTML.slice(0, 1000), errors: window.__panelGuardErrors ?? [] })`,
@@ -487,7 +498,7 @@ async function verifyShortSessionMenu(cdpEndpoint, url) {
   try {
     await applyViewport(send, { width: 844, height: 390, mobile: true });
     await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
     await waitForDynamicViewport(send);
@@ -564,7 +575,7 @@ async function verifyChatFocus(cdpEndpoint, url) {
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900, mobile: false });
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
     // Keep the async inspection reachable from the page global while CDP
@@ -589,7 +600,7 @@ async function verifyIntentColumn(cdpEndpoint, url) {
   const { send } = page;
   try {
     await applyViewport(send, { width: 1024, height: 900, mobile: false });
-    await navigateTo(page, url);
+    await navigateTo(page, url, BOOT);
     await evaluate(send, "window.settled");
     await waitForFonts(send);
     return await evaluate(send, "window.__overflowGuardIntentColumn = window.inspectIntentColumn()");

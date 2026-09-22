@@ -650,7 +650,7 @@ func TestDisposeUnchangedLaneMechanics_RelockPolicy(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	lane := isolationLane{delegateID: delegateID, path: lanePath}
+	lane := isolationLane{delegateID: delegateID, path: lanePath, branch: delegateID}
 	metaDir := r.metaDir(t, r.canonicalMain(t))
 	run, st := r.laneDisposalRunner(t, lane)
 	r.s.worktreeDisposeBeforeRemove = func(p string) {
@@ -687,7 +687,7 @@ func TestDisposeUnchangedLaneMechanics_UnlockPolicy(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	delegateID, lanePath, _ := r.seedIsolationLane(t)
-	lane := isolationLane{delegateID: delegateID, path: lanePath}
+	lane := isolationLane{delegateID: delegateID, path: lanePath, branch: delegateID}
 	metaDir := r.metaDir(t, r.canonicalMain(t))
 	run, st := r.laneDisposalRunner(t, lane)
 	r.s.worktreeDisposeBeforeRemove = func(p string) {
