@@ -197,11 +197,12 @@ func tokenExpiry(value string) (time.Time, bool) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return time.Time{}, false
 	}
-	// An exp beyond int64 is no expiry at all: the float→int conversion
-	// out of range is implementation-defined, and on amd64 it yields
-	// MinInt64 — a negative epoch. 2^63 is exactly representable as a
-	// float64, so the bound is the exclusive comparison.
-	if claims.Exp <= 0 || claims.Exp >= 9223372036854775808.0 {
+	// An exp outside [1, 2^63) is no expiry at all: the float→int
+	// conversion out of range is implementation-defined and on amd64
+	// yields MinInt64, and a fractional exp below 1 truncates to a
+	// non-positive epoch. 2^63 is exactly representable as a float64, so
+	// the upper bound is the exclusive comparison.
+	if claims.Exp < 1 || claims.Exp >= 9223372036854775808.0 {
 		return time.Time{}, false
 	}
 	return time.Unix(int64(claims.Exp), 0), true
@@ -252,22 +253,20 @@ func realRunCommand(command string) (string, error) {
 		// A spawn failure names its own cause; it cannot carry output.
 		return "", &CommandError{Detail: firstLine(err.Error())}
 	}
-	if err := cmd.Wait(); err != nil {
-		// WaitDelay may have closed the pipes while a descendant still held
-		// them, and os/exec reports the shell's own exit status — an
-		// ExitError — in preference to the drain's ErrWaitDelay, so the
-		// kill cannot live on any one error branch. Cancel never ran
-		// without a context deadline (os/exec calls it only from the
-		// Context's watcher), so every failure path kills the group here:
-		// the pgid is the only handle on descendants the shell left
-		// behind, and a failed mint is retried on the next resolve. The
-		// kill signals a raw pgid the reaped shell left named: the group
-		// holds the pgid while any member lives, and a recycled pid needs
-		// a full pid-space wrap inside one drain window — the same
-		// microscopic race devtool's Stop documents and accepts, because
-		// closing it fully would need waitid(WNOWAIT), which pure Go
-		// doesn't expose.
-		procgroup.Kill(cmd.Process.Pid)
+	err := cmd.Wait()
+	// The group the command ran in dies with the run, success or failure:
+	// a mint command is not a daemon launcher, and on the failure paths
+	// Cancel never ran (os/exec calls it only from the Context's watcher,
+	// and no deadline may have fired) while os/exec reports the shell's
+	// own exit status in preference to the drain's ErrWaitDelay, so the
+	// kill cannot live on any one branch. The kill signals a raw pgid the
+	// reaped shell left named: the group holds the pgid while any member
+	// lives, and a recycled pid needs a full pid-space wrap inside one
+	// command run — the same microscopic race devtool's Stop documents
+	// and accepts, because closing it fully would need waitid(WNOWAIT),
+	// which pure Go doesn't expose.
+	procgroup.Kill(cmd.Process.Pid)
+	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}
 		}

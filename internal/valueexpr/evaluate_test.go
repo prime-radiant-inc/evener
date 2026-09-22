@@ -185,7 +185,7 @@ func TestMintAnchorsTTLAtCompletion(t *testing.T) {
 // usable, positive epoch.
 func TestTokenExpiryRejectsOutOfRangeClaims(t *testing.T) {
 	enc := base64.RawURLEncoding
-	for _, exp := range []string{"1e300", "9223372036854775808"} {
+	for _, exp := range []string{"1e300", "9223372036854775808", "0.5", "1e-300"} {
 		token := strings.Join([]string{
 			enc.EncodeToString([]byte(`{"alg":"none"}`)),
 			enc.EncodeToString([]byte(fmt.Sprintf(`{"exp":%s}`, exp))),

@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -351,15 +352,16 @@ func validateProvider(ps providerSchema, where string) error {
 // entry for the credential — one name, in one case, is the only consistent
 // shape.
 func checkCredentialHeaderNames(headers map[string]string, where string) error {
-	names := make([]string, 0, len(headers))
-	for k := range headers {
-		names = append(names, k)
-	}
-	slices.Sort(names)
-	for i := 1; i < len(names); i++ {
-		if strings.EqualFold(names[i], names[i-1]) {
-			return fmt.Errorf("%s.credential_headers: %q and %q differ only by case; header names are case-insensitive, so one of them must go", where, names[i-1], names[i])
+	// Keyed on the folded name: byte order puts case variants apart when
+	// an unrelated name sorts between them, so adjacency cannot be the
+	// check. Sorted iteration keeps the refusal's two names deterministic.
+	seen := map[string]string{}
+	for _, k := range slices.Sorted(maps.Keys(headers)) {
+		folded := strings.ToLower(k)
+		if first, dup := seen[folded]; dup {
+			return fmt.Errorf("%s.credential_headers: %q and %q differ only by case; header names are case-insensitive, so one of them must go", where, first, k)
 		}
+		seen[folded] = k
 	}
 	return nil
 }

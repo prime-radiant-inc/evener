@@ -980,6 +980,21 @@ func TestCredentialHeaderCaseVariantsRefusedAtLoad(t *testing.T) {
 	}
 }
 
+// Byte order sorts case variants apart when an unrelated name lands
+// between them, so adjacent-pair comparison alone cannot be the check: the
+// guard keys on the folded name, wherever sorting puts it.
+func TestCredentialHeaderCaseVariantsWithInterveningNameRefusedAtLoad(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"credential_headers = { \"Authorization\" = '''$A''', \"X-Key\" = '''$B''', \"authorization\" = '''$C''' }\n"
+	if _, err := ParseConfig([]byte(config)); err == nil || !strings.Contains(err.Error(), "differ only by case") {
+		t.Fatalf("ParseConfig err = %v; want the case-variant refusal", err)
+	}
+}
+
 // A minted token is data, never judged by its shape: an all-letters command
 // output is a credential, not a scheme word, so the no-material rule reads
 // the authored pieces (literals and reference defaults), never the
