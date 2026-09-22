@@ -181,13 +181,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	// verbatim — the post-mortem can see what was actually sent, not just
 	// the empty object the replay-safe form carries.
 	transcriptLines := readTranscriptLines(t, transcriptPath)
-	rawWant, err := json.Marshal(malformedArgs)
-	if err != nil {
-		t.Fatalf("marshal raw args: %v", err)
-	}
-	if !strings.Contains(strings.Join(transcriptLines, "\n"), `"raw_arguments":`+string(rawWant)) {
-		t.Fatalf("durable transcript does not preserve the malformed raw arguments verbatim:\n%s", strings.Join(transcriptLines, "\n"))
-	}
+	requireTranscriptRawArguments(t, transcriptLines, malformedArgs)
 	durableResult, ok := findToolResultInHistory(durableHistory, "call_bad")
 	if !ok || !durableResult.IsError || !durableResult.PrevalOnly {
 		t.Fatalf("durable call_bad result = %+v, want pre-validation error", durableResult)
@@ -198,13 +192,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		t.Fatalf("durable call/result order = call:%d result:%d, want call before result", callIndex, resultIndex)
 	}
 	// The doctor transcript render must show the raw text for such a call.
-	doc, err := doctor.Transcript(dir, meta.ID, doctor.TranscriptOpts{})
-	if err != nil {
-		t.Fatalf("doctor.Transcript: %v", err)
-	}
-	if rendered := doctor.RenderTranscript(doc, "markdown"); !strings.Contains(rendered, malformedArgs) {
-		t.Fatalf("doctor transcript render hides the malformed raw arguments:\n%s", rendered)
-	}
+	requireDoctorShowsRawArguments(t, dir, meta.ID, malformedArgs)
 
 	restored, err := RestoreSessionFromMetaWithConfig(
 		client,
@@ -249,6 +237,12 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	mu.Unlock()
 	if len(bodies) != 4 {
 		t.Fatalf("OpenAI Responses request count = %d, want 4", len(bodies))
+	}
+	// raw_arguments is a transcript diagnostic; it must never reach a provider.
+	for i, body := range bodies {
+		if strings.Contains(string(body), "raw_arguments") {
+			t.Fatalf("request %d serialized raw_arguments to the provider: %s", i+1, body)
+		}
 	}
 
 	second := decodeResponsesRequest(t, bodies[1])
@@ -414,29 +408,22 @@ func TestSession_OpenAIUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	meta := sess.Meta()
 	transcriptPath := sess.TranscriptPath()
 	lines := readTranscriptLines(t, transcriptPath)
-	rawWant, err := json.Marshal(unquotedArgs)
-	if err != nil {
-		t.Fatalf("marshal raw args: %v", err)
-	}
-	if !strings.Contains(strings.Join(lines, "\n"), `"raw_arguments":`+string(rawWant)) {
-		t.Fatalf("durable transcript does not preserve the model's raw unquoted arguments verbatim:\n%s", strings.Join(lines, "\n"))
-	}
+	requireTranscriptRawArguments(t, lines, unquotedArgs)
 
 	// The doctor transcript render must show the raw text for such a call.
-	doc, err := doctor.Transcript(dir, meta.ID, doctor.TranscriptOpts{})
-	if err != nil {
-		t.Fatalf("doctor.Transcript: %v", err)
-	}
-	rendered := doctor.RenderTranscript(doc, "markdown")
-	if !strings.Contains(rendered, unquotedArgs) {
-		t.Fatalf("doctor transcript render hides the raw unquoted arguments:\n%s", rendered)
-	}
+	requireDoctorShowsRawArguments(t, dir, meta.ID, unquotedArgs)
 
 	mu.Lock()
 	bodies := append([][]byte(nil), requestBodies...)
 	mu.Unlock()
 	if len(bodies) != 2 {
 		t.Fatalf("OpenAI Responses request count = %d, want 2", len(bodies))
+	}
+	// raw_arguments is a transcript diagnostic; it must never reach a provider.
+	for i, body := range bodies {
+		if strings.Contains(string(body), "raw_arguments") {
+			t.Fatalf("request %d serialized raw_arguments to the provider: %s", i+1, body)
+		}
 	}
 	second := decodeResponsesRequest(t, bodies[1])
 	input := responsesInputItems(t, second)
@@ -503,6 +490,29 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatalf("marshal JSON: %v", err)
 	}
 	return string(body)
+}
+
+// requireTranscriptRawArguments asserts the durable transcript preserves the
+// model's raw argument bytes verbatim in the raw_arguments field — the
+// post-mortem record of what was actually sent.
+func requireTranscriptRawArguments(t *testing.T, lines []string, rawArgs string) {
+	t.Helper()
+	if !strings.Contains(strings.Join(lines, "\n"), `"raw_arguments":`+mustJSON(t, rawArgs)) {
+		t.Fatalf("durable transcript does not preserve the raw arguments %q verbatim:\n%s", rawArgs, strings.Join(lines, "\n"))
+	}
+}
+
+// requireDoctorShowsRawArguments asserts the doctor transcript render shows
+// the raw argument text for a call whose arguments were not valid JSON.
+func requireDoctorShowsRawArguments(t *testing.T, stateBase, sessionID, rawArgs string) {
+	t.Helper()
+	doc, err := doctor.Transcript(stateBase, sessionID, doctor.TranscriptOpts{})
+	if err != nil {
+		t.Fatalf("doctor.Transcript: %v", err)
+	}
+	if rendered := doctor.RenderTranscript(doc, "markdown"); !strings.Contains(rendered, rawArgs) {
+		t.Fatalf("doctor transcript render hides the raw arguments:\n%s", rendered)
+	}
 }
 
 func decodeResponsesRequest(t *testing.T, body []byte) map[string]any {

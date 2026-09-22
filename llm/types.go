@@ -183,6 +183,18 @@ type ToolCallData struct {
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
+// SentArguments returns the argument bytes the model actually sent: the
+// preserved raw bytes for a call whose arguments were not valid JSON
+// (Arguments holds the replay-safe {} placeholder there), else the recorded
+// arguments. Byte-faithful in both branches; callers wanting tidy edges trim
+// presentation-side.
+func (tc *ToolCallData) SentArguments() string {
+	if tc.RawArguments != "" {
+		return tc.RawArguments
+	}
+	return string(tc.Arguments)
+}
+
 // Parse unmarshals Arguments into ParsedArguments. If Arguments is nil or empty,
 // ParsedArguments is set to an empty map.
 func (tc *ToolCallData) Parse() error {

@@ -15,6 +15,14 @@ var (
 	brokenEscapeRe = regexp.MustCompile(`\\u([0-9a-fA-F]{0,3})([^0-9a-fA-F]|$)`)
 	// uEscapeRe matches a complete \uXXXX escape.
 	uEscapeRe = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+	// bareKeyRe matches a bare identifier object key — an identifier directly
+	// after '{' or ',' (with optional JSON whitespace) followed by ':'. The
+	// anchor keeps value-position identifiers out; starting the identifier at
+	// [A-Za-z_] keeps digit-leading names out, which the caller's json.Valid
+	// gate cannot do: quoting {2id: 1} would yield valid JSON. A match inside
+	// a string value can only break that string, so the gate rejects those
+	// rewrites whole instead of repairing around them.
+	bareKeyRe = regexp.MustCompile(`([{,][ \t\n\r]*)([A-Za-z_][A-Za-z0-9_]*)([ \t\n\r]*:)`)
 )
 
 // RepairJSON makes unparseable tool-argument bytes parseable by fixing broken
@@ -69,119 +77,17 @@ func RepairJSON(raw []byte) ([]byte, []Change) {
 }
 
 // quoteBareObjectKeys wraps bare identifier object keys — a key position
-// holding [A-Za-z_][A-Za-z0-9_]* followed by ':' — in double quotes. It is
-// string- and structure-aware: identifiers inside string values and bare
-// identifiers in value position ({"a": true}, {"a": b}) are never touched,
-// because quoting those would invent a string the model never sent. Only
+// holding [A-Za-z_][A-Za-z0-9_]* followed by ':' — in double quotes. Only
 // quotes are inserted, so the caller's json.Valid gate stays the sole
-// authority on whether the rewrite repairs the input. Returns the input
-// unchanged when no key is quoted.
+// authority on whether the rewrite repairs the input: a match that landed in
+// a string value breaks that string and the gate refuses the rewrite whole.
+// Returns the input unchanged when no key is quoted.
 func quoteBareObjectKeys(s string) (string, int) {
-	type frame struct {
-		object bool // false for arrays
-		keyPos bool // the next structural token in this container is a key position
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	var stack []frame
-	quoted := 0
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		switch c {
-		case ' ', '\t', '\n', '\r':
-			b.WriteByte(c)
-			i++
-		case '"':
-			// Copy the whole string, tracking escapes, so a quoted key or a
-			// string containing ':' never leaks into key detection.
-			j := i + 1
-			for j < len(s) {
-				if s[j] == '\\' {
-					j += 2
-					continue
-				}
-				if s[j] == '"' {
-					j++
-					break
-				}
-				j++
-			}
-			if j > len(s) {
-				j = len(s) // dangling escape at end; keep every byte
-			}
-			b.WriteString(s[i:j])
-			if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].keyPos {
-				stack[n-1].keyPos = false
-			}
-			i = j
-		case '{':
-			stack = append(stack, frame{object: true, keyPos: true})
-			b.WriteByte(c)
-			i++
-		case '[':
-			stack = append(stack, frame{object: false})
-			b.WriteByte(c)
-			i++
-		case '}', ']':
-			if n := len(stack); n > 0 && (c == '}') == stack[n-1].object {
-				stack = stack[:n-1]
-			}
-			b.WriteByte(c)
-			i++
-		case ',':
-			if n := len(stack); n > 0 {
-				stack[n-1].keyPos = stack[n-1].object
-			}
-			b.WriteByte(c)
-			i++
-		case ':':
-			b.WriteByte(c)
-			i++
-		default:
-			// A bare identifier at an object key position followed by ':' is
-			// an unquoted key: wrap it in quotes. Anything else — numbers,
-			// literals, or an identifier in value position — is copied
-			// verbatim; the caller's validity gate rejects what stays broken.
-			n := len(stack)
-			if n == 0 || !stack[n-1].object || !stack[n-1].keyPos || !isIdentStart(c) {
-				b.WriteByte(c)
-				i++
-				continue
-			}
-			j := i + 1
-			for j < len(s) && isIdentChar(s[j]) {
-				j++
-			}
-			k := j
-			for k < len(s) && (s[k] == ' ' || s[k] == '\t' || s[k] == '\n' || s[k] == '\r') {
-				k++
-			}
-			if k < len(s) && s[k] == ':' {
-				b.WriteByte('"')
-				b.WriteString(s[i:j])
-				b.WriteByte('"')
-				quoted++
-				stack[n-1].keyPos = false
-				i = j
-				continue
-			}
-			b.WriteString(s[i:j])
-			i = j
-		}
-	}
-	if quoted == 0 {
+	locs := bareKeyRe.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
 		return s, 0
 	}
-	return b.String(), quoted
-}
-
-func isIdentStart(c byte) bool {
-	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-func isIdentChar(c byte) bool {
-	return isIdentStart(c) || (c >= '0' && c <= '9')
+	return bareKeyRe.ReplaceAllString(s, `${1}"${2}"${3}`), len(locs)
 }
 
 func fixLoneSurrogates(s string) (string, []Change) {

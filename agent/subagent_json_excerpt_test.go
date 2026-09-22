@@ -149,13 +149,7 @@ func TestSubagentSeesFailingInputExcerpt(t *testing.T) {
 	// not just the replay-safe empty object.
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	childLines := readTranscriptLines(t, childTranscriptPath)
-	rawWant, err := json.Marshal(truncatedArgs)
-	if err != nil {
-		t.Fatalf("marshal raw args: %v", err)
-	}
-	if !strings.Contains(strings.Join(childLines, "\n"), `"raw_arguments":`+string(rawWant)) {
-		t.Fatalf("child transcript does not preserve the truncated raw arguments verbatim:\n%s", strings.Join(childLines, "\n"))
-	}
+	requireTranscriptRawArguments(t, childLines, truncatedArgs)
 	_, childEntries, _, err := readTranscript(childTranscriptPath)
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
@@ -307,13 +301,7 @@ func TestSubagentUnquotedKeyToolCallRecoversAndExecutes(t *testing.T) {
 	// The child's durable transcript preserves the raw unquoted text verbatim.
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
 	childLines := readTranscriptLines(t, childTranscriptPath)
-	rawWant, err := json.Marshal(unquotedArgs)
-	if err != nil {
-		t.Fatalf("marshal raw args: %v", err)
-	}
-	if !strings.Contains(strings.Join(childLines, "\n"), `"raw_arguments":`+string(rawWant)) {
-		t.Fatalf("child transcript does not preserve the raw unquoted arguments verbatim:\n%s", strings.Join(childLines, "\n"))
-	}
+	requireTranscriptRawArguments(t, childLines, unquotedArgs)
 	_, childEntries, _, err := readTranscript(childTranscriptPath)
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)

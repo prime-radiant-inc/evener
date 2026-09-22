@@ -23,6 +23,14 @@ func toolCall(name, args string) llm.ContentPart {
 		ID: "tc-" + name, Name: name, Arguments: json.RawMessage(args)}}
 }
 
+// rejectedToolCall is toolCall for a call whose arguments were not valid
+// JSON: Arguments holds the replay-safe {} placeholder while raw_arguments
+// carries the model's bytes.
+func rejectedToolCall(name, raw string) llm.ContentPart {
+	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "tc-" + name, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: raw}}
+}
+
 func toolResult(name string, content any, isError bool) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 		ToolCallID: "tc-" + name,
@@ -251,12 +259,7 @@ func TestTranscript_ToolCallShowsRejectedRawArguments(t *testing.T) {
 	const rawRejected = `{"update":[{"id":1},{id: 2, status: "in_progress"}]}`
 	turns := []schema.Turn{
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-				ID:           "tc-rejected",
-				Name:         "task_list",
-				Arguments:    json.RawMessage(`{}`),
-				RawArguments: rawRejected,
-			}},
+			rejectedToolCall("rejected", rawRejected),
 		}}),
 	}
 	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})

@@ -232,18 +232,20 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			if part.ToolCall == nil {
 				continue
 			}
-			arguments := strings.TrimSpace(string(part.ToolCall.Arguments))
-			// A call whose arguments were not valid JSON keeps the model's
-			// raw bytes in RawArguments; the {} Arguments form is a replay
-			// placeholder that hides what was actually sent.
-			if part.ToolCall.RawArguments != "" {
-				arguments = part.ToolCall.RawArguments
+			arguments := part.ToolCall.SentArguments()
+			var intent string
+			// A rejected call (raw arguments set) shows the model's raw bytes
+			// and skips the intent lookup: its recorded arguments are the {}
+			// placeholder, which can only parse to an empty intent anyway.
+			if part.ToolCall.RawArguments == "" {
+				arguments = strings.TrimSpace(arguments)
+				intent = toolIntentFromArguments(part.ToolCall.Arguments)
 			}
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
 				Arguments:  arguments,
 				ArgPreview: truncate(arguments, argPreviewMax),
-				Intent:     toolIntentFromArguments(part.ToolCall.Arguments),
+				Intent:     intent,
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
 		case llm.ContentToolResult:

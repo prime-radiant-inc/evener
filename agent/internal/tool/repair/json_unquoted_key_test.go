@@ -77,6 +77,32 @@ func TestRepairJSON_UnquotedKeyCombinedWithEscapeRepair(t *testing.T) {
 	}
 }
 
+// TestRepairJSON_UnquotedKeyCombinedWithSurrogateRepair proves the
+// key-quoting pass also composes with the lone-surrogate repair: both fixes
+// apply under the shared json.Valid gate and the result parses.
+func TestRepairJSON_UnquotedKeyCombinedWithSurrogateRepair(t *testing.T) {
+	in := `{"a":"\ud800", id: 2}`
+	out, changes := RepairJSON([]byte(in))
+	if !json.Valid(out) {
+		t.Fatalf("repaired %q is not valid JSON", out)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("repaired %q does not parse: %v", out, err)
+	}
+	want := map[string]any{"a": "�", "id": 2.0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repaired = %#v, want %#v", got, want)
+	}
+	kinds := map[ChangeKind]bool{}
+	for _, c := range changes {
+		kinds[c.Kind] = true
+	}
+	if !kinds[ChangeUnicodeRepair] || !kinds[ChangeQuoteObjectKey] {
+		t.Fatalf("changes = %+v, want both %s and %s", changes, ChangeUnicodeRepair, ChangeQuoteObjectKey)
+	}
+}
+
 // TestRepairJSON_UnquotedKeyScopeGuard pins what the repair must NOT do:
 // bare values, single-quoted keys, trailing commas, comments, digit-leading
 // keys, keys without colons, and inputs needing a second kind of fix (missing
