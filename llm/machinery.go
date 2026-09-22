@@ -5,9 +5,9 @@ import "strings"
 // The faux-XML tags wrapping one-way machinery notifications to the model
 // (e.g. a stored-attachment path note). This package is the single source of
 // the spelling: the producer (agent's systemNotification helper) builds blocks
-// from these constants, and the consumers — apptranscript's exported aliases
-// and transcript's decode-time inference for entries written before the
-// Machinery flag existed — match the same tags, so they cannot drift apart.
+// from these constants, and the consumers — transcript's decode-time
+// inference for entries written before the Machinery flag existed — match the
+// same tags, so they cannot drift apart.
 const (
 	SystemNotificationOpenTag  = "<system-notification>"
 	SystemNotificationCloseTag = "</system-notification>"
