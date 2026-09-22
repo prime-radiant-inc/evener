@@ -133,7 +133,9 @@ if ! (cd "$tmpdir" && printf '%s  %s\n' "$expected_sha" "$archive_name" | $sha_c
 	exit 1
 fi
 
-tar -xzf "$archive" -C "$tmpdir"
+# A login shell can export TAR_OPTIONS; the extraction must obey only the
+# verified archive's own layout, so the override is cleared for this tar.
+TAR_OPTIONS= tar -xzf "$archive" -C "$tmpdir"
 
 extract_dir="$tmpdir/$archive_root"
 if [ ! -d "$extract_dir" ]; then

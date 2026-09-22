@@ -79,12 +79,6 @@ func TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine(t *testing.T) {
 			t.Skip("neither sha256sum nor shasum is on PATH; install.sh refuses to verify without one")
 		}
 	}
-	// An ambient tool-configuration override the harness must NOT forward to
-	// the installer run: inherited TAR_OPTIONS would strip the archive's root
-	// directory and fail the install, so a green run proves the child's
-	// environment is controlled rather than merely filtered of install.sh's
-	// own variables.
-	t.Setenv("TAR_OPTIONS", "--strip-components=1")
 
 	// The release: a real tar.gz holding the archive root install.sh expects,
 	// with the two binaries it ships.
@@ -168,16 +162,16 @@ printf '200\n'
 			cmd.Dir = runDir
 			// The child runs with a minimal controlled environment: only PATH is
 			// inherited, so the real tools the LookPath probes found resolve the
-			// same way. Everything else ambient is dropped — BASH_ENV, ENV,
-			// TAR_OPTIONS, or any other tool-behavior override a developer
-			// machine carries must not be able to alter what this run proves,
-			// and the poisoned TAR_OPTIONS set above pins that exclusion.
+			// same way. Everything else is set deliberately — including a hostile
+			// TAR_OPTIONS, because the login shells of real remote hosts export
+			// such overrides and the extraction must not obey one.
 			cmd.Env = []string{
 				"HOME=" + home,
 				"TMPDIR=" + runDir,
 				"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
 				"EVENER_TEST_ARCHIVE=" + archivePath,
 				"EVENER_TEST_CHECKSUMS=" + checksumsPath,
+				"TAR_OPTIONS=--strip-components=1",
 			}
 			out, err := cmd.CombinedOutput()
 			if err != nil {
