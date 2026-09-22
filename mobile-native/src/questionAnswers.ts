@@ -4,6 +4,7 @@ import {
   composeAskAnswers,
 } from "@evener/appwire-client";
 import {
+  boundQuestion,
   liveAsksFor,
   MAX_ITEM_BYTES,
   type MobileConversation,
@@ -71,29 +72,75 @@ function questionHash(text: string): string {
 // input size, and the memo below (keyed on the question-array reference
 // reconcileBatches.ts hands back unchanged when nothing changed) means an
 // unaffected render or keystroke never rehashes at all.
+// Each element also carries the digest of its display-bound copy
+// (boundQuestion over boundQuestionText): before this identity existed the
+// sheet persisted that bounded copy itself as a draft's definition, and a
+// stored truncated copy can never hash to the canonical digest — so the
+// comparison (sameQuestion below) accepts either, without putting the
+// bounded prose itself back into the signature.
 const questionsIdentityMemo = new WeakMap<AskQuestionRef[], string>();
 
 // The comparable form of one persisted question definition: its {key, digest}
 // pair. A signature's elements have carried that pair since questionsIdentity
-// signed them, but a draft saved by an older build holds the full canonical
-// question as its definition — same question, an earlier era's shape. Both
-// normalize to the same pair: an element that already carries its digest keeps
-// it, and a legacy full question hashes to the digest the identity computes
-// for that same canonical question, so a pre-identity draft still compares
-// equal (draftRepository.ts's questionDefinitions) and an app update never
+// signed them, but a draft saved by an older build holds the full question —
+// canonical, or the display bound's truncated copy — as its definition: same
+// question, an earlier era's shape. All normalize to the same pair: an
+// element that already carries its digest keeps it, and a legacy full
+// question hashes to the digest the identity computes for that same
+// canonical question, so a pre-identity draft still compares equal
+// (draftRepository.ts's questionDefinitions) and an app update never
 // silently drops a reader's saved answers.
+export interface QuestionDefinition {
+  key: string;
+  digest: string;
+  // The digest of the question's display-bound copy, carried only by the
+  // identity's own elements (questionsIdentity below) so a stored definition
+  // an older build serialized from the bound rows can still be recognized.
+  // A legacy element predating the identity has none.
+  boundDigest?: string;
+}
+
 export function questionDefinition(question: {
   key: string;
   digest?: unknown;
-}): { key: string; digest: string } {
-  const digest =
-    typeof question.digest === "string"
-      ? question.digest
-      : questionHash(JSON.stringify(question));
-  return { key: question.key, digest };
+  boundDigest?: unknown;
+}): QuestionDefinition {
+  const definition: QuestionDefinition = {
+    key: question.key,
+    digest:
+      typeof question.digest === "string"
+        ? question.digest
+        : questionHash(JSON.stringify(question)),
+  };
+  if (typeof question.boundDigest === "string")
+    definition.boundDigest = question.boundDigest;
+  return definition;
 }
 
-// A JSON array of {key, digest}, not a bare hash string: draftRepository.ts's
+// Whether a persisted definition names the same question the identity just
+// signed. The identity signs the canonical digest, but the sheet that
+// predated it serialized the bounded timeline rows themselves, so a draft
+// from that window holds the display bound's TRUNCATED copy — whose hash
+// matches no canonical digest. The untruncated text is gone from the stored
+// row, so the current element carries the digest of its own bounded copy
+// alongside the canonical one, and either is "the same question" here. The
+// bounded digest cannot see past the display bound — two questions that
+// differ only beyond it compare equal, exactly as they did under the era
+// that persisted them — and the first save rewrites the definition
+// canonically.
+export function sameQuestion(
+  stored: QuestionDefinition | undefined,
+  current: QuestionDefinition,
+): boolean {
+  if (!stored) return false;
+  return (
+    stored.digest === current.digest ||
+    (current.boundDigest !== undefined &&
+      stored.digest === current.boundDigest)
+  );
+}
+
+// A JSON array of definitions, not a bare hash string: draftRepository.ts's
 // questionDefinitions parses this signature expecting an array it can index
 // per key (JSON.parse(signature) -> question.key), the same contract a
 // bounded-and-stringified question array satisfied before this identity was
@@ -104,7 +151,12 @@ export function questionsIdentity(questions: AskQuestionRef[]): string {
   const cached = questionsIdentityMemo.get(questions);
   if (cached !== undefined) return cached;
   const identity = JSON.stringify(
-    questions.map((question) => questionDefinition(question)),
+    questions.map((question) => ({
+      ...questionDefinition(question),
+      boundDigest: questionHash(
+        JSON.stringify(boundQuestion(question, boundQuestionText)),
+      ),
+    })),
   );
   questionsIdentityMemo.set(questions, identity);
   return identity;

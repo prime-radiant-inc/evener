@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
-import { questionsIdentity } from "./questionAnswers";
+import {
+	boundQuestionText,
+	questionsIdentity,
+} from "./questionAnswers";
+import {
+	boundQuestion,
+	MAX_ITEM_BYTES,
+} from "../../mobile/src/conversation/project";
 import { DraftRepository } from "./draftRepository";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
@@ -343,6 +350,101 @@ test("a draft saved under the pre-identity full-question signature still loads t
 			destination,
 			questionsIdentity([{ ...question, question: "Changed" }]),
 		),
+	).toEqual({});
+});
+
+// Older still than the full-question signature above: the sheet's questions
+// once came from the bounded timeline rows themselves (the pre-identity
+// pendingQuestions read conversation.items), so a draft saved in that window
+// holds an oversized question's TRUNCATED copy as its definition — the cut
+// copy hashes to a digest the identity never computes for the canonical
+// question. The comparison must accept that bounded digest too, or the
+// upgrade silently drops a reader's saved answer for exactly the questions
+// too large to fit a timeline row.
+test("a draft saved under the pre-identity bounded-copy signature still loads through questionsIdentity", () => {
+	const huge = "x".repeat(MAX_ITEM_BYTES + 10);
+	const oversized: AskQuestionRef = {
+		key: "call:0",
+		callId: "call",
+		header: huge,
+		question: huge,
+		multiSelect: false,
+		options: [{ label: huge, detail: huge }],
+	};
+	const selections = {
+		[oversized.key]: {
+			resolution: { kind: "free" as const, text: "custom answer" },
+			note: "context",
+		},
+	};
+	repository.writeQuestions(
+		destination,
+		JSON.stringify([boundQuestion(oversized, boundQuestionText)]),
+		selections,
+	);
+	database.close();
+	openRepository();
+	expect(
+		repository.readQuestions(destination, questionsIdentity([oversized])),
+	).toEqual(selections);
+	// A genuinely different question still does not inherit the draft.
+	expect(
+		repository.readQuestions(
+			destination,
+			questionsIdentity([{ ...oversized, header: `different ${huge}` }]),
+		),
+	).toEqual({});
+});
+
+// The bounded digest inherits the persisted era's one blind spot by design:
+// a stored truncated copy cannot tell whether the agent changed the question
+// past the display bound — the untruncated text is gone from the row — so a
+// draft saved under the bounded signature loads for a same-key question that
+// differs only beyond it, exactly as it did under the signature era that
+// persisted it. The first save rewrites the definition canonically, so the
+// window closes on the reader's first edit.
+test("a legacy bounded draft loads for a same-key question that differs only past the display bound", () => {
+	const huge = "x".repeat(MAX_ITEM_BYTES + 10);
+	const first: AskQuestionRef = {
+		key: "call:0",
+		callId: "call",
+		header: huge,
+		question: "Choose",
+		multiSelect: false,
+		options: [{ label: "A", detail: "" }],
+	};
+	const second = { ...first, header: `${huge}-and-more` };
+	const selections = {
+		[first.key]: {
+			resolution: { kind: "free" as const, text: "kept" },
+			note: "",
+		},
+	};
+	repository.writeQuestions(
+		destination,
+		JSON.stringify([boundQuestion(first, boundQuestionText)]),
+		selections,
+	);
+	database.close();
+	openRepository();
+	expect(
+		repository.readQuestions(destination, questionsIdentity([second])),
+	).toEqual(selections);
+	// The reader's first save rewrites the stored definition canonically: the
+	// draft now follows the current question's own digest, and the superseded
+	// question no longer matches either stored digest.
+	const edited = {
+		[first.key]: {
+			resolution: { kind: "free" as const, text: "edited" },
+			note: "",
+		},
+	};
+	repository.writeQuestions(destination, questionsIdentity([second]), edited);
+	expect(
+		repository.readQuestions(destination, questionsIdentity([second])),
+	).toEqual(edited);
+	expect(
+		repository.readQuestions(destination, questionsIdentity([first])),
 	).toEqual({});
 });
 

@@ -468,15 +468,41 @@ it("distinguishes two oversized questions that share a prefix past the display b
   expect(a).not.toBe(b);
 });
 
+// The identity signs each question twice over: the canonical digest that
+// distinguishes questions (above), and the digest of the display-bound copy
+// an older build persisted as a draft's definition (the pre-identity sheet
+// serialized the bounded timeline rows, so draftRepository.ts's comparison
+// needs that digest to recognize a stored truncated copy). The two digests
+// agree exactly where the bounded copies do — and never on an oversized
+// question, whose cut copy differs from its canonical form.
+it("signs each question with its canonical digest and the digest of its bounded copy", () => {
+  const huge = "x".repeat(MAX_ITEM_BYTES + 10);
+  const [element] = JSON.parse(questionsIdentity([{ ...question, header: huge }]));
+  expect(element.key).toBe(question.key);
+  expect(element.digest).not.toBe(element.boundDigest);
+  const prefix = "x".repeat(MAX_ITEM_BYTES * 4);
+  const [a] = JSON.parse(
+    questionsIdentity([{ ...question, header: `${prefix}-first-tail` }]),
+  );
+  const [b] = JSON.parse(
+    questionsIdentity([{ ...question, header: `${prefix}-second-tail` }]),
+  );
+  // The bounded digests agree where the bounded copies do — and the
+  // canonical digests still tell the two questions apart.
+  expect(a.boundDigest).toBe(b.boundDigest);
+  expect(a.digest).not.toBe(b.digest);
+});
+
 // Recomputing a hash over the full canonical payload on every render/keystroke
 // is exactly the O(payload)-per-render cost this identity exists to avoid
 // paying twice: the SAME question array (the reference reconcileBatches.ts
 // hands back unchanged, per its own "same array when nothing changed" rule)
 // must answer from a memo, not rehash. Counted, not timed (a wall-clock
 // delta flakes under scheduler pauses or a loaded CI runner): questionHash's
-// digest input is built with one JSON.stringify(question) per question, so a
-// spy on the global counts exactly one fresh-computation pass per distinct
-// array reference, and zero for every memoized read of the same one.
+// digest inputs are built with JSON.stringify — once over the canonical
+// question and once over its bounded copy — so a spy on the global counts
+// exactly one fresh-computation pass per distinct array reference, and zero
+// for every memoized read of the same one.
 it("memoizes by question-array reference instead of rehashing on every call", () => {
   const many: AskQuestionRef[] = Array.from({ length: 20 }, (_, i) => ({
     ...question,
