@@ -236,6 +236,52 @@ func TestCanonicalStateDirResolvesDotDotThroughSymlink(t *testing.T) {
 	}
 }
 
+// TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd pins the
+// relative-input half of the same contract under a symlinked working
+// directory: a shell that cd'd through a symlink hands the process a lexical
+// PWD, which os.Getwd prefers whenever it matches ".". Anchoring a relative
+// state dir onto that lexical form — or resolving it before anchoring — must
+// attachment reads will actually address. No t.Parallel: chdir and PWD are
+// process-global.
+func TestCanonicalStateDirAnchorsRelativeStateDirThroughSymlinkedCwd(t *testing.T) {
+	work := t.TempDir()
+	real := filepath.Join(work, "real-work")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	link := filepath.Join(work, "link-work")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	state := filepath.Join(real, "state")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(link); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Setenv("PWD", link)
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore Chdir: %v", err)
+		}
+	})
+
+	if got := canonicalStateDir("state"); got != resolvedPath(t, state) {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (an existing relative state dir under a symlinked cwd must resolve to the physical path)", "state", got, state)
+	}
+	fresh := filepath.Join("fresh", "inner")
+	wantFresh := filepath.Join(resolvedPath(t, real), "fresh", "inner")
+	if got := canonicalStateDir(fresh); got != wantFresh {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (a missing relative state dir under a symlinked cwd must resolve to the physical path)", fresh, got, wantFresh)
+	}
+}
+
 // TestRestoreSessionCanonicalizesRelativeStateDir pins the restore-side half
 // of the same contract: `evener serve --resume` threads a --state-dir
 // through RestoreSessionFromMetaWithConfig, and a restored session must carry

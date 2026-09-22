@@ -69,23 +69,21 @@ func TestSteeringMessageToLLMFlagsNotificationText(t *testing.T) {
 	}
 }
 
-// TestSkillDeliveryMessageSplitsNoteFromBody: the changed-on-disk carrier
-// splits the machinery note from the skill body — the note is flagged, the
-// body stays ordinary content — while Message.Text stays byte-identical to
-// the former note+"\n\n"+body concatenation the model has always read.
-func TestSkillDeliveryMessageSplitsNoteFromBody(t *testing.T) {
+// TestSkillDeliveryMessageKeepsNoteAndBodyInOneFlaggedPart: the
+// changed-on-disk carrier is one machinery-flagged part carrying the note
+// and the body concatenated exactly as before, so the wire text stays
+// byte-identical on every adapter — including chatcompletions'
+// textFromParts, which joins separate text parts with an extra newline.
+func TestSkillDeliveryMessageKeepsNoteAndBodyInOneFlaggedPart(t *testing.T) {
 	t.Parallel()
 	note := systemNotificationf("Skill %q changed on disk since its earlier activation; the complete current instructions follow.", "brioche")
 	body := "# Brioche skill\nButter the pan."
 	msg := skillDeliveryMessage(note, body)
-	if len(msg.Content) != 2 {
-		t.Fatalf("parts=%+v, want note and body", msg.Content)
+	if len(msg.Content) != 1 {
+		t.Fatalf("parts=%+v, want the note and body in one part", msg.Content)
 	}
-	if msg.Content[0].Text != note || !msg.Content[0].Machinery {
-		t.Fatalf("note part=%+v, want the flagged machinery note", msg.Content[0])
-	}
-	if msg.Content[1].Text != "\n\n"+body || msg.Content[1].Machinery {
-		t.Fatalf("body part=%+v, want the unflagged body with the separating blank line", msg.Content[1])
+	if msg.Content[0].Text != note+"\n\n"+body || !msg.Content[0].Machinery {
+		t.Fatalf("carrier part=%+v, want the flagged concatenation note+\\n\\n+body", msg.Content[0])
 	}
 	if got, want := msg.Text(), note+"\n\n"+body; got != want {
 		t.Fatalf("model-facing text changed: got %q, want %q", got, want)

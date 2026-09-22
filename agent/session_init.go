@@ -93,12 +93,15 @@ func canonicalStateDir(dir string) string {
 	if dir == "" {
 		return dir
 	}
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		if abs, aerr := filepath.Abs(resolved); aerr == nil {
-			return abs
-		}
-	}
-	// filepath.Abs Cleans ".." lexically, which is wrong across a symlink:
+	// Anchor relative paths BEFORE resolving anything: a relative
+	// EvalSymlinks result stays relative, and anchoring it afterward — or
+	// anchoring through filepath.Abs — can preserve a lexical symlinked
+	// working directory, because os.Getwd prefers PWD whenever it matches
+	// ".", so a shell that cd'd through a symlink hands us the lexical form.
+	// The component walk below resolves every existing component of the
+	// anchored path, lexical or not.
+	//
+	// filepath.Abs would also Clean ".." lexically, which is wrong across a symlink:
 	// the kernel resolves `link/../state` against the physical parent of
 	// link's target, while Clean folds it to link's lexical parent. Anchor
 	// without cleaning and walk the components top-down instead, resolving

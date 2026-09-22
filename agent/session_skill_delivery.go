@@ -268,19 +268,17 @@ func (s *Session) recordSkillDeliveryNotification(message llm.Message, outcome s
 }
 
 // skillDeliveryMessage builds the model-facing carrier for a skill's
-// complete content. A non-empty note (the changed-on-disk explanation) rides
-// as its own machinery-flagged part; the body follows as ordinary content,
-// so Message.Text stays byte-identical to the former note+"\n\n"+body
-// concatenation the model has always read while the bubble filter can drop
-// the note by flag alone.
+// complete content. A non-empty note (the changed-on-disk explanation)
+// prefixes the body inside one machinery-flagged part: the carrier is a
+// TurnSystem notification the user never typed, and a single part keeps the
+// wire text byte-identical to the former note+"\n\n"+body concatenation on
+// every adapter — including ones that join separate text parts with a
+// separator (chatcompletions' textFromParts).
 func skillDeliveryMessage(note, body string) llm.Message {
 	if note == "" {
 		return llm.User(body)
 	}
-	return llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
-		llm.MachineryText(note),
-		{Kind: llm.ContentText, Text: "\n\n" + body},
-	}}
+	return llm.UserMachinery(note + "\n\n" + body)
 }
 
 // finalizeSkillDeliveryFailure drops the obligation for an invocation whose
