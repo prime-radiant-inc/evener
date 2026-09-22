@@ -1125,39 +1125,24 @@ func TestJobNotificationFromRecordLabelFields(t *testing.T) {
 		description string
 		command     string
 		task        string
-		intent      string
 		want        string
-		wantIntent  string
 	}{
 		{
 			name:        "description",
 			description: "explicit description",
 			command:     "shell command",
 			task:        "delegate task",
-			intent:      "caller's rationale",
 			want:        "explicit description",
-			wantIntent:  "caller's rationale",
 		},
 		{
-			name:       "command is not a label",
-			command:    "shell command",
-			intent:     "caller's rationale",
-			want:       "",
-			wantIntent: "caller's rationale",
+			name:    "command is not a label",
+			command: "shell command",
+			want:    "",
 		},
 		{
-			name:       "delegate task",
-			task:       "Inspect the workspace",
-			intent:     "caller's rationale",
-			want:       "Inspect the workspace",
-			wantIntent: "caller's rationale",
-		},
-		{
-			name:       "intent alone",
-			command:    "shell command",
-			intent:     "caller's rationale",
-			want:       "",
-			wantIntent: "caller's rationale",
+			name: "delegate task",
+			task: "Inspect the workspace",
+			want: "Inspect the workspace",
 		},
 	}
 	for _, tt := range tests {
@@ -1170,13 +1155,13 @@ func TestJobNotificationFromRecordLabelFields(t *testing.T) {
 				Description: tt.description,
 				Command:     tt.command,
 				Task:        tt.task,
-				Intent:      tt.intent,
+				Intent:      "caller's rationale",
 			})
 			if n.Description != tt.want {
 				t.Fatalf("notification description = %q, want %q", n.Description, tt.want)
 			}
-			if n.Intent != tt.wantIntent {
-				t.Fatalf("notification intent = %q, want %q", n.Intent, tt.wantIntent)
+			if n.Intent != "caller's rationale" {
+				t.Fatalf("notification intent = %q, want the caller's rationale", n.Intent)
 			}
 		})
 	}

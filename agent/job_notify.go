@@ -85,15 +85,19 @@ func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 // self/parent-target watch fires under jm.mu (job_watch.go's onSessionEvent),
 // where a jobNotificationFromRecord-style store read would deadlock against
 // jm.liveJobRecords. jobs.go's emitJobFinished builds that payload from the
-// same job record jobNotificationFromRecord reads at terminal-flush time, so
-// this mirrors that mapping instead of diverging into a second, thinner
-// notification shape (kata 673k: without it, self-watch JOB_FINISHED frames
-// carry job_id="" and no way to tell which of several concurrent jobs
-// finished).
+// same job record jobNotificationFromRecord reads at terminal-flush time and
+// stamps the record's own label and intent on it, so this mirrors that
+// mapping — including the never-the-command label policy
+// (jobRecordNotificationLabel) — instead of diverging into a second, thinner
+// notification shape. data.Command stays the jobs listing's identification
+// field and is never a label source here (kata 673k: without the identity
+// stamp, self-watch JOB_FINISHED frames carry job_id="" and no way to tell
+// which of several concurrent jobs finished).
 func jobFinishedEventIdentity(n jobNotification, data events.JobFinishedData) jobNotification {
 	n.JobID = data.JobID
 	n.JobType = data.JobType
-	n.Description = envvars.FirstNonEmpty(data.Task, data.Command)
+	n.Description = envvars.FirstNonEmpty(data.Description, data.Task)
+	n.Intent = data.Intent
 	n.Status = data.Status
 	n.Reason = data.Reason
 	n.ExhaustionBudget = data.ExhaustionBudget

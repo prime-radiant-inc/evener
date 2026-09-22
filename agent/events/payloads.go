@@ -659,6 +659,8 @@ type JobFinishedData struct {
 	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
 	DelegateID       string `json:"delegate_id,omitempty"`
 	Task             string `json:"task,omitempty"`
+	Description      string `json:"description,omitempty"`
+	Intent           string `json:"intent,omitempty"`
 	OriginTurnID     string `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string `json:"origin_tool_call_id,omitempty"`
 	OriginItemID     string `json:"origin_item_id,omitempty"`
