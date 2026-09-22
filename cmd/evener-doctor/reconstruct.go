@@ -554,7 +554,7 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		for _, c := range calls[m.ID] {
 			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: c.ID, Name: c.Name, Arguments: json.RawMessage(c.Arguments)}})
 		}
-			entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn, MachineryFlagged: true})
+		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn, MachineryFlagged: true})
 	}
 	if len(entries) == 0 || h.SystemPrompt == "" {
 		return fail(errors.New("archive lacks conversation entries or initial system prompt"))
