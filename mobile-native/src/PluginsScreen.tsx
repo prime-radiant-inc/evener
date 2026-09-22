@@ -34,15 +34,8 @@ import {
   createPluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import {
-  isReady,
-  useConnectionDisplay,
-  useLiveReadiness,
-  useRenderClient,
-  whenReady,
-} from "./connectionDisplay";
+import { isReady, whenReady } from "./connectionDisplay";
 import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
@@ -53,6 +46,12 @@ import {
   runGatedMutation,
   type PluginMutationGate,
 } from "./pluginMutationGate";
+import {
+  ConnectionWall,
+  HUB_NO_LONGER_SELECTED,
+  ModalConnectionStatus,
+  useRetainedScreenConnection,
+} from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -81,11 +80,8 @@ const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 // A mounted screen re-keyed to another hub is a fresh screen: the
 // reconnect-retention state below - the banner's everReady, the last
 // client a retry's gap renders through - belongs to the hub it was built
-// for, and none of it may survive a hub the route now names. React
-// Navigation can update a mounted instance's params (setParams on a
-// focused screen is this app's own idiom - see
-// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
-// re-key remounts it whole.
+// for, and a re-key remounts the body whole (the keyed wrapper's own
+// rationale: useRetainedScreenConnection's doc).
 export function PluginsScreen(props: NativeStackScreenProps<Routes, "Plugins">) {
   return <PluginsScreenBody key={props.route.params.hubId} {...props} />;
 }
@@ -105,17 +101,15 @@ function PluginsScreenBody({
   // credential store is (credentialStore.ts), as committed state a discarded
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
-  const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
-  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
-  // A flap keeps `client` set (the connection layer's own generation guard -
-  // hubConnection.ts), but a manual retry clears it, then reports a fresh
-  // client while it is still dialing; the list keeps rendering the previous
-  // one through the whole gap, never the not-yet-ready replacement, rather
-  // than dropping to the wall for a moment the banner should cover just as
-  // well as a passive reconnect does. Scoped to the active hub: see
-  // useRenderClient's own doc.
-  const renderClient = useRenderClient(client, state, activeProfile?.id);
+  const {
+    activeProfile,
+    client,
+    state,
+    retry,
+    display,
+    canUseConnection,
+    renderClient,
+  } = useRetainedScreenConnection(route.params.hubId);
   // An applied marketplace removal's residue lives beside the gate, above the
   // early returns below, for the same reason it does: they unmount and remount
   // the ready-only child on every connection transition, and the browser that
@@ -304,15 +298,14 @@ function PluginsScreenBody({
     [],
   );
   if (activeProfile?.id !== route.params.hubId)
-    return (
-      <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
-    );
+    return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
   if (display === "wall" || !renderClient)
     return (
-      <View style={{ padding: 20 }}>
-        <Copy>Connect to {activeProfile.name} to manage plugins.</Copy>
-        <Action onPress={retry}>Reconnect</Action>
-      </View>
+      <ConnectionWall
+        hubName={activeProfile.name}
+        purpose="manage plugins"
+        onReconnect={retry}
+      />
     );
   return (
     <>
@@ -647,10 +640,7 @@ function Plugins({
               </View>
               <Action onPress={close}>Done</Action>
             </View>
-            {/* The native modal covers the banner the screen shows behind
-             * it, so the status and the manual reconnect live here while
-             * this detail is open. */}
-            {connectionState !== "ready" ? <ConnectionStatus /> : null}
+            <ModalConnectionStatus connectionState={connectionState} />
             <ScrollView
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
               contentContainerStyle={{ padding: 20, gap: 12 }}
