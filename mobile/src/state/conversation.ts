@@ -1330,24 +1330,25 @@ export function createConversationStore() {
   }
 
   // The identity-only shape of a shed item: identity, ordering and
-  // fold-classification fields only. Every text/output/image field stays
-  // shed — this is the payload bound, not a payload cache — which is why the
-  // cast is needed: ItemModel.text is a required "settled text" field, and
-  // the skeleton's whole point is to carry identity without it. The
-  // package's merges read text off it as undefined, exactly like the sparse
-  // wire fragments itemTextPresence distinguishes.
+  // fold-classification fields only. Every output/image field stays shed —
+  // this is the payload bound, not a payload cache. text carries the wire's
+  // own settled-empty representation ("", exactly what wireItemToModel gives
+  // a wire item whose text field was omitted): a skeleton never has text of
+  // its own to offer, and "" is what keeps mergePageItem's textSource
+  // selection string-valid in BOTH merge directions — a skeleton selected
+  // as the source contributes the same empty settle the sparse wire reissue
+  // itself would have hydrated to, never an undefined that leaks into
+  // streaming prefixes or reasoningText's item.text.length (review round 4).
   function compactItemSkeletons(items: ItemModel[]): ItemModel[] {
-    return items.map(
-      (item) =>
-        ({
-          id: item.id,
-          turnId: item.turnId,
-          type: item.type,
-          ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
-          ...(item.position !== undefined ? { position: item.position } : {}),
-          ...(item.callId !== undefined ? { callId: item.callId } : {}),
-        }) as ItemModel,
-    );
+    return items.map((item) => ({
+      id: item.id,
+      turnId: item.turnId,
+      type: item.type,
+      text: "",
+      ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
+      ...(item.position !== undefined ? { position: item.position } : {}),
+      ...(item.callId !== undefined ? { callId: item.callId } : {}),
+    }));
   }
 
   // The dedupe key of a remembered skeleton: composite identity, so two
@@ -1401,11 +1402,18 @@ export function createConversationStore() {
       if (!colliding.has(turn.id)) return turn;
       const skeletons = compactedTurnItems.get(turn.id);
       if (skeletons === undefined) return turn;
-      const presentIdentities = new Set(
-        turn.items.map((item) => item.transcriptKey ?? item.id),
-      );
+      // Review round 4: a skeleton is "already represented" by the package's
+      // own rule (itemIdentityMatches: transcriptKey when both sides carry
+      // one, else id), not by a `transcriptKey ?? id` key comparison. An
+      // id-only skeleton whose item was restored carrying a transcript key
+      // IS the same item as the restored one (the id still matches), and
+      // injecting it beside the real item would let the skeleton's empty
+      // settle erase the retained copy's text on the next overlapping page —
+      // and the wire-text repair would then re-adopt the OLDER page's text
+      // over it (stale content).
       const missing = skeletons.filter(
-        (skeleton) => !presentIdentities.has(skeleton.transcriptKey ?? skeleton.id),
+        (skeleton) =>
+          !turn.items.some((item) => itemIdentityMatches(item, skeleton)),
       );
       if (missing.length === 0) return turn;
       changed = true;
@@ -1437,24 +1445,31 @@ export function createConversationStore() {
     return changed ? stripped : turns;
   }
 
-  // mergePageItem derives text from a presence marker (itemTextPresence)
-  // that defaults to "provided", and a hand-built skeleton cannot carry it,
-  // so a skeleton on the model side of mergeOlderItemPage (the NEWER merge
-  // input) would leave the just-arrived page item's text erased. Re-adopt
-  // the text from the page's own wire item for exactly the erased
-  // identities — text is the only field mergePageItem takes from a
-  // textSource instead of a ?? chain.
+  // mergePageItem takes text from a textSource instead of a ?? chain, and on
+  // the model side of mergeOlderItemPage the NEWER input — the retained copy
+  // — wins it, so a skeleton the injection added to that side leaves the
+  // just-arrived page item's text erased to the skeleton's empty settle.
+  // Re-adopt the text from the page's own wire item for exactly the
+  // skeleton-erased identities: an identity is erased when an injected
+  // skeleton carried it (or a page item matching an injected skeleton by the
+  // package's identity rule — the merged item can take its transcript key
+  // from that side), the item's text is the empty settle, and the page's
+  // wire actually provided text. A page item that omitted text has nothing to
+  // give (the map holds only provided text), and its hydrated empty settle
+  // is the correct bound — the repair must skip it, not force anything.
   function adoptStrippedTextFromWireItems(
     turns: TurnModel[],
     wireTextByIdentity: Map<string, string>,
+    erasedIdentities: Set<string>,
   ): TurnModel[] {
-    if (wireTextByIdentity.size === 0) return turns;
+    if (wireTextByIdentity.size === 0 || erasedIdentities.size === 0) return turns;
     let changed = false;
     const adopted = turns.map((turn) => {
       if (
         !turn.items.some(
           (item) =>
-            item.text === undefined &&
+            (item.text === undefined || item.text === "") &&
+            erasedIdentities.has(item.transcriptKey ?? item.id) &&
             (wireTextByIdentity.has(item.transcriptKey ?? item.id) ||
               wireTextByIdentity.has(item.id)),
         )
@@ -1468,7 +1483,9 @@ export function createConversationStore() {
           const text =
             wireTextByIdentity.get(item.transcriptKey ?? item.id) ??
             wireTextByIdentity.get(item.id);
-          return text !== undefined && item.text === undefined
+          return text !== undefined &&
+            (item.text === undefined || item.text === "") &&
+            erasedIdentities.has(item.transcriptKey ?? item.id)
             ? { ...item, text }
             : item;
         }),
@@ -2462,6 +2479,23 @@ export function createConversationStore() {
               currentConv.turns,
               compactedTurnsCollidingWith(pageIdentities),
             );
+            // Review round 4: the identities a skeleton fold could have
+            // erased the page's text from — each injected skeleton's own
+            // identity key, plus the identity keys of the page items that
+            // match it by the package's rule. A fold's merged item carries
+            // the skeleton's transcript key when it has one, else the page
+            // item's, so both keys name the erased entry.
+            const erasedIdentities = new Set<string>();
+            for (const skeleton of injectedPage.injected) {
+              erasedIdentities.add(skeleton.transcriptKey ?? skeleton.id);
+              for (const turn of result.turnsPage?.data ?? []) {
+                for (const item of turn.items ?? []) {
+                  if (itemIdentityMatches(item, skeleton)) {
+                    erasedIdentities.add(item.transcriptKey ?? item.id);
+                  }
+                }
+              }
+            }
             const mergeConv: MobileConversation =
               injectedPage.injected.length > 0
                 ? { ...currentConv, turns: injectedPage.turns }
@@ -2478,6 +2512,7 @@ export function createConversationStore() {
             const boundedTurns = adoptStrippedTextFromWireItems(
               boundRetainedTurns(strippedPageTurns, pageMerged),
               pageTextByIdentity,
+              erasedIdentities,
             );
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
