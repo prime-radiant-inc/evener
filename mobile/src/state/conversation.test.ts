@@ -9029,6 +9029,115 @@ describe("ConversationStore", () => {
         expect.objectContaining({ transcriptKey: "kr", text: "fresh reissue" }),
       ]);
     });
+
+    // Review round 12, reconciliation precedence: the duplicate
+    // reconciliation initially treated display order as freshness order. A
+    // page can carry a keyless alias of an item beside a keyed stale
+    // sibling; the retained turn holds the item's fresh payload. The merge
+    // folds the retained item into the keyless alias (first identity match)
+    // while the stale sibling sits untouched — and the reconciliation then
+    // let that PURE OLDER sibling fold over the fresh result, publishing
+    // the stale text. Source precedence must decide the fold, not list
+    // order: content from the newer side of the merge wins independently
+    // of where the aliases sort.
+    it("a page's untouched stale alias does not overwrite the retained fold", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A retained turn holds the item's fresh payload under
+      // {id pa, transcriptKey pk}, in window.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "pk", text: "pk row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "rt",
+              [
+                {
+                  id: "pa",
+                  transcriptKey: "pk",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "fresh",
+                  position: { entry: 30, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 50, outputTokens: 5 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "pk", text: "fresh" }),
+      ]);
+
+      // The next page carries a KEYLESS alias of the same item (the retained
+      // item's bare id) followed by a keyed sibling holding the item's
+      // STALE text. The merge folds the retained item into the keyless
+      // alias — the first identity match — and the untouched stale sibling
+      // must not then fold over the fresh result.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "pa",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "older keyless",
+                  position: { entry: 30, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "sb",
+                  transcriptKey: "pk",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale",
+                  position: { entry: 31, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "pk", text: "fresh" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

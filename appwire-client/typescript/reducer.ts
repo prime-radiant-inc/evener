@@ -762,10 +762,18 @@ function mergePageItems(older: ItemModel[], newer: ItemModel[], context?: ToolIt
 // the skeleton while the real item stays beside the fold (the mobile
 // store's retained-turn bound injects exactly such alias skeletons). The
 // reconciliation is the iteration's own rule applied to its own result: an
-// item that identity-matches an earlier item folds into it — later-wins
-// precedence included, so whichever side the merge's direction says is
-// newer keeps its fields — and the merge's fragment membership is recorded
-// so a caller tracking participation still sees every input.
+// item that identity-matches an earlier item folds into it.
+//
+// Which side of the fold is "newer" is decided by SOURCE, never by list
+// order: an item whose membership includes newer-side inputs keeps its
+// fields over a pure older-side sibling no matter where the two sort —
+// display order says nothing about freshness, and the untouched sibling is
+// exactly the case the iteration leaves behind (the fresh fold happened
+// elsewhere). Items of the same participation — both untouched older-side
+// wire fragments, or two folds that each drew newer content — keep the
+// list's own order as the tiebreak, the same later-wins the iteration
+// itself applies. The fold's fragment membership is recorded on the merge
+// provenance, so a caller tracking participation still sees every input.
 function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeContext): ItemModel[] {
   const reconciled: ItemModel[] = [];
   for (const item of items) {
@@ -776,11 +784,26 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
     }
     const existing = reconciled[index];
     if (existing === undefined) continue;
-    const mergedItem = mergePageItem(existing, item);
-    if (context) recordMergedToolItem(context, mergedItem, existing, item);
+    const existingCarriesFresh = freshParticipates(context, existing);
+    const itemCarriesFresh = freshParticipates(context, item);
+    const existingIsNewer = existingCarriesFresh && !itemCarriesFresh;
+    const olderItem = existingIsNewer ? item : existing;
+    const newerItem = existingIsNewer ? existing : item;
+    const mergedItem = mergePageItem(olderItem, newerItem);
+    if (context) recordMergedToolItem(context, mergedItem, olderItem, newerItem);
     reconciled[index] = mergedItem;
   }
   return reconciled;
+}
+
+// Whether an item's merge membership includes newer-side ("fresh") inputs.
+// The context records an entry for every input item at creation, so an
+// untouched item speaks for its own side; a folded item speaks for whatever
+// its folds combined. An item the context never saw — a callId-fold rewrite,
+// or a merge without a context at all — reads as older-side, leaving list
+// order to decide exactly as it did before source precedence existed.
+function freshParticipates(context: ToolItemMergeContext | undefined, item: ItemModel): boolean {
+  return context !== undefined && context.provenance.get(item)?.fresh !== undefined;
 }
 
 function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {
