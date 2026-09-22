@@ -211,12 +211,12 @@ type Turn struct {
 	// It is empty for ordinary steering and all non-steering turns.
 	AttentionID string `json:"attention_id,omitempty"`
 	// AttentionResolution is set only on TurnAttentionResolution turns.
-	AttentionResolution     *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
-	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
+	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
 	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
 	// preserves the logical turn identity across live events and transcript
 	// recovery for both client input and daemon goal continuations.
-	ClientMutationID string `json:"client_mutation_id,omitempty"`
+	ClientMutationID        string                   `json:"client_mutation_id,omitempty"`
+	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`

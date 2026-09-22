@@ -124,18 +124,19 @@ func canonicalStateDir(dir string) string {
 // packages.Load to admit them all
 // (TestDelegateControllerProductionIntegrationMatchesInventory).
 //
-// Windows anchors through filepath.Abs, which delegates to
-// syscall.FullPath (GetFullPathName): Windows "relative" is three input
-// classes — plain (state), volume-root (\state), and drive-relative
-// (C:state) — and only full-path resolution anchors all three
-// correctly, against the right per-drive current directory.
-// Concatenating the process cwd instead corrupts C:state into
-// D:\cwd\C:state. The lexical Clean Abs applies is harmless: the
-// component walk re-resolves every existing component of the anchored
-// path afterward.
+// Windows routes only its volume-bearing input classes through
+// filepath.Abs, which delegates to syscall.FullPath (GetFullPathName):
+// drive-relative (C:state) belongs to the current directory of its own
+// drive and volume-root (\state) to the current drive's root, so
+// concatenating the process cwd corrupts C:state into D:\cwd\C:state.
+// GetFullPathName folds ".." lexically, an unavoidable trade for those
+// classes, whose per-drive anchoring nothing else provides. Plain
+// relative Windows inputs must NOT go through it: they fall through to
+// the raw cwd anchoring below, which keeps ".." raw for the component
+// walk to pop against a symlink or junction's physical parent.
 //
-// Every other platform anchors through the RAW process cwd without
-// cleaning: anchoring through filepath.Abs there can preserve a lexical
+// Every other input anchors through the RAW process cwd without
+// cleaning: anchoring through filepath.Abs can preserve a lexical
 // symlinked working directory, because os.Getwd prefers PWD whenever
 // it matches ".", so a shell that cd'd through a symlink hands us the
 // lexical form — the walk physicalizes it either way. Abs would also
@@ -146,7 +147,7 @@ func canonicalStateDir(dir string) string {
 // resolved parent. On Getwd failure no faithful anchor is available;
 // the caller falls back to the cleaning Abs.
 func anchorRelativeStateDir(dir string) (string, bool) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && (filepath.VolumeName(dir) != "" || (len(dir) > 0 && os.IsPathSeparator(dir[0]))) {
 		abs, err := filepath.Abs(dir)
 		if err != nil {
 			return dir, false

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,26 @@ func TestAnchorRelativeStateDirDriveRelativeUsesDriveCwd(t *testing.T) {
 	}
 	if want := filepath.Join(dir, "state"); !strings.EqualFold(got, want) {
 		t.Fatalf("anchorRelativeStateDir(%q) = %q, want %q", vol+"state", got, want)
+	}
+}
+
+// A plain relative --state-dir keeps its raw ".." components for the
+// component walk: routing it through filepath.Abs would fold ".."
+// lexically (GetFullPathName semantics) and the walk would never get
+// to pop the physical parent through a symlink or junction.
+func TestAnchorRelativeStateDirPlainRelativeKeepsDotDotRaw(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := anchorRelativeStateDir(`link\..\state`)
+	if !ok {
+		t.Fatal(`anchorRelativeStateDir(link\..\state) failed`)
+	}
+	if want := cwd + `\link\..\state`; got != want {
+		t.Fatalf("anchorRelativeStateDir(%q) = %q, want raw %q", `link\..\state`, got, want)
 	}
 }
 

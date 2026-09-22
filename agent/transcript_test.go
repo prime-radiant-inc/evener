@@ -3351,6 +3351,7 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 	assistant.ResponseStorageScopeFingerprint = "storage-scope-1"
 	assistant.ResponseRequestFingerprint = "request-fingerprint-1"
 	assistant.ResponseContextMarker = "context-marker-1"
+	assistant.Usage = llm.Usage{InputTokens: 111, OutputTokens: 22, TotalTokens: 133}
 
 	steering := turn(schema.TurnSteering, llm.User("steering"))
 	steering.SteeringSource = events.SteeringSourceUser
@@ -3366,6 +3367,33 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 		NewProvider: "new-provider", NewModel: "new-model",
 	}
 
+	userInput := turn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "user image"},
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0, 255, 1, 254}, MediaType: "image/png", Detail: "high"}},
+	}})
+	userInput.SkillState = &schema.SkillTurnState{
+		Outcomes: []schema.SkillActivationOutcome{{
+			Revision: 7, SessionID: "session-1", InvocationID: "invocation-1",
+			ToolCallID: "tool-call-1", ClientMutationID: "cmid-1", Status: "active",
+		}},
+		Obligations: []schema.SkillDeliveryObligation{{
+			InvocationID: "invocation-1", ToolCallID: "tool-call-1",
+			ClientMutationID: "cmid-1", AtomicGroupID: "group-1", Route: "tool",
+		}},
+	}
+
+	failed := turn(schema.TurnFailure, llm.System("provider failed"))
+	failed.Error = &schema.TurnFailureInfo{
+		Message: "provider failed", Source: "provider",
+		Title: "provider failed", Hint: "retry",
+	}
+
+	hookDone := turn(schema.TurnHookCompleted, llm.System("hook ran"))
+	hookDone.Hook = &schema.HookInfo{
+		Event: "PreToolUse", HookType: "command", Matcher: "shell",
+		PluginName: "plugin-1", ExitCode: 0, DurationMS: 12,
+	}
+
 	turns := []schema.Turn{
 		assistant,
 		turn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
@@ -3374,16 +3402,17 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{Name: "inspect", Content: "empty-id-result", ToolState: json.RawMessage(`{"state":"empty"}`)}},
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "orphan", Name: "inspect", Content: "orphan-result", ImageData: []byte{0, 1, 2}, ImageMediaType: "image/png"}},
 		}}),
-		turn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: "user image"},
-			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0, 255, 1, 254}, MediaType: "image/png", Detail: "high"}},
-		}}),
+		userInput,
 		turn(schema.TurnTool, llm.ToolResultNamed("legacy", "legacy_tool", map[string]any{"legacy": true}, false)),
 		steering,
 		turn(schema.TurnSystem, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "system"}}}),
 		turn(schema.TurnCheckpoint, llm.User("checkpoint")),
 		turn(schema.TurnSummary, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "summary"}}}),
 		modelSwitch,
+		failed,
+		hookDone,
+		turn(schema.TurnEnvironment, llm.System("environment")),
+		turn(schema.TurnNotesContext, llm.User("notes context")),
 	}
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
 	if err != nil {
