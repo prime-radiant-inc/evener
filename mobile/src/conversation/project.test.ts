@@ -399,6 +399,40 @@ describe("projectThread", () => {
       expect(a?.kind).toBe("assistant");
       if (a?.kind === "assistant") expect(a.streaming).toBe(false);
     });
+
+    // The streaming signal is per-item, not per-turn: an agentMessage that
+    // carries its own status decides streaming alone (isActiveItemInModel —
+    // the same field the web reads, TurnBlock.tsx's isItemLive), whatever
+    // its turn says. A revert to a turn-only check would keep every test
+    // above green — an item without its own status inherits the turn's — so
+    // these two pin the item-status side of the signal in both directions.
+    it("does not stream a completed agentMessage inside an inProgress turn", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", text: "settled", status: "completed" })],
+          { status: "inProgress" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(false);
+    });
+
+    it("streams an agentMessage that carries inProgress status itself", () => {
+      const t = thread([
+        turn(
+          "t1",
+          [item({ id: "a1", type: "agentMessage", text: "in flight", status: "inProgress" })],
+          { status: "completed" },
+        ),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("assistant");
+      if (a?.kind === "assistant") expect(a.streaming).toBe(true);
+    });
   });
 
   describe("reasoning items", () => {

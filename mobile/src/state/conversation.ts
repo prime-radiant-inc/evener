@@ -33,6 +33,7 @@ import {
 } from "@evener/appwire-client";
 import type {
   AnyNotification,
+  AskQuestionRef,
   InputItem,
   ItemModel,
   MutationReceipt,
@@ -45,14 +46,20 @@ import type {
   ActivityMember,
 } from "../conversation/project";
 import {
+  activityIdentity,
   activityState,
+  attachmentSourceId,
+  attachmentSourceIdentity,
   capItems as sharedCapItems,
   clusterActivities,
   itemAttachments,
   MAX_ITEM_BYTES,
+  ownTimelineIdentities,
   projectItemAttachments,
   projectTimeline,
   RETAINED_ITEM_CAP,
+  timelineIdentity,
+  timelineIdentities,
   TRUNCATION_MARKER,
   truncateItem as sharedTruncateItem,
   truncateText,
@@ -64,48 +71,6 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-
-function attachmentSourceId(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments" && item.id.endsWith(":attachments")
-    ? item.id.slice(0, -":attachments".length)
-    : null;
-}
-
-function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments"
-    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
-    : null;
-}
-
-function timelineIdentity(item: MobileTimelineItem): string {
-  return item.transcriptKey ?? item.id;
-}
-
-// The canonical identity of a clustered activity member — the same
-// transcriptKey-first rule timelineIdentity applies to a top-level row.
-function activityIdentity(activity: ActivityMember): string {
-  return activity.transcriptKey ?? activity.id;
-}
-
-// The identities a row IS: its own, plus every clustered member's. Distinct
-// from timelineIdentities, which also carries the identity of the row an
-// attachment belongs to — an attachment is not a duplicate of its source.
-function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = new Set([timelineIdentity(item)]);
-  if (item.kind === "activity" && item.members) {
-    for (const member of item.members) {
-      identities.add(activityIdentity(member));
-    }
-  }
-  return identities;
-}
-
-function timelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = ownTimelineIdentities(item);
-  const source = attachmentSourceIdentity(item);
-  if (source !== null) identities.add(source);
-  return identities;
-}
 
 function liveRevisionForItem(
   item: MobileTimelineItem,
@@ -508,17 +473,81 @@ export function exceedsByteLimit(text: string, maxBytes: number): boolean {
 
 export { MAX_ITEM_BYTES, RETAINED_ITEM_CAP, TRUNCATION_MARKER, truncateText };
 
-// Check if an activity detail's arguments/output/error exceed the byte limit
-// — the same rule applies to a top-level activity detail and to each of a
-// cluster's member details.
+// Check if an activity detail's text-bearing fields exceed the byte limit —
+// description joins arguments/output/error, the four fields
+// truncateActivityDetail bounds. The same rule applies to a top-level
+// activity detail and to each of a cluster's member details.
 function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
   return (
+    (detail.description !== undefined &&
+      exceedsByteLimit(detail.description, MAX_ITEM_BYTES)) ||
     (detail.arguments !== undefined &&
       exceedsByteLimit(detail.arguments, MAX_ITEM_BYTES)) ||
     (detail.output !== undefined &&
       exceedsByteLimit(detail.output, MAX_ITEM_BYTES)) ||
     (detail.error !== undefined &&
       exceedsByteLimit(detail.error, MAX_ITEM_BYTES))
+  );
+}
+
+// A question's own prose, in the fields boundQuestion cuts: header, question,
+// why, ifUnanswered, and every option's label and detail.
+function exceedsQuestionLimit(question: AskQuestionRef): boolean {
+  return (
+    exceedsByteLimit(question.header, MAX_ITEM_BYTES) ||
+    exceedsByteLimit(question.question, MAX_ITEM_BYTES) ||
+    (question.why !== undefined &&
+      exceedsByteLimit(question.why, MAX_ITEM_BYTES)) ||
+    (question.ifUnanswered !== undefined &&
+      exceedsByteLimit(question.ifUnanswered, MAX_ITEM_BYTES)) ||
+    question.options.some(
+      (option) =>
+        exceedsByteLimit(option.label, MAX_ITEM_BYTES) ||
+        exceedsByteLimit(option.detail, MAX_ITEM_BYTES),
+    )
+  );
+}
+
+// Whether ANY field truncateItem bounds on this row exceeds the limit in its
+// original content — the exact rule for which rows the store records as
+// truncated. #1737 moved the bounds over every row kind (a pasted user
+// message, a daemon notice, a failure's title and detail, question prose,
+// and an activity's description and label joined assistant markdown and the
+// activity arguments/output/error), but the ownership checks below kept
+// reading only those last two, so the other kinds arrived cut with no id in
+// the set and no affordance. An attachments row's display name is bounded
+// too, but that bound predates #1737 and its ownership stays as it was.
+function rowExceedsDisplayBound(item: MobileTimelineItem): boolean {
+  switch (item.kind) {
+    case "assistant":
+      return exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
+    case "activity":
+      return (
+        exceedsByteLimit(item.label, MAX_ITEM_BYTES) ||
+        exceedsActivityDetailLimit(item.detail)
+      );
+    case "user":
+    case "notice":
+      return exceedsByteLimit(item.text, MAX_ITEM_BYTES);
+    case "failure":
+      return (
+        exceedsByteLimit(item.title, MAX_ITEM_BYTES) ||
+        exceedsByteLimit(item.detail, MAX_ITEM_BYTES)
+      );
+    case "question":
+      return item.questions.some(exceedsQuestionLimit);
+    default:
+      return false;
+  }
+}
+
+// A clustered member is bounded on its label and its detail's fields exactly
+// like the top-level row (truncateItem's member map), so ownership reads the
+// same pair.
+function exceedsActivityMemberBound(member: ActivityMember): boolean {
+  return (
+    exceedsByteLimit(member.label, MAX_ITEM_BYTES) ||
+    exceedsActivityDetailLimit(member.detail)
   );
 }
 
@@ -1146,23 +1175,17 @@ export function createConversationStore() {
       retainedIds.has(identity);
     truncatedItemIds.clear();
     for (const item of items) {
-      let needsTruncation = false;
-      if (item.kind === "assistant") {
-        needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
-      } else if (item.kind === "activity") {
-        needsTruncation = exceedsActivityDetailLimit(item.detail);
-      }
-      if (needsTruncation || staysFrozen(timelineIdentity(item))) {
+      if (rowExceedsDisplayBound(item) || staysFrozen(timelineIdentity(item))) {
         truncatedItemIds.add(timelineIdentity(item));
       }
-      // A clustered member's own oversized detail freezes under the
+      // A clustered member's own oversized label or detail freezes under the
       // member's own identity, independent of the top-level freeze above —
       // native expands members directly, so each is bounded and guarded on
       // its own.
       if (item.kind === "activity" && item.members) {
         for (const member of item.members) {
           const identity = activityIdentity(member);
-          if (exceedsActivityDetailLimit(member.detail) || staysFrozen(identity)) {
+          if (exceedsActivityMemberBound(member) || staysFrozen(identity)) {
             truncatedItemIds.add(identity);
           }
         }
@@ -1180,13 +1203,7 @@ export function createConversationStore() {
   function truncateAndRecordSingle(
     item: MobileTimelineItem,
   ): MobileTimelineItem {
-    let needsTruncation = false;
-    if (item.kind === "assistant") {
-      needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
-    } else if (item.kind === "activity") {
-      needsTruncation = exceedsActivityDetailLimit(item.detail);
-    }
-    if (needsTruncation) {
+    if (rowExceedsDisplayBound(item)) {
       truncatedItemIds.add(timelineIdentity(item));
     }
     return truncateItem(item);
@@ -3334,16 +3351,6 @@ export function createConversationStore() {
             // An item/* transition the cases above do not handle needs the
             // canonical projection; only those resync, not every unknown
             // family, to avoid reread storms from unrelated notifications.
-            // An askPending change needs it for the same reason and one
-            // more: question rows come only from the canonical projection
-            // (F6 — ask_user is never single-item projected), while the
-            // sheet reads the model directly (questionAnswers.ts's
-            // pendingQuestions, through liveAsksFor), so a model-only flip
-            // would otherwise leave the sheet and the timeline disagreeing —
-            // a stale question row beside an empty sheet, or a pending ask
-            // with no row. askPending rides every thread/status/changed
-            // frame but only moves when an ask raises or resolves, so
-            // resyncing on the change cannot storm.
             // An askPending change needs it for the same reason and one
             // more: question rows come only from the canonical projection
             // (F6 — ask_user is never single-item projected), while the
