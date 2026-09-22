@@ -3335,25 +3335,39 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 	turn := func(kind schema.TurnKind, message llm.Message) schema.Turn {
 		return schema.Turn{Kind: kind, Message: message, Timestamp: fixed}
 	}
+	assistant := turn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind:     llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{ID: "duplicate", Name: "inspect", Arguments: json.RawMessage(`{"path":"/tmp/a"}`)},
+	}}})
+	assistant.AttemptGroupID = "attempt-group-1"
+	assistant.ResponseID = "resp-1"
+	assistant.ResponseIDHash = "resp-hash-1"
+	assistant.ResponseProvider = "provider-1"
+	assistant.ResponseModel = "model-1"
+	assistant.ResponseRequestModel = "request-model-1"
+	assistant.ResponseEndpointFamily = "endpoint-family-1"
+	assistant.ResponseProtocol = "protocol-1"
+	assistant.ResponseEndpoint = "endpoint-1"
+	assistant.ResponseStorageScopeFingerprint = "storage-scope-1"
+	assistant.ResponseRequestFingerprint = "request-fingerprint-1"
+	assistant.ResponseContextMarker = "context-marker-1"
+
+	steering := turn(schema.TurnSteering, llm.User("steering"))
+	steering.SteeringSource = events.SteeringSourceUser
+	steering.SteeringKind = events.SteeringKindTaskNudge
+	steering.GoalContinuation = &schema.GoalContinuationInfo{Text: "goal continuation notice"}
+	steering.ClientMutationID = "client-mutation-1"
+	steering.StableTurnID = "stable-turn-1"
+	steering.OwningTurnID = "owning-turn-1"
+
+	modelSwitch := turn(schema.TurnModelSwitch, llm.User("model switch"))
+	modelSwitch.ModelSwitch = &schema.ModelSwitchInfo{
+		OldProvider: "old-provider", OldModel: "old-model",
+		NewProvider: "new-provider", NewModel: "new-model",
+	}
+
 	turns := []schema.Turn{
-		schema.Turn{
-			Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
-				Kind:     llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{ID: "duplicate", Name: "inspect", Arguments: json.RawMessage(`{"path":"/tmp/a"}`)},
-			}}}, Timestamp: fixed,
-			AttemptGroupID:                  "attempt-group-1",
-			ResponseID:                      "resp-1",
-			ResponseIDHash:                  "resp-hash-1",
-			ResponseProvider:                "provider-1",
-			ResponseModel:                   "model-1",
-			ResponseRequestModel:            "request-model-1",
-			ResponseEndpointFamily:          "endpoint-family-1",
-			ResponseProtocol:                "protocol-1",
-			ResponseEndpoint:                "endpoint-1",
-			ResponseStorageScopeFingerprint: "storage-scope-1",
-			ResponseRequestFingerprint:      "request-fingerprint-1",
-			ResponseContextMarker:           "context-marker-1",
-		},
+		assistant,
 		turn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "duplicate", Name: "inspect", Content: map[string]any{"paired": true}}},
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "duplicate", Name: "inspect", Content: "duplicate-id-result"}},
@@ -3365,25 +3379,11 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0, 255, 1, 254}, MediaType: "image/png", Detail: "high"}},
 		}}),
 		turn(schema.TurnTool, llm.ToolResultNamed("legacy", "legacy_tool", map[string]any{"legacy": true}, false)),
-		schema.Turn{
-			Kind: schema.TurnSteering, Message: llm.User("steering"), Timestamp: fixed,
-			SteeringSource:   events.SteeringSourceUser,
-			SteeringKind:     events.SteeringKindTaskNudge,
-			GoalContinuation: &schema.GoalContinuationInfo{Text: "goal continuation notice"},
-			ClientMutationID: "client-mutation-1",
-			StableTurnID:     "stable-turn-1",
-			OwningTurnID:     "owning-turn-1",
-		},
+		steering,
 		turn(schema.TurnSystem, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "system"}}}),
 		turn(schema.TurnCheckpoint, llm.User("checkpoint")),
 		turn(schema.TurnSummary, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "summary"}}}),
-		schema.Turn{
-			Kind: schema.TurnModelSwitch, Message: llm.User("model switch"), Timestamp: fixed,
-			ModelSwitch: &schema.ModelSwitchInfo{
-				OldProvider: "old-provider", OldModel: "old-model",
-				NewProvider: "new-provider", NewModel: "new-model",
-			},
-		},
+		modelSwitch,
 	}
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
 	if err != nil {
