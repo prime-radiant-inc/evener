@@ -1559,6 +1559,83 @@ func TestMarketplaceStaleListReadDuringReconciliationKeepsWarning(t *testing.T) 
 	}
 }
 
+func TestMarketplaceFreshMutationDuringReconciliationKeepsCloneRemainsWarning(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	added := appwire.MarketplaceEntry{Name: "added", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	// The unavailable outcome lands and arms the read boundary (generation
+	// 1) with its reconciliation read (generation 2) still outstanding and
+	// its warning standing.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	got, reconcile := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err: marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+			EvenerErrorInfo:    appwire.ErrorMarketplaceUnregisteredCloneRemains,
+			AppliedUnavailable: true,
+		}),
+		Action:     "remove",
+		Name:       removed.Name,
+		Generation: 1,
+	})
+	after := got.(hubModel)
+	if reconcile == nil || !after.marketplaceReconcilePending || after.err == nil {
+		t.Fatal("unavailable removal did not arm reconciliation with its warning")
+	}
+
+	// A successful add - real news, issued after the removal landed - lands
+	// as a MUTATE response while the reconciliation read is still
+	// outstanding. It settles the fence exactly like a confirming read, so
+	// it must settle the standing account the same way: the clone files the
+	// outcome reported are still on disk, so only the stale uncertainty
+	// strips - the fresh mutation must not erase the fact wholesale.
+	got, cmd := after.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Action:     "add",
+		Generation: 3,
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept, added}},
+	})
+	settled := got.(hubModel)
+	if cmd != nil {
+		t.Fatal("fresh add snapshot needs no replacement read")
+	}
+	if settled.marketplaceRemovePending != "" || settled.marketplaceReconcilePending {
+		t.Fatalf("fresh add left the fence at %q/%v, want settled", settled.marketplaceRemovePending, settled.marketplaceReconcilePending)
+	}
+	if settled.err == nil || !strings.Contains(settled.err.Error(), "clone files remain") {
+		t.Fatalf("fresh add erased the standing clone-remains warning = %v", settled.err)
+	}
+	if strings.Contains(settled.err.Error(), "could not be confirmed") {
+		t.Fatalf("fresh add left the stale uncertainty in the warning: %v", settled.err)
+	}
+	updated, panelCmd := settled.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("fresh add should leave the marketplace list selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after fresh add = %q, want %q", remove.Name, kept.Name)
+	}
+
+	// The outstanding reconciliation read is superseded by the add's
+	// applied response, so landing it later must change nothing: a
+	// discarded read is not the model's news.
+	straggler := reconcile().(launchconfig.MarketplaceListResultMsg)
+	got, _ = settled.handleMarketplaceListResult(straggler)
+	late := got.(hubModel)
+	if late.err == nil || !strings.Contains(late.err.Error(), "clone files remain") || strings.Contains(late.err.Error(), "could not be confirmed") {
+		t.Fatalf("superseded reconcile read changed the standing warning = %v", late.err)
+	}
+}
+
 func TestMarketplaceDelayedRefreshAfterAppliedSettlementKeepsWarning(t *testing.T) {
 	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	kept := appwire.MarketplaceEntry{Name: "kept", LastUpdated: 1, Source: appwire.MarketplaceSourceInput{Kind: "url"}}
