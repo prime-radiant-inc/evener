@@ -35,11 +35,14 @@ const (
 	// maxOutput caps what a command may print before it is refused, so a
 	// runaway command cannot balloon memory.
 	maxOutput = 1 << 20
+	// defaultCommandTimeout is the timeout the command seam starts at and
+	// ResetForTest restores; naming it keeps the two from drifting apart.
+	defaultCommandTimeout = 30 * time.Second
 )
 
 // commandTimeout bounds one command run; a test seam makes the timeout itself
 // testable without a real 30-second wait.
-var commandTimeout = 30 * time.Second
+var commandTimeout = defaultCommandTimeout
 
 // Now is the clock seam; RunCommand is the executor seam, initialized to the
 // real shell invocation. Hosts' tests swap these to keep unit tests off real
@@ -96,7 +99,7 @@ func ResetForTest() {
 	evaluateMu.Unlock()
 	RunCommand = realRunCommand
 	Now = time.Now
-	commandTimeout = 30 * time.Second
+	commandTimeout = defaultCommandTimeout
 }
 
 // evaluate returns the command's value, cached until it stops being fresh. A

@@ -14,9 +14,6 @@ import (
 // time — references, defaults, and command expressions — naming the field in
 // the error. It never echoes the value, which may hold a secret.
 func checkEnvRefs(value, what string) error {
-	if !strings.Contains(value, "$") {
-		return nil
-	}
 	if _, err := valueexpr.Scan(value); err != nil {
 		return fmt.Errorf("%s: %w", what, err)
 	}

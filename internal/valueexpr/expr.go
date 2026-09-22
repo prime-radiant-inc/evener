@@ -30,14 +30,18 @@ package valueexpr
 
 import (
 	"errors"
-	"regexp"
 	"strings"
 )
 
-var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// isEnvNameStart and isEnvNameByte spell the grammar a reference name may
+// take: a letter or underscore first, then letters, digits, or underscores.
+// ValidEnvName is the one authority over the whole set.
+func isEnvNameStart(c byte) bool {
+	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
 
 func isEnvNameByte(c byte) bool {
-	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+	return isEnvNameStart(c) || (c >= '0' && c <= '9')
 }
 
 // sink receives a value's pieces while scan walks it: every literal run, every
@@ -82,11 +86,8 @@ scanLoop:
 			}
 			expr := value[i+2 : i+2+end]
 			i += 2 + end + 1
-			name, def, hasDef := expr, "", false
-			if before, after, ok := strings.Cut(expr, ":-"); ok {
-				name, def, hasDef = before, after, true
-			}
-			if !envNameRe.MatchString(name) {
+			name, def, hasDef := strings.Cut(expr, ":-")
+			if !ValidEnvName(name) {
 				// name is whatever the author put between the braces: exactly
 				// the content a misplaced secret would occupy, so it must not
 				// be interpolated into the message.
@@ -121,7 +122,7 @@ scanLoop:
 			// Falling out of the loop means the value ran out with the depth
 			// still open.
 			return errors.New("unterminated $( in value")
-		case isEnvNameByte(next) && (next < '0' || next > '9'):
+		case isEnvNameStart(next):
 			j := i + 1
 			for j < len(value) && isEnvNameByte(value[j]) {
 				j++
@@ -216,7 +217,15 @@ func Pieces(value string) ([]Piece, error) {
 // The env-ref grammar's single authority; hosts that validate a name-shaped
 // field (the registry's api_key_env) call this instead of restating the rule.
 func ValidEnvName(name string) bool {
-	return envNameRe.MatchString(name)
+	if name == "" || !isEnvNameStart(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isEnvNameByte(name[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Unresolved names why a piece of the value produced nothing: a missing or

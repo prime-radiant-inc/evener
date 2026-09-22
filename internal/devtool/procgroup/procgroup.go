@@ -21,10 +21,7 @@ import (
 // Start starts cmd in its own process group. The caller keeps ownership of
 // Wait; Stop only signals.
 func Start(cmd *exec.Cmd) error {
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
+	cmd.SysProcAttr = baseprocgroup.SysProcAttr()
 	return cmd.Start()
 }
 
