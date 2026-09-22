@@ -27,6 +27,7 @@ import {
   isToolResultItemId,
   itemIdentityMatches,
   joinWarningParts,
+  markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPageWithFolds,
   mergeTurnHistory,
@@ -1288,6 +1289,7 @@ export function createConversationStore() {
   function boundRetainedTurns(
     turns: TurnModel[],
     retainedItems: MobileTimelineItem[],
+    itemFoldSources?: WeakMap<ItemModel, readonly ItemModel[]>,
   ): TurnModel[] {
     const retainedIdentities = new Set(
       retainedItems.flatMap((item) => [...timelineIdentities(item)]),
@@ -1303,10 +1305,21 @@ export function createConversationStore() {
       // Testing the bare id too only ever over-keeps (a row that shares an
       // id but conflicts on transcript key is not in the retained set under
       // its id), and over-keeping is the safe direction for merge parity.
+      // Review round 14: a merged item's own identity is not the only one
+      // that backs a row — its fold sources' identities do too. An alias
+      // chain can settle content on an identity no row carries while the
+      // row still names the keyless id the chain consumed, so a turn whose
+      // items all match by their own identities alone can still back a
+      // visible row through the sources those items folded from.
       const inWindow = turn.items.some(
         (item) =>
           retainedIdentities.has(item.transcriptKey ?? item.id) ||
-          retainedIdentities.has(item.id),
+          retainedIdentities.has(item.id) ||
+          (itemFoldSources?.get(item) ?? []).some(
+            (source) =>
+              retainedIdentities.has(source.transcriptKey ?? source.id) ||
+              retainedIdentities.has(source.id),
+          ),
       );
       if (inWindow) return turn;
       trimmed = true;
@@ -1348,15 +1361,17 @@ export function createConversationStore() {
   function compactItemSkeletons(items: ItemModel[]): ItemModel[] {
     return items.map(
       (item) =>
-        markItemTextOmitted({
-          id: item.id,
-          turnId: item.turnId,
-          type: item.type,
-          text: "",
-          ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
-          ...(item.position !== undefined ? { position: item.position } : {}),
-          ...(item.callId !== undefined ? { callId: item.callId } : {}),
-        }),
+        markItemIdentityOnly(
+          markItemTextOmitted({
+            id: item.id,
+            turnId: item.turnId,
+            type: item.type,
+            text: "",
+            ...(item.transcriptKey !== undefined ? { transcriptKey: item.transcriptKey } : {}),
+            ...(item.position !== undefined ? { position: item.position } : {}),
+            ...(item.callId !== undefined ? { callId: item.callId } : {}),
+          }),
+        ),
     );
   }
 
@@ -1366,6 +1381,24 @@ export function createConversationStore() {
   // entry instead of growing the set.
   function skeletonKey(skeleton: ItemModel): string {
     return `${skeleton.id}\u0000${skeleton.transcriptKey ?? ""}`;
+  }
+
+  // Each merged item's participating sources, remembered past the merge that
+  // produced them. The keep-window check needs them (review round 14): a
+  // fold can land content on an identity the display rows never carried —
+  // an alias chain settles on the second alias's keyed identity while the
+  // page's row still names the keyless id the chain started from — so
+  // whether a merged turn backs a visible row can only be answered through
+  // the identities its items folded FROM, and the live-path bound sites ask
+  // long after the merge is gone.
+  const mergedItemFoldSources = new WeakMap<ItemModel, readonly ItemModel[]>();
+  function recordItemFoldSources(
+    turns: TurnModel[],
+    itemFoldSources: (item: ItemModel) => readonly ItemModel[],
+  ): void {
+    for (const turn of turns) {
+      for (const item of turn.items) mergedItemFoldSources.set(item, itemFoldSources(item));
+    }
   }
 
   // Conservative collision scan: which compact turns remember an identity
@@ -2395,13 +2428,14 @@ export function createConversationStore() {
               rehydrateRealSources,
               history.itemFoldSources,
             );
+            recordItemFoldSources(mergedTurns, history.itemFoldSources);
             transferFoldedCompactedEntries(mergedTurns, history.olderTurnFolds);
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
             // fragments supplied, and only out-of-window payloads trim. The
             // final retained rows (rehydrateCapped) are the window; the pass
             // settles page turn ownership with the same bound.
-            mergedTurns = boundRetainedTurns(mergedTurns, rehydrateCapped);
+            mergedTurns = boundRetainedTurns(mergedTurns, rehydrateCapped, mergedItemFoldSources);
           }
           if (replacesInstance) {
             pageOwnedIds.clear();
@@ -2645,6 +2679,7 @@ export function createConversationStore() {
               pageRealSources,
               pageMerge?.folds.itemFoldSources,
             );
+            if (pageMerge) recordItemFoldSources(strippedPageTurns, pageMerge.folds.itemFoldSources);
             // The compact turns are the merge's NEWER (retained) side here;
             // the retained-side folds name the carrier a bridged compact
             // turn's content landed in.
@@ -2653,7 +2688,11 @@ export function createConversationStore() {
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
             // whose payloads left the keep-window to the compact set.
-            const boundedTurns = boundRetainedTurns(strippedPageTurns, pageMerged);
+            const boundedTurns = boundRetainedTurns(
+              strippedPageTurns,
+              pageMerged,
+              mergedItemFoldSources,
+            );
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
               // never the capped nextCursor above.
@@ -3269,7 +3308,7 @@ export function createConversationStore() {
                 conversation: {
                   ...conv,
                   items: cappedItems,
-                  turns: boundRetainedTurns(conv.turns, cappedItems),
+                  turns: boundRetainedTurns(conv.turns, cappedItems, mergedItemFoldSources),
                 },
               });
             } else {
@@ -3538,7 +3577,7 @@ export function createConversationStore() {
               conversation: {
                 ...conv,
                 items: warningCappedItems,
-                turns: boundRetainedTurns(conv.turns, warningCappedItems),
+                turns: boundRetainedTurns(conv.turns, warningCappedItems, mergedItemFoldSources),
               },
             });
             break;
@@ -3915,7 +3954,7 @@ export function createConversationStore() {
                   conversation: {
                     ...conv,
                     items: reprojected,
-                    turns: boundRetainedTurns(conv.turns, reprojectedCapped),
+                    turns: boundRetainedTurns(conv.turns, reprojectedCapped, mergedItemFoldSources),
                   },
                 });
                 break;

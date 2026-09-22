@@ -8378,10 +8378,13 @@ describe("ConversationStore", () => {
 
       // A page now supplies the item KEYLESS under fa's bare id. Both
       // remembered aliases are injected and the merge folds the real page
-      // item through them, settling on fb's identity — the kk row keeps the
-      // turn in window, so the restored text must survive the strip.
+      // item through them, settling on fb's identity. The real projector
+      // rows a keyless page item under its bare id (fa) — the merged item's
+      // final identity matches no row, but its participating source does,
+      // so the window must keep the turn and the restored text must survive
+      // the strip (review round 14).
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+        items: [{ kind: "user" as const, id: "fa", text: "fa row" }],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -9268,6 +9271,119 @@ describe("ConversationStore", () => {
       const after = store.getState().conversation!;
       expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
         expect.objectContaining({ id: "rb", transcriptKey: "kr", text: "restored alias" }),
+      ]);
+    });
+
+    // Review round 14, non-text payload: omitted text does not mean an item
+    // lacks payload. A hydrated tool item can carry a current output,
+    // arguments, and status while the wire omitted its text, and the
+    // freshness check read exactly that — text omitted — so a retained tool
+    // item folding into a page's keyless alias classified its fold as
+    // payload-less. A later stale keyed sibling then tied with it and let
+    // display order overwrite the retained fields. Identity-only skeletons
+    // are the items to exclude — the ones carrying no field a fold keeps —
+    // never real items merely because their text is omitted.
+    it("a retained tool item with omitted text keeps its fields through the fold", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A retained tool item whose wire omitted the text field — hydrated
+      // with the omitted-text marker — carrying its CURRENT output.
+      service.olderItems = {
+        items: [{ kind: "user" as const, id: "kt", text: "kt row" }],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "rt",
+              [
+                {
+                  id: "item_tool_7",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-9",
+                  argumentsJson: '{"command":"make"}',
+                  output: "current output",
+                  status: "completed",
+                  transcriptKey: "kt",
+                  position: { entry: 50, item: 0 },
+                },
+              ],
+              { inputTokens: 60, outputTokens: 6 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kt", output: "current output" }),
+      ]);
+
+      // The next page carries the item's KEYLESS alias (the retained item's
+      // bare id, text omitted too) followed by a keyed sibling holding the
+      // item's STALE output. The retained item folds into the keyless alias
+      // (the first identity match) — and its fields, not the stale
+      // sibling's, must come out of the reconciliation.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "item_tool_7",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-9",
+                  argumentsJson: '{"command":"make"}',
+                  status: "inProgress",
+                  position: { entry: 50, item: 0 },
+                },
+                {
+                  id: "item_tool_8",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-8",
+                  argumentsJson: '{"command":"make"}',
+                  output: "stale output",
+                  status: "completed",
+                  transcriptKey: "kt",
+                  position: { entry: 51, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      expect(after.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kt", output: "current output" }),
       ]);
     });
   });

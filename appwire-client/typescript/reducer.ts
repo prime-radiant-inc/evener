@@ -230,6 +230,39 @@ export function markItemTextOmitted(item: ItemModel): ItemModel {
   return setItemTextPresence(item, "omitted");
 }
 
+const ITEM_IDENTITY_ONLY = Symbol("itemIdentityOnly");
+
+// The public handle on the identity-only marker: mark a hand-built ItemModel
+// as carrying nothing but its identity, ordering and fold-classification
+// fields — no text, no payload, nothing a merge keeps from it. The mobile
+// store's compact-turn skeletons are the caller: a skeleton stands in for a
+// shed payload, so merges must never read one as supplying content — most
+// importantly, a fold that only drew a skeleton must not count as fresh
+// payload participation (the duplicate reconciliation's precedence reads
+// exactly that). A marked item keeps its other semantics unchanged: merges
+// treat its text per the omitted-text marker, and identity matching ignores
+// the marker entirely.
+export function markItemIdentityOnly(item: ItemModel): ItemModel {
+  Object.defineProperty(item, ITEM_IDENTITY_ONLY, { value: true, enumerable: false, configurable: true });
+  return item;
+}
+
+// Whether an item carries nothing a merge keeps beyond identity, ordering
+// and fold-classification. A marked item is identity-only by declaration —
+// the marker exists precisely because shape alone cannot prove intent. An
+// unmarked item is identity-only only when it says so structurally: its
+// text is omitted (never a textSource winner) and every field it carries
+// is one a skeleton could carry — the wire's own sparse identity-only
+// fragment. A real item with omitted text is NOT identity-only: tool items
+// routinely omit text while carrying their current output, arguments,
+// images, and status.
+const itemIdentityOnlyFields = new Set(["id", "turnId", "type", "text", "transcriptKey", "position", "callId"]);
+function itemIsIdentityOnly(item: ItemModel): boolean {
+  if ((item as ItemModel & { [ITEM_IDENTITY_ONLY]?: boolean })[ITEM_IDENTITY_ONLY] === true) return true;
+  if (itemTextPresence(item) !== "omitted") return false;
+  return Object.keys(item).every((field) => itemIdentityOnlyFields.has(field));
+}
+
 // imageSessionRoute threads through wireItemToModel/wireToTurnModel from the
 // callers that can name the serving session — hydrateThread's wire
 // thread.sessionId (falling back to the thread id, mirroring
@@ -802,21 +835,22 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
 }
 
 // Whether an item's merge membership includes newer-side ("fresh") inputs
-// that could supply payload — text-omitted identity-only participants do
-// not count: the retained-turn bound's remembered skeletons, and the wire's
-// own sparse fragments, carry the omitted-text marker and supply no field
-// the fold can keep, so folding one in must not make an item read as fresh.
-// The context records an entry for every input item at creation, so an
-// untouched item speaks for its own side; a folded item speaks for whatever
-// its folds combined. An item the context never saw — a callId-fold rewrite,
-// or a merge without a context at all — reads as older-side, leaving list
-// order to decide exactly as it did before source precedence existed.
+// that could supply payload — identity-only participants do not count: the
+// retained-turn bound's remembered skeletons, and the wire's own sparse
+// identity-only fragments, supply no field the fold can keep, so folding
+// one in must not make an item read as fresh. Omitted TEXT alone never
+// disqualifies a real item: tool items routinely omit text while carrying
+// their current output, arguments, images, and status — payload is what
+// matters, and itemIsIdentityOnly is the exact test. The context records an
+// entry for every input item at creation, so an untouched item speaks for
+// its own side; a folded item speaks for whatever its folds combined. An
+// item the context never saw — a callId-fold rewrite, or a merge without a
+// context at all — reads as older-side, leaving list order to decide exactly
+// as it did before source precedence existed.
 function freshParticipates(context: ToolItemMergeContext | undefined, item: ItemModel): boolean {
   if (context === undefined) return false;
   const provenance = context.provenance.get(item);
-  return (
-    provenance !== undefined && membershipLeaves(provenance.fresh).some((leaf) => itemTextPresence(leaf) !== "omitted")
-  );
+  return provenance !== undefined && membershipLeaves(provenance.fresh).some((leaf) => !itemIsIdentityOnly(leaf));
 }
 
 function turnsShareItemIdentity(left: TurnModel, right: TurnModel): boolean {

@@ -341,6 +341,7 @@ export {
   itemIdentityMatches,
   joinedReasoningParagraphs,
   joinWarningParts,
+  markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
