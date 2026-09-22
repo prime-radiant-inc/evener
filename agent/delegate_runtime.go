@@ -2434,6 +2434,12 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 // a failure after the disposal re-provisions the environment's own scratch. A
 // shared environment (ownsFresh false) belongs to the live parent, so its
 // already-owned kinds are left alone and its scratch is never disposed here.
+// A contended sandbox slot — its lease held in this process by the racing
+// idle-release teardown — is never a replacement target: the adoption could
+// not take its lease, and a disposed fresh scratch would leave the restored
+// delegate running on the retained directory unowned. The fresh scratch stays
+// for that cycle, and the next restore re-probes the settled contention and
+// resumes in the retained directory.
 func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnvironment, sessionID string, ownsFresh bool) (bool, error) {
 	if env == nil {
 		return false, nil
@@ -2448,7 +2454,7 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 	}
 	before := scratchRefDirs(env)
 	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
-	if ownsFresh && ok && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
+	if ownsFresh && ok && !s.retainedScratchSlotContended(dir) && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
 		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
 			return false, err
 		}

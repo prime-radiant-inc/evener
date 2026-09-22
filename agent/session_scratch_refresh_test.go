@@ -2,11 +2,13 @@ package agent
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -296,7 +298,12 @@ func TestScratchRefreshRechecksRevisionBeforeInstall(t *testing.T) {
 // worktree-re-entry read's lock: installConsumerRefresh mutates consumer rows
 // after the pool is published, so the parked-binding read must copy its row out
 // under the pool mutex. A reader that touches the map unlocked raises the
-// runtime's unrecoverable concurrent-map throw.
+// runtime's unrecoverable concurrent-map throw. Writers and readers run fixed
+// coordinated batches behind a start barrier — no wall-clock sleep. Readers
+// additionally wait for the first committed write, so the observation assertion
+// is deterministic: the remaining ~150 writes are still in flight while the
+// readers run, and a read that misses the committed row is a real bug, not a
+// scheduling race.
 func TestParkedWorktreeBindingIDReadsUnderConcurrentPoolMutation(t *testing.T) {
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
@@ -312,44 +319,102 @@ func TestParkedWorktreeBindingIDReadsUnderConcurrentPoolMutation(t *testing.T) {
 		contended: map[string]struct{}{},
 		adopted:   map[string]string{},
 	})
-	stop := make(chan struct{})
+	start := make(chan struct{})
+	firstWrite := make(chan struct{})
+	var firstWriteOnce sync.Once
+	sawWritten := make(chan struct{}, 8)
+	const writesPerWriter = 50
+	const readsPerReader = 50
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
+			<-start
+			for range writesPerWriter {
 				s.installConsumerRefresh(s.retainedScratch.Load(),
 					sandbox.ScratchConsumerBinding{SessionID: s.id, WorktreeRestoreBindingID: bindingID},
 					sandbox.ScratchBinding{BindingID: bindingID},
 					nil, nil,
 				)
+				firstWriteOnce.Do(func() { close(firstWrite) })
 			}
 		})
 	}
 	for range 4 {
 		wg.Go(func() {
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				if got := s.parkedWorktreeBindingID(); got != bindingID && got != "" {
+			<-start
+			<-firstWrite
+			for range readsPerReader {
+				got := s.parkedWorktreeBindingID()
+				if got != bindingID && got != "" {
 					t.Errorf("parked binding read %q, want %q or empty-before-first-write", got, bindingID)
+				}
+				if got == bindingID {
+					select {
+					case sawWritten <- struct{}{}:
+					default:
+					}
 				}
 			}
 		})
 	}
-	// TRIPWIRE: the overlap window is the test itself — the stress loops need a
-	// real slice of wall clock for the mutation and read streams to interleave;
-	// 200ms is the budget for that overlap, not a poll for a condition.
-	time.Sleep(200 * time.Millisecond)
-	close(stop)
+	close(start)
 	wg.Wait()
+	select {
+	case <-sawWritten:
+	default:
+		t.Fatal("no reader observed a written value; the mutation and read streams never interleaved")
+	}
+}
+
+// TestRestoreKeepsFreshScratchWhenRetainedSlotContended pins the round-4
+// ownership guard: a contended retained sandbox slot — its lease held in this
+// process by the racing idle-release teardown — must never be a replacement
+// target. Disposing the fresh allocation to adopt a directory the adoption
+// cannot take the lease of would leave the restored delegate running on the
+// retained scratch unowned, beside its in-process holder.
+func TestRestoreKeepsFreshScratchWhenRetainedSlotContended(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RESTORECONTENDED1"
+	const bindingID = "b-restore-contended"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	// The pool the previous refresh left: current rows, the slot recorded
+	// contended (the teardown held its lease), no reacquired handle.
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{},
+	})
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, true); err != nil {
+		t.Fatalf("restore adoption with a contended retained slot: %v", err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(fresh) {
+		t.Fatalf("the contended slot's replacement disposed the fresh scratch %q; the restored session now runs on %q without the lease", fresh, got)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("the fresh scratch was disposed against a contended slot: %v", err)
+	}
 }
 
 // TestScratchRefreshInstallWindowBlocksManifestUpdates pins the round-2

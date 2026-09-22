@@ -1211,6 +1211,28 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 	return true, nil
 }
 
+// retainedScratchSlotContended reports whether the pool holds no reacquired
+// handle for dir because its lease is held elsewhere in this process — the
+// racing-idle-release window. A dispose-then-adopt replacement must never run
+// against a contended slot: the adoption cannot take the lease (no handle),
+// and with the fresh allocation already disposed the session would end up
+// running on the retained directory unowned, beside its in-process holder.
+// The replacement is skipped instead, the fresh allocation stays, and the next
+// restore re-probes the settled contention (refreshRetainedScratchConsumer)
+// and resumes in the retained directory with the lease in hand. An engineered
+// absence — no handle, no contention — is NOT skipped here; that refusal
+// semantics is pinned elsewhere and stays.
+func (s *Session) retainedScratchSlotContended(dir string) bool {
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		return false
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	_, contended := pool.contended[canonicalScratchDir(dir)]
+	return contended
+}
+
 // adoptResumedRootScratch adopts sessionID's retained allocation onto env on
 // the resume path. Resume provisions the sandbox before this runs, and
 // EnableSandbox always mints a fresh session scratch; that fresh mint is a
@@ -1238,7 +1260,7 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		return nil
 	}
 	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
-	if !ok || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
+	if !ok || s.retainedScratchSlotContended(dir) || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
 		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 			return err
 		}
@@ -1252,7 +1274,7 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		}
 	}
 	unsandboxed, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindUnsandboxed)
-	if !ok || filepath.Clean(unsandboxed) == filepath.Clean(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
+	if !ok || s.retainedScratchSlotContended(unsandboxed) || filepath.Clean(unsandboxed) == filepath.Clean(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
 		return nil
 	}
 	env.DisposeUnsandboxedScratch()
