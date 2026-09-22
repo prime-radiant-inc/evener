@@ -79,7 +79,6 @@ function GuardedBrowser({
   // tests hold a ready connection throughout.
   const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
   const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
-  const authoritativeFrom = useRef(0);
   return (
     <>
       <ErrorMessage message={warning} />
@@ -90,24 +89,27 @@ function GuardedBrowser({
         installed={createPluginsStore(client)}
         marketplaces={marketplaces}
         lastAddMarketplaces={lastAddMarketplaces}
-        authoritativeFrom={authoritativeFrom}
         gate={createPluginMutationGate()}
         ready={true}
         canUseConnection={canUseConnection}
         onOpenPlugin={() => {}}
         appliedRemovalNames={names}
-        onAppliedRemoval={(name, notice) => {
-          setNames((current) => new Set([...current, name]));
+        onAppliedRemoval={(name, notice, _owner, marketplaces, _publicationVersion) => {
+          // The production screen's rule, in this harness's minimal shape:
+          // an accepted snapshot that already omits the target is the
+          // outcome's own reconciliation and leaves no fence.
+          if (marketplaces === null || marketplaces.some((item) => item.name === name))
+            setNames((current) => new Set([...current, name]));
           if (notice !== null) setWarning(notice);
           return true;
         }}
-        onAuthoritativeMarketplaces={() => {
+        onAuthoritativeMarketplaces={(_marketplaces, _owner, _publicationVersion) => {
           // The screen's fallback ruling, in this harness's minimal shape:
-          // the first publication after an outcome retires the fence
-          // whatever it carries - the browser's own watermark decides which
-          // publications count as that first one. The updater bails on an
-          // already-empty fence so the re-render it triggers cannot loop
-          // back into the reporting effect.
+          // a publication after an outcome retires the fence whatever it
+          // carries. The screen prunes per name against each fence's own
+          // baseline; this single-name harness clears the whole fence. The
+          // updater bails on an already-empty fence so the re-render it
+          // triggers cannot loop back into the reporting effect.
           setNames((current) => (current.size ? new Set() : current));
         }}
         onMarketplaceAdded={(name) => {
