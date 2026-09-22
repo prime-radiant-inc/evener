@@ -42,7 +42,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 			t.Fatal(err)
 		}
 		active := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
-		if _, err := h.s.worktreeCreateCore(context.Background(), active, "lane", "", 0, "marker", "create", nil); err == nil {
+		if _, err := h.s.worktreeCreateCore(context.Background(), active, "lane", "lane", "", 0, "marker", "create", nil); err == nil {
 			t.Fatal("create outside repository succeeded")
 		}
 		if _, err := h.s.worktreeSwitchByName(context.Background(), "lane"); err == nil {
@@ -127,7 +127,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		h, _ := newWorktreeFaultSession(t)
 		active := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
 		active.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}
-		if _, err := h.s.worktreeCreateCore(context.Background(), active, "sandbox-create", "", 0, "marker", "create", nil); err == nil {
+		if _, err := h.s.worktreeCreateCore(context.Background(), active, "sandbox-create", "sandbox-create", "", 0, "marker", "create", nil); err == nil {
 			t.Fatal("create accepted unavailable control sandbox")
 		}
 		h.s.mu.Lock()
