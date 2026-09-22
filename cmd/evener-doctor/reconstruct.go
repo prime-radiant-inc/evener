@@ -568,9 +568,12 @@ func validArchivedResultStatus(toolName, status string) bool {
 	switch status {
 	case "completed", "error":
 		return true
-	case "running", "idle", "failed", "cancelled", "stopped", "exhausted":
+	case "running", "idle", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
 		// AgentsView uses delegate lifecycle as the status of successful calls
-		// to these tools. A failed delegate is not a failed status query.
+		// to these tools. A failed delegate is not a failed status query, and
+		// a job_status result may carry a command-outcome status: the
+		// supervised command exited nonzero or was signalled, which is still
+		// a successful query about a finished job.
 		return toolName == "delegate" || toolName == "delegate_send" || toolName == "job_status"
 	default:
 		return false

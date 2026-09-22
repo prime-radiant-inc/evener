@@ -36,6 +36,8 @@ test("jobStatusDotState maps statuses onto StatusDot states", () => {
   expect(jobStatusDotState("queued")).toBe("working");
   expect(jobStatusDotState("failed")).toBe("failed");
   expect(jobStatusDotState("exhausted")).toBe("failed");
+  expect(jobStatusDotState("command_exited_nonzero", true)).toBe("failed");
+  expect(jobStatusDotState("command_killed", true)).toBe("failed");
   expect(jobStatusDotState("blocked")).toBe("needs-you");
   expect(jobStatusDotState("completed", true)).toBe("ended");
   expect(jobStatusDotState("stopped")).toBe("ended");
@@ -45,5 +47,7 @@ test("jobStatusDotState maps statuses onto StatusDot states", () => {
 test("isFailedStatus matches the danger set", () => {
   expect(isFailedStatus("failed")).toBe(true);
   expect(isFailedStatus("exhausted")).toBe(true);
+  expect(isFailedStatus("command_exited_nonzero")).toBe(true);
+  expect(isFailedStatus("command_killed")).toBe(true);
   expect(isFailedStatus("completed")).toBe(false);
 });

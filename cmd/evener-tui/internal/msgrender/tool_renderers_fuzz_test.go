@@ -209,7 +209,7 @@ func replayRenderSurface() {
 		{Task: "fail", Status: "failed", Reason: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRST-extra"},
 		{Task: "error", Status: "error"},
 	}, 10)
-	for _, status := range []string{"failed", "error", "completed", "done", "succeeded", "cancelled", "stopped", "other"} {
+	for _, status := range []string{"failed", "error", "completed", "done", "succeeded", "cancelled", "stopped", "command_exited_nonzero", "command_killed", "other"} {
 		_ = subagentRailClass(status)
 	}
 	_ = ShellBody(nil, "", 80)

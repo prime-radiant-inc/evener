@@ -1259,6 +1259,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				FromWatch:        data.FromWatch,
 				Background:       data.Background,
 				Command:          data.Command,
+				Intent:           data.Intent,
 				ParentDelegateID: data.ParentDelegateID,
 				DelegateID:       data.DelegateID,
 				Task:             data.Task,

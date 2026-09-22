@@ -17,6 +17,9 @@ export interface ActivityCounts {
 // as "failure"; a stable delegate carries its delegatestore outcome verbatim,
 // so a failure arrives as "failed" or "exhausted". These are the one definition
 // per kind, shared by the rows and by the merged summaries.
+// The status fallback below serves readers with no outcome (the activity
+// tree's status dot): it knows the daemon's failure statuses, including the
+// command-outcome statuses a nonzero exit or a signal death ends in.
 export function isFailedJobOutcome(outcome: string | undefined): boolean {
   return outcome === "failure";
 }
@@ -28,7 +31,13 @@ export function isFailedDelegateOutcome(outcome: string | undefined): boolean {
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
   if (isFailedJobOutcome(outcome) || isFailedDelegateOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
-  return normalized === "failed" || normalized === "exhausted" || normalized === "error";
+  return (
+    normalized === "failed" ||
+    normalized === "exhausted" ||
+    normalized === "error" ||
+    normalized === "command_exited_nonzero" ||
+    normalized === "command_killed"
+  );
 }
 
 export interface ActivityBranchState {

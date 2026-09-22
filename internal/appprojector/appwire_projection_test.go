@@ -370,7 +370,7 @@ func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventJobFinished,
-		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed"},
+		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed", Intent: "reproduce the failure"},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobFinished {
 		t.Fatalf("want exactly one evener/job/finished notification, got %+v", out)
@@ -381,6 +381,9 @@ func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 	}
 	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.Job.JobID != "job_1" || params.Job.Status != "completed" {
 		t.Fatalf("params = %+v", params)
+	}
+	if params.Job.Intent != "reproduce the failure" {
+		t.Fatalf("params.Job.Intent = %q, want the finished push to forward the intent", params.Job.Intent)
 	}
 }
 

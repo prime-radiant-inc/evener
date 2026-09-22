@@ -220,6 +220,14 @@ func TestRenderSubagentRailConsolidates(t *testing.T) {
 	}
 }
 
+func TestSubagentRailClass_CommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if got := subagentRailClass(status); got != "failed" {
+			t.Fatalf("%s rail class = %q, want failed", status, got)
+		}
+	}
+}
+
 func TestSubagentRailClass_Exhausted(t *testing.T) {
 	if got := subagentRailClass("exhausted"); got != "failed" {
 		t.Fatalf("exhausted rail class = %q, want failed", got)

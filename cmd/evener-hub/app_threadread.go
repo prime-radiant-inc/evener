@@ -1303,7 +1303,7 @@ func delegateJobIDFromRaw(raw json.RawMessage) string {
 
 func isTerminalHistoricalJobStatus(status string) bool {
 	switch status {
-	case "completed", "failed", "cancelled", "stopped", "exhausted":
+	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
 		return true
 	default:
 		return false
