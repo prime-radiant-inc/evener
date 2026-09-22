@@ -1315,7 +1315,15 @@ export function createConversationStore() {
       // still fold through the package's own merge.
       const shed = compactItemSkeletons(turn.items);
       const remembered = compactedTurnItems.get(turn.id);
-      compactedTurnItems.set(turn.id, remembered === undefined ? shed : [...remembered, ...shed]);
+      if (remembered === undefined) {
+        compactedTurnItems.set(turn.id, shed);
+      } else {
+        // Dedupe by composite identity: a restore-and-trim cycle of the
+        // same items must not grow the remembered set (review round 3).
+        const byKey = new Map(remembered.map((skeleton) => [skeletonKey(skeleton), skeleton]));
+        for (const skeleton of shed) byKey.set(skeletonKey(skeleton), skeleton);
+        compactedTurnItems.set(turn.id, [...byKey.values()]);
+      }
       return { ...turn, items: [] };
     });
     return trimmed ? bounded : turns;
@@ -1340,6 +1348,14 @@ export function createConversationStore() {
           ...(item.callId !== undefined ? { callId: item.callId } : {}),
         }) as ItemModel,
     );
+  }
+
+  // The dedupe key of a remembered skeleton: composite identity, so two
+  // skeletons that share an id but differ on transcript key (or vice versa)
+  // stay distinct entries while a re-shed of the same item replaces its own
+  // entry instead of growing the set.
+  function skeletonKey(skeleton: ItemModel): string {
+    return `${skeleton.id}\u0000${skeleton.transcriptKey ?? ""}`;
   }
 
   // Conservative collision scan: which compact turns remember an identity
@@ -1439,7 +1455,8 @@ export function createConversationStore() {
         !turn.items.some(
           (item) =>
             item.text === undefined &&
-            wireTextByIdentity.has(item.transcriptKey ?? item.id),
+            (wireTextByIdentity.has(item.transcriptKey ?? item.id) ||
+              wireTextByIdentity.has(item.id)),
         )
       ) {
         return turn;
@@ -1475,6 +1492,13 @@ export function createConversationStore() {
       for (const item of turn.items) {
         const identity = item.transcriptKey ?? item.id;
         if (!ownerByIdentity.has(identity)) ownerByIdentity.set(identity, turn.id);
+        // Record the bare id too: a remembered id-only item whose re-issue
+        // gained a transcript key folds by ID, and the merged item then
+        // carries the new key — the old bare id is the only key the
+        // remembered skeleton can look up.
+        if (item.transcriptKey !== undefined && !ownerByIdentity.has(item.id)) {
+          ownerByIdentity.set(item.id, turn.id);
+        }
       }
     }
     for (const [turnId, skeletons] of [...compactedTurnItems]) {
@@ -2191,7 +2215,19 @@ export function createConversationStore() {
             );
             const history = mergeTurnHistory(injectedFresh.turns, conversation.turns);
             mergedTurns = history.turns;
-            if (history.olderCoverage && history.transcriptOverlap) {
+            // Review round 3: the wire-cursor gate must read only RETAINED
+            // transcript evidence. Injected skeletons fold fragments, but
+            // they are memory, not content — an unmatched skeleton must not
+            // claim older coverage or transcript overlap and let discarded
+            // history override the fresh wire cursor. When skeletons were
+            // injected, take the gate from the same merge WITHOUT them: the
+            // compact turns then contribute exactly what the retained
+            // state still holds (nothing, or a restored turn's real items).
+            const coverage =
+              injectedFresh.injected.length > 0
+                ? mergeTurnHistory(currentConvForMerge.turns, conversation.turns)
+                : history;
+            if (coverage.olderCoverage && coverage.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
             // Strip the injected skeletons the merge did not fold away,
