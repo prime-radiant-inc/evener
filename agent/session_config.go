@@ -639,6 +639,29 @@ type testConfig struct {
 	// refresh's install hold would serialize on. Nil in production.
 	scratchTerminalReleaseAfterDetach func()
 
+	// scratchTerminalReleaseAttempt observes each terminal-release attempt
+	// at 1, in the same position as the environment pin probe: inside the
+	// bounded retry, before the tombstone transaction. Nil in production.
+	scratchTerminalReleaseAttempt func(attempt int)
+
+	// scratchRefreshAfterSeedCAS runs inside the refresh's install hold
+	// immediately after a pass's seed pool won its publish CAS and before the
+	// terminal-seal check — the exact window a terminal detach can sweep the
+	// freshly published pool in. Nil in production.
+	scratchRefreshAfterSeedCAS func()
+
+	// scratchDetachRetainHook runs before each lease release in the terminal
+	// pool sweep, so a test can hold the sweep mid-loop — the exact window a
+	// losing seed pass must not release the same handles in. Nil in
+	// production.
+	scratchDetachRetainHook func()
+
+	// scratchLockBackoff replaces the wall-clock sleep that spaces
+	// lock-contention retries in the agent layer (the refresh's re-derive
+	// loop and the swap's rebase loop), so tests can sequence deterministically
+	// against the schedule. Nil in production.
+	scratchLockBackoff func(attempt int)
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose

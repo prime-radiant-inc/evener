@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
@@ -39,7 +40,7 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	if !ok {
 		return nil
 	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
+	manifest, err := sandbox.ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		return err
 	}
@@ -48,16 +49,27 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	// must not be renamed to this consumer or republished under another root. If
 	// it belongs to this owner's manifest, register only the consumer's role.
 	if existing, err := env.ScratchRetentionBinding(); err == nil && existing.BindingID != "" {
-		stored, ok := findScratchBinding(manifest, existing.BindingID)
-		if !ok {
+		if _, ok := findScratchBinding(manifest, existing.BindingID); !ok {
 			return nil
 		}
-		consumer := scratchConsumerPreservingRoles(manifest, sessionID, stored.BindingID)
 		return sandbox.RetryScratchLockContention(func() error {
 			if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
 				hook()
 			}
-			return sandbox.UpsertScratchBinding(owner, stored, consumer)
+			// Recompute both rows from the manifest as it stands NOW: a
+			// concurrent writer that committed while a refused attempt
+			// waited on the lock — a role update, a slot move on the same
+			// binding — must not be overwritten by this pass's stale
+			// snapshot when its retry replays the upsert.
+			fresh, err := sandbox.LoadScratchRetention(owner)
+			if err != nil {
+				return err
+			}
+			freshBinding, ok := findScratchBinding(fresh, existing.BindingID)
+			if !ok {
+				return nil
+			}
+			return sandbox.UpsertScratchBinding(owner, freshBinding, scratchConsumerPreservingRoles(fresh, sessionID, freshBinding.BindingID))
 		})
 	}
 	bindingID, err := identifier.NewSessionID()
@@ -162,6 +174,7 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 	// kinds to move intact across a stale-revision retry instead of letting the
 	// delete shrink the set the eventual write copies.
 	moved := maps.Clone(sourceBinding.Slots)
+	swapLockRefusals := 0
 	for range 5 {
 		manifest, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
@@ -213,6 +226,15 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 		// race (round 8).
 		if errors.Is(err, sandbox.ErrScratchRetentionStaleRevision) ||
 			errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+			// A lock refusal is transient — the holder is a mortal
+			// in-process writer — while a stale revision re-derives
+			// immediately. Only the refusal waits out the hold, or one
+			// fsync-scale writer consumes the whole shared bound and turns
+			// a transient race into a failed worktree move.
+			if errors.Is(err, sandbox.ErrScratchRetentionLockHeld) {
+				s.sleepScratchLockBackoff(swapLockRefusals)
+				swapLockRefusals++
+			}
 			continue
 		}
 		return err
@@ -329,37 +351,49 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 	if err != nil {
 		return err
 	}
-	binding, ok := findScratchBinding(manifest, installed.BindingID)
-	if !ok {
+	if _, ok := findScratchBinding(manifest, installed.BindingID); !ok {
 		return nil
-	}
-	consumer := sandbox.ScratchConsumerBinding{SessionID: s.id, CurrentBindingID: binding.BindingID}
-	s.mu.Lock()
-	shared := s.parentSharedEnv
-	restore := s.worktreeRestoreEnv
-	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
-	s.mu.Unlock()
-	// Each role resolves its OWN environment's binding, which may differ from
-	// the published environment's binding (a shared or parked environment), so
-	// a Task 6 consumer can join every role to its exact binding.
-	if sharedEnv, ok := shared.(*execenv.LocalExecutionEnvironment); ok {
-		if id, ok := s.roleScratchBindingID(manifest, sharedEnv); ok {
-			consumer.ParentSharedBindingID = id
-		}
-	}
-	if id, ok := s.roleScratchBindingID(manifest, restore); ok {
-		consumer.WorktreeRestoreBindingID = id
-	}
-	for _, candidate := range abandoned {
-		if id, ok := s.roleScratchBindingID(manifest, candidate); ok {
-			consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, id)
-		}
 	}
 	return sandbox.RetryScratchLockContention(func() error {
 		if hook := s.cfg.testOnly.scratchUpsertAttempt; hook != nil {
 			hook()
 		}
-		return sandbox.UpsertScratchBinding(owner, binding, consumer)
+		// Recompute the rows from the manifest as it stands NOW: a role
+		// update that committed while a refused attempt waited on the lock
+		// must not be overwritten by this pass's stale snapshot when its
+		// retry replays the upsert.
+		fresh, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			return err
+		}
+		freshBinding, ok := findScratchBinding(fresh, installed.BindingID)
+		if !ok {
+			return nil
+		}
+		consumer := sandbox.ScratchConsumerBinding{SessionID: s.id, CurrentBindingID: freshBinding.BindingID}
+		s.mu.Lock()
+		shared := s.parentSharedEnv
+		restore := s.worktreeRestoreEnv
+		abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
+		s.mu.Unlock()
+		// Each role resolves its OWN environment's binding, which may differ
+		// from the published environment's binding (a shared or parked
+		// environment), so a Task 6 consumer can join every role to its
+		// exact binding.
+		if sharedEnv, ok := shared.(*execenv.LocalExecutionEnvironment); ok {
+			if id, ok := s.roleScratchBindingID(fresh, sharedEnv); ok {
+				consumer.ParentSharedBindingID = id
+			}
+		}
+		if id, ok := s.roleScratchBindingID(fresh, restore); ok {
+			consumer.WorktreeRestoreBindingID = id
+		}
+		for _, candidate := range abandoned {
+			if id, ok := s.roleScratchBindingID(fresh, candidate); ok {
+				consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, id)
+			}
+		}
+		return sandbox.UpsertScratchBinding(owner, freshBinding, consumer)
 	})
 }
 
@@ -575,6 +609,7 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 	if !ok {
 		return nil
 	}
+	lockRefusals := 0
 	for range 5 {
 		if s.retainedScratchSealed.Load() {
 			// The terminal close is sealing the pool: nothing this pass
@@ -694,6 +729,12 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 			handles[canonicalScratchDir(ref.Dir)] = handle
 		}
 		if lockContention {
+			// A fail-fast lock refusal is transient — the holder is a mortal
+			// in-process writer holding the manifest for fsync-scale work —
+			// so the pass spaces its retry instead of burning the remaining
+			// bound against one hold and failing the delegate's send.
+			s.sleepScratchLockBackoff(lockRefusals)
+			lockRefusals++
 			continue
 		}
 		if hook := s.cfg.testOnly.scratchRefreshBeforeInstall; hook != nil {
@@ -740,6 +781,9 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 			}
 			for range 5 {
 				if s.retainedScratch.CompareAndSwap(nil, seeded) {
+					if hook := s.cfg.testOnly.scratchRefreshAfterSeedCAS; hook != nil {
+						hook()
+					}
 					if s.retainedScratchSealed.Load() {
 						// The terminal close sealed the pool between this
 						// pass's reacquire and its publish. Undo the publish —
@@ -749,7 +793,15 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 						// detach would be unreachable (every consumer is
 						// already torn down) and its handles would hold their
 						// pins against the collector for the daemon's life.
-						s.retainedScratch.CompareAndSwap(seeded, nil)
+						if !s.retainedScratch.CompareAndSwap(seeded, nil) {
+							// The terminal detach already swept this pass's
+							// published pool and Retained its handles — the
+							// published map aliases this pass's own. Only
+							// the sweep's winner owns the leases: releasing
+							// them here too would race the detach's Retain
+							// on the same unsynchronized objects.
+							handles = nil
+						}
 						return errScratchRefreshSealed
 					}
 					return nil
@@ -791,6 +843,10 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 			// before the next pass re-derives its own against the moved
 			// manifest or the current pool.
 			releaseRefreshHandles(handles)
+			if errors.Is(installErr, sandbox.ErrScratchRetentionLockHeld) {
+				s.sleepScratchLockBackoff(lockRefusals)
+				lockRefusals++
+			}
 			continue
 		default:
 			releaseRefreshHandles(handles)
@@ -853,6 +909,20 @@ func releaseRefreshHandles(handles map[string]*sandbox.SessionScratch) {
 	for _, handle := range handles {
 		_ = handle.Retain()
 	}
+}
+
+// sleepScratchLockBackoff spaces one lock-contention retry the way
+// sandbox.RetryScratchLockContention spaces its attempts — the same growing
+// schedule, one source — so the agent layer's re-derive loops wait out a
+// fsync-scale manifest hold instead of burning their retry bound against it.
+// The testOnly hook replaces the wall-clock sleep so tests sequence
+// deterministically against the schedule.
+func (s *Session) sleepScratchLockBackoff(attempt int) {
+	if hook := s.cfg.testOnly.scratchLockBackoff; hook != nil {
+		hook(attempt)
+		return
+	}
+	time.Sleep(sandbox.ScratchLockContentionDelay(attempt))
 }
 
 // installConsumerRefresh folds one consumer's refreshed manifest rows into
@@ -1495,6 +1565,18 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 		local.RetainSessionScratch()
 		return
 	}
+	if s.retainedScratch.Load() == nil {
+		// No durable retained state exists to protect: prepareRetainedScratch
+		// built no pool, so every reference this environment holds was
+		// published by this very restore — a fresh mint the failed
+		// construction pinned under its own new binding. Keeping it would
+		// leak a directory nothing will ever reacquire; disposing is exactly
+		// the fresh-mint contract. (When the pool is nil because the
+		// manifest is released or empty, the reference set below is empty and
+		// this is the outcome the loop would reach anyway.)
+		local.DisposeUnadoptedScratch()
+		return
+	}
 	referenced, ok := s.retainedScratchReferenceDirs()
 	if !ok {
 		local.RetainSessionScratch()
@@ -1631,6 +1713,9 @@ func (s *Session) detachRetainedScratch() {
 	pool.adopted = map[string]string{}
 	pool.mu.Unlock()
 	for _, handle := range handles {
+		if hook := s.cfg.testOnly.scratchDetachRetainHook; hook != nil {
+			hook()
+		}
 		_ = handle.Retain()
 	}
 }

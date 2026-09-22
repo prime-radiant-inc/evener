@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -672,5 +673,68 @@ func TestScratchRetentionOpenRefusesWhileManifestLocked(t *testing.T) {
 	}
 	if err := restored.Retain(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestScratchMutationsRefuseReleasedManifest proves the round-11 terminal-write
+// hole: once ReleaseScratchRetention commits the tombstone, every binding
+// mutation must refuse the manifest. A losing writer retrying through a
+// lock-contention window must not be able to resurrect bindings or add
+// references to an authority that already authorized collection — and the
+// bounded retry must treat the refusal as terminal, never as contention.
+func TestScratchMutationsRefuseReleasedManifest(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	original, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = original.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: original.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: original}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := original.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Released {
+		t.Fatal("fixture expected the Released tombstone")
+	}
+
+	fresh, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fresh.Cleanup() })
+	consumer := ScratchConsumerBinding{SessionID: owner.RootSessionID, CurrentBindingID: binding.BindingID}
+
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: fresh}, nil); !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("PinScratchBinding on a released manifest returned %v; the tombstone must close the manifest to writers", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("UpsertScratchBinding on a released manifest returned %v; the tombstone must close the manifest to writers", err)
+	}
+	if err := UpsertScratchBindingOnly(owner, binding); !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("UpsertScratchBindingOnly on a released manifest returned %v; the tombstone must close the manifest to writers", err)
+	}
+	if err := UpdateScratchBindings(owner, manifest.Revision, []ScratchBinding{binding}, nil); !errors.Is(err, ErrScratchRetentionReleased) {
+		t.Fatalf("UpdateScratchBindings on a released manifest returned %v; the tombstone must close the manifest to writers", err)
+	}
+
+	var retryCalls int
+	retryErr := RetryScratchLockContention(func() error {
+		retryCalls++
+		return ErrScratchRetentionReleased
+	})
+	if !errors.Is(retryErr, ErrScratchRetentionReleased) || retryCalls != 1 {
+		t.Fatalf("the bounded retry treated a released manifest as contention (%d calls, err %v); the refusal is terminal", retryCalls, retryErr)
 	}
 }

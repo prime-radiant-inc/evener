@@ -1083,16 +1083,6 @@ func TestScratchRefreshReprobesContendedSlotAfterRelease(t *testing.T) {
 }
 
 // TestContendedRetainedSlotKeepsBindingRowAcrossMint pins the round-10
-// continuity contract: an owning slot adoption skips because its lease is
-// contended in this process (the racing idle-release teardown holds it) must
-// not become permanently replaceable. The binding row on the manifest is the
-// only place a later refresh learns which directory to re-probe — its
-// stale-claim set is derived from the live rows — so a fresh fallback mint that
-// overwrote the row's slot would end the retry: every subsequent restore would
-// resume in the empty fallback, and the original directory's files would never
-// come back. The mint must stay pinned for protection, but as a bare reference:
-// a graph shape validateRetainedScratchGraph deliberately sanctions (a
-// TestContendedRetainedSlotKeepsBindingRowAcrossMint pins the round-10
 // continuity contract for the production cold-restore shape: resume provisions
 // the sandbox and EnableSandbox mints a fresh scratch BEFORE adoption, so a
 // contended retained slot is shadowed by a live allocation and the adoption
@@ -1277,5 +1267,150 @@ func TestContendedSlotWithoutLiveAllocationKeepsBindingRow(t *testing.T) {
 	}
 	if !pinned {
 		t.Fatalf("the first mint %q was left unpinned: a protected allocation must publish a reference", minted)
+	}
+}
+
+// TestScratchRefreshBacksOffLockContention pins the round-11 backoff gap: the
+// refresh's re-derive loop retried a fail-fast manifest-lock refusal
+// immediately, so five passes — microseconds each — could all lose to one
+// fsync-scale hold and fail the delegate's send. The refusal must route
+// through the same growing spacing sandbox.RetryScratchLockContention
+// applies, so a hold that ends between passes leaves the retry bound intact.
+func TestScratchRefreshBacksOffLockContention(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHBACKOFF1"
+	const bindingID = "b-refresh-backoff"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+	if s.retainedScratch.Load() != nil {
+		t.Fatal("fixture expected no published pool")
+	}
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	var backoffs atomic.Int32
+	s.cfg.testOnly.scratchLockBackoff = func(int) {
+		if backoffs.Add(1) == 1 {
+			// The first refused pass hands the lock over mid-backoff —
+			// exactly the position the schedule exists to wait a hold out
+			// from.
+			close(releaseLock)
+			<-lockReleased
+		}
+	}
+	// The holder verifiably owns the lock before the refresh's first open,
+	// so pass 1 deterministically loses it.
+	close(takeLock)
+	<-lockTaken
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("the refresh failed a transient manifest-lock hold instead of backing off: %v", err)
+	}
+	if backoffs.Load() < 1 {
+		t.Fatalf("the refresh retried lock contention %d times without any backoff spacing", backoffs.Load())
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the backed-off refresh never published its pool")
+	}
+}
+
+// TestScratchUpsertRetryKeepsConcurrentRoleUpdate pins the round-11 stale-row
+// replay: the upsert retry closures used to capture the consumer record from
+// the manifest as it stood before the first attempt, so a concurrent role
+// update that committed while a refused attempt waited on the lock was
+// overwritten by the retry's replay of the stale snapshot. The retry must
+// recompute the row from the manifest as it stands on each attempt.
+func TestScratchUpsertRetryKeepsConcurrentRoleUpdate(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("fixture binding installation: %v", err)
+	}
+	installed, err := env.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("read the installed binding: %v", err)
+	}
+	// The competing role value a concurrent writer commits mid-retry, on its
+	// own pinned binding so the row it names validates.
+	_, roleRow := mintRefreshScratchBinding(t, s, "b-role-competitor", sandbox.ScratchKindSandbox)
+
+	takeLock := make(chan struct{})
+	lockTaken := make(chan struct{})
+	releaseLock := make(chan struct{})
+	lockReleased := make(chan struct{})
+	go func() {
+		<-takeLock
+		_ = sandbox.WithScratchRetentionLock(owner, func() error {
+			close(lockTaken)
+			<-releaseLock
+			return nil
+		})
+		close(lockReleased)
+	}()
+	attempts := 0
+	s.cfg.testOnly.scratchUpsertAttempt = func() {
+		attempts++
+		switch attempts {
+		case 1:
+			close(takeLock)
+			<-lockTaken
+		case 2:
+			// The holder is gone; a concurrent writer commits a role update
+			// for this consumer before the retry's upsert replays.
+			close(releaseLock)
+			<-lockReleased
+			fresh, err := sandbox.LoadScratchRetention(owner)
+			if err != nil {
+				t.Fatalf("concurrent writer's load: %v", err)
+			}
+			b1, ok := findScratchBinding(fresh, installed.BindingID)
+			if !ok {
+				t.Fatalf("binding %q vanished mid-retry", installed.BindingID)
+			}
+			concurrent := sandbox.ScratchConsumerBinding{
+				SessionID:                s.id,
+				CurrentBindingID:         b1.BindingID,
+				WorktreeRestoreBindingID: roleRow.BindingID,
+			}
+			if err := sandbox.UpsertScratchBinding(owner, b1, concurrent); err != nil {
+				t.Fatalf("concurrent role update: %v", err)
+			}
+		}
+	}
+	// The second, idempotent installation takes the existing-binding branch —
+	// the retry path under test.
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("idempotent installation lost to the retry: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("the upsert took %d attempts, want exactly 2", attempts)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := scratchConsumerFor(t, manifest, s.id)
+	if row.WorktreeRestoreBindingID != roleRow.BindingID {
+		t.Fatalf("the retry's upsert overwrote a concurrent role update: worktree-restore role = %q, want the concurrently committed %q", row.WorktreeRestoreBindingID, roleRow.BindingID)
 	}
 }

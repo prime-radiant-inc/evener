@@ -312,7 +312,22 @@ func (s *Session) releaseTerminalScratchRetention() {
 	if hook := s.cfg.testOnly.scratchTerminalReleaseAfterDetach; hook != nil {
 		hook()
 	}
-	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+	// The manifest's update lock is fail-fast, so a concurrent in-process
+	// writer — a refresh pass's install hold, a mint's pin transaction — can
+	// refuse the tombstone with ErrScratchRetentionLockHeld. That refusal is
+	// transient by construction (holds last fsync-scale and every writer is
+	// mortal), while giving up after one attempt leaves the tombstone
+	// unwritten and the pins durable forever with every consumer already
+	// gone — so the release retries the refusal with the same bounded,
+	// growing backoff every other scratch writer uses before warning.
+	var releaseAttempt int
+	if err := sandbox.RetryScratchLockContention(func() error {
+		releaseAttempt++
+		if hook := s.cfg.testOnly.scratchTerminalReleaseAttempt; hook != nil {
+			hook(releaseAttempt)
+		}
+		return sandbox.ReleaseScratchRetention(owner)
+	}); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("scratch retention release failed: %v", err)})
 	}
 }

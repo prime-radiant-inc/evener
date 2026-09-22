@@ -49,6 +49,17 @@ var ErrScratchRetentionLeaseHeld = errors.New("sandbox: retained scratch lease i
 // already do. The lock is deliberately fail-fast — callers never block on it.
 var ErrScratchRetentionLockHeld = errors.New("sandbox: scratch retention manifest is locked by another writer")
 
+// ErrScratchRetentionReleased is returned when a binding mutation — a pin, an
+// upsert, a revision-checked update — targets a manifest whose terminal
+// tombstone has already committed. A released manifest is closed for writes:
+// a losing writer retrying through a lock-contention window must not be able
+// to resurrect bindings or add references after the terminal release, which
+// would leave live allocations pinned against collection on an authority that
+// already authorized their collection. Unlike the lock sentinel this error is
+// terminal — it must not be retried. ReleaseScratchRetention itself writes
+// the tombstone directly and remains the only writer after the fact.
+var ErrScratchRetentionReleased = errors.New("sandbox: scratch retention manifest is released")
+
 // ScratchOwner identifies the root that owns a retention manifest. It is the
 // only retention authority: every pin, reference and binding belongs to exactly
 // one owner.
@@ -402,6 +413,9 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 	if err != nil {
 		return err
 	}
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
 	if binding.Slots == nil {
 		binding.Slots = make(map[string]ScratchSlot, len(refs))
 	}
@@ -534,6 +548,9 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 	if err != nil {
 		return err
 	}
+	if manifest.Released {
+		return ErrScratchRetentionReleased
+	}
 	if manifest.Revision != expectedRevision {
 		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
@@ -569,6 +586,15 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 // writers re-read and rebase onto the fresh manifest under the lock. The
 // bound keeps a sustained refusal a real, reported failure: exhaustion
 // returns the refusal to the caller, never a silent success.
+// ScratchLockContentionDelay returns the growing spacing the bounded retry
+// applies between attempts at a fail-fast manifest-lock refusal: the first
+// retry waits 1ms and the spacing doubles to an 8ms cap, so a fsync-scale
+// hold is waited out rather than failed against. It is the single source for
+// every lock-contention spacing in the process; pass attempt counting from 0.
+func ScratchLockContentionDelay(attempt int) time.Duration {
+	return time.Duration(1<<attempt) * time.Millisecond
+}
+
 func RetryScratchLockContention(fn func() error) error {
 	var err error
 	for attempt := 0; ; attempt++ {
@@ -578,7 +604,7 @@ func RetryScratchLockContention(fn func() error) error {
 		if attempt >= 4 {
 			return err
 		}
-		time.Sleep(time.Duration(1<<attempt) * time.Millisecond)
+		time.Sleep(ScratchLockContentionDelay(attempt))
 	}
 }
 
@@ -607,6 +633,9 @@ func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers 
 	manifest, err := loadScratchRetention(owner)
 	if err != nil {
 		return err
+	}
+	if manifest.Released {
+		return ErrScratchRetentionReleased
 	}
 	if err := applyScratchBindingUpdate(&manifest, binding, consumers); err != nil {
 		return err
@@ -995,6 +1024,44 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// ResetScratchRetentionIfReleased reinitializes a manifest whose terminal
+// tombstone has committed and returns the manifest to publish against. A
+// terminal close removed every pin it could acquire and authorized ordinary
+// collection for the rest, so a restored session treats that durable state as
+// already gone: it mints fresh allocations rather than resuming the closed
+// session's scratch, and its first publication must be a legal write against a
+// manifest that no longer claims to be released — otherwise every write rides
+// a tombstone that authorizes collecting the session's live allocations. An
+// unreleased manifest is returned untouched.
+func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error) {
+	if err := owner.validate(); err != nil {
+		return ScratchManifest{}, err
+	}
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		return ScratchManifest{}, err
+	}
+	defer func() { _ = lock.Release() }()
+	manifest, err := loadScratchRetention(owner)
+	if err != nil {
+		return ScratchManifest{}, err
+	}
+	if !manifest.Released {
+		return manifest, nil
+	}
+	// Keep the revision advancing: a writer holding the pre-reset revision
+	// must still read as stale against the reinitialized manifest.
+	fresh := ScratchManifest{
+		Version:  manifest.Version,
+		Revision: manifest.Revision + 1,
+		Owner:    manifest.Owner,
+	}
+	if err := writeScratchRetention(owner, fresh); err != nil {
+		return ScratchManifest{}, err
+	}
+	return fresh, nil
 }
 
 // BorrowRetainedSessionScratch returns a lease-less handle to an already

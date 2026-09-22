@@ -1467,6 +1467,7 @@ func TestScratchSwapRetriesLockContention(t *testing.T) {
 		close(lockReleased)
 	}()
 	attempts := 0
+	backoffs := 0
 	root.cfg.testOnly.scratchSwapBeforeUpdate = func() {
 		attempts++
 		switch attempts {
@@ -1478,11 +1479,15 @@ func TestScratchSwapRetriesLockContention(t *testing.T) {
 			<-lockReleased
 		}
 	}
+	root.cfg.testOnly.scratchLockBackoff = func(int) { backoffs++ }
 	if err := root.stageScratchSwapBinding(target, source, root.id); err != nil {
 		t.Fatalf("swap lost to transient lock contention: %v", err)
 	}
 	if attempts != 2 {
 		t.Fatalf("the swap took %d attempts, want exactly 2: one refused by the holder, one retried after its release", attempts)
+	}
+	if backoffs != 1 {
+		t.Fatalf("the swap's lock-held retry waited through %d backoffs, want exactly 1: the refusal must space itself against the holder, not share the stale-revision bound", backoffs)
 	}
 	targetBinding, err := target.ScratchRetentionBinding()
 	if err != nil {
