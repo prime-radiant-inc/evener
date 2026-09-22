@@ -10816,6 +10816,88 @@ describe("ConversationStore", () => {
       expect(settled?.items).toEqual([]);
       expect(settled?.usage).toEqual({ inputTokens: 42, outputTokens: 4 });
     });
+
+    // Review round 26: the active-turn exemption cannot live only in
+    // publishModel — pagination, rehydration and the live capping paths all
+    // run the same bound, and an in-flight page can land right after a live
+    // steering injection whose item has no display row (or row applier) yet.
+    // The page response must not clear the active turn's live items.
+    it("a page response does not clear a live steering injection", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "u", text: "u row" }],
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A live turn starts and takes a steering injection: model-only —
+      // no row applier exists for the steering append yet, so no display
+      // row can back the item.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/steering/injected",
+        params: { threadId: "thread-1", ref: "ref-1", text: "go left", kind: "user", source: "user", startedAt: 1000 },
+      } as AnyNotification);
+      const live = store.getState().conversation!;
+      expect(live.turns.find((turn) => turn.id === "t1")?.items.map((item) => item.id)).toEqual([
+        "item_steering_live_t1_0",
+      ]);
+
+      // An unrelated page lands while t1 is still running: the page bound
+      // runs against the retained rows, and t1's steering item has none.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "un",
+              [
+                {
+                  id: "un-0",
+                  transcriptKey: "un",
+                  turnId: "un",
+                  type: "agentMessage",
+                  text: "unrelated",
+                  position: { entry: 91, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 9, outputTokens: 9 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      const after = store.getState().conversation!;
+      // The page itself merged and the bound ran: the page brought turn
+      // fragments but no rows (items: []), so un compacts by design.
+      expect(after.turns.find((turn) => turn.id === "un")?.items).toEqual([]);
+      // The active turn's live steering item survived the page bound.
+      expect(after.turns.find((turn) => turn.id === "t1")?.items.map((item) => item.id)).toEqual([
+        "item_steering_live_t1_0",
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

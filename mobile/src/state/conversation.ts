@@ -1292,6 +1292,7 @@ export function createConversationStore() {
     turns: TurnModel[],
     retainedItems: MobileTimelineItem[],
     itemFoldIdentities?: WeakMap<ItemModel, ReadonlySet<string>>,
+    activeTurnId?: string,
   ): TurnModel[] {
     const retainedIdentities = new Set(
       retainedItems.flatMap((item) => [...timelineIdentities(item)]),
@@ -1299,6 +1300,17 @@ export function createConversationStore() {
     let trimmed = false;
     const bounded = turns.map((turn) => {
       if (turn.items.length === 0) return turn;
+      // Review round 26: the active turn's payloads are the live working
+      // set, not retained history. The dual-write row appliers lag the
+      // model half — a steering append has no row applier yet — so the
+      // bound would trim live items before any display row exists to back
+      // them, and every caller runs it, not just publishModel: an
+      // in-flight page or rehydrate can land mid-stream. Skipping before
+      // the bookkeeping also keeps the live turn out of the compact sets.
+      // The exemption ends when the turn settles: a completion clears
+      // activeTurnId, and the next bound pass compacts it like any
+      // settled turn.
+      if (activeTurnId !== undefined && turn.id === activeTurnId) return turn;
       // Item identity is the package's own rule (itemIdentityMatches:
       // transcriptKey when both sides carry one, else id) approximated from
       // above: a retained row keeps the turn that could supply it alive
@@ -2506,7 +2518,12 @@ export function createConversationStore() {
             // fragments supplied, and only out-of-window payloads trim. The
             // final retained rows (rehydrateCapped) are the window; the pass
             // settles page turn ownership with the same bound.
-            mergedTurns = boundRetainedTurns(mergedTurns, rehydrateCapped, mergedItemFoldIdentities);
+            mergedTurns = boundRetainedTurns(
+              mergedTurns,
+              rehydrateCapped,
+              mergedItemFoldIdentities,
+              conversation.activeTurnId,
+            );
           }
           if (replacesInstance) {
             pageOwnedIds.clear();
@@ -2768,6 +2785,7 @@ export function createConversationStore() {
               strippedPageTurns,
               pageMerged,
               mergedItemFoldIdentities,
+              currentConv.activeTurnId,
             );
             set({
               // conversation.olderCursor is the wire truth (result.nextCursor),
@@ -3232,23 +3250,18 @@ export function createConversationStore() {
           // backing them — on the open() compatibility path no reread is
           // scheduled to clean up after it either (review round 25).
           if (conv === state.conversation) return;
-          const activeTurnId = conv.activeTurnId;
-          const bounded = boundRetainedTurns(conv.turns, conv.items, mergedItemFoldIdentities);
           set({
             conversation: {
               ...conv,
-              // The active turn's payloads are the live working set, not
-              // retained history — the dual-write row appliers lag the
-              // model half (a steering append has no row applier yet), so
-              // bounding it would trim live items before any row exists
-              // to back them. Every settled turn bounds (review round
-              // 25): a completion's full view can repopulate a compacted
-              // turn's entire payload with no row-applier pass to bound
-              // it, and on the open() compatibility path no reread is
-              // scheduled to clean up after it either.
-              turns: bounded.map((turn, index) =>
-                turn.id === activeTurnId ? (conv.turns[index] ?? turn) : turn,
-              ),
+              // Bound against the rows the publish keeps; the active turn
+              // is exempted inside the helper (review round 26) — its
+              // payloads are the live working set — while every settled
+              // turn bounds (review round 25): a completion's full view can
+              // repopulate a compacted turn's entire payload with no
+              // row-applier pass to bound it, and on the open()
+              // compatibility path no reread is scheduled to clean up
+              // after it either.
+              turns: boundRetainedTurns(conv.turns, conv.items, mergedItemFoldIdentities, conv.activeTurnId),
             },
           });
         };
@@ -3410,7 +3423,7 @@ export function createConversationStore() {
                 conversation: {
                   ...conv,
                   items: cappedItems,
-                  turns: boundRetainedTurns(conv.turns, cappedItems, mergedItemFoldIdentities),
+                  turns: boundRetainedTurns(conv.turns, cappedItems, mergedItemFoldIdentities, conv.activeTurnId),
                 },
               });
             } else {
@@ -3679,7 +3692,7 @@ export function createConversationStore() {
               conversation: {
                 ...conv,
                 items: warningCappedItems,
-                turns: boundRetainedTurns(conv.turns, warningCappedItems, mergedItemFoldIdentities),
+                turns: boundRetainedTurns(conv.turns, warningCappedItems, mergedItemFoldIdentities, conv.activeTurnId),
               },
             });
             break;
@@ -4056,7 +4069,7 @@ export function createConversationStore() {
                   conversation: {
                     ...conv,
                     items: reprojected,
-                    turns: boundRetainedTurns(conv.turns, reprojectedCapped, mergedItemFoldIdentities),
+                    turns: boundRetainedTurns(conv.turns, reprojectedCapped, mergedItemFoldIdentities, conv.activeTurnId),
                   },
                 });
                 break;
