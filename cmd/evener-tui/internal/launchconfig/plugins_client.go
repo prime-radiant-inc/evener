@@ -133,11 +133,11 @@ func CmdMarketplaceList(client *appwire.Client) tea.Cmd {
 }
 
 // CmdMarketplaceReconcileList requests a generation-tagged list read. The hub
-// model issues one to settle an applied-but-unconfirmed removal, and - once
-// any removal has landed, arming the boundary that rejects untagged reads -
-// for every later refetch too, so each response stays orderable against the
-// boundary. Ordinary untagged reads (CmdMarketplaceList) remain for callers
-// without a removal to order against, and for the launchconfig-level tests.
+// model tags EVERY list read from the first one: the panel open, every
+// notification refresh, and the reconnect path all funnel through
+// marketplaceListRead, so each response stays orderable against the removal
+// boundary. The untagged CmdMarketplaceList is retained only for the
+// launchconfig-level tests.
 func CmdMarketplaceReconcileList(client *appwire.Client, generation uint64) tea.Cmd {
 	return cmdMarketplaceList(client, generation)
 }
