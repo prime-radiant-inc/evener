@@ -74,7 +74,7 @@ func buildUserInputMessage(input string, images []ImageAttachment) llm.Message {
 		})
 	}
 	if note := persistedAttachmentNote(images); note != "" {
-		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: note})
+		parts = append(parts, llm.MachineryText(note))
 	}
 	return llm.Message{Role: llm.RoleUser, Content: parts}
 }
