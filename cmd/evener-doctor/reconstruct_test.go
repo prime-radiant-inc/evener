@@ -1046,9 +1046,15 @@ func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
 // reconstruction must not abort on it.
 func TestValidArchivedResultStatusCommandOutcomes(t *testing.T) {
 	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
-		for _, tool := range []string{"delegate", "delegate_send", "job_status"} {
-			if !validArchivedResultStatus(tool, status) {
-				t.Errorf("validArchivedResultStatus(%q, %q) = false, want true", tool, status)
+		if !validArchivedResultStatus("job_status", status) {
+			t.Errorf("validArchivedResultStatus(job_status, %q) = false, want true", status)
+		}
+		// The command-outcome statuses are shell-job statuses: a delegate's
+		// own lifecycle never carries one, so an archived delegate tool
+		// result with one is invalid, not reconstructed.
+		for _, tool := range []string{"delegate", "delegate_send"} {
+			if validArchivedResultStatus(tool, status) {
+				t.Errorf("validArchivedResultStatus(%q, %q) = true, want false", tool, status)
 			}
 		}
 	}

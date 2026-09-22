@@ -2,6 +2,7 @@
 import type { ItemModel } from "@evener/appwire-client";
 import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
+import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -106,7 +107,7 @@ registerToolRenderer({
     const parsedOutput = parseJSONObject(item.output);
     const jobId = jobControlTarget(item);
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    return status ? `Checked ${jobId} · ${status}` : `Checked ${jobId}`;
+    return status ? `Checked ${jobId} · ${jobStatusDisplay(status)}` : `Checked ${jobId}`;
   },
   body: DelegateStatusBody,
 });

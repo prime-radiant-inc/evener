@@ -86,6 +86,15 @@ test("job_status: summary reads current target/id and lifecycle status", () => {
   expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe("Checked dlg_42 · idle");
 });
 
+test("job_status: summary states the command-outcome statuses under the card's display words", () => {
+  const d = toolRendererFor("job_status");
+  const args = JSON.stringify({ target: "job_44" });
+  const output = JSON.stringify({ id: "job_44", type: "shell", status: "command_exited_nonzero" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe(
+    "Checked job_44 · Command failed",
+  );
+});
+
 test("job_status: falls back to the target arg with no status suffix when output isn't parseable yet", () => {
   const d = toolRendererFor("job_status");
   const args = JSON.stringify({ target: "job_43" });

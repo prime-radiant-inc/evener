@@ -8,7 +8,7 @@ session command timeout); `mode: "background"` starts it and returns a
 `job_id` immediately.
 (a) Foreground inline result with stdout+stderr+exit code, ephemeral — no
 durable record; (b) nonzero exit reported honestly as a normal tool result, not
-hidden (`failed` / `exit_nonzero`); (c) `mode: "background"` launch-and-return —
+hidden (`command_exited_nonzero` / `exit_nonzero`); (c) `mode: "background"` launch-and-return —
 `job_id` returned immediately, process keeps running, later output readable;
 (d) `max_runtime_ms` kills a runaway and finalizes `stopped` / `run_timeout`;
 (e) complete-or-handle + the output window (spec §0.6 + the
@@ -85,7 +85,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
   `timed_out` `false`, NO `job_id`, `output_status` `"all_retained"`, and
   `output` containing BOTH `INLINE_OUT_OK` and `INLINE_ERR_OK`.
 - Arm (b): step 2 is a normal tool result (not a tool error) with
-  `status` `"failed"`, `reason` `"exit_nonzero"`, `exit_code` `7`, and
+  `status` `"command_exited_nonzero"`, `reason` `"exit_nonzero"`, `exit_code` `7`, and
   `output` containing `FAIL_OUT_7` and `FAIL_ERR_7`. Falsification: the
   nonzero exit comes back as `completed`, the exit code is absent, or the
   call surfaces as a tool error.
@@ -108,8 +108,9 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
   `jobs.jsonl` has one `job_finished` for it with `status:"stopped"`,
   `reason:"run_timeout"`. Falsification: the job is still `running` past
   ~20s, the process survives, or the kill is reported as
-  `failed`/`cancelled` instead of `stopped`/`run_timeout` (a runtime-limit
-  kill is neither command failure nor parent cancellation).
+  `command_killed`/`failed`/`cancelled` instead of `stopped`/`run_timeout`
+  (a runtime-limit kill is neither command failure nor parent
+  cancellation).
 - Arm (e) complete-or-handle + output window:
   - Turn-3 step-1 (chatty command): the result contains a `job_id` (output
     exceeded the 8 KiB ride-whole budget), `status` `"completed"`,
