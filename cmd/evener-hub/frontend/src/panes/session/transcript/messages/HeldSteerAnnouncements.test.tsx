@@ -1,0 +1,314 @@
+// HeldSteerAnnouncements' own contract (steering-ghost spec §2/§5): the held
+// steer surface's ONE aria-live region announces exactly once each - a held
+// steer's appearance, its delivery (the delivered item replaces the ghost in
+// place, so the announcement is the swap's only audible trace), and each
+// non-delivery departure (rejected / canceled by Stop / delivery-uncertain /
+// failed) - and never anything on the held-timer's cadence: the component
+// reads no clock at all. Same harness as HeldSteerStack.test.tsx (seeds
+// through real storage + refresh + flush; hydrate for status/reflection).
+import type { ConnectionState, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { connectionStore } from "../../../../stores/connection";
+import type { MutationRecoveryKind } from "../../../../stores/mutationOutbox";
+import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
+import type { InputAttachment } from "../../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import type { PendingMethod } from "../../composer/queue/pendingReconcile";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../../composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "../../composer/queue/testing/flushPendingTurnsProjection";
+import { SessionNowContext } from "../../liveness";
+import { HeldSteerAnnouncements } from "./HeldSteerAnnouncements";
+
+// Two fixed clock instants for the timer-cadence test. SessionNowContext's
+// default is Date.now() frozen at module import; any fixed instant at or
+// before the seeded records' real createdAt makes formatElapsed's negative
+// skew clamp the count to 0s deterministically. The values themselves carry no
+// meaning - only their inequality does: the component must read neither.
+const NOW_A = 43_000;
+const NOW_B = 97_000;
+
+const CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  changeVisionModel: true,
+  queue: true,
+  goal: true,
+  sharedNotes: true,
+  rename: true,
+};
+
+function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: `thr_${ref}`,
+    sessionId: `sess_${ref}`,
+    preview: "test",
+    ephemeral: false,
+    modelProvider: "anthropic/claude-sonnet-4-5",
+    createdAt: 1000,
+    updatedAt: 1000,
+    status: { type: "active" },
+    cwd: "/tmp/project",
+    cliVersion: "1.0.0",
+    source: "evener",
+    evener: {
+      ref,
+      mutationStateAuthoritative: true,
+      capabilities: CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+    turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+    ...overrides,
+  };
+}
+
+function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
+  return { thread: testThread(ref, overrides) };
+}
+
+function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
+  const fake = new FakeClient(state);
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
+async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread> = {}): Promise<void> {
+  fake.on("thread/read", () => readResponse(ref, overrides));
+  await threadsStore.getState().ensureThread(ref);
+}
+
+// seedHeld writes a real durable outbox row through the same storage every
+// submission path uses (HeldSteerStack.test.tsx's own helper) and settles the
+// shared projection so the render below observes the seeded entry, not a
+// racing refresh. Enqueueing alone never reconciles the entry
+// (pendingTurnsStore's own contract), so the row stays in its seeded
+// submitting state. Returns the clientMutationId so tests can key wire
+// fixtures and departure writes to it.
+async function seedHeld(
+  method: PendingMethod,
+  text: string,
+  opts: { skillNames?: string[]; attachments?: InputAttachment[] } = {},
+): Promise<string> {
+  const wireMethod = {
+    send: "turn/start",
+    steer: "turn/steer",
+    queue: "turn/queue",
+    drain: "turn/drainAsSteer",
+    promote: "turn/promoteQueuedAsSteer",
+  }[method];
+  const skillNames = opts.skillNames ?? [];
+  const attachments = opts.attachments ?? [];
+  const input = [
+    ...(text ? [{ type: "text", text }] : []),
+    ...attachments.map((attachment) => ({
+      type: "image",
+      mediaType: attachment.mediaType,
+      data: attachment.data,
+      name: attachment.name,
+    })),
+    ...skillNames.map((name) => ({ type: "skill", name })),
+  ];
+  const storage = new MutationOutboxIndexedDB();
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: wireMethod,
+    payload: { ref: "ref_a", input },
+    attachments: attachments.map((attachment, index) => ({
+      presentationId: `presentation_${index}`,
+      marker: attachment.marker,
+      name: attachment.name ?? "attachment",
+      mediaType: attachment.mediaType,
+      blob: new Blob(),
+    })),
+    optimisticDisplay: { method: wireMethod, input },
+  });
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  return outbox.clientMutationId;
+}
+
+// The REAL MutationRecoveryKind that models an acceptance rejection, looked up
+// in the type's own home (stores/mutationOutbox re-exports the package's
+// records.ts): its doc comments name "rejected" as the daemon's refusal -
+// the recoveryReason a rejected row carries is "why the daemon refused, in
+// its own words" - while the other kind, "orphaned", is the one with "no
+// daemon message to carry". QueueStrip.test.tsx's seedRecovery seeds the same
+// kind through the same transferToRecovery write; never an invented string.
+const REJECTED_AT_ACCEPTANCE: MutationRecoveryKind = "rejected";
+
+beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
+  resetPendingTurnsStoreForTests();
+});
+
+afterEach(() => {
+  cleanup();
+  // Same hygiene as HeldSteerStack.test.tsx: every test here calls ensureThread
+  // directly (HeldSteerAnnouncements takes its ref as a prop), so cleanup()'s
+  // unmount leaves the ref refcounted, and every test writes real durable rows
+  // into this file's own globalThis.indexedDB instance, which the beforeEach
+  // only replaces BEFORE each test - wipe both for whichever file runs next.
+  resetThreadsStoreForTests();
+  globalThis.indexedDB = new IDBFactory();
+});
+
+// The first observation never announces (the reader who just opened the pane
+// scrolled to the bottom and sees the ghost), so every appearance test renders
+// BEFORE seeding: the seed's projection refresh is the arrival the region
+// announces.
+test("a held steer appearing is announced once", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  await seedHeld("steer", "hello");
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
+  );
+  // Not re-announced on a re-render (no new transition).
+  const before = screen.getByTestId("held-steer-announcements").textContent;
+  await act(async () => {});
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe(before);
+});
+
+test("delivery is announced once when the transcript reflects the id", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  const id = await seedHeld("steer", "hello");
+  render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  // The delivered shape: the daemon's own hydrate carries the turn item the
+  // steer became, keyed by the client mutation id (reconcilePendingEntries'
+  // reflectedMutationIds rule) - the same re-hydrate HeldSteerStack.test.tsx's
+  // disappearance test drives.
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "inProgress",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", clientMutationId: id }],
+        },
+      ],
+    }),
+  );
+  await threadsStore.getState().refreshThread("ref_a");
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message delivered."),
+  );
+  // Announced once, not re-announced on a re-render.
+  const before = screen.getByTestId("held-steer-announcements").textContent;
+  await act(async () => {});
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe(before);
+});
+
+// seedKind names the STORAGE WRITE, not a literal recovery-kind string: the
+// same real durable writes QueueStrip.test.tsx's seedRecovery / seedCanceled /
+// seedBlockedUnknown perform, driven here on the seeded steer's own id - the
+// record moves where the departure's real path moves it, and the projection
+// refresh publishes it.
+test.each([
+  ["rejected", "Steering message was rejected. It's kept with the queue.", "transferToRecovery"],
+  ["canceled by Stop", "Steering message was canceled by Stop. It's kept with the queue.", "cancelUnattempted"],
+  ["delivery-uncertain", "Steering message delivery is uncertain. It's kept with the queue.", "markUnknown"],
+] as const)("a %s departure is announced once", async (_label, expected, seedKind) => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  const id = await seedHeld("steer", "hello");
+  render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  const storage = new MutationOutboxIndexedDB();
+  if (seedKind === "transferToRecovery") {
+    await storage.transferToRecovery(id, REJECTED_AT_ACCEPTANCE, "turn is not active");
+  } else if (seedKind === "cancelUnattempted") {
+    await storage.cancelUnattempted("ref_a");
+  } else {
+    await storage.markUnknown(id, "blockedUnknown");
+  }
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() => expect(screen.getByTestId("held-steer-announcements").textContent).toBe(expected));
+  // Announced once, not re-announced on a re-render.
+  const before = screen.getByTestId("held-steer-announcements").textContent;
+  await act(async () => {});
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe(before);
+});
+
+test("a failed-delivery vanish (record gone, nothing holds the id) is announced once", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  await seedHeld("steer", "hello");
+  render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  // The post-settle vanish shape: the durable record is gone and no other
+  // projection holds the id. A fresh empty IndexedDB snapshot reproduces it
+  // mechanically. The mutation runtime singleton binds its IndexedDB factory
+  // at mint time (stores/threads.ts getMutationRuntime), so the fresh snapshot
+  // needs the runtime re-minted against the new factory - the same rebind this
+  // file's beforeEach performs for every test.
+  globalThis.indexedDB = new IDBFactory();
+  resetThreadsStoreForTests();
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message failed to deliver."),
+  );
+  // Announced once, not re-announced on a re-render.
+  const before = screen.getByTestId("held-steer-announcements").textContent;
+  await act(async () => {});
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe(before);
+});
+
+test("the region stays silent on the timer's cadence", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  // Render BEFORE seeding: the first observation baselines silently, so the
+  // seed's arrival is the one transition the region announces - and the only
+  // text a clock-only re-render must leave untouched.
+  const view = render(
+    <SessionNowContext.Provider value={NOW_A}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  await seedHeld("steer", "hello");
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held."),
+  );
+  // The clock advances under a mounted region (Session's own 3s
+  // SessionNowContext tick): the component never reads it, so the
+  // announcement is neither changed nor re-announced.
+  view.rerender(
+    <SessionNowContext.Provider value={NOW_B}>
+      <HeldSteerAnnouncements ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  expect(screen.getByTestId("held-steer-announcements").textContent).toBe("Steering message held.");
+});

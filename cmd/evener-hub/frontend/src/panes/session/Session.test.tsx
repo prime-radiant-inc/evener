@@ -2451,6 +2451,37 @@ test("held steering renders only on a live surface: a notLoaded session shows no
   expect(document.querySelector("[data-row-id='live-edge']")).toBeNull();
 });
 
+// The held-steer announcements region follows the ask dock's one mounting rule
+// (the pending-ask test above pins the same for its own region): the ghost
+// stack itself is a virtualized trailing row - a scroll-away unmounts it - so
+// its ONE aria-live region must live OUTSIDE the virtual list, or every
+// scroll remount would re-announce unchanged text (the AskDockAnnouncements
+// pattern; steering-ghost spec §2).
+test("the held-steer announcements region lives outside the virtual list", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await seedPendingSteer("ref_a");
+  });
+  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+
+  // The ghost stack itself IS inside the virtual list - it is the live-edge
+  // trailing row, scrolling away with the content...
+  const list = screen.getByTestId("transcript-virtual-list");
+  expect(list.contains(screen.getByTestId("held-steer-stack"))).toBe(true);
+
+  // ...while its one aria-live region stays OUTSIDE the list, so a
+  // virtualized remount of the row never re-announces unchanged text.
+  const announcements = screen.getByTestId("held-steer-announcements");
+  expect(list.contains(announcements)).toBe(false);
+});
+
 test("explains that an incompatible daemon needs an explicit restart", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));

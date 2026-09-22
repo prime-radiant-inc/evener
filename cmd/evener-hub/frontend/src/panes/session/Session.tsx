@@ -53,6 +53,7 @@ import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { useTranscriptScrollKeys } from "./transcript/flow/useTranscriptScrollKeys";
+import { HeldSteerAnnouncements } from "./transcript/messages/HeldSteerAnnouncements";
 import { HeldSteerStack, heldSteerEntries, useHeldSteerEpoch } from "./transcript/messages/HeldSteerStack";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
@@ -536,6 +537,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
           re-announce on every scroll-away/scroll-back remount. This
           component announces only real pending/count transitions. */}
       <AskDockAnnouncements ref={ref} />
+      {/* The held-steer ghosts' ONE live region, same rule as the ask
+          dock's: outside the virtual list, announcing only real
+          appearance/delivery/departure transitions. */}
+      <HeldSteerAnnouncements ref={ref} />
     </div>
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
