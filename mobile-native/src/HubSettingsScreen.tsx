@@ -186,8 +186,11 @@ function HubSettings({
 	// ready. The overview store keeps the last successful load through a
 	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
 	// data stays usable meanwhile; this is the recovery read: one refresh and
-	// one upgrade reconcile per transition back to ready.
-	const refreshedAtReady = useRef(false);
+	// one upgrade reconcile per transition back to ready. The seed counts a
+	// mount that is already ready as refreshed: the focus read above is the
+	// read it owes, and a ready "transition" that never happened must not
+	// fire a second refresh and reconcile on top of it.
+	const refreshedAtReady = useRef(connectionState === "ready");
 	useEffect(() => {
 		if (connectionState !== "ready") {
 			refreshedAtReady.current = false;
