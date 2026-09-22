@@ -21,8 +21,10 @@ export interface ParsedNotification {
   type: "delegate" | "job" | "watch" | "watch-send" | "observer-callback";
   title: string;
   tone: NotificationTone;
-  // The head line's label: intent (preferred) or description; a failure head
-  // shows the intent alone.
+  // The head line's label, assembled by notificationSecondary below:
+  // intent (preferred) or description, then job type; warning heads may
+  // append the exit code and reason, and an error head shows the intent
+  // alone.
   secondary: string;
   jobId?: string;
   jobType?: string;
@@ -108,7 +110,8 @@ function analyzeJobNotification(
 
   let disposition: JobDisposition = "unknown";
   if (
-    status === "failed" ||
+    // status.includes("fail") covers failed and every *_failed machinery
+    // reason; the command-outcome statuses carry no "fail" substring.
     status === "command_exited_nonzero" ||
     status === "command_killed" ||
     status === "error" ||
@@ -432,16 +435,17 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
 // statuses — the job ran the command fine; the COMMAND is what failed), and
 // "Job failed" is reserved for the job system's own failures. Pre-split
 // blocks (status="failed" carrying a command-outcome reason) fall back on
-// the reason so durable history renders under the same words; the reason is
-// producer-escaped (escapeNotificationText), so it is decoded before
-// matching — a reason containing & < > must match decoded.
+// the reason so durable history renders under the same words. The compared
+// literals contain none of the four characters escapeNotificationText
+// escapes, so the raw attribute value compares directly — no entity a
+// producer could emit decodes into a literal.
 function terminalJobTitle(status: string, reason: string): string {
   if (status === "command_exited_nonzero") return "Command failed";
   if (status === "command_killed") return "Command killed";
   if (status === "failed") {
-    const decodedReason = decodeNotificationEntities(reason).trim();
-    if (decodedReason === "exit_nonzero") return "Command failed";
-    if (decodedReason.startsWith("killed_by_signal")) return "Command killed";
+    const trimmedReason = reason.trim();
+    if (trimmedReason === "exit_nonzero") return "Command failed";
+    if (trimmedReason.startsWith("killed_by_signal")) return "Command killed";
   }
   return `Job ${status}`;
 }

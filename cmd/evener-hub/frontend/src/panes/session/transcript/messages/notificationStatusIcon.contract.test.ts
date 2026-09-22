@@ -42,18 +42,20 @@ test("statusIcon restates no seat geometry of its own", () => {
   expect(statusIconOwn).toBe("");
 });
 
-// The failure tone's seat variant: the same shared rail geometry (composed,
-// not copied), at FULL strength - the red cross is the card's one attention
-// signal now that the error chip is gone, so the seat's ambient 50% opacity
-// is the one declaration it overrides. The colour itself comes from the
-// FailureGlyph widget's own stylesheet (the token allowlist's sanctioned
-// --danger home); this card stylesheet never names a hue.
+// The failure tone's seat variant: the sibling .statusIcon seat at FULL
+// strength - the red cross is the card's one attention signal now that the
+// error chip is gone, so the seat's ambient 50% opacity is the one
+// declaration it overrides. It composes the sibling .statusIcon rather than
+// restating the shared seat pair, so the two seats cannot drift apart; the
+// shared rail geometry itself is pinned by the .statusIcon tests above. The
+// colour comes from the FailureGlyph widget's own stylesheet (the token
+// allowlist's sanctioned --danger home); this card stylesheet never names
+// a hue.
 const statusIconErrorRule = uncommented.match(/\.statusIconError\s*\{([^}]*)\}/)?.[1] ?? "";
 const statusIconErrorOwn = statusIconErrorRule.replace(/composes:[^;]+;/g, "").trim();
 
-test("the failure tone seats its glyph on the same shared rail seat", () => {
-  expect(statusIconErrorRule).toContain('composes: seat from "../../../../styles/railseat.module.css"');
-  expect(statusIconErrorRule).toContain('composes: gutterPull from "../../../../styles/railseat.module.css"');
+test("the failure tone seats its glyph by composing the statusIcon seat", () => {
+  expect(statusIconErrorRule).toContain("composes: statusIcon;");
 });
 
 test("the failure seat overrides only the ambient opacity, nothing else", () => {

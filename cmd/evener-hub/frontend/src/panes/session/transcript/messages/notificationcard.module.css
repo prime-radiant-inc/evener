@@ -42,16 +42,15 @@
   composes: gutterPull from "../../../../styles/railseat.module.css";
 }
 
-/* The failure tone's seat variant: the same shared rail geometry at FULL
+/* The failure tone's seat variant: the sibling .statusIcon seat at FULL
  * strength. The red cross is the card's one attention signal now that the
  * error Chip is gone, so the seat's ambient 50% recede is the one declaration
  * it overrides - the same strength decision as ToolRow's inline
  * FailureGlyph. Colour itself comes from the FailureGlyph widget's
- * stylesheet, never named here. */
+ * stylesheet, never named here. Composing the sibling (not restating its
+ * composed pair) keeps the two seats from ever drifting apart. */
 .statusIconError {
-  composes: seat from "../../../../styles/railseat.module.css";
-  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
-  composes: gutterPull from "../../../../styles/railseat.module.css";
+  composes: statusIcon;
   opacity: 1;
 }
 

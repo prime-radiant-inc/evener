@@ -137,54 +137,61 @@ Job job_f failed.
 // "Job failed" is reserved for the job system's own failures, and
 // pre-split blocks (status="failed" with a command-outcome reason) fall
 // back on the reason so history renders under the same words.
-test("command_exited_nonzero titles as Command failed with error tone", () => {
-  const block = `<job-notification job_id="job_c" event="command_exited_nonzero" job_type="shell" intent="Running the mid-turn kill reproduction." status="command_exited_nonzero" reason="exit_nonzero" exit_code="1">
+const titleCases: Array<{
+  name: string;
+  block: string;
+  wantTitle: string;
+  wantSecondary?: string;
+  wantExitCode?: number;
+}> = [
+  {
+    name: "command_exited_nonzero titles as Command failed with error tone",
+    block: `<job-notification job_id="job_c" event="command_exited_nonzero" job_type="shell" intent="Running the mid-turn kill reproduction." status="command_exited_nonzero" reason="exit_nonzero" exit_code="1">
 Job job_c command_exited_nonzero.
-</job-notification>`;
-  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.title).toBe("Command failed");
-  expect(n.tone).toBe("error");
-  expect(n.secondary).toBe("Running the mid-turn kill reproduction.");
-  expect(n.exitCode).toBe(1);
-});
-
-test("command_killed titles as Command killed with error tone", () => {
-  const block = `<job-notification job_id="job_c" event="command_killed" job_type="shell" status="command_killed" reason="killed_by_signal: SIGKILL" exit_code="-1">
+</job-notification>`,
+    wantTitle: "Command failed",
+    wantSecondary: "Running the mid-turn kill reproduction.",
+    wantExitCode: 1,
+  },
+  {
+    name: "command_killed titles as Command killed with error tone",
+    block: `<job-notification job_id="job_c" event="command_killed" job_type="shell" status="command_killed" reason="killed_by_signal: SIGKILL" exit_code="-1">
 Job job_c command_killed.
-</job-notification>`;
-  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.title).toBe("Command killed");
-  expect(n.tone).toBe("error");
-  expect(n.exitCode).toBe(-1);
-});
-
-test("a pre-split failed block with exit_nonzero titles as Command failed", () => {
-  const block = `<job-notification job_id="job_old" event="failed" job_type="shell" description="cd &quot;$(pwd)&quot; &amp;&amp; make check" status="failed" reason="exit_nonzero" exit_code="2">
+</job-notification>`,
+    wantTitle: "Command killed",
+    wantExitCode: -1,
+  },
+  {
+    // The old wire's description-as-command still never reaches the head.
+    name: "a pre-split failed block with exit_nonzero titles as Command failed",
+    block: `<job-notification job_id="job_old" event="failed" job_type="shell" description="cd &quot;$(pwd)&quot; &amp;&amp; make check" status="failed" reason="exit_nonzero" exit_code="2">
 Job job_old failed.
-</job-notification>`;
-  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.title).toBe("Command failed");
-  expect(n.tone).toBe("error");
-  // The old wire's description-as-command still never reaches the head.
-  expect(n.secondary).toBe("");
-});
-
-test("a pre-split failed block with killed_by_signal titles as Command killed", () => {
-  const block = `<job-notification job_id="job_old" event="failed" job_type="shell" status="failed" reason="killed_by_signal: SIGTERM" exit_code="-1">
+</job-notification>`,
+    wantTitle: "Command failed",
+    wantSecondary: "",
+  },
+  {
+    name: "a pre-split failed block with killed_by_signal titles as Command killed",
+    block: `<job-notification job_id="job_old" event="failed" job_type="shell" status="failed" reason="killed_by_signal: SIGTERM" exit_code="-1">
 Job job_old failed.
-</job-notification>`;
-  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.title).toBe("Command killed");
-  expect(n.tone).toBe("error");
-});
-
-test("machinery failures keep the Job failed title", () => {
-  const block = `<job-notification job_id="job_m" event="failed" job_type="shell" status="failed" reason="wait_failed">
+</job-notification>`,
+    wantTitle: "Command killed",
+  },
+  {
+    name: "machinery failures keep the Job failed title",
+    block: `<job-notification job_id="job_m" event="failed" job_type="shell" status="failed" reason="wait_failed">
 Job job_m failed.
-</job-notification>`;
+</job-notification>`,
+    wantTitle: "Job failed",
+  },
+];
+
+test.each(titleCases)("$name", ({ block, wantTitle, wantSecondary, wantExitCode }) => {
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.title).toBe("Job failed");
+  expect(n.title).toBe(wantTitle);
   expect(n.tone).toBe("error");
+  if (wantSecondary !== undefined) expect(n.secondary).toBe(wantSecondary);
+  if (wantExitCode !== undefined) expect(n.exitCode).toBe(wantExitCode);
 });
 
 test("a nonzero-exit completion keeps failure facts off the head line", () => {
