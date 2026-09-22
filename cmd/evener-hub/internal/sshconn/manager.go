@@ -1736,8 +1736,10 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// A deploy is only a decision when there is something to deploy. With no
 	// BuildSource/BuildBinary configured, attempting one fails at
 	// verifyBuildSource with ErrDeploy, which is non-terminal: the supervisor
-	// retried it forever and the cause was discarded. ensureOnce refuses the
-	// incompatible cases terminally instead.
+	// retried it forever and the cause was discarded. With nothing to deploy a
+	// version difference is left to the attach path, which accepts the host's own
+	// build; ensureOnce refuses terminally only the cases no deploy could fix — a
+	// protocol or launch-contract failure.
 	return (deployNeeded && deployPossible) || devUnverified
 }
 
@@ -2568,8 +2570,11 @@ func (m *Manager) canBuild() bool {
 // canDeploy reports whether the controller can install its own build on a host
 // at all: either the primary push path is available, or the installer fallback
 // can pin a published artifact for this controller's build channel. A dev/dirty
-// controller with no build source has neither, so it cannot resolve a version
-// difference and ensureOnce refuses it terminally.
+// controller with no build source has neither, so a version difference cannot be
+// converged here — under the attach rule that is not a refusal: the host keeps its
+// own build and attaches, and ensureOnce reports the difference. What such a
+// controller still refuses terminally is a protocol or launch-contract failure,
+// which no deploy could have fixed.
 //
 // This answers "is a deploy path configured", not "will the configured path
 // accept this build": a dirty controller with a build source reaches deploy,

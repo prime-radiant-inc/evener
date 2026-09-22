@@ -1003,13 +1003,18 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   - it reads the on-disk `launch-check` `version` (`facts.Version`) and the
     running hub's `/api/health` `version` (`running`, with `runningKnown == false`
     when nothing answered);
-  - it enters the deploy/restart branch when **either** differs from the
-    controller's `buildinfo.Version()` (`expected`), and deploys (§4) **only**
-    when the on-disk `facts.Version` differs — a restart left pending by an
-    earlier failed attempt already installed the build, so re-cross-compiling on
-    every reconnect would be a needless build;
+  - it enters the deploy/restart branch when the running hub's `version` differs
+    from the controller's `buildinfo.Version()` (`expected`) while the on-disk
+    build already matches — a stale process to replace — or when the on-disk
+    `facts.Version` differs **and a deploy path is configured** (§4) to install
+    the controller's build; the deploy replaces the binary and the restart brings
+    up what the deploy wrote, so re-cross-compiling on every reconnect for a
+    mismatch a deploy already resolved would be a needless build;
+  - an on-disk difference with **no** deploy path attaches instead: the protocol
+    decides compatibility (§5, "On-disk identity"), so the host keeps the build it
+    has and `ensureOnce` reports the difference as it attaches;
   - when nothing answers the probe (`runningKnown == false`) there is no running
-    hub to judge. An on-disk mismatch still drives its own deploy/restart. Half
+    hub to judge, and the deploy-path condition above is the whole test. Half
     of the remaining case — a host that is merely **not started** — is closed by
     the first-attach bootstrap below; a reconnect never silently restarts a
     process it cannot identify (the rule unchanged by this round).
@@ -1804,7 +1809,7 @@ with the remote hub and its daemons still running.
 15. A first attach to a host whose hub is not running starts the identified
     supervisor (or the detached ad hoc launch), waits for `/api/health` to report
     the build the started binary actually carries — the controller's when a deploy
-    converged the host, the host's own otherwise (`startExpectation`) — and attaches
+    converged the host, the host's own otherwise (`expectedServedBuild`) — and attaches
     only after it matches; an address a hub
     already owns starts nothing, and a hub that never becomes healthy attaches
     nothing and fails with `ErrRestart`. An **ambiguous** unit-definition match

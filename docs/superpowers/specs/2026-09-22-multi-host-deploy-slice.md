@@ -244,9 +244,10 @@ pins the channel source, the wait, the restart wiring, and the start wiring.
     checkout).
 - **Precedence** when more than one is available: `-deploy-binary`, then
   `-build-source`, then the installer fallback (D4/D5 permitting).
-- **When a deploy happens** is unchanged from `04:991-995`: on an **on-disk**
-  version difference, not on every reconnect, and a restart is re-verified
-  before attach rather than re-deployed.
+- **When a deploy happens** is unchanged from `04:1006-1016`: on an **on-disk**
+  version difference **and only when a deploy path is configured** — with none,
+  the host keeps its build and attaches — not on every reconnect, and a restart
+  is re-verified before attach rather than re-deployed.
 - **Identity.** The cross-compiled path's identity is true by construction. The
   operator-supplied path is verified on the host after the push, and the
   installer path keeps its existing post-install check; in every case a build
