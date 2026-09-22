@@ -19,9 +19,8 @@ type isolationLane struct {
 	delegateID string
 	path       string
 	// branch is the lane's git branch, resolved from its sidecar via
-	// Sidecar.BranchOrName(): the mnemonic name when the parent sent one, the
-	// delegate id otherwise. Only the branch-acting paths populate it — a lane
-	// built for the touch+unlock tail or a relock never touches a branch.
+	// Sidecar.BranchOrName(). Only the branch-acting paths populate it — a
+	// lane built for the touch+unlock tail or a relock never touches a branch.
 	branch string
 }
 

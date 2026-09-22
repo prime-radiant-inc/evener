@@ -1338,8 +1338,9 @@ func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (Wor
 // native worktree tools spec §9 lifecycle step 1: create the delegate's
 // isolation lane as a managed worktree named for the delegate id, branched
 // from the parent's active HEAD, locked with the delegate's evener:dlg: marker.
-// branch is the git branch cut for the lane: the parent-supplied mnemonic name
-// when one was sent, the delegate id otherwise (the delegate-lane branch-names
+// branch is the git branch cut for the lane, and this function owns its
+// empty-means-id default: callers pass the descriptor's raw value, and an empty
+// branch names the branch with the delegate id (the delegate-lane branch-names
 // design — the directory, sidecar, and all addressing stay id-keyed).
 // It does not touch the parent's own env at all — the caller (createDelegate)
 // roots the CHILD env at the returned path via prepareSubagentRun's
@@ -1349,6 +1350,9 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID, branch
 	active, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return "", "", "", "", identifier.Project{}, errors.New(`delegate isolation:"worktree" requires a local execution environment`)
+	}
+	if branch == "" {
+		branch = delegateID
 	}
 	lockReason := worktree.FormatDelegateMarker(delegateID, s.id)
 	res, err := s.worktreeCreateCore(ctx, active, delegateID, branch, "", worktree.EvDelegateCreate, lockReason, `delegate isolation:"worktree"`, func(sc *worktree.Sidecar) {
@@ -1370,8 +1374,7 @@ func (s *Session) createDelegateWorktree(ctx context.Context, delegateID, branch
 // is a `manage_worktree list`-visible annoyance an operator can clean up by
 // hand, never data loss, and failing the caller's already-failed spawn on a
 // cleanup error would only obscure the original error.
-// branch is the git branch the lane was cut on — the mnemonic name when the
-// parent sent one, the delegate id otherwise — so the rollback deletes the
+// branch is the git branch the lane was cut on, so the rollback deletes the
 // branch git actually holds while the sidecar stays keyed to the id.
 func (s *Session) rollbackFreshDelegateWorktree(delegateID, branch, lanePath string, project identifier.Project) {
 	if project.ID == "" || project.CanonicalPath == "" {
@@ -2320,9 +2323,9 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// finding) with little safety value, so the lane proceeds.
 	sc, scErr := worktree.ReadSidecar(metaDir, name)
 	hasSidecar := scErr == nil
-	// The lane's git branch: the recorded branch when the sidecar names one
-	// (a parent-named delegate lane), the name otherwise. Every branch-acting
-	// step below resolves through this, never the name by assumption.
+	// The lane's git branch; the sidecar names it for a parent-named delegate
+	// lane, the name otherwise. Every branch-acting step below uses this,
+	// never the name by assumption.
 	branch := name
 	if hasSidecar {
 		branch = sc.BranchOrName()
@@ -3132,7 +3135,8 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 			continue
 		}
 
-		if !branchExists(run, sc.BranchOrName()) {
+		branch := sc.BranchOrName()
+		if !branchExists(run, branch) {
 			if err := s.deleteWorktreeSidecar(metaDir, sc.Name); err != nil && !os.IsNotExist(err) {
 				if policy.abortOnError {
 					return nil, nil, fmt.Errorf("manage_worktree prune: deleting stale sidecar %q: %w", sc.Name, err)
@@ -3144,7 +3148,7 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 			continue
 		}
 
-		tipOut, tErr := run("rev-parse", "--verify", "refs/heads/"+sc.BranchOrName())
+		tipOut, tErr := run("rev-parse", "--verify", "refs/heads/"+branch)
 		if tErr != nil {
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: "rev-parse failed: " + tErr.Error()})
 			continue
@@ -3189,9 +3193,9 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 				continue
 			}
 		}
-		if _, err := run("branch", "-D", sc.BranchOrName()); err != nil {
+		if _, err := run("branch", "-D", branch); err != nil {
 			reason := "checked out"
-			if loc, ok := checkoutLocationOf(run, sc.BranchOrName()); ok {
+			if loc, ok := checkoutLocationOf(run, branch); ok {
 				reason = "checked out at " + loc
 			}
 			skipped = append(skipped, WorktreePruneEntry{Name: sc.Name, Reason: reason})

@@ -435,9 +435,6 @@ func (r *wtRepo) seedStableIsolationLane(t *testing.T) (delegateID, lanePath, ba
 func (r *wtRepo) seedStableIsolationLaneOpts(t *testing.T, branch string) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	if branch == "" {
-		branch = delegateID
-	}
 	lanePath, _, baseSHA, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, branch)
 	if err != nil {
 		t.Fatalf("create stable delegate worktree: %v", err)
@@ -455,7 +452,7 @@ func (r *wtRepo) seedStableIsolationLaneOpts(t *testing.T, branch string) (deleg
 		Isolation:        "worktree",
 		Resumable:        true,
 	}
-	if branch != delegateID {
+	if branch != "" {
 		descriptor.WorktreeBranch = branch
 	}
 	lease := delegateLease{delegateID: delegateID, generation: 1}

@@ -68,9 +68,8 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
-	// laneBranch is the git branch the lane was cut on: the descriptor's
-	// mnemonic name when the parent sent one, the delegate id otherwise.
-	// Rollback deletes this branch, never the id by assumption.
+	// laneBranch is the git branch the lane was cut on. Rollback deletes this
+	// branch, never the id by assumption.
 	laneBranch string
 	// laneAdmission is the spawn's close-fence admission, carried here so a
 	// rollback can rename it as it begins.
@@ -2005,14 +2004,7 @@ func stableDelegateSandboxSnapshot(policy *sandbox.SandboxPolicy) *delegatestore
 
 func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation *delegateStartReservation, project identifier.Project, requestedSandbox *sandbox.SandboxPolicy) (delegateIsolation, error) {
 	s := runtime.owner
-	// The lane's git branch: the descriptor's mnemonic name when the parent
-	// sent one, the delegate id otherwise. The directory stays keyed to the id
-	// either way; only the branch carries the name.
-	laneBranch := reservation.descriptor.WorktreeBranch
-	if laneBranch == "" {
-		laneBranch = reservation.delegateID
-	}
-	isolation := delegateIsolation{worktreeProject: project, laneBranch: laneBranch}
+	isolation := delegateIsolation{worktreeProject: project}
 	workingDir := reservation.worktreePath
 	var (
 		laneAdmission envWorkID
@@ -2051,10 +2043,14 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
 		}
 		defer s.endEnvWork(laneAdmission)
-		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID, isolation.laneBranch)
+		// createDelegateWorktree owns the empty-means-id default and returns
+		// the branch it actually cut, so the isolation record never resolves
+		// the rule itself.
+		path, laneBranch, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID, reservation.descriptor.WorktreeBranch)
 		if err != nil {
 			return isolation, err
 		}
+		isolation.laneBranch = laneBranch
 		isolation.worktreePath = path
 		isolation.worktreeProject = createdProject
 		if filepath.Clean(path) != filepath.Clean(workingDir) {

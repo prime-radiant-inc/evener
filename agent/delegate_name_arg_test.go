@@ -59,31 +59,16 @@ func TestDecodeDelegateArgs_Name(t *testing.T) {
 }
 
 // spawnIsolationLaneForTest drives the fresh-create plumbing up to and including
-// prepareIsolation: decode-level args go in, describe builds the durable
-// descriptor, ReserveCreate reserves the lane path keyed to the delegate id, and
-// prepareIsolation cuts the lane. The caller owns the returned isolation and must
-// run its cleanup.
+// prepareIsolation, reusing reserveWorktreeIsolatedDelegateArgs for the
+// select→ceiling→describe→ReserveCreate sequence exactly as production runs it.
+// The caller owns the returned isolation and must run its cleanup.
 func spawnIsolationLaneForTest(t *testing.T, r *wtRepo, args delegateArgs) (*delegateStartReservation, delegateIsolation) {
 	t.Helper()
-	runtime := delegateRuntime{owner: r.s}
-	ctx := context.Background()
-	selection, err := r.s.selectSubagentModel(ctx, args.Model, args.AgentType)
-	if err != nil {
-		t.Fatalf("selectSubagentModel: %v", err)
+	runtime, reservation, project := reserveWorktreeIsolatedDelegateArgs(t, r.s, args)
+	if reservation.descriptor.Isolation != "worktree" || reservation.descriptor.WorktreeBranch != args.Name {
+		t.Fatalf("descriptor isolation/branch = %q/%q, want worktree/%q", reservation.descriptor.Isolation, reservation.descriptor.WorktreeBranch, args.Name)
 	}
-	toolNameCeiling := r.s.stableDelegateEffectiveToolNameCeiling(selection, args, "")
-	descriptor, project, err := runtime.describe(ctx, args, args.Task, args.Isolation, nil, selection, toolNameCeiling)
-	if err != nil {
-		t.Fatalf("describe delegate: %v", err)
-	}
-	if descriptor.Isolation != "worktree" || descriptor.WorktreeBranch != args.Name {
-		t.Fatalf("descriptor isolation/branch = %q/%q, want worktree/%q", descriptor.Isolation, descriptor.WorktreeBranch, args.Name)
-	}
-	reservation, err := r.s.delegateController.ReserveCreate(rootDelegateActor(r.s.ID()), descriptor)
-	if err != nil {
-		t.Fatalf("ReserveCreate: %v", err)
-	}
-	isolation, err := runtime.prepareIsolation(ctx, reservation, project, nil)
+	isolation, err := runtime.prepareIsolation(context.Background(), reservation, project, nil)
 	if err != nil {
 		t.Fatalf("prepareIsolation: %v", err)
 	}

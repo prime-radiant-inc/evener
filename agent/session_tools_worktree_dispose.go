@@ -311,11 +311,12 @@ func (s *Session) disposeEvaluateHalfRemoved(run worktree.GitRunner, id string, 
 // remnants (the branch if its tip judges D0-model-collectible, the sidecar) and
 // reports already-disposed. It never refuses.
 func (s *Session) disposeAlreadyDisposedRemnants(run worktree.GitRunner, id, lanePath, metaDir string, sc worktree.Sidecar) WorktreeDisposeResult {
+	branch := sc.BranchOrName()
 	branchDeleted := false
-	if tipOut, tErr := run("rev-parse", "refs/heads/"+sc.BranchOrName()); tErr == nil {
+	if tipOut, tErr := run("rev-parse", "refs/heads/"+branch); tErr == nil {
 		tip := strings.TrimSpace(tipOut)
 		if disposable, _, dErr := disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget); dErr == nil && disposable {
-			if _, delErr := run("branch", "-D", sc.BranchOrName()); delErr == nil {
+			if _, delErr := run("branch", "-D", branch); delErr == nil {
 				branchDeleted = true
 			}
 		}
@@ -328,7 +329,7 @@ func (s *Session) disposeAlreadyDisposedRemnants(run worktree.GitRunner, id, lan
 	return WorktreeDisposeResult{
 		DelegateID:      id,
 		LanePath:        lanePath,
-		Branch:          sc.BranchOrName(),
+		Branch:          branch,
 		AlreadyDisposed: true,
 		Message:         msg,
 	}

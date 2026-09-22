@@ -59,9 +59,6 @@ func (r *wtRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath, ba
 func (r *wtRepo) seedForeignUnlockedLaneOnBranch(t *testing.T, branch string) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	if branch == "" {
-		branch = delegateID
-	}
 	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, branch)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)

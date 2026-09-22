@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -36,17 +35,9 @@ func halfRemoveLane(t *testing.T, r *wtRepo, lanePath string) {
 
 func assertCanaryLaneGone(t *testing.T, r *wtRepo, delegateID, lanePath string) {
 	t.Helper()
+	assertNoDelegateLane(t, r, delegateID, lanePath)
 	if r.branchExists(t, canaryLaneBranch) {
 		t.Error("the named branch survived")
-	}
-	if r.branchExists(t, delegateID) {
-		t.Error("a branch named after the delegate id exists")
-	}
-	if r.lanePresent(lanePath) {
-		t.Error("the lane directory survived")
-	}
-	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), delegateID); !os.IsNotExist(err) {
-		t.Errorf("the sidecar survived: %v", err)
 	}
 }
 
@@ -84,12 +75,7 @@ func TestDelegateLaneBranchCanary_DisposeHalfRemovedLane(t *testing.T) {
 	if !strings.Contains(res.Message, canaryLaneBranch) {
 		t.Errorf("message = %q, want it to name the deleted branch %q", res.Message, canaryLaneBranch)
 	}
-	if r.branchExists(t, canaryLaneBranch) {
-		t.Error("the named branch survived a half-removed dispose")
-	}
-	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); !os.IsNotExist(err) {
-		t.Errorf("the sidecar survived: %v", err)
-	}
+	assertCanaryLaneGone(t, r, id, lanePath)
 }
 
 // The already-disposed remnants arm (idempotent re-dispose after a crash
@@ -109,12 +95,7 @@ func TestDelegateLaneBranchCanary_DisposeAlreadyDisposedRemnants(t *testing.T) {
 	if !res.AlreadyDisposed {
 		t.Errorf("AlreadyDisposed = %v, want true", res.AlreadyDisposed)
 	}
-	if r.branchExists(t, canaryLaneBranch) {
-		t.Error("the named branch survived the already-disposed remnants cleanup")
-	}
-	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); !os.IsNotExist(err) {
-		t.Errorf("the sidecar survived: %v", err)
-	}
+	assertCanaryLaneGone(t, r, id, lanePath)
 }
 
 // Close-time disposal must delete the named branch of an unchanged lane.
@@ -189,10 +170,26 @@ func TestDelegateLaneBranchCanary_PruneSweep2CollectsNamedBranch(t *testing.T) {
 	if e["reason"] != "unchanged" {
 		t.Errorf("reason = %v, want unchanged (tip == base)", e["reason"])
 	}
-	if r.branchExists(t, canaryLaneBranch) {
-		t.Error("the named branch survived sweep-2 collection")
+	assertCanaryLaneGone(t, r, id, lanePath)
+}
+
+// remove steps 9-10 (delete_branch) must act on the named branch of a
+// record-less divergent lane — the arm the force-cascade canary never reaches,
+// because the cascade arm returns before step 9.
+func TestDelegateLaneBranchCanary_RemoveDeleteBranch(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedForeignUnlockedLaneOnBranch(t, canaryLaneBranch)
+
+	out, err := r.removeOp(t, map[string]any{"name": id, "delete_branch": true})
+	if err != nil {
+		t.Fatalf("remove delete_branch: %v", err)
 	}
-	if _, scErr := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); !os.IsNotExist(scErr) {
-		t.Errorf("the sidecar survived: %v", scErr)
+	if got := out["branch"]; got != canaryLaneBranch {
+		t.Errorf("remove result branch = %v, want %q", got, canaryLaneBranch)
 	}
+	if out["branch_deleted"] != true {
+		t.Errorf("branch_deleted = %v, want true (unchanged lane: tip == base)", out["branch_deleted"])
+	}
+	assertCanaryLaneGone(t, r, id, lanePath)
 }
