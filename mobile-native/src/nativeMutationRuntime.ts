@@ -24,8 +24,8 @@ import type {
 } from "../../mobile/src/state/conversationMutation";
 import {
 	MutationOutboxSQLite,
-	type MutationOutboxDatabase,
 } from "./mutationOutboxStorage";
+import type { SqliteSync } from "./sqliteSync";
 
 export interface NativeMutationRuntimeOptions {
 	createMutationId?: () => string;
@@ -114,7 +114,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		)?.[1].client;
 	}
 
-	constructor(database: MutationOutboxDatabase, options: NativeMutationRuntimeOptions = {}) {
+	constructor(database: SqliteSync, options: NativeMutationRuntimeOptions = {}) {
 		const identity = createClientIdentity(undefined, nativeRandomSource());
 		this.storage = new MutationOutboxSQLite(database, {
 			createMutationId: options.createMutationId,
@@ -279,7 +279,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 function createNativeMutationRuntime(): NativeMutationRuntime {
 	const database = openDatabaseSync("evener-mutations.db");
 	database.execSync("PRAGMA journal_mode = WAL");
-	return new NativeMutationRuntime(database as unknown as MutationOutboxDatabase, {
+	return new NativeMutationRuntime(database as unknown as SqliteSync, {
 		setInterval: (callback, milliseconds) =>
 			globalThis.setInterval(callback, milliseconds) as unknown as number,
 		clearInterval: (intervalId) =>

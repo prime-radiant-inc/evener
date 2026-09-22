@@ -1,9 +1,9 @@
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ThreadReadResponse } from "@evener/appwire-client";
-import type { MutationOutboxDatabase } from "./mutationOutboxStorage";
+import type { SqliteSync } from "./sqliteSync";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 import {
 	getNativeMutationRuntime,
 	nativeMutationTargetKey,
@@ -15,18 +15,12 @@ const expoSQLite = vi.hoisted(() => ({ openDatabaseSync: vi.fn() }));
 vi.mock("expo-sqlite", () => expoSQLite);
 vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
 
-let database: DatabaseSync | undefined;
+let database: SqliteDoubleDatabase | undefined;
 
-function openDatabase(): MutationOutboxDatabase {
-	database = new DatabaseSync(":memory:");
-	return {
-		execSync: (sql) => database?.exec(sql),
-		runSync: (sql, ...params) => database?.prepare(sql).run(...params) ?? { changes: 0 },
-		getFirstSync: <T>(sql: string, ...params: (string | number)[]) =>
-			(database?.prepare(sql).get(...params) as T | undefined) ?? null,
-		getAllSync: <T>(sql: string, ...params: (string | number)[]) =>
-			(database?.prepare(sql).all(...params) as T[]) ?? [],
-	};
+function openDatabase(): SqliteSync {
+	const opened = openSqliteSyncDouble();
+	database = opened.database;
+	return opened.port;
 }
 
 afterEach(() => {
