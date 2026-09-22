@@ -10609,6 +10609,94 @@ describe("ConversationStore", () => {
         expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "alias restored" }),
       ]);
     });
+
+    // Review round 24, the rank rule: a fresh leaf's status only reaches
+    // the merge when it WINS the rank chain — an inProgress fragment
+    // folding into a failed alias leaves the alias's failure in place —
+    // but the fresh-supplied field set counted any defined status, so the
+    // INHERITED failure rode fresh precedence over a later duplicate's
+    // completed status. Status counts as supplied only when a fresh
+    // leaf's own status is what the merge kept.
+    it("an inProgress fragment does not promote an inherited failed status", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [{ kind: "user" as const, id: "kk", text: "kk row" }],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                // An in-progress retained fragment: its rank cannot beat
+                // the failed alias it folds into, so the merge keeps the
+                // alias's failure.
+                markItemTextOmitted({
+                  id: "f9",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "",
+                  status: "inProgress",
+                  transcriptKey: "kk",
+                  position: { entry: 50, item: 0 },
+                }),
+              ],
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page reissues the fragment's keyless alias — carrying the
+      // FAILED status the in-progress fragment cannot displace —
+      // followed by a keyed sibling carrying the restored text and a
+      // COMPLETED status. The alias fold keeps the failure; the
+      // reconciliation must let the sibling's completed status stand.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pq",
+              [
+                {
+                  id: "f9",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "stale text",
+                  status: "failed",
+                  position: { entry: 50, item: 0 },
+                },
+                {
+                  id: "g2",
+                  turnId: "pq",
+                  type: "agentMessage",
+                  text: "restored text",
+                  status: "completed",
+                  transcriptKey: "kk",
+                  position: { entry: 51, item: 0 },
+                },
+              ],
+              { inputTokens: 70, outputTokens: 7 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const afterRound24 = store.getState().conversation!;
+      expect(afterRound24.turns.find((turn) => turn.id === "rt")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kk", text: "restored text", status: "completed" }),
+      ]);
+    });
   });
 
   describe("F11: no presentation disclosure state in conversation store", () => {

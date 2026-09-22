@@ -917,8 +917,11 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
 // none). Every other field counts by the merge's OWN rule for it (review
 // rounds 20 and 22): the nullish-fallback fields only when the leaf
 // carries a value (null falls through to the older side), the rank-merged
-// status only when defined, and the spread-merged fields by property
-// PRESENCE — a fresh leaf's own undefined clears the field, and the
+// status only when a fresh leaf's status is the value the merge kept
+// (review round 24: a lower-ranked fresh status loses to the older
+// alias's, and the inherited value must not claim precedence), and the
+// spread-merged fields by property PRESENCE — a fresh leaf's own
+// undefined clears the field, and the
 // clearing property must claim precedence or a later stale duplicate's
 // value survives the reconciliation. An identity-only leaf supplies
 // nothing at all — not even its identity (review round 19: a remembered
@@ -926,6 +929,12 @@ function reconcileItemDuplicates(items: ItemModel[], context?: ToolItemMergeCont
 // fields) — and an item the context never saw speaks only for itself.
 function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): ReadonlySet<string> {
   const supplied = new Set<string>();
+  // The rank rule: a fresh leaf's status only reaches the merge when it
+  // wins the rank chain — an inProgress fragment under a failed alias
+  // leaves the alias's failure in place — so the merged status counts as
+  // fresh-supplied only when a fresh leaf's own status is what the merge
+  // kept (review round 24).
+  let statusSupplied = false;
   const record = (leaf: ItemModel): void => {
     if (itemIsIdentityOnly(leaf)) return;
     for (const [key, value] of Object.entries(leaf)) {
@@ -939,9 +948,7 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
         continue;
       }
       if (key === "status") {
-        // The rank rule keeps the older side's status when the leaf's is
-        // undefined, so only a defined status counts.
-        if (value !== undefined) supplied.add(key);
+        if (value !== undefined && value === item.status) statusSupplied = true;
         continue;
       }
       // Every other field is spread-merged by property presence: the
@@ -954,9 +961,11 @@ function freshSuppliedFields(context: ToolItemMergeContext, item: ItemModel): Re
   const provenance = context.provenance.get(item);
   if (provenance === undefined) {
     record(item);
+    if (statusSupplied) supplied.add("status");
     return supplied;
   }
   for (const leaf of membershipLeaves(provenance.fresh)) record(leaf);
+  if (statusSupplied) supplied.add("status");
   return supplied;
 }
 
