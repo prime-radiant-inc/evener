@@ -30,7 +30,6 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPageWithFolds,
-  mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
   sessionControls,
@@ -2488,43 +2487,85 @@ export function createConversationStore() {
             const history = mergeTurnHistoryWithFolds(injectedFresh.turns, conversation.turns);
             mergedTurns = history.turns;
             // Review round 3: the wire-cursor gate must read only RETAINED
-            // transcript evidence. Injected skeletons fold fragments, but
-            // they are memory, not content — an unmatched skeleton must not
-            // claim older coverage or transcript overlap and let discarded
-            // history override the fresh wire cursor. When skeletons were
-            // injected, take the gate from the same merge WITHOUT them: the
-            // compact turns then contribute exactly what the retained
-            // state still holds (nothing, or a restored turn's real items).
-            // Review round 7: turns that are compact-ONLY (no items, only
-            // remembered skeletons) are excluded from that merge's inputs
-            // entirely. mergeTurnHistory counts an unmatched empty turn as
-            // older coverage (usage metadata is claimed even when items
-            // cannot be), so a compact turn that the real, injected merge
-            // folded into a fresh carrier under a different id would still
-            // claim coverage here — and with an unchanged real turn
-            // supplying transcriptOverlap, the stale cursor would override a
-            // fresh read that actually covers everything (sessionTokens then
-            // reports "loaded" for a complete read). A compact turn holds no
-            // transcript content by construction; its usage survives through
-            // the actual merge, not through the cursor gate.
-            // Review round 8: the exclusion holds regardless of whether a
-            // collision actually injected skeletons. Without injection the
-            // unmatched compact turn itself still entered the merge and
-            // claimed olderCoverage, and an unchanged real turn supplied
-            // transcriptOverlap — the stale cursor overrode a fresh read
-            // that actually covered everything. So the gate's older input
-            // always drops compact-only turns; only when that excludes
-            // nothing AND no skeletons were injected is the gate the merge
-            // already computed.
-            const coverageOlderTurns = currentConvForMerge.turns.filter(
-              (turn) => !(turn.items.length === 0 && compactedTurnItems.has(turn.id)),
+            // transcript evidence — memory must not let discarded history
+            // override the fresh wire cursor. Rounds 3/7/8 answered that
+            // with a skeleton-free re-merge that dropped compact-only turns
+            // from its inputs. RoboRev round 30: the re-merge lost the ALIAS
+            // relationships the real merge saw through the injected
+            // skeletons. A compact turn's item can return keyed under a NEW
+            // bare id (the hub reissues under a new wire id while the
+            // transcript key stands), and a complete reread can then re-serve
+            // the same content KEYLESS under the ORIGINAL id: the real merge
+            // folds the restored item into the reread through the remembered
+            // alias, but the re-merge matched nothing, claimed the restored
+            // turn as uncovered history, and — an unchanged turn supplying
+            // overlap — let the stale retained cursor override the complete
+            // reread's absent one. The gate now reads the ACTUAL merge's own
+            // fold membership, with memory still claiming nothing: injected
+            // skeletons are never retained content (round 3), compact-only
+            // turns stay excluded outright (rounds 7-8, whether or not a
+            // collision injected anything), an unmatched turn still claims —
+            // its usage is retained history even when its items cannot be —
+            // and a turn's real items count as consumed only when the output
+            // item they folded into also carries a real item from the fresh
+            // side: an item that folded into skeletons alone, or into a
+            // retained-only chain, is still history the fresh read lacks.
+            const coverageFreshItemRefs = new Set(
+              conversation.turns.flatMap((turn) => turn.items),
             );
-            const coverage =
-              injectedFresh.injected.length > 0 ||
-              coverageOlderTurns.length !== currentConvForMerge.turns.length
-                ? mergeTurnHistory(coverageOlderTurns, conversation.turns)
-                : history;
-            if (coverage.olderCoverage && coverage.transcriptOverlap) {
+            const coverageInjectedRefs = new Set(injectedFresh.injected);
+            const coverageFoldedTurnIds = new Set<string>();
+            for (const foldedIds of history.olderTurnFolds.values()) {
+              for (const foldedId of foldedIds) coverageFoldedTurnIds.add(foldedId);
+            }
+            // Which output item each retained real item folded into, and
+            // which output items carry a real source from either side. The
+            // merge's no-op path returns the fresh items by reference with
+            // no membership recorded (round 23): the retained side
+            // contributed nothing there, so the scan below reads no sources
+            // and the no-op branch settles the gate directly.
+            const coverageOutputCarriesFresh = new Set<ItemModel>();
+            const coverageOutputCarriesRetained = new Set<ItemModel>();
+            const coverageRetainedItemOutput = new Map<ItemModel, ItemModel>();
+            const coverageMergeNoOp = history.turns === conversation.turns;
+            if (!coverageMergeNoOp) {
+              for (const turn of history.turns) {
+                for (const item of turn.items) {
+                  for (const source of history.itemFoldSources(item)) {
+                    if (coverageFreshItemRefs.has(source)) {
+                      coverageOutputCarriesFresh.add(item);
+                    } else if (!coverageInjectedRefs.has(source)) {
+                      coverageRetainedItemOutput.set(source, item);
+                      if (source.type !== "warning") coverageOutputCarriesRetained.add(item);
+                    }
+                  }
+                }
+              }
+            }
+            const coverageTranscriptOverlap = [...coverageOutputCarriesFresh].some((item) =>
+              coverageOutputCarriesRetained.has(item),
+            );
+            let coverageOlder = false;
+            if (!coverageMergeNoOp) {
+              for (const turn of currentConvForMerge.turns) {
+                if (turn.items.length === 0 && compactedTurnItems.has(turn.id)) continue;
+                if (!coverageFoldedTurnIds.has(turn.id)) {
+                  coverageOlder = true;
+                  break;
+                }
+                if (turn.items.length === 0) continue;
+                if (
+                  turn.items.some((item) => {
+                    const output = coverageRetainedItemOutput.get(item);
+                    return output === undefined || !coverageOutputCarriesFresh.has(output);
+                  })
+                ) {
+                  coverageOlder = true;
+                  break;
+                }
+              }
+            }
+            if (coverageOlder && coverageTranscriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
             // Strip the injected skeletons the merge did not fold away —

@@ -5716,6 +5716,215 @@ describe("ConversationStore", () => {
       expect(sessionTokens(conv)).toEqual({ inputTokens: 501, outputTokens: 21, scope: "loaded" });
     });
 
+    // RoboRev round 30, coverage aliases: the cursor gate's skeleton-free
+    // re-merge lost the alias relationships the real merge saw through the
+    // injected skeleton. A compact turn's item returns keyed under a NEW
+    // bare id (the hub reissues under a new wire id while the transcript
+    // key stands), then a complete reread re-serves the same content
+    // KEYLESS under the ORIGINAL id. The real merge folds the restored
+    // item into the reread through the remembered alias, but the re-merge
+    // matched nothing — the restored turn read as uncovered history and,
+    // an unchanged turn supplying overlap, the stale retained cursor
+    // overrode the complete reread's absent one and sessionTokens reported
+    // "loaded" for a complete read.
+    it("a complete reread through a remembered alias keeps its absent cursor", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "user" as const, id: "PK", text: "pk row" },
+            ...Array.from({ length: 480 }, (_, j) => ({
+              kind: "user" as const,
+              id: `f-${j}`,
+              text: `f-${j}`,
+            })),
+          ],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn: compacts at its own load and remembers {a, k}.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "a",
+                  transcriptKey: "k",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ct")?.items).toEqual([]);
+
+      // The restore: a rehydrate re-serves the same content keyed under a
+      // NEW bare id, with the keyed row that keeps the restored turn
+      // in-window. The fresh side wins the fold, so the restored item
+      // carries b's identity while the compact turn's memory rides along.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "assistant" as const, id: "b", markdown: "restore", streaming: false, transcriptKey: "k" },
+            { kind: "user" as const, id: "PK", text: "pk row" },
+          ],
+          turns: [
+            {
+              id: "f1",
+              status: "completed",
+              items: [
+                {
+                  id: "b",
+                  transcriptKey: "k",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "ct")).toBe(false);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "f1")?.items).toEqual([
+        expect.objectContaining({ id: "b", transcriptKey: "k", text: "payload" }),
+      ]);
+
+      // The complete reread re-serves the same content KEYLESS under the
+      // ORIGINAL id, plus the unchanged real turn. The fresh read's own
+      // cursor is null — nothing older exists.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "user" as const, id: "a", text: "a row" },
+            { kind: "user" as const, id: "PK", text: "pk row" },
+          ],
+          turns: [
+            {
+              id: "f2",
+              status: "completed",
+              items: [
+                {
+                  id: "a",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // The restored turn folded into the reread through the remembered
+      // alias: its content is the reread's, not extra retained history.
+      expect(conv.turns.some((turn) => turn.id === "f1")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "f2")?.items).toEqual([
+        expect.objectContaining({ id: "a", text: "payload" }),
+      ]);
+      // The complete read's absent cursor stands: the restored turn never
+      // counted as uncovered history.
+      expect(conv.olderCursor).toBeUndefined();
+      expect(sessionTokens(conv)).toEqual({
+        inputTokens: 510,
+        outputTokens: 30,
+        scope: "session",
+      });
+    });
+
     // Review round 1, finding 1: the package's merges match fragments by
     // ITEM identity when turn ids differ. A compact survivor has no items to
     // match with, so when the wire re-issues its content under another turn
