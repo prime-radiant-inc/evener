@@ -180,6 +180,13 @@ type hubModel struct {
 	// post-removal state, so accepting it - however late it arrives - would
 	// resurrect the removed marketplace's row.
 	marketplaceListReadsOrdered bool
+	// marketplaceListReadIssued is the generation of the newest list read
+	// this model has issued. The reconciliation gate holds back failed
+	// reads older than it, so only the newest list read's own failure
+	// reaches the panel: an add or refresh issuance shares the ordering
+	// counter but never moves this marker, and can never outrank a read's
+	// failure - which is the panel's only way out of its loading state.
+	//
 	// marketplaceListFloor is the read generation at the moment the latest
 	// marketplace removal landed. Reads at or below it were issued before
 	// that landing and are stale by construction; reads above it were issued
@@ -191,10 +198,11 @@ type hubModel struct {
 	// read already superseded, so it is rejected however late it arrives -
 	// failures never advance it, so an outstanding reconciliation's success
 	// still settles while a newer request has merely been issued or failed.
-	marketplaceListFloor   uint64
-	marketplaceListApplied uint64
-	followupModal          *tuipick.TextInputModal
-	launchOverridesModal   *launchconfig.LaunchOverridesModal
+	marketplaceListReadIssued uint64
+	marketplaceListFloor      uint64
+	marketplaceListApplied    uint64
+	followupModal             *tuipick.TextInputModal
+	launchOverridesModal      *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress

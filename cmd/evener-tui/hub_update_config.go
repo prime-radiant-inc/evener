@@ -653,11 +653,13 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 		m.marketplaceRemovePending = ""
 		m.marketplaceReconcilePending = false
 	}
-	// While the fence is still standing, hold back failed reads older
-	// than the newest issued - the newest failure is the news - and let a
-	// successful read through to the panel: it has already settled the
-	// fence above.
-	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceReconcileGeneration {
+	// While the fence is still standing, hold back failed reads older than
+	// the newest LIST READ issued - the newest read's failure is the news,
+	// and it is the panel's only way out of its loading state - while an
+	// add or refresh issuance, which shares the ordering counter, never
+	// outranks it. A successful read reaches the panel: it has already
+	// settled the fence above.
+	if m.marketplaceReconcilePending && msg.ReconcileGeneration != m.marketplaceListReadIssued {
 		return m, nil
 	}
 	if msg.Err == nil {
@@ -684,6 +686,7 @@ func (m hubModel) handleMarketplaceListResult(msg launchconfig.MarketplaceListRe
 func (m *hubModel) marketplaceListRead() tea.Cmd {
 	if m.marketplaceListReadsOrdered {
 		m.marketplaceReconcileGeneration++
+		m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
 		return launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 	}
 	return launchconfig.CmdMarketplaceList(m.client)
@@ -709,6 +712,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				var replacement tea.Cmd
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
+					m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
 					replacement = launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 				}
 				if m.pluginsPanel != nil {
@@ -728,6 +732,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
+					m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
 					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 				}
 				return m, nil
@@ -743,6 +748,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 				m.marketplaceReconcilePending = true
 				if m.client != nil {
 					m.marketplaceReconcileGeneration++
+					m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
 					return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 				}
 				return m, nil
@@ -768,6 +774,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 			// was handled, and they can be newer than the response's own
 			// snapshot.
 			m.marketplaceReconcileGeneration++
+			m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
 			replacement := launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 			if m.pluginsPanel != nil {
 				updated, cmd := m.pluginsPanel.Update(launchconfig.MarketplaceListResultMsg{List: msg.List})
@@ -789,6 +796,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		// replacement read that lands the mutation's own effect.
 		if m.client != nil {
 			m.marketplaceReconcileGeneration++
+			m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
 			return m, launchconfig.CmdMarketplaceReconcileList(m.client, m.marketplaceReconcileGeneration)
 		}
 		return m, nil

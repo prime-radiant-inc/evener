@@ -871,6 +871,42 @@ func TestMarketplaceMutateResultFreshSnapshotSettlesPendingReconciliation(t *tes
 	}
 }
 
+func TestMarketplaceListResultNewestReadFailureReachesThePanel(t *testing.T) {
+	// During a pending reconciliation, /plugins was reopened (issuing the
+	// list read, generation 2) and an add was submitted after it (bumping
+	// the ordering counter to 3); both requests then fail. The fresh panel
+	// is still showing its loading state.
+	panel := launchconfig.NewPluginsPanel()
+	m := hubModel{
+		pluginsPanel:                   &panel,
+		marketplaceRemovePending:       "removed",
+		marketplaceReconcilePending:    true,
+		marketplaceReconcileGeneration: 3,
+		marketplaceListReadIssued:      2,
+		marketplaceListReadsOrdered:    true,
+		marketplaceListFloor:           1,
+	}
+
+	// The newest list read's failure must reach the panel and clear its
+	// loading state, however many mutations were issued after it: an add's
+	// issuance never outranks a list read's failure.
+	got, _ := m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
+		Err:                 errors.New("list read failed"),
+		ReconcileGeneration: 2,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "removed" || !after.marketplaceReconcilePending {
+		t.Fatalf("failed read settled the fence to %q/%v, want the fence standing", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	view := after.pluginsPanel.View()
+	if strings.Contains(view, "Loading marketplaces…") {
+		t.Fatal("the newest read's failure must clear the panel's loading state")
+	}
+	if !strings.Contains(view, "Error: list read failed") {
+		t.Fatalf("panel view = %q, want the read failure surfaced", view)
+	}
+}
+
 func TestMarketplaceMutateResultSuccessRefetchesPastTheAdvancingFloor(t *testing.T) {
 	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	removing := appwire.MarketplaceEntry{Name: "removing"}
