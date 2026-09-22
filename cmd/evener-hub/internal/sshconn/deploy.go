@@ -287,6 +287,19 @@ func declaresEvenerModule(dir string) bool {
 // attached (round thirteen).
 var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 
+// errDeployUnstamped marks a deploy (or restart onto a deployed build) that left
+// the host reporting a build other than the controller's. Unlike the dirty-tree
+// refusal above, the controller HAD a deploy path and used it; the freshly
+// re-read launch contract still disagrees, so the artifact that reached the host
+// was not stamped by this controller — the one case the pre-push check cannot
+// catch, an operator-supplied -deploy-binary built from a different tree that
+// targets the right platform but carries another build's identity. The refusal
+// is terminal rather than ErrDeploy: retrying re-pushes the same artifact, so the
+// supervisor would loop forever while the host was never attached (the same
+// mistake round thirteen records for the dirty-controller refusal). Attaching
+// instead would serve a build version auto-match exists to prevent.
+var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by this controller")
+
 // deploy installs a matching build on the host. The cross-compile + push path is
 // primary when a build source is configured; otherwise the installer fallback
 // runs on the host. It returns the resolved run target the manager must record as

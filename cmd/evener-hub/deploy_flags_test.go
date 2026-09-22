@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // TestParseHubOptionsRejectsMissingDeployBinary pins that a bad -deploy-binary
@@ -202,6 +204,35 @@ func TestRunMainWithoutDeployFlagsStarts(t *testing.T) {
 	var stderr bytes.Buffer
 	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
 		t.Fatalf("runMain with no deploy flags: %v, stderr=%s", err, stderr.String())
+	}
+}
+
+// TestRunMainPassesDeployHelpToTheSSHManager pins the one line nothing asserted:
+// main.go hands the hub's deploy help text to sshconn.Options. That text is what
+// makes the terminal version refusal actionable — without it the operator is told
+// to "set Options.BuildSource", a library-internal field they cannot act on — so
+// the wiring is the behavior, not an implementation detail. The manager is
+// captured through the deps seam and the Options it was handed are asserted, so
+// this fails if the hub stops passing the help text even though deployWiring
+// still produces it.
+func TestRunMainPassesDeployHelpToTheSSHManager(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var got sshconn.Options
+	deps.newSSHManager = func(reg *hostreg.Registry, opts sshconn.Options) *sshconn.Manager {
+		got = opts
+		return sshconn.New(reg, opts)
+	}
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if got.DeployHelp != hubDeployHelp {
+		t.Fatalf("sshconn.Options.DeployHelp = %q, want the hub's help text %q", got.DeployHelp, hubDeployHelp)
+	}
+	for _, want := range []string{"-deploy-binary", "-build-source"} {
+		if !strings.Contains(got.DeployHelp, want) {
+			t.Fatalf("the wired deploy help %q does not name %s", got.DeployHelp, want)
+		}
 	}
 }
 

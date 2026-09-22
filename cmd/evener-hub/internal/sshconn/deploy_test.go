@@ -1715,3 +1715,173 @@ func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 		}
 	})
 }
+
+// postDeployBuildRunner answers the whole ensure sequence for a linux host whose
+// evener is at /opt/evener/bin/evener and whose hub is NOT running: preflight
+// (whose launch-check reports oldsha), the deploy-target resolution, the push,
+// and the post-deploy launch-check, which reports postDeploy — the build the
+// artifact the push streamed really carries. The health probe fails before
+// anything is launched, so the host reads as "no hub present" and the deploy is a
+// fresh install rather than a restart; afterwards it answers postDeploy, the
+// version the launched binary reports.
+func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
+	t.Helper()
+	launchCalls, launches := 0, 0
+	return &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(fmt.Sprintf(`{"protocol":"evener-appwire-v5","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor: an ad hoc host
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte(noListenerMarker + "\n"), nil // nothing is listening
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			launches++
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			if launches == 0 {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(fmt.Sprintf(`{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`, postDeploy)), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+}
+
+// TestEnsurePostDeployBuildMismatchRefusesTerminally pins acceptance criterion 8:
+// a deploy whose freshly re-read launch contract still disagrees with the
+// controller is a failed verification and never an attach. The artifact path is
+// the one the pre-push check cannot cover — an operator-supplied binary that
+// targets the right platform but was built from another tree — so the only
+// evidence the controller has is the host's own launch-check after the write.
+// The refusal is terminal: retrying re-pushes the same artifact, so it cannot
+// converge. The matching case beside it pins that a deploy which does pin the
+// controller's build attaches exactly as before.
+func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	opts := Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	}
+
+	// The stopped-host shape: there is no hub to answer a health probe, so the
+	// deploy is a fresh install and the refusal must fire before the first-attach
+	// bootstrap starts anything.
+	t.Run("a stopped host whose installed artifact reports another build", func(t *testing.T) {
+		fr := postDeployBuildRunner(t, "othersha")
+		m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+		_, err := m.Ensure(context.Background(), "alpha")
+		requireUnstampedRefusal(t, err)
+		requireNoAttach(t, fr)
+		for _, argv := range fr.recordedRuns() {
+			if strings.Contains(strings.Join(argv, " "), "nohup") {
+				t.Fatalf("a hub was started on the mismatched build: %v", argv)
+			}
+		}
+	})
+
+	// The running-host shape, which is the one that attached outright before this
+	// gate existed: a live hub unit answers the restart's health probe with its own
+	// build, so the restart reads as successful while the binary the controller
+	// addressed reports another build. Without the gate the bridge starts and the
+	// host is served on a build the controller never stamped — and the next
+	// reconnect deploys again, so it re-deploys forever while attached.
+	t.Run("a running host left on a build the controller did not stamp", func(t *testing.T) {
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+		_, err := m.Ensure(context.Background(), "alpha")
+		requireUnstampedRefusal(t, err)
+		requireNoAttach(t, fr)
+	})
+
+	t.Run("a deployed build that matches still attaches", func(t *testing.T) {
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+		ch, err := m.Ensure(context.Background(), "alpha")
+		if err != nil {
+			t.Fatalf("Ensure: %v (a deploy whose fresh facts match the controller must still attach)", err)
+		}
+		if got := ch.Preflight().Version; got != "newsha" {
+			t.Fatalf("channel version = %q, want newsha (the deployed build)", got)
+		}
+		if starts := fr.recordedStarts(); len(starts) != 1 {
+			t.Fatalf("bridge Start calls = %d, want 1", len(starts))
+		}
+	})
+}
+
+// requireUnstampedRefusal asserts the terminal refusal a deploy that did not pin
+// the controller's build must produce: the sentinel, its terminality, and the
+// message naming both the build the host reports and the one it should carry.
+func requireUnstampedRefusal(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, errDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want errDeployUnstamped (a deploy that did not pin the controller's build must not attach)", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-pushes the same artifact)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("Ensure err = %v still wraps ErrDeploy, so a supervisor would retry the same refusal forever", err)
+	}
+	for _, want := range []string{`"othersha"`, `"newsha"`, "not built from this controller's tree"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// requireNoAttach asserts no bridge process was started for the host.
+func requireNoAttach(t *testing.T, fr *fakeRunner) {
+	t.Helper()
+	if starts := fr.recordedStarts(); len(starts) != 0 {
+		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a build the controller did not deploy)", len(starts))
+	}
+}

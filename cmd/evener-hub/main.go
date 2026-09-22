@@ -116,6 +116,11 @@ type mainDeps struct {
 	loadAuthToken   func(string) (string, error)
 	loadCredentials func(string) (*credentials.Store, error)
 	loadRegistry    hubcore.RegistryLoader
+	// newSSHManager builds the SSH connection manager. It is a seam so a test can
+	// capture the sshconn.Options the hub hands it — in particular DeployHelp,
+	// which is what makes the terminal version refusal name the hub's flags
+	// instead of sshconn's internal field name. nil uses sshconn.New.
+	newSSHManager func(*hostreg.Registry, sshconn.Options) *sshconn.Manager
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
 	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
@@ -442,7 +447,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	case opts.buildSource != "":
 		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -build-source %s\n", opts.buildSource)
 	}
-	sshManager := sshconn.New(hostRegistry, sshconn.Options{
+	newSSHManager := deps.newSSHManager
+	if newSSHManager == nil {
+		newSSHManager = sshconn.New
+	}
+	sshManager := newSSHManager(hostRegistry, sshconn.Options{
 		Logger:      func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
 		BuildBinary: deploy.buildBinary,
 		BuildSource: deploy.buildSource,

@@ -1585,11 +1585,27 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// violate version auto-match — the guarantee this component exists for — so
 	// refuse terminally rather than serve a build the controller did not ask for.
 	// It fires after the deploy/restart phase so a configured deploy still gets
-	// its chance (that case never reaches here with a mismatch: the re-probed
-	// facts carry the deployed build's version).
+	// its chance; a mismatch after one did run is refused by the gate below, which
+	// judges the same fresh facts instead of assuming the deployed build's version
+	// is the controller's.
 	if !m.canDeploy() && facts.LaunchCheckKnown && facts.Version != expected {
 		return nil, fmt.Errorf("%w: host %q runs version %q, want %q, and no build source is configured to deploy the controller's build; %s",
 			ErrVersionMismatch, host.Name, facts.Version, expected, m.deployHelp())
+	}
+	// The same judgement must hold when a deploy path WAS configured and used.
+	// The refreshed facts above are the only evidence the controller has of the
+	// build the host now holds, and the pre-push check cannot cover an
+	// operator-supplied artifact built from another tree: it targets the right
+	// platform and carries a foreign identity, so the push succeeds and this
+	// launch-check is what disagrees. Attaching anyway would serve a host on a
+	// build the controller did not stamp — the version auto-match guarantee this
+	// component exists for — and the next attempt would deploy again, so the host
+	// would re-deploy forever while attached. Terminal rather than ErrDeploy for
+	// the same reason errControllerDirty is: retrying re-pushes the same artifact,
+	// so it can never converge.
+	if (deploy || restart) && facts.LaunchCheckKnown && facts.Version != expected {
+		return nil, fmt.Errorf("%w: host %q still reports version %q after this controller deployed its build, want %q; the deployed artifact was not built from this controller's tree, so the host cannot be pinned to the controller's build — supply an artifact built from this controller's tree, or a build source",
+			errDeployUnstamped, host.Name, facts.Version, expected)
 	}
 	// First attach to a stopped host must be able to start the hub. The probe
 	// above only restarts a hub that is already answering, and the bridge is a
@@ -1793,7 +1809,8 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	// *running* hub against expected, but this launch-check describes the on-disk
 	// binary, which can still differ (a replaced or partially installed file);
 	// overwriting it with expected would make the channel claim a match it did
-	// not observe. A difference here is what makes the next Ensure redeploy.
+	// not observe. A difference here is what ensureOnce's post-deploy gate
+	// refuses on: a deploy that leaves it cannot be retried into converging.
 	facts.Version = refreshed.Version
 	return facts, nil
 }
@@ -2232,6 +2249,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, errExecutableMissing),
 		errors.Is(err, errControllerDirty),
 		errors.Is(err, errRunTargetUnservable),
+		errors.Is(err, errDeployUnstamped),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -2256,6 +2274,15 @@ var ErrControllerDirty = errControllerDirty
 // errors.Is and surface it as a typed deploy failure (appwire.HubLaunchError)
 // rather than a generic internal error, the same reason ErrControllerDirty is.
 var ErrRunTargetUnservable = errRunTargetUnservable
+
+// ErrDeployUnstamped is the exported alias for the terminal post-deploy identity
+// refusal (errDeployUnstamped, deploy.go): this controller deployed its build but
+// the host still reports a different one, so the artifact was not stamped by this
+// controller and the host can never be pinned to its build. It is exported so a
+// caller — the hub's attach handler — can match the refusal with errors.Is and
+// surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrControllerDirty is.
+var ErrDeployUnstamped = errDeployUnstamped
 
 // hostLockEntry is one per-host gate together with its live-user count.
 // refs counts the hostLock acquisitions that have not been released yet —
