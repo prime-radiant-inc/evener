@@ -195,6 +195,12 @@ func runHostDeployCase(t *testing.T, provider *fakellm.Server, hubBin, version, 
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
 		if installHash == "" {
+			// The host had no install here when the case began. Skipping the check
+			// would let the case create one and still pass, which is the violation
+			// the assertion exists to catch, so assert it is still absent.
+			if got := host.sha256IfFile(installPath); got != "" {
+				t.Errorf("the deploy created %s on host %s (sha256 %s); it must write only to the test-owned %s", installPath, host.target, got, runTarget)
+			}
 			return
 		}
 		if got := host.sha256IfFile(installPath); got != installHash {
