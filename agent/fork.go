@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -98,7 +99,7 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 		}
 	}
 
-	return childID, divergenceEntry.Turn.Message.Text(), nil
+	return childID, apptranscript.UserFacingText(divergenceEntry.Turn.Message), nil
 }
 
 func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {

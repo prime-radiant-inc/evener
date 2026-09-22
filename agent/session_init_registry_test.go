@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -77,6 +80,166 @@ func TestChildRegistryKeepsDelegateWithAllowance(t *testing.T) {
 			t.Error("child with delegationAllowance=0: registry is missing job_watch — a session that can run jobs must be able to watch its own jobs")
 		}
 	})
+}
+
+// resolvedPath is EvalSymlinks over a fixture path that must exist, for
+// building expectations that must match what the session records:
+// canonicalStateDir resolves the state dir to its physical path, and on macOS
+// t.TempDir() is reached through /var or /tmp symlinks, so a raw fixture path
+// and the canonical spelling are two names for one file there, and only the
+// resolved spelling matches. On Linux the two spellings are identical and
+// this is a no-op, which is why CI never sees it (skillFixtureRoot documents
+// the same trap for skill discovery).
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", path, err)
+	}
+	return resolved
+}
+
+// TestNewSessionCanonicalizesRelativeStateDir pins the path contract of a
+// relative --state-dir: attachment paths recorded into transcripts name an
+// absolute location, and the model's file tools resolve paths against their
+// own working directory, so the session must anchor a relative state dir to
+// the process working directory once, at construction — writes and announced
+// paths then resolve identically no matter who reads them back. No
+// t.Parallel: chdir is process-global.
+func TestNewSessionCanonicalizesRelativeStateDir(t *testing.T) {
+	work := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore Chdir: %v", err)
+		}
+	})
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: "state"})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	want := filepath.Join(resolvedPath(t, work), "state")
+	if sess.stateDir != want {
+		t.Fatalf("session stateDir=%q, want %q (a relative StateDir must resolve against the process working directory at construction)", sess.stateDir, want)
+	}
+}
+
+// TestNewSessionResolvesSymlinkedStateDirToPhysicalPath: a state dir reached
+// through a symlink keeps that component in an Abs-only resolution, and the
+// sandbox's file tools refuse symlinked ancestors on some hosts (macOS's
+// /tmp, /var), which would turn an announced attachment path into a
+// deterministic refusal. The anchored state dir must be the physical path.
+func TestNewSessionResolvesSymlinkedStateDirToPhysicalPath(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	physical := filepath.Join(work, "real-state")
+	if err := os.Mkdir(physical, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	link := filepath.Join(work, "link-state")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: link})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if sess.stateDir != resolvedPath(t, physical) {
+		t.Fatalf("session stateDir=%q, want the physical path %q (a symlinked StateDir must resolve at construction)", sess.stateDir, physical)
+	}
+}
+
+// TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath pins the
+// not-yet-created half of the same contract: EvalSymlinks cannot resolve a
+// path whose final components do not exist (a fresh --state-dir on first
+// launch), and an Abs-only fallback would record the symlinked form — on the
+// hosts whose file tools refuse symlinked ancestors, every attachment path
+// announced from that session would be a deterministic read refusal. The
+// deepest existing ancestor must resolve, with the missing tail joined back
+// unchanged.
+func TestCanonicalStateDirResolvesSymlinkedAncestorOfMissingPath(t *testing.T) {
+	t.Parallel()
+	work := t.TempDir()
+	physical := filepath.Join(work, "real-state")
+	if err := os.Mkdir(physical, 0o700); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	link := filepath.Join(work, "link-state")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	fresh := filepath.Join(link, "never", "created")
+	want := filepath.Join(resolvedPath(t, physical), "never", "created")
+	if got := canonicalStateDir(fresh); got != want {
+		t.Fatalf("canonicalStateDir(%q) = %q, want %q (a symlinked ancestor must resolve even when the state dir does not exist yet)", fresh, got, want)
+	}
+	// The same branch without any symlink must keep the anchored absolute form.
+	plain := filepath.Join(work, "plain-missing", "state")
+	if got := canonicalStateDir(plain); got != plain {
+		t.Fatalf("canonicalStateDir(%q) = %q, want the anchored absolute form unchanged", plain, got)
+	}
+}
+
+// TestRestoreSessionCanonicalizesRelativeStateDir pins the restore-side half
+// of the same contract: `evener serve --resume` threads a --state-dir
+// through RestoreSessionFromMetaWithConfig, and a restored session must carry
+// the same absolute anchor the original session recorded, so state paths
+// written before the restart and reads after it agree. The setup uses an
+// absolute state dir, so only the restore path exercises the relative form.
+// No t.Parallel: chdir is process-global.
+func TestRestoreSessionCanonicalizesRelativeStateDir(t *testing.T) {
+	work := t.TempDir()
+	stateDir := filepath.Join(work, "state")
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(work), SessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	id := sess.ID()
+	sess.Close()
+
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(orig); err != nil {
+			t.Fatalf("restore Chdir: %v", err)
+		}
+	})
+
+	meta, err := schema.LoadSessionMeta("state", id)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(work), meta, RestoreSessionConfig{StateDir: "state"})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if restored.stateDir != resolvedPath(t, stateDir) {
+		t.Fatalf("restored stateDir=%q, want %q (a relative restore StateDir must resolve against the process working directory at construction)", restored.stateDir, stateDir)
+	}
 }
 
 // TestLeafDelegateWatchesItsOwnJobsOnly: a session that can run jobs can watch

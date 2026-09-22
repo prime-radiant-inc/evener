@@ -33,12 +33,18 @@ type queuedClientMutationIdentity struct {
 }
 
 func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
-	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{
+	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentityOf(queued))
+}
+
+// queuedClientMutationIdentityOf is withQueuedClientMutation's identity for a
+// queued input, for a caller that holds the input rather than the context.
+func queuedClientMutationIdentityOf(queued queuedInput) queuedClientMutationIdentity {
+	return queuedClientMutationIdentity{
 		ClientMutationID: queued.ClientMutationID,
 		StableTurnID:     queued.StableTurnID,
 		QueueEntryID:     queued.ID,
 		SteeringCarrier:  queued.SteeringCarrier,
-	})
+	}
 }
 
 func queuedClientMutationFromContext(ctx context.Context) queuedClientMutationIdentity {
@@ -738,21 +744,57 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 
 // popQueueHead removes and returns the next queued entry. Returns a zero
 // value when the queue is empty.
+//
+// The claim refuses a poisoned transcript on the same store generation it
+// claims on (popQueueHeadRefusingPoison); this form drops that refusal, which
+// claims nothing and leaves the head queued. A caller that would announce the
+// turn it claimed -- the wake and the drain loop -- reads the refusing form
+// instead, so no call can announce a turn the transcript cannot record.
 func (s *Session) popQueueHead() queuedInput {
+	queued, _ := s.popQueueHeadRefusingPoison()
+	return queued
+}
+
+// popQueueHeadRefusingPoison is the queue head's claim: it returns the entry it
+// took, or the poisoned-transcript refusal that stopped it, or neither when the
+// head is not claimable at all. The refusal is decided on the same clone the
+// claim acts on, not on a snapshot the caller read a step earlier, so a Stop,
+// a poisoning, or a queue change that lands between the caller's view of the
+// work and this claim cannot make the refusal and the claim disagree: whenever
+// this would claim, it also refuses a poisoned transcript, and a claimable
+// state that never materializes is quiet rather than an error.
+func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("input admission failed: %v", admissionErr)})
-		return queuedInput{}
+		return queuedInput{}, nil
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return queuedInput{}
+		return queuedInput{}, nil
+	}
+	// The writer is sampled under s.mu here, before the serializer takes
+	// clientMutations.mu; the claim reads only the writer's own lock inside, so
+	// the serializer never waits on s.mu.
+	writer := s.attachedTranscript()
+	if s.cfg.testOnly.queueHeadClaimSampled != nil {
+		s.cfg.testOnly.queueHeadClaimSampled()
 	}
 	var queued queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if s.cfg.testOnly.queueHeadClaimInSerializer != nil {
+			s.cfg.testOnly.queueHeadClaimInSerializer()
+		}
 		if !queueHeadClaimable(snapshot) {
 			return nil
+		}
+		// The transcript's refusal is part of the claim decision, read on the
+		// generation this claim commits against. Returning it from the mutation
+		// is what keeps the refusal from committing anything -- a nil return
+		// would save the generation the claim then declined to change.
+		if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			return refusal
 		}
 		entry := snapshot.InputQueue[0]
 		record := snapshot.Journal[entry.ClientMutationID]
@@ -781,14 +823,19 @@ func (s *Session) popQueueHead() queuedInput {
 		queued.StableTurnID = record.StableTurnID
 		return nil
 	})
+	// A refusal is the transcript's, not the store's: distinguish it from a
+	// claim write that failed, which stands down with a warning instead.
+	if transcriptRefusedClaim(err) {
+		return queuedInput{}, err
+	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
-		return queuedInput{}
+		return queuedInput{}, nil
 	}
 	if queued.ClientMutationID != "" {
 		s.reflectDurableInputQueue()
 	}
-	return queued
+	return queued, nil
 }
 
 // queueHeadClaimable reports whether the queue head is one popQueueHead may
@@ -1210,6 +1257,9 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
 	}
+	// Persist the steering's attachments before its turn is built so the
+	// message can name their durable paths (agent/image_persist.go).
+	msg.Images = s.persistInputImages(msg.Images)
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 	t.SteeringSource = msg.Source
 	t.SteeringKind = msg.Kind

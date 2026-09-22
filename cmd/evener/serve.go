@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -126,6 +127,10 @@ type serveServer interface {
 	SetWorkingDir(string)
 	SetShutdownFunc(func())
 	SetDaemonLifecycle(func() appwire.DaemonLifecycle, func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error))
+	// SetDaemonIdleTimeoutSet installs the hook behind
+	// evener/daemon/idle-timeout/set, which retargets the automatic
+	// idle-retirement deadline.
+	SetDaemonIdleTimeoutSet(func(context.Context, appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error))
 	// SetRetirementAdmission installs the process-owned admission boundary on
 	// the daemon's router. The callback receives the access kind ("read" or
 	// "mutation") and returns the lease release the handler runs after it
@@ -338,6 +343,21 @@ func startupInterrupted(ctx context.Context, step string) error {
 		return fmt.Errorf("interrupted while %s: %w", step, err)
 	}
 	return nil
+}
+
+// armInterruptRunner arms the mutation runner and the server's cancel func in
+// the one order an accepted interrupt needs: the runner first.
+//
+// The interrupt path does not consult the server cancel func; it calls
+// cancelAndWaitMutationRunner, which reads the runner fields under
+// mutationRunnerMu and then waits for runnerDone before it finalizes the fence.
+// Armed cancel-first, a Stop accepted between the two statements finds the runner
+// fields still nil, returns without waiting, finalizes the fence and clears it --
+// and the claimed turn then runs the very turn the user stopped. One definition,
+// so the three arming sites cannot drift into three different orders.
+func armInterruptRunner(setRunner, setCancel func()) {
+	setRunner()
+	setCancel()
 }
 
 func runServeWithDeps(args []string, deps serveDeps) error {
@@ -939,17 +959,30 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return nil
 	}
+	// requireExactOwnership is the one exact-ownership fence behind both
+	// identity-fenced daemon control RPCs: the current rendezvous entry must
+	// exist and the caller's generation fingerprint must match it, where an
+	// unrendered (empty) generation never compares equal. The retire path runs
+	// it again between TryClaim and the claim's prepare so a thread/clear that
+	// swapped ownership under an uncommitted claim cannot be retired by its
+	// predecessor's stale row.
+	requireExactOwnership := func(generation string) error {
+		entry, ok := rvRegistration.Entry()
+		if !ok {
+			return appwire.Unavailable("daemon rendezvous not registered")
+		}
+		if generation == "" || generation != rendezvous.OwnershipFingerprint(entry) {
+			return appwire.Conflict("daemon identity does not match current ownership")
+		}
+		return nil
+	}
 	// requestRetirement serves evener/daemon/retire. Exact-ownership
 	// revalidation runs BEFORE the admission fence is touched: a caller
 	// holding a stale generation (same PID, drifted identity) gets a conflict
 	// and no claim is consumed.
 	requestRetirement := func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
-		entry, ok := rvRegistration.Entry()
-		if !ok {
-			return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if params.Identity.Generation == "" || params.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
-			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
+			return appwire.DaemonRetireResponse{}, err
 		}
 		// claim_attempted marks the instant between the pre-claim identity check
 		// and the admission fence: the caller's generation has been accepted but
@@ -973,14 +1006,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		// the caller proved. Re-read ownership and abort the uncommitted claim if
 		// it moved, so a stale request can never retire its replacement. The
 		// abort is essential: a claim left in "preparing" wedges the daemon.
-		recheck, ok := rvRegistration.Entry()
-		if !ok {
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
 			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon rendezvous not registered")
-		}
-		if params.Identity.Generation != rendezvous.OwnershipFingerprint(recheck) {
-			_ = retirement.Abort(claim, "prepare_failed")
-			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
+			return appwire.DaemonRetireResponse{}, err
 		}
 		if err := consumeRetirementClaim(ctx, claim); err != nil {
 			// A post-commit teardown failure means the retirement already
@@ -997,6 +1025,67 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDaemonLifecycle(func() appwire.DaemonLifecycle {
 		return server.DaemonLifecycleFromSnapshot(retirement.Snapshot())
 	}, requestRetirement)
+	// requestIdleTimeoutSet serves evener/daemon/idle-timeout/set. Like retire,
+	// the exact-ownership fence runs BEFORE the controller is touched, so a
+	// caller holding a stale generation (same PID, drifted identity) gets a
+	// conflict and no deadline moves.
+	requestIdleTimeoutSet := func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
+		}
+		if params.TimeoutMillis < 0 {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis must not be negative")
+		}
+		// maxIdleTimeoutMillis is the largest value whose nanosecond conversion
+		// cannot overflow time.Duration: larger values would wrap — 1<<58 millis
+		// lands on exactly zero, a success response that silently disabled
+		// automatic retirement.
+		const maxIdleTimeoutMillis = math.MaxInt64 / int64(time.Millisecond)
+		if params.TimeoutMillis > maxIdleTimeoutMillis {
+			return appwire.DaemonIdleTimeoutSetResponse{}, appwire.InvalidParams("timeoutMillis exceeds the maximum representable duration")
+		}
+		// idle_timeout_attempted marks the instant between the pre-retarget
+		// identity check and the controller write: the caller's generation has
+		// been accepted but Retarget has not run. Like claim_attempted above, it
+		// is an observability beat outside every lock (retirementObserve is nil
+		// in production) so a test can interleave a thread/clear into exactly
+		// the window the revalidation below must still defend.
+		retirementObserve("idle_timeout_attempted", getSession().ID())
+		prev, token, err := retirement.RetargetStamped(time.Duration(params.TimeoutMillis) * time.Millisecond)
+		if err != nil {
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
+		}
+		// idle_timeout_written parks the handler immediately after the
+		// controller write and before the revalidation fence — the exact
+		// window in which a later legitimate writer's deadline must survive
+		// the stale request's revert. Same contract as idle_timeout_attempted:
+		// observability only, nil in production.
+		retirementObserve("idle_timeout_written", getSession().ID())
+		// The pre-retarget check and Retarget are not atomic: a thread/clear can
+		// run to completion between them (mutations do not serialize with each
+		// other), re-rooting the controller to the replacement — and the write
+		// above then moved the REPLACEMENT's deadline, so a bare conflict would
+		// leave the harm in place. Re-read ownership and, if it moved, undo the
+		// write by its token: UndoRetarget restores the deadline the write
+		// replaced, but only while this request's write is still the newest — a
+		// later legitimate writer (the replacement's own archive decision) owns
+		// the deadline now and must survive the refusal, even when it chose the
+		// same value, which a value comparison could not tell apart. A clear
+		// that completed before this write reset the fresh root to the
+		// configured baseline, so this write landed after that reset and the
+		// undo below is the only thing that can take it back; a clear that
+		// completes after the write has already superseded this write's token
+		// with its own reset, and the undo correctly yields. Refuse like the
+		// retire path does after its claim. The undo is best-effort: a
+		// controller that is no longer resident never restores (the process is
+		// preparing or retiring and its deadline no longer matters).
+		if err := requireExactOwnership(params.Identity.Generation); err != nil {
+			retirement.UndoRetarget(token, prev)
+			return appwire.DaemonIdleTimeoutSetResponse{}, err
+		}
+		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: server.DaemonLifecycleFromSnapshot(retirement.Snapshot())}, nil
+	}
+	srv.SetDaemonIdleTimeoutSet(requestIdleTimeoutSet)
 	// Install the retirement admission boundary on the router. Every routed
 	// handler is classified by access kind (server/appwire_retirement_admission.go):
 	// a mutation holds a lease for the handler's duration and is refused while
@@ -1603,8 +1692,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			currentCancel = cancelTurn
 			turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 			if !msg.ClientMutationStart && !msg.QueuedInput {
-				srv.SetCancelFunc(cancelTurn)
-				setMutationRunner(cancelTurn, runnerDone)
+				// The runner first, then the server cancel: the interrupt path
+				// does not read srv.SetCancelFunc, it calls
+				// cancelAndWaitMutationRunner, which reads these runner fields
+				// and waits on runnerDone before finalizing the fence. Armed the
+				// other way round, a Stop accepted between the two statements
+				// finds the fields still nil, returns without waiting, finalizes
+				// the fence and clears it -- and the turn then runs anyway.
+				armInterruptRunner(
+					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { srv.SetCancelFunc(cancelTurn) },
+				)
 				if !holdServeStateForAwaitingWake(msg.Kind, sess.HasPendingAsk()) {
 					srv.SetProcessing(true)
 					srv.SetState(string(agent.SessionProcessing))
@@ -1614,19 +1712,54 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			var processErr error
 			processed := true
 			if msg.ClientMutationStart {
-				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string) {
-					srv.SetCancelFunc(cancelTurn)
-					setMutationRunner(cancelTurn, runnerDone)
-					srv.SetProcessingTurn(turnID)
-					srv.SetState(string(agent.SessionProcessing))
+				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string, phase agent.ClientMutationStartPhase) {
+					// Arm on the way in and publish on the way out: a
+					// turn/interrupt that finalizes the claimed start between
+					// the two must find the runner already armed, while a claim
+					// that refuses must never announce a running turn.
+					//
+					// The runner is armed first for the reason the interrupt path
+					// waits on it: cancelAndWaitMutationRunner reads these fields
+					// and then waits for runnerDone before finalizing the fence,
+					// and it never consults srv.SetCancelFunc.
+					armInterruptRunner(
+						func() { setMutationRunner(cancelTurn, runnerDone) },
+						func() { srv.SetCancelFunc(cancelTurn) },
+					)
+					if phase == agent.ClientMutationStartClaimed {
+						srv.SetProcessingTurn(turnID)
+						srv.SetState(string(agent.SessionProcessing))
+					}
 				})
+				if !processed {
+					// The claim refused: nothing is running, so drop the runner
+					// armed for it rather than leave a Stop pointed at a turn
+					// that will never start.
+					clearMutationRunner(runnerDone)
+					srv.SetCancelFunc(nil)
+				}
 			} else if msg.QueuedInput {
+				// Arm before the claim, the way the start path does: a queued
+				// claim sets the durable active turn inside its commit, and a
+				// turn/interrupt that lands between that commit and this publish
+				// must find a runner to cancel. Armed after the claim, the Stop
+				// finalizes the unincorporated claim with nothing to cancel and
+				// the input is lost.
+				armInterruptRunner(
+					func() { setMutationRunner(cancelTurn, runnerDone) },
+					func() { srv.SetCancelFunc(cancelTurn) },
+				)
 				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
-					srv.SetCancelFunc(cancelTurn)
-					setMutationRunner(cancelTurn, runnerDone)
 					srv.SetProcessingTurn(turnID)
 					srv.SetState(string(agent.SessionProcessing))
 				})
+				if !processed {
+					// The claim refused: nothing is running, so drop the runner
+					// armed for it rather than leave a Stop pointed at a turn
+					// that will never start.
+					clearMutationRunner(runnerDone)
+					srv.SetCancelFunc(nil)
+				}
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}

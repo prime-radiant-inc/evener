@@ -2,6 +2,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   useCallback,
   useEffect,
+	useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -45,7 +46,19 @@ import {
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-export function PluginsScreen({
+// A mounted screen re-keyed to another hub is a fresh screen: the
+// reconnect-retention state below - the banner's everReady, the last
+// client a retry's gap renders through - belongs to the hub it was built
+// for, and none of it may survive a hub the route now names. React
+// Navigation can update a mounted instance's params (setParams on a
+// focused screen is this app's own idiom - see
+// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
+// re-key remounts it whole.
+export function PluginsScreen(props: NativeStackScreenProps<Routes, "Plugins">) {
+  return <PluginsScreenBody key={props.route.params.hubId} {...props} />;
+}
+
+function PluginsScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Plugins">) {
   // One plugin mutation at a time, across this list AND the browser: switching
@@ -97,12 +110,14 @@ export function PluginsScreen({
 
 function Plugins({
   client,
+  connectionState,
   hubName,
   gate,
   connectionState,
   canUseConnection,
 }: {
   client: ConversationClientLike;
+  connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
   connectionState: ConnectionState;
@@ -131,6 +146,20 @@ function Plugins({
       item.plugin.toLowerCase().includes(needle) ||
       item.marketplace.toLowerCase().includes(needle),
   );
+  // The store's own reconnect recovery is what a banner over a live screen
+  // needs: the hub broadcasts a change only to clients connected when it
+  // happens, so everything that moved while this one was away arrives as
+  // nothing at all, and the store re-reads a list something wants once
+  // connectionChanged says the connection is ready again (storeLifecycle.ts).
+  // The wall this screen used to show remounted the store on every recovery,
+  // so that read happened for free with the remount; keeping the screen
+  // mounted behind a banner removes it, and this drives the store through
+  // every transition itself, the way useCredentialStore drives the credential
+  // store (credentialStore.ts). A layout effect, so the store knows its
+  // connection before the mount effect's first read issues.
+  useLayoutEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchPlugins();
@@ -207,6 +236,7 @@ function Plugins({
       {panel === "browse" ? (
         <MarketplaceBrowser
           client={client}
+          connectionState={connectionState}
           hubName={hubName}
           installed={model}
           gate={gate}
@@ -314,6 +344,10 @@ function Plugins({
               </View>
               <Action onPress={close}>Done</Action>
             </View>
+            {/* The native modal covers the banner the screen shows behind
+             * it, so the status and the manual reconnect live here while
+             * this detail is open. */}
+            {connectionState !== "ready" ? <ConnectionStatus /> : null}
             <ScrollView
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
               contentContainerStyle={{ padding: 20, gap: 12 }}

@@ -5,18 +5,19 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 )
 
-func registerArchiveHandler(server *appserver.Server, cfg hubcore.WebConfig, navigation func() *NavigationService) {
+func registerArchiveHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, navigation func() *NavigationService) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerArchiveSet, func(ctx context.Context, params appwire.ArchiveParams) (appwire.ArchiveResponse, error) {
-		return archiveSet(ctx, cfg, navigation(), params)
+		return archiveSet(ctx, cfg, sources, navigation(), params)
 	})
 }
 
-func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, params appwire.ArchiveParams) (appwire.ArchiveResponse, error) {
+func archiveSet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, params appwire.ArchiveParams) (appwire.ArchiveResponse, error) {
 	switch params.Kind {
 	case appwire.ArchiveTargetSession, appwire.ArchiveTargetProject:
 	default:
@@ -72,8 +73,37 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 	if cfg.Archive == nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
 	}
-	if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
-		return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
+	// persistNudge lands the durable decision and, once it persisted, pushes
+	// a session decision to that session's resident daemon: the decision is
+	// the durable fact, the daemon deadline beneath it best-effort.
+	persistNudge := func() error {
+		if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
+			return appwire.InternalError("archive store error: " + err.Error())
+		}
+		if params.Kind == appwire.ArchiveTargetSession {
+			nudgeResidentDaemonIdleTimeout(ctx, cfg, sources, decisionID, params.Archived)
+		}
+		return nil
+	}
+	if params.Kind == appwire.ArchiveTargetSession && cfg.ResumeLocks != nil {
+		// The session lock covers exactly the durable write and its daemon
+		// nudge: requests on different connections run handlers concurrently,
+		// and two archive toggles racing on one session must land their nudges
+		// in the order the decisions persisted, so the last durable decision is
+		// also the last deadline the daemon applied. The navigation refresh and
+		// attention poke below run outside it, so a wedged nudge delays only
+		// this session's decisions and fences, never the tree rebuild.
+		lock := cfg.ResumeLocks.For(decisionID)
+		if err := lock.LockContext(ctx); err != nil {
+			return appwire.ArchiveResponse{}, err
+		}
+		err := persistNudge()
+		lock.Unlock()
+		if err != nil {
+			return appwire.ArchiveResponse{}, err
+		}
+	} else if err := persistNudge(); err != nil {
+		return appwire.ArchiveResponse{}, err
 	}
 
 	// An archive decision can move a session in or out of tier eligibility;
@@ -95,6 +125,60 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 		cfg.PokeAttention()
 	}
 	return appwire.ArchiveResponse{OK: true, Navigation: navigationMutation}, nil
+}
+
+// archivedSessionIdleTimeout is the automatic idle-retirement deadline the Hub
+// pushes to a resident daemon when its session is archived.
+const archivedSessionIdleTimeout = time.Minute
+
+// archivedDaemonNudgeTimeout bounds the best-effort idle-deadline nudge so a
+// wedged daemon cannot hang the archive response behind an unanswered loopback
+// RPC. It is a wedge bound for an unresponsive peer, never the mechanism: the
+// dial + initialize + set sequence completes in single-digit milliseconds on
+// any healthy daemon.
+var archivedDaemonNudgeTimeout = 5 * time.Second
+
+// nudgeResidentDaemonIdleTimeout pushes a session archive decision to that
+// session's resident daemon as a deadline change: archiving shortens the
+// daemon's automatic idle retirement to archivedSessionIdleTimeout (an idle
+// daemon stops within a minute; a busy one retires once its work settles), and
+// unarchiving restores the Hub's configured timeout. Deliberately silent and
+// best-effort: no resident daemon (the common archived session), an
+// older-protocol peer, or a raced exit all leave the daemon on its configured
+// deadline — which the resident list already publishes — and none of them may
+// fail the archive decision itself. Reading the roster's published snapshot
+// (not refreshing it) keeps this action from probing any daemon, exactly like
+// the resident list it complements.
+func nudgeResidentDaemonIdleTimeout(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID string, archived bool) {
+	if cfg.Roster == nil || sources == nil || sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, archivedDaemonNudgeTimeout)
+	defer cancel()
+	entry, ok := liveDaemonForSession(cfg.Roster, sessionID)
+	if !ok || entry.Protocol != appwire.ProtocolVersion || entry.Endpoint == "" {
+		return
+	}
+	local, err := spawnedLocalDaemonSource(sources)
+	if err != nil {
+		return
+	}
+	timeout := cfg.DaemonIdleTimeout
+	if archived {
+		// The archived deadline is an upper bound, never an extension: a Hub
+		// configured with a shorter idle timeout must not have its daemon's
+		// retirement DELAYED by archiving. A disabled (zero) configuration
+		// still shortens — the explicit archive decision outlives a Hub-wide
+		// automatic-retirement disable.
+		timeout = archivedSessionIdleTimeout
+		if cfg.DaemonIdleTimeout > 0 && cfg.DaemonIdleTimeout < archivedSessionIdleTimeout {
+			timeout = cfg.DaemonIdleTimeout
+		}
+	}
+	_, _ = local.SetDaemonIdleTimeoutAtEntry(ctx, entry.Entry, appwire.DaemonIdleTimeoutSetParams{
+		Identity:      daemonIdentity(entry.Entry),
+		TimeoutMillis: appwire.DurationMillis(timeout),
+	})
 }
 
 // validateHostProjectArchive cross-checks a non-local project archive against
@@ -141,10 +225,15 @@ func validateDecisionSource(cfg hubcore.WebConfig, source string) error {
 	if cfg.RemoteHostClient == nil {
 		return appwire.InvalidParams("unknown source: " + source)
 	}
-	for _, host := range cfg.RemoteHosts {
-		if host.Name == source {
-			return nil
-		}
+	// The live registry is the authority for hosts that exist past boot: it
+	// carries every host the management surface added at runtime, so an
+	// archive or favorite decision may name a UI-added host. The configured
+	// entries stay accepted alongside it, so without a registry (tests,
+	// embedders), or for a name only the config carries, the configured set
+	// decides — remoteHostKnown (app_threadlist.go) is the one membership
+	// rule this and the fan-out's remote gates share.
+	if !remoteHostKnown(cfg, source) {
+		return appwire.InvalidParams("unknown source: " + source)
 	}
-	return appwire.InvalidParams("unknown source: " + source)
+	return nil
 }

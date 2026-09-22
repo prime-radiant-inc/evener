@@ -133,9 +133,11 @@ passes the authored `registry.Provider` alongside each instance.
 `hubInstancesController.Edit` extends its existing field-by-field apply with
 the new pairs, then handles rename last, all under `c.mu`:
 
-1. Refuse when `params.NewName` is set on an implicit instance
-   (`InvalidParams`: "instance %q comes from the environment and cannot be
-   renamed").
+1. A rename is offered on every instance. One with no authored entry authors
+   the entry under the new name, pinning the base it was resolving against; for
+   an instance a UI credential created that moves the whole instance, and for
+   one the environment supplies the old row stays (amended 2026-09-16,
+   registry spec §5.1).
 2. Validate with `registry.ValidInstanceName`; refuse `Conflict` when
    `c.reg.Get().Instance(newName)` exists (authored or implicit) or
    `l.Providers[newName]` exists.
@@ -163,12 +165,16 @@ clients drop their cached credential state for the old name.
 unchanged. Body, top to bottom:
 
 1. Header row as today: `StatusDot`, "★ default" and "from environment"
-   chips.
+   chips. The last follows §5.1: it marks an instance the host's environment
+   supplies, not one whose credential the user added through the UI
+   (amended 2026-09-16).
 2. The form, prefilled from the `InstanceEntry`:
-   - Name (`Input`). Read-only with a "from environment" note on implicit
-     instances. When dirty, an inline note under the field: "Launch config
-     and past sessions that reference `<old>` keep the old name." No
-     confirm dialog.
+   - Name (`Input`), editable on every instance. When dirty, an inline note
+     under the field: "Launch config and past sessions that reference
+     `<old>` keep the old name." On an environment-backed instance the note
+     adds that the rename creates a new instance and leaves that one in
+     place, because nothing in the rename can move a shell variable or the
+     ADC file (amended 2026-09-16). No confirm dialog.
    - Base provider: a read-only meta row (`providerId`); re-basing is not
      supported by the edit RPC and is not added.
    - Base URL (`Input`). Emptying a field that had a value sends
@@ -198,8 +204,10 @@ unchanged. Body, top to bottom:
 4. Below the form, unchanged from today: the credential layers block, Test
    credentials, Set/Replace key, Set/Replace credential JSON, Sign in… /
    Refresh OAuth, ★ make default.
-5. Danger zone, unchanged: Clear stored key, Clear, Remove, all
-   ConfirmDialog-gated.
+5. Danger zone: Clear stored key, Clear, Remove, all ConfirmDialog-gated.
+   Remove follows §5.1 — offered for an authored instance and for an
+   implicit one the user credentialed through the UI, withheld from an
+   instance the environment supplies (amended 2026-09-16).
 
 `AddInstanceDialog` gains the same Protocol and Surface selects
 (`InstanceCreateParams` already accepts both), placed after Base URL.
@@ -343,10 +351,12 @@ Go:
   leaves the previous file intact.
 - `cmd/evener-hub/app_instances_test.go`: rename re-keys providers.toml,
   repoints the default, moves the stored key and the OAuth record; rename
-  of an implicit instance is refused; rename onto a taken name is
-  `Conflict`; `apiKeyEnv`/`credentialHeader` set and clear; `clearProtocol`
-  and `clearSurface`; the entry carries the authored `apiKeyEnv` and
-  `credentialHeader`; a credential header without `$` is refused.
+  of an instance with no authored entry authors one under the new name and
+  leaves an environment-supplied row in place (amended 2026-09-16); rename
+  onto a taken name is `Conflict`; `apiKeyEnv`/`credentialHeader` set and
+  clear; `clearProtocol` and `clearSurface`; the entry carries the authored
+  `apiKeyEnv` and `credentialHeader`; a credential header without `$` is
+  refused.
 - `internal/plugins/marketplaces_test.go`: edit rename moves both
   directories and re-keys the registry and install paths; re-source swaps
   the staged clone and leaves installed plugins untouched; rename plus

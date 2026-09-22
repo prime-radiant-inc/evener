@@ -3,7 +3,10 @@ import {
   type AskQuestionRef,
   composeAskAnswers,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import {
+  liveAsksFor,
+  type MobileConversation,
+} from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
@@ -11,11 +14,19 @@ export type QuestionSelections = Record<
 export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
-  return conversation?.askPending
-    ? conversation.items.flatMap((item) =>
-        item.kind === "question" ? item.questions : [],
-      )
-    : [];
+  // Asked of the MODEL, with the package's own rule — the same call the
+  // projection's question rows come from (project.ts's askQuestionsByCall,
+  // through liveAsksFor's shared scan), so the refs are canonical: the sheet
+  // renders, and the answer composer validates against, exactly the labels
+  // the agent offered. The timeline rows a reader scrolls carry the display
+  // bound's cut copies instead — a label longer than the bound would submit
+  // as its truncated remnant if this list read those rows, and two options
+  // sharing a prefix longer than the bound cut to the same string and become
+  // indistinguishable. The wire's askPending gate still applies: the package's
+  // own liveAskQuestions returns nothing while the model says nothing is
+  // pending, so the explicit conversation.askPending check is not lost.
+  if (conversation === null) return [];
+  return [...liveAsksFor(conversation).values()].flat();
 }
 export function composeQuestionAnswers(
   questions: AskQuestionRef[],

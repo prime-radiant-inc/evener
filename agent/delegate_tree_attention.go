@@ -41,20 +41,47 @@ func delegateAttentionProjectionEligible(state delegatestore.State, delegateID s
 }
 
 func readExistingDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
+	// The pre-stat is this boundary's strict shape: a transcript missing here
+	// is an error, where readDelegateAttentionFold keeps missing-as-empty for
+	// its historical callers, and foldcache reports a missing path as an
+	// ordinary absent result rather than an error.
 	if _, err := os.Stat(path); err != nil {
 		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
 	}
-	fold, err := readDelegateAttentionFold(path, expectedSessionID)
+	// The fold cache serves an unchanged transcript's fold without re-reading
+	// it: the status sweeps this function backs run per thread/read, and
+	// folding every eligible child's full transcript each time made a click on
+	// a delegate-heavy session cost that session's total delegate transcript
+	// bytes (session_attention.go's delegateAttentionFoldCache). A cache hit
+	// skips the re-read and the post-read stat: a hit proves identical bytes
+	// were fully read and folded in this process already, which is the same
+	// readiness the retirement-prepare call below relies on (its
+	// EstablishDurability flush changes the identity, so flushed-but-unread
+	// bytes still recompute).
+	result, err := delegateAttentionFoldCache.Get(context.Background(), path, extendDelegateAttentionFold(expectedSessionID))
 	if err != nil {
 		return delegateAttentionFold{}, err
 	}
-	// readDelegateAttentionFold retains missing-as-empty semantics for historical
-	// callers. This projection boundary is strict, including a removal racing the
-	// fold above.
-	if _, err := os.Stat(path); err != nil {
-		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+	// The memo is keyed to the expected session id as well as the path: a hit
+	// computed for a different session (a transcript path reused across
+	// sessions) or an absent result (the transcript removed between the
+	// pre-stat and the cache's stat) must not serve the cached fold. Both
+	// bypass the cache: read, fold, and post-read stat exactly like the
+	// uncached path, leaving the memo untouched.
+	if result.Value.sessionID != expectedSessionID {
+		fold, _, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
+		if err != nil {
+			return delegateAttentionFold{}, err
+		}
+		// readDelegateAttentionFold retains missing-as-empty semantics for historical
+		// callers. This projection boundary is strict, including a removal racing the
+		// fold above.
+		if _, err := os.Stat(path); err != nil {
+			return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+		}
+		return fold, nil
 	}
-	return fold, nil
+	return result.Value.fold, nil
 }
 
 // reconcileDelegateAttentionFromTranscripts is the final bootstrap boundary.
@@ -366,6 +393,29 @@ func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bo
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.nextIdleDelegateAttentionLocked()
+}
+
+// selectDelegateAttentionWake is the wake driver's selection: it returns the
+// next eligible delegate with pending attention and takes this pass's hold
+// in one critical section, so no release claim can slip between selection
+// and hold. The pass MUST release the hold on every exit; overlapping passes
+// each hold their own reference.
+func (c *delegateTreeController) selectDelegateAttentionWake() (string, string, bool) {
+	if c == nil {
+		return "", "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delegateID, attentionID, pending := c.nextIdleDelegateAttentionLocked()
+	if !pending {
+		return "", "", false
+	}
+	c.holdAttentionRestoreLocked(delegateID)
+	return delegateID, attentionID, true
+}
+
+func (c *delegateTreeController) nextIdleDelegateAttentionLocked() (string, string, bool) {
 	delegateIDs := make([]string, 0, len(c.attentionWakeIDs))
 	for delegateID, ids := range c.attentionWakeIDs {
 		if len(ids) == 0 || !c.delegateAttentionWakeEligibleLocked(delegateID) {
@@ -451,6 +501,53 @@ func (c *delegateTreeController) forgetDelegateAttention(delegateID string, atte
 	for _, attentionID := range attentionIDs {
 		c.forgetDelegateAttentionLocked(delegateID, attentionID)
 	}
+}
+
+// holdAttentionRestore marks delegateID as owned by an attention wake pass:
+// its runtime was restored cold and the pass is between that restore and its
+// reservation decision. Release claims must not reap the runtime inside that
+// span — the reservation would commit against a husk and the wake retry would
+// pay a second cold restore. The pass releases the hold at exit, whichever way
+// it decides. Holds count, so overlapping wake passes each keep their own
+// reference and one pass's exit cannot drop another's hold.
+func (c *delegateTreeController) holdAttentionRestore(delegateID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.holdAttentionRestoreLocked(delegateID)
+}
+
+// holdAttentionRestoreLocked is the one definition of the hold mutation: the
+// nil-map initialization plus the counted hold. Both hold sites share it — the
+// wake driver's selection, which already holds c.mu, and the standalone hold,
+// which takes the mutex itself — so the mutation semantics cannot diverge
+// between what tests exercise and what the driver takes. Callers must hold
+// c.mu.
+func (c *delegateTreeController) holdAttentionRestoreLocked(delegateID string) {
+	if c.attentionRestoreHolds == nil {
+		c.attentionRestoreHolds = make(map[string]int)
+	}
+	c.attentionRestoreHolds[delegateID]++
+}
+
+// releaseAttentionRestoreHold drops this wake pass's hold. Releasing an
+// unheld delegate is a no-op, so a declined or failed pass cannot leak the
+// hold by clearing twice or out of order, and the last reference out clears
+// the delegate for claims again.
+func (c *delegateTreeController) releaseAttentionRestoreHold(delegateID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.attentionRestoreHolds[delegateID] <= 1 {
+		delete(c.attentionRestoreHolds, delegateID)
+		return
+	}
+	c.attentionRestoreHolds[delegateID]--
+}
+
+// attentionRestoreHeldLocked reports whether an attention wake pass holds
+// delegateID between its cold restore and its reservation decision. Callers
+// must hold c.mu.
+func (c *delegateTreeController) attentionRestoreHeldLocked(delegateID string) bool {
+	return c.attentionRestoreHolds[delegateID] > 0
 }
 
 // armColdDelegateAttention admits a wake only after re-folding the exact cold

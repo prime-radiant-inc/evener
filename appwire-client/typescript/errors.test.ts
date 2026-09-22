@@ -1,18 +1,140 @@
 // @vitest-environment node
 
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
+import appwireErrorsGo from "../../appwire/errors.go?raw";
+import appwireTypesGo from "../../appwire/types.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorEndpointConflict,
+  ErrorInstanceRemoveApplied,
+  ErrorInstanceRenamePersisted,
+  ErrorInvalidHostField,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
+  hostFieldError,
   isHubLaunchError,
+  isInstanceRemoveApplied,
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
+
+function decodeUpper(value: unknown): string | undefined {
+  return typeof value === "string" ? value.toUpperCase() : undefined;
+}
+
+test("wireRejectionPayload decodes the named key when the discriminator matches", () => {
+  const error = new WireError("boom", -32603, { evenerErrorInfo: "somePostApply", applied: "ok" });
+  expect(wireRejectionPayload(error, "somePostApply", "applied", decodeUpper)).toBe("OK");
+});
+
+test("wireRejectionPayload returns undefined for a different evenerErrorInfo - the code alone is never the discriminator", () => {
+  const error = new WireError("boom", -32603, { evenerErrorInfo: "conflict", applied: "ok" });
+  expect(wireRejectionPayload(error, "somePostApply", "applied", decodeUpper)).toBeUndefined();
+});
+
+test("wireRejectionPayload returns undefined for a non-WireError, or when decode rejects the payload", () => {
+  expect(wireRejectionPayload(new Error("boom"), "somePostApply", "applied", decodeUpper)).toBeUndefined();
+  const malformed = new WireError("boom", -32603, { evenerErrorInfo: "somePostApply", applied: 42 });
+  expect(wireRejectionPayload(malformed, "somePostApply", "applied", decodeUpper)).toBeUndefined();
+});
+
+// goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
+// file the hub stamps every evenerErrorInfo from. Reading the source (the way
+// mobile/src/services/conversation.test.ts binds its decoder literals to
+// appwire/types.go) is what makes the binding real: renaming the constant or
+// changing its value in Go fails here, rather than leaving every client matching
+// a discriminator the hub no longer sends.
+function goErrorInfo(name: string): string {
+  const match = appwireErrorsGo.match(new RegExp(`${name}\\s+ErrorInfo\\s*=\\s*"([^"]+)"`));
+  if (!match) throw new Error(`appwire/errors.go has no ${name} ErrorInfo constant`);
+  return match[1]!;
+}
+
+test("hostFieldError reads the blamed input off the hub's own discriminant", () => {
+  // The binding: the Go constant's value is what this module matches on.
+  expect(ErrorInvalidHostField).toBe(goErrorInfo("ErrorInvalidHostField"));
+  const blamed = new WireError('host "m4": missing ssh destination', -32602, {
+    evenerErrorInfo: ErrorInvalidHostField,
+    field: "address",
+  });
+  expect(hostFieldError(blamed)).toBe("address");
+  // A plain validation refusal carries no field, a form-level refusal carries an
+  // empty one, and a non-WireError carries nothing at all.
+  expect(hostFieldError(new WireError("boom", -32602, { evenerErrorInfo: "invalidParams" }))).toBeUndefined();
+  expect(hostFieldError(new WireError("boom", -32602, { evenerErrorInfo: ErrorInvalidHostField }))).toBeUndefined();
+  expect(hostFieldError(new Error("boom"))).toBeUndefined();
+});
+
+test("the host entry's wire spellings are the ones refusals and inputs share", () => {
+  // The dialog's inputs and a refusal's field are the same strings because both
+  // are HostEntry's json names; this pins that vocabulary against the Go tags so
+  // a rename on one side cannot leave the other looking for a missing input.
+  // Each name is matched as a whole json tag — the name followed by a closing
+  // quote or an omitempty comma — not as a prefix, so "addr" cannot be satisfied
+  // by the "address" tag. "name" is the field hostEntryField blames for an
+  // invalid or reserved host name, so it belongs in the pinned set too.
+  for (const name of ["name", "address", "user", "keyPath", "evenerPath", "configPath", "addr", "roots"]) {
+    expect(appwireTypesGo).toMatch(new RegExp(`json:"${name}("|,)`));
+  }
+});
+
+// The persisted rename discriminator (a rename that stood in the config but
+// could not finish) is the one place a client decides whether to report a
+// standing write or a failed one. A hub-side rename of it must break this test,
+// not silently disable recognition in the web pane, the sheet, and native.
+describe("the persisted rename discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorInstanceRenamePersisted).toBe(goErrorInfo("ErrorInstanceRenamePersisted"));
+  });
+});
+
+// The applied-removal discriminator is the removal-side sibling: a removal that
+// stood but could not put back what it deleted must be reconciled by every
+// client, not read as a retryable failure. A hub-side rename of it has to break
+// this binding.
+describe("the applied-removal discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorInstanceRemoveApplied).toBe(goErrorInfo("ErrorInstanceRemoveApplied"));
+  });
+
+  test("isInstanceRemoveApplied reads only that discriminator", () => {
+    expect(
+      isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRemoveApplied })),
+    ).toBe(true);
+    expect(
+      isInstanceRemoveApplied(new WireError("left behind", -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted })),
+    ).toBe(false);
+    expect(isInstanceRemoveApplied(new Error("left behind"))).toBe(false);
+  });
+});
+
+// The marketplace remove-applied discriminator is the marketplace-side
+// sibling of the applied-removal family: a marketplace removal that stood -
+// unregister and clone cleanup both done - whose response could not re-read
+// the updated list. Every consumer must reconcile rather than retry, and a
+// hub-side rename of it has to break this binding rather than silently read
+// the standing removal as a failed one.
+describe("the marketplace remove-applied discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorMarketplaceRemoveApplied).toBe(goErrorInfo("ErrorMarketplaceRemoveApplied"));
+  });
+});
+
+// The endpoint-conflict discriminant is what separates a moved destination from
+// a genuine conflict (a name collision) that shares CodeConflict. A hub-side
+// rename of it must break this binding rather than silently read collisions as
+// endpoint conflicts.
+describe("the endpoint-conflict discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorEndpointConflict).toBe(goErrorInfo("ErrorEndpointConflict"));
+  });
+});
 
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");

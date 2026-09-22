@@ -491,10 +491,18 @@ An **instance** is a named, usable provider. Instances come from two places:
 
 Implicit instances are computed identically by every process from the same
 inputs; the hub no longer materializes `providers.toml` at startup and passes
-nothing to children beyond `EVENER_PROVIDERS_CONFIG` when a file exists. The
-hub lists implicit instances flagged *from environment*; editing one or
-making it the default writes a shadowing explicit entry; removing one is
-refused with a message naming the variable or record that makes it exist.
+nothing to children beyond `EVENER_PROVIDERS_CONFIG` when a file exists. An
+implicit instance is flagged *from environment* only when the host's
+environment is what supplies it — an API-key variable, the ADC file, or a
+keyless local default — and removing one of those is refused with a message
+naming the variable or record that makes it exist. An implicit instance whose
+credential the user added through the UI (a stored key, a signed-in Codex
+record) is the user's own: it carries no such flag, and removing it deletes
+that credential, which is what takes the instance away (amended 2026-09-16).
+Editing an implicit instance, and making one the default, write a shadowing
+explicit entry. Renaming any instance writes one under the new name; for an
+instance the environment supplies, the old row stays, because nothing in the
+rename can move a shell variable or the ADC file (amended 2026-09-16).
 
 The **default instance** is `default` from `providers.toml` when set; else
 the first instance, explicit or implicit, that has a `DefaultModel` in this
@@ -1899,8 +1907,10 @@ The hub's instance CRUD (`cmd/evener-hub/app_instances.go`) calls the same
 functions, with the implicit-instance semantics of §5.1 (edit and
 set-default write a shadowing entry that carries only the fields the user
 changed, never a literal `base_url` the form merely displayed, so §10's
-credential-inheritance stop does not fire on an untouched URL; remove is
-refused). The appwire types
+credential-inheritance stop does not fire on an untouched URL; rename does the
+same under the new name; remove is refused only where the environment supplies
+the instance, since deleting the credential is what takes a user-added one
+away — amended 2026-09-16). The appwire types
 change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIStyle` and gains `Base`, `Protocol`, `Surface`, `Vars`, `Auth`,
 `Implicit`, and `Models` — the instance's known models (exact catalog rows

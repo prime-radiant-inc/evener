@@ -22,6 +22,7 @@ export type {
   MutationOutboxChannel,
   MutationOutboxOptions,
   MutationOutboxStorage,
+  MutationStopBarrier,
   MutationVisibilityTarget,
 } from "./outbox";
 export { isClientReady, MutationOutbox } from "./outbox";
@@ -42,7 +43,13 @@ export type {
   PendingTurnsThreadsPort,
   SubmittedDraft,
 } from "./pendingTurns";
-export { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
+export {
+  awaitingFirstFrameSend,
+  blockedEntries,
+  createPendingTurnsStore,
+  outboxEntriesByState,
+  recoveryEntries,
+} from "./pendingTurns";
 export type {
   MutationPersistencePort,
   MutationPersistenceSnapshot,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { marketplaceSourceLabel } from "@evener/appwire-client";
+import { marketplaceSourceLabel, type ConnectionState } from "@evener/appwire-client";
 import type {
   MarketplaceAddParams,
   PluginRefParams,
@@ -22,6 +22,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { ConnectionStatus } from "./ConnectionStatus";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import {
   PLUGIN_MUTATION_BUSY,
@@ -29,7 +30,11 @@ import {
   type PluginMutationGate,
 } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
-import { catalogToBrowse } from "./marketplaceBrowserModel";
+import {
+  appliedRemovalNotice,
+  catalogToBrowse,
+  refetchAfterRemoval,
+} from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -44,6 +49,7 @@ const WRITE_FAILED =
 
 export function MarketplaceBrowser({
   client,
+  connectionState,
   hubName,
   installed,
   gate,
@@ -52,6 +58,7 @@ export function MarketplaceBrowser({
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
+  connectionState: ConnectionState;
   hubName: string;
   installed: PluginsStore;
   // The screen's plugin-mutation gate, shared with the installed list: a
@@ -75,6 +82,15 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // Wired the way PluginsScreen wires its plugins store: the marketplaces
+  // store hears every connection transition through connectionChanged, so a
+  // reconnection re-reads a list this view has already asked for and retires
+  // the catalogs a change away may have invalidated (storeLifecycle.ts). A
+  // layout effect, so the store knows its connection before the mount
+  // effect's first read issues.
+  useLayoutEffect(() => {
+    model.connectionChanged(client, connectionState);
+  }, [model, client, connectionState]);
   useEffect(() => {
     model.start();
     void model.getState().fetchMarketplaces();
@@ -115,14 +131,27 @@ export function MarketplaceBrowser({
       setSelected(null);
   }, [selected, state.marketplaces]);
   // Every write goes through the gate; a refusal reads as busy, a throw as
-  // failure.
-  async function act(action: () => Promise<void>) {
+  // failure. A write whose rejection carries its own shape (a marketplace
+  // removal the hub can report as already applied) hands onFailed the caught
+  // error and chooses what the error slot shows - the generic write-failed
+  // copy by default.
+  async function act(
+    action: () => Promise<void>,
+    onFailed?: (error: unknown) => string | null,
+  ) {
     const version = revision.current;
     setError(null);
-    const outcome = await runGatedMutation(gate, canUseConnection, action);
+    let caught: unknown;
+    const outcome = await runGatedMutation(gate, canUseConnection, () =>
+      action().catch((error: unknown) => {
+        caught = error;
+        throw error;
+      }),
+    );
     if (revision.current !== version) return;
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
-    else if (outcome === "failed") setError(WRITE_FAILED);
+    else if (outcome === "failed")
+      setError(onFailed ? onFailed(caught) : WRITE_FAILED);
   }
   function install(target: PluginRefParams) {
     void act(() => plugins.installPlugin(target.plugin, target.marketplace));
@@ -145,7 +174,15 @@ export function MarketplaceBrowser({
         style: "destructive",
         onPress: () => {
           if (revision.current !== version) return;
-          void act(() => state.removeMarketplace(name));
+          // An applied removal (appliedRemovalNotice's doc) never reads as
+          // a failed write: reconcile a stale list, show at most the litter
+          // warning, never a retry hint.
+          void act(() => state.removeMarketplace(name), (error) => {
+            const notice = appliedRemovalNotice(error);
+            if (notice === undefined) return WRITE_FAILED;
+            if (refetchAfterRemoval(model, name)) void state.fetchMarketplaces();
+            return notice;
+          });
         },
       },
     ]);
@@ -335,6 +372,7 @@ export function MarketplaceBrowser({
       {adding && (
         <AddMarketplace
           client={client}
+          connectionState={connectionState}
           hubName={hubName}
           gate={gate}
           ready={ready}
@@ -348,6 +386,7 @@ export function MarketplaceBrowser({
 }
 
 function AddMarketplace({
+  connectionState,
   client,
   hubName,
   gate,
@@ -356,6 +395,7 @@ function AddMarketplace({
   onClose,
   onAdd,
 }: {
+  connectionState: ConnectionState;
   hubName: string;
   gate: PluginMutationGate;
   ready: boolean;
@@ -427,6 +467,10 @@ function AddMarketplace({
           </View>
           <Action onPress={onClose}>Cancel</Action>
         </View>
+        {/* The native modal covers the banner the browser shows behind it,
+         * so the status and the manual reconnect live here while this form
+         * is open. */}
+        {connectionState !== "ready" ? <ConnectionStatus /> : null}
         <KeyboardAvoidingView
           style={styles.fill}
           enabled={Platform.OS === "android"}

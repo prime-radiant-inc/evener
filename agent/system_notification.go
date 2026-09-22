@@ -3,14 +3,19 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 // systemNotification wraps msg in a <system-notification> faux-XML block.
 // These blocks are used for one-way notifications to the model that are not
 // steering messages (which use <SYSTEM-REMINDER>) — e.g. tool-output context
-// like a skill's directory path, or a callback-cancellation notice.
+// like a skill's directory path, or a callback-cancellation notice. The tags
+// come from apptranscript's exported constants — the same spelling its
+// reloaded-bubble filter matches on — so the producer and the filter cannot
+// drift apart.
 func systemNotification(msg string) string {
-	return "<system-notification>" + msg + "</system-notification>"
+	return apptranscript.SystemNotificationOpenTag + msg + apptranscript.SystemNotificationCloseTag
 }
 
 // systemNotificationf is the format variant of systemNotification.
