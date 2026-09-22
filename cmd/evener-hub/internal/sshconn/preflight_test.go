@@ -50,7 +50,7 @@ func TestParseEffectiveUID(t *testing.T) {
 	}
 }
 
-// TestOSArchMappingParity pins the uname mapping to install.sh:21-45. If
+// TestOSArchMappingParity pins the uname mapping to install.sh:35-59. If
 // install.sh grows a target, this table and mapOS/mapArch must change together.
 func TestOSArchMappingParity(t *testing.T) {
 	osCases := []struct {

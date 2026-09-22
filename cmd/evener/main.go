@@ -387,6 +387,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  serve\tRun the evener HTTP/RPC server\n")
 	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
+	_, _ = fmt.Fprintf(tw, "  install\tInstall Evener on a remote macOS or Linux host over SSH\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
 	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
@@ -473,7 +474,8 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 		upgrade: func(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 			return runUpgrade(args, stdout, stderr)
 		},
-		plugin: runPlugin,
+		install: runInstall,
+		plugin:  runPlugin,
 		hub: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			// The hub's attach subcommand bridges AppWire over this process's
 			// stdin/stdout, so they must be threaded through rather than dropped:
@@ -512,6 +514,7 @@ type cliCommandRunners struct {
 	launchCheck func([]string, io.Reader, io.Writer, io.Writer) error
 	openAI      func([]string, io.Reader, io.Writer, io.Writer) error
 	upgrade     func([]string, io.Reader, io.Writer, io.Writer) error
+	install     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
 	hub         func([]string, io.Reader, io.Writer, io.Writer) error
 	tui         func([]string, io.Reader, io.Writer, io.Writer) error
@@ -535,6 +538,8 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener openai", runners.openAI(args[1:], stdin, stdout, stderr)
 	case "upgrade":
 		return true, "evener upgrade", runners.upgrade(args[1:], stdin, stdout, stderr)
+	case "install":
+		return true, "evener install", runners.install(args[1:], stdin, stdout, stderr)
 	case "plugin":
 		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	case "hub":

@@ -282,8 +282,11 @@ func TestTopLevelHelpListsSubcommands(t *testing.T) {
 	fs.Usage()
 	usage := stderr.String()
 
-	for _, cmd := range []string{"openai", "serve", "launch-check", "upgrade"} {
-		if !strings.Contains(usage, cmd) {
+	for _, cmd := range []string{"openai", "serve", "launch-check", "upgrade", "install", "plugin", "hub", "tui", "doctor", "migrate", "models", "providers"} {
+		// The indented row, not a bare substring: "install" also appears inside
+		// "Upgrade installed Evener binaries", so only the command row proves the
+		// subcommand is listed.
+		if !strings.Contains(usage, "  "+cmd+" ") {
 			t.Errorf("usage missing subcommand %q:\n%s", cmd, usage)
 		}
 	}

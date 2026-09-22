@@ -3,7 +3,6 @@ package sshconn
 import (
 	"bytes"
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -658,28 +658,6 @@ func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target stri
 	return nil
 }
 
-// installerScript is the installer the fallback runs on the host, compiled into
-// this binary: a byte-for-byte copy of the repository's install.sh, the same
-// file the documented quickstart serves. It is embedded rather than generated
-// (like agent/sandbox's SBPL policies) so it stays auditable as plain shell text
-// and byte-identical across every build.
-//
-// Why a compiled-in copy rather than a URL: the fallback used to download
-// install.sh from the repository's mutable `main` branch and execute it on every
-// remote host. A future branch change, or any compromise of the repository,
-// therefore gained arbitrary code execution on every auto-deployed host, under
-// the controller's ssh identity and with no operator in the loop. The controller
-// binary is the trust anchor instead: its installer copy is reviewed, built, and
-// (for a release) published as part of the same artifact the operator chose to
-// run, and it cannot change under the controller's feet.
-//
-// The copy is kept honest by TestRound11EmbeddedInstallerMatchesTheReviewedScript,
-// which fails whenever it drifts from the repository's install.sh; the fix for a
-// failure is to re-copy the reviewed script, never to loosen the check.
-//
-//go:embed install.sh
-var installerScript []byte
-
 // installerRefFor maps this controller's build channel to the artifact
 // reference install.sh accepts as EVENER_INSTALL_VERSION. install.sh treats that
 // variable as a GitHub *release tag* (`$repo/releases/download/$version`), while
@@ -759,36 +737,6 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 	return bindir, shareBindir, p, nil
 }
 
-// installerCommand builds the remote command that runs the embedded installer
-// pinned to ref, installing into bindir/shareBindir when a custom run target is
-// given. The script itself arrives on stdin (deployInstaller feeds
-// installerScript), so the host fetches nothing to execute: its only network
-// use is install.sh's own archive and checksums.txt download. The installer runs
-// with the variables passed to `env` (not to sh), and every value is
-// rendered as one shell word by internal/shellquote.
-//
-// It writes the script to a temp file and runs it only after that write
-// succeeds AND the file's byte count matches the embedded script's length,
-// rather than feeding it straight to an interpreter: a dropped or truncated ssh
-// stream must not execute half a script, and ssh reports a dropped stream as a
-// successful EOF, so `cat` alone exits 0 on a partial transfer. The count is the
-// same check pushBinaryRemote makes — the two handoffs a host executes from a
-// stream must fail closed identically. A pipeline returns the LAST command's
-// status, so `cat … | sh` would report sh's status and hide the write failure
-// entirely. Round ten's property — check the handoff before executing — is
-// preserved; round eleven replaces the download whose status it checked with the
-// embedded copy, and round twelve adds the byte count that catch makes possible.
-func installerCommand(ref, bindir, shareBindir string, size int) string {
-	env := "EVENER_INSTALL_VERSION=" + shellquote.RemoteWord(ref)
-	if bindir != "" {
-		env += " BINDIR=" + shellquote.RemoteWord(bindir) + " EVENER_SHARE_BINDIR=" + shellquote.RemoteWord(shareBindir)
-	}
-	tmp := "tmp=$(mktemp \"${TMPDIR:-/tmp}/evener-install.XXXXXX\") || exit 1"
-	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
-	verify := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(size) + " ]"
-	return tmp + "; " + cleanup + "; cat > \"$tmp\" && " + verify + " && env " + env + " sh \"$tmp\""
-}
-
 // deployInstaller is the fallback deploy path for a controller with no build
 // source: it streams the embedded installer to the host pinned to the
 // controller's own build channel, then verifies the installed binary is the
@@ -817,7 +765,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", err
 	}
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir, len(installerScript))), bytes.NewReader(installerScript))
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remoteinstall.Command(ref, "", bindir, shareBindir)), bytes.NewReader(remoteinstall.Script))
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q installer (%s): %w: %s", ErrDeploy, host.Name, ref, err, tail(out))
 	}
