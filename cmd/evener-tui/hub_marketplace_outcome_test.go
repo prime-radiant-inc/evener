@@ -1238,3 +1238,212 @@ func TestMarketplaceMutateResultAppliedSnapshotRefetchesPastTheAdvancingFloor(t 
 		t.Fatalf("panel row after replacement read = %q, want the newer %q", remove.Name, added.Name)
 	}
 }
+
+func TestMarketplaceStaleRefreshDuringReconciliationKeepsWarning(t *testing.T) {
+	stale := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	confirmed := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{confirmed}}, nil
+		})
+	})
+	defer cleanup()
+
+	// A remove is in flight (issued as generation 1) and a refresh of
+	// "kept" was issued after it (generation 2) when the removal's
+	// unavailable outcome lands and arms the read boundary.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, stale),
+		marketplaceRemovePending:       stale.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	issued, delayedRefresh := m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: confirmed.Name})
+	m = issued.(hubModel)
+	if delayedRefresh == nil {
+		t.Fatal("refresh did not create a delayed mutation command")
+	}
+	got, reconcileCmd := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err:        marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains, AppliedUnavailable: true}),
+		Action:     "remove",
+		Name:       stale.Name,
+		Generation: 1,
+	})
+	after := got.(hubModel)
+	if reconcileCmd == nil || !after.marketplaceReconcilePending {
+		t.Fatal("unavailable removal did not start reconciliation")
+	}
+	if after.err == nil {
+		t.Fatal("unavailable removal did not leave its warning standing")
+	}
+
+	// The refresh was issued before the removal landed, so its snapshot
+	// still carries the removed marketplace: the boundary must discard it
+	// wholesale - without disturbing the fence, and without erasing the
+	// warning, which no list read may erase either.
+	got, replacement := after.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{stale}},
+		Action:     "refresh",
+		Name:       confirmed.Name,
+		Generation: 2,
+	})
+	after = got.(hubModel)
+	if replacement == nil {
+		t.Fatal("discarded stale refresh should schedule the replacement read that lands its effect")
+	}
+	if after.marketplaceRemovePending != stale.Name || !after.marketplaceReconcilePending {
+		t.Fatalf("stale refresh changed pending state = %q/%v, want fence preserved", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
+		t.Fatalf("stale refresh cleared the standing removal warning = %v", after.err)
+	}
+	updated, panelCmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale refresh snapshot discarded the pending marketplace row")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != stale.Name {
+		t.Fatalf("stale refresh snapshot selected %q, want %q", remove.Name, stale.Name)
+	}
+
+	fresh := replacement().(launchconfig.MarketplaceListResultMsg)
+	if fresh.Err != nil || fresh.ReconcileGeneration != after.marketplaceReconcileGeneration || fresh.List.Marketplaces[0].Name != confirmed.Name {
+		t.Fatalf("replacement list = %+v, want the current confirmed snapshot", fresh)
+	}
+	got, _ = after.handleMarketplaceListResult(fresh)
+	after = got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("replacement list left pending state = %q/%v, want cleared", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+}
+
+func TestMarketplaceDelayedRefreshAfterAppliedSettlementKeepsWarning(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceRefresh, func(context.Context, appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed, kept}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	// The remove (generation 1) and then a refresh of "kept" (generation 2)
+	// are in flight when the removal lands with an applied snapshot.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed, kept),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	issued, delayedRefresh := m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: kept.Name})
+	m = issued.(hubModel)
+	if delayedRefresh == nil {
+		t.Fatal("refresh did not create a delayed mutation command")
+	}
+
+	got, replacement := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err: marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+			EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+			Applied:         appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+		}),
+		Action:     "remove",
+		Name:       removed.Name,
+		Generation: 1,
+	})
+	after := got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("applied settlement state = %q/%v, want cleared fence", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	if after.err == nil {
+		t.Fatal("applied settlement did not leave its warning standing")
+	}
+	if replacement == nil {
+		t.Fatal("applied settlement should schedule its replacement read past the advancing floor")
+	}
+
+	// The refresh's response still carries the removed marketplace. Issued
+	// below the floor the settlement just armed, it is discarded wholesale
+	// - and a discarded response is not the model's news, so the
+	// clone-remains warning must survive it exactly as it survives every
+	// list read.
+	delayed := delayedRefresh().(launchconfig.MarketplaceMutateResultMsg)
+	if delayed.Generation != 2 {
+		t.Fatalf("delayed refresh generation = %d, want request generation 2", delayed.Generation)
+	}
+	got, _ = after.handleMarketplaceMutateResult(delayed)
+	after = got.(hubModel)
+	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
+		t.Fatalf("stale refresh cleared the applied warning = %v", after.err)
+	}
+	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale refresh replaced the applied marketplace panel")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("stale refresh selected %q, want %q", remove.Name, kept.Name)
+	}
+}
+
+func TestMarketplaceDelayedRefreshAfterFreshReconciliationKeepsWarning(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceRefresh, func(context.Context, appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{removed, kept}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	issued, delayedRefresh := m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: kept.Name})
+	m = issued.(hubModel)
+	if delayedRefresh == nil {
+		t.Fatal("refresh did not create a delayed mutation command")
+	}
+	got, reconcile := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err:        marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains, AppliedUnavailable: true}),
+		Action:     "remove",
+		Name:       removed.Name,
+		Generation: 1,
+	})
+	after := got.(hubModel)
+	if reconcile == nil || !after.marketplaceReconcilePending {
+		t.Fatal("unavailable removal did not start reconciliation")
+	}
+	fresh := reconcile().(launchconfig.MarketplaceListResultMsg)
+	got, _ = after.handleMarketplaceListResult(fresh)
+	after = got.(hubModel)
+	if after.marketplaceRemovePending != "" || after.marketplaceReconcilePending {
+		t.Fatalf("fresh reconciliation state = %q/%v, want cleared fence", after.marketplaceRemovePending, after.marketplaceReconcilePending)
+	}
+	if after.err == nil {
+		t.Fatal("fresh reconciliation cleared the unavailable warning")
+	}
+
+	delayed := delayedRefresh().(launchconfig.MarketplaceMutateResultMsg)
+	if delayed.Generation != 2 {
+		t.Fatalf("delayed refresh generation = %d, want request generation 2", delayed.Generation)
+	}
+	got, _ = after.handleMarketplaceMutateResult(delayed)
+	after = got.(hubModel)
+	if after.err == nil || !strings.Contains(after.err.Error(), "clone files remain") {
+		t.Fatalf("stale refresh cleared the unavailable warning = %v", after.err)
+	}
+	updated, cmd := after.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if cmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("stale refresh replaced the reconciled marketplace panel")
+	}
+	if remove := cmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("stale refresh resurrected %q, want %q", remove.Name, kept.Name)
+	}
+}
