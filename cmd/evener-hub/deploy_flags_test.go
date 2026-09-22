@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/buildinfo"
 )
 
 // TestParseHubOptionsRejectsMissingDeployBinary pins that a bad -deploy-binary
@@ -210,4 +212,87 @@ func otherTarget(goos, goarch string) (string, string) {
 		return goos, "arm64"
 	}
 	return goos, "amd64"
+}
+
+// TestRunMainLogsTheDeployPathItWasGiven pins acceptance criterion 10 as landed:
+// the hub logs, at startup, which deploy path it was started with — the
+// -deploy-binary / -build-source value, and which one wins when both are set.
+// That single line is the whole deploy-leg log: nothing logs a host, a target,
+// or a file's contents, so the criterion is stated as exactly this and no more.
+// The hub's other startup lines (the auth URL among them) are not part of the
+// deploy leg and are unchanged by this slice.
+func TestRunMainLogsTheDeployPathItWasGiven(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	// The checkout only has to pass verifyBuildSource here. This test binary
+	// carries no build stamp, so the revision check is skipped; pinning GitSHA to
+	// "" keeps that true if the package is ever built with ldflags.
+	origSHA := buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.GitSHA = origSHA })
+	buildinfo.GitSHA = ""
+	checkout := t.TempDir()
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "both flags log which one wins",
+			args: []string{"-deploy-binary", exe, "-build-source", checkout},
+			want: "[hub] deploy path: -deploy-binary " + exe + " takes precedence over -build-source " + checkout,
+		},
+		{
+			name: "deploy-binary alone",
+			args: []string{"-deploy-binary", exe},
+			want: "[hub] deploy path: -deploy-binary " + exe,
+		},
+		{
+			name: "build-source alone",
+			args: []string{"-build-source", checkout},
+			want: "[hub] deploy path: -build-source " + checkout,
+		},
+		{
+			name: "no deploy path logs nothing",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg, deps := newTraceMainTestDeps(t)
+			var stderr bytes.Buffer
+			args := append([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, tc.args...)
+			if err := runMain(args, &stderr, deps); err != nil {
+				t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+			}
+			logged := deployPathLogLines(stderr.String())
+			if tc.want == "" {
+				if len(logged) != 0 {
+					t.Fatalf("a hub with no deploy path logged a deploy leg: %v", logged)
+				}
+				return
+			}
+			if len(logged) != 1 || logged[0] != tc.want {
+				t.Fatalf("deploy path log = %v, want exactly [%q]", logged, tc.want)
+			}
+		})
+	}
+}
+
+// deployPathLogLines returns the hub's deploy-path startup lines, which are the
+// whole deploy-leg log.
+func deployPathLogLines(stderr string) []string {
+	var out []string
+	for line := range strings.SplitSeq(stderr, "\n") {
+		if strings.HasPrefix(line, "[hub] deploy path: ") {
+			out = append(out, line)
+		}
+	}
+	return out
 }

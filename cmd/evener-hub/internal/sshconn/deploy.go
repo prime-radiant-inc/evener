@@ -663,12 +663,17 @@ var installerScript []byte
 //     terminally (ErrVersionMismatch) rather than re-fetching the same artifact
 //     forever;
 //   - dev/dirty: refused with ErrDeploy — there is no publishable identity to
-//     pin, so the operator must use the push path or Options.BuildBinary.
+//     pin, so the refusal appends the remedy clause.
+//
+// remedy is the remedy clause those refusals append. The caller resolves it from
+// Options.DeployHelp, so a hub tells the operator which flags to set while an
+// embedder with no flags to name keeps the library's own sentence
+// (Manager.installerRemedy). It must be non-empty.
 //
 // `latest` is never passed.
-func installerRefFor(channel, releaseTag, dirty string) (string, error) {
+func installerRefFor(channel, releaseTag, dirty, remedy string) (string, error) {
 	if strings.TrimSpace(dirty) == "true" {
-		return "", fmt.Errorf("%w: this controller was built from a dirty tree, so the installer fallback has no published artifact to pin; use the atomic push path or Options.BuildBinary", ErrDeploy)
+		return "", fmt.Errorf("%w: this controller was built from a dirty tree, so the installer fallback has no published artifact to pin; %s", ErrDeploy, remedy)
 	}
 	switch channel {
 	case "release":
@@ -680,7 +685,7 @@ func installerRefFor(channel, releaseTag, dirty string) (string, error) {
 	case "snapshot":
 		return "snapshot", nil
 	default:
-		return "", fmt.Errorf("%w: this controller's build channel %q has no publishable artifact to pin (buildinfo.Version() %q is a Git SHA, not a release tag); use the atomic push path or Options.BuildBinary", ErrDeploy, channel, buildinfo.Version())
+		return "", fmt.Errorf("%w: this controller's build channel %q has no publishable artifact to pin (buildinfo.Version() %q is a Git SHA, not a release tag); %s", ErrDeploy, channel, buildinfo.Version(), remedy)
 	}
 }
 
@@ -760,7 +765,7 @@ func installerCommand(ref, bindir, shareBindir string, size int) string {
 // moved artifact is a failed verification (a terminal ErrVersionMismatch), never
 // a retry of the same pinned ref and never an attach.
 func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
+	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	if err != nil {
 		return "", err
 	}
@@ -802,9 +807,11 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	// controller's means the pinned ref has moved past this controller's commit
 	// (for a snapshot build, the mutable `snapshot` tag). Refuse terminally as a
 	// version mismatch — ErrDeploy would be retried forever by the supervisor,
-	// re-downloading and re-rejecting the same unmatchable artifact.
+	// re-downloading and re-rejecting the same unmatchable artifact. The remedy
+	// clause names the path that does carry a provable identity, so the operator
+	// is told how to stop depending on the moved tag.
 	if want := m.opts.controllerVersion(); lc.Version != want {
-		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel tag cannot be resolved by retrying)", ErrVersionMismatch, host.Name, lc.Version, want, ref)
+		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact %q does not match the controller's build; a moved channel tag cannot be resolved by retrying); %s", ErrVersionMismatch, host.Name, lc.Version, want, ref, m.installerRemedy())
 	}
 	return runTarget, nil
 }

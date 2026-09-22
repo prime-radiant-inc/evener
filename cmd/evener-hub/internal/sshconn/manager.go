@@ -2479,20 +2479,35 @@ func (m *Manager) canDeploy() bool {
 	if m.canBuild() {
 		return true
 	}
-	_, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
+	_, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	return err == nil
 }
 
-// deployHelp is the remedy clause the terminal version refusal appends: the
-// embedder's text when it supplied any, else the library's default. See
-// Options.DeployHelp. The default is what an embedder with no flags to name
-// gets, so an unconfigured hub that also supplies no help is refused exactly as
-// it was before this field existed.
-func (m *Manager) deployHelp() string {
+// deployRemedy is the remedy clause a deploy refusal appends: the embedder's
+// text when it supplied any, else the library's own sentence for that refusal.
+// See Options.DeployHelp.
+func (m *Manager) deployRemedy(libraryDefault string) string {
 	if help := strings.TrimSpace(m.opts.DeployHelp); help != "" {
 		return help
 	}
-	return "set Options.BuildSource"
+	return libraryDefault
+}
+
+// deployHelp is the remedy clause the terminal version refusal appends. The
+// default is what an embedder with no flags to name gets, so an unconfigured hub
+// that also supplies no help is refused exactly as it was before this field
+// existed.
+func (m *Manager) deployHelp() string {
+	return m.deployRemedy("set Options.BuildSource")
+}
+
+// installerRemedy is the remedy clause the installer-path refusals append. Its
+// default names the option an embedder sets directly, which is the right text
+// when there are no CLI flags to name; a hub supplies Options.DeployHelp
+// instead, so an operator is told which flags to set rather than an internal
+// field they cannot act on.
+func (m *Manager) installerRemedy() string {
+	return m.deployRemedy("use the atomic push path or Options.BuildBinary")
 }
 
 // isDevDeployed reports whether this Manager has installed its own dev build on
