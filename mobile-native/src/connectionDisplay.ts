@@ -60,18 +60,23 @@ export function connectionDisplay(
  * pattern), never causes its own re-render, and only ever needs to be read
  * alongside the state that already re-renders the screen when it changes.
  *
- * `hubId` scopes it to the hub the screen is showing: a navigator can reuse
- * one screen instance across a hub change without unmounting it (its route
- * params change in place), and `everReady` for the PREVIOUS hub says nothing
- * about the new one - it is reset the moment `hubId` moves. */
+ * `hubId` is the hub whose connection `state` reports - the ACTIVE
+ * profile's hub, not the one the route names. The two disagree in the
+ * window where a navigator has already re-keyed a mounted screen to
+ * another hub while the connection still reports the previous one (the
+ * screen's own `activeProfile?.id !== route.params.hubId` early return is
+ * what hides that window's data), and retention recorded for the previous
+ * hub says nothing about the next one: both refs are reset the moment
+ * `hubId` moves, so a hub the profile is still moving toward inherits
+ * neither the banner history nor the fatal wall of the one before it. */
 export function useConnectionDisplay(
-	hubId: string,
+	hubId: string | undefined,
 	state: ConnectionState,
 	fatal: boolean,
 ): ConnectionDisplay {
 	const everReady = useRef(false);
 	const fatalRecovery = useRef(false);
-	const scope = useRef(hubId);
+	const scope = useRef<string | undefined>(hubId);
 	if (scope.current !== hubId) {
 		scope.current = hubId;
 		everReady.current = false;
@@ -123,16 +128,18 @@ export function whenReady<A extends unknown[]>(
  * ClientProvider slot - AFTER `await fresh.connect()` resolves, never on
  * construction.
  *
- * Scoped to `hubId` for the same reason `useConnectionDisplay` is: a reused
- * screen instance must not go on rendering the previous hub's client once
- * `hubId` has moved past it. */
+ * Scoped to `hubId` - the ACTIVE profile's hub, not the route's - for the
+ * same reason `useConnectionDisplay` is: once the connection's hub moves,
+ * whatever client the previous hub adopted is dropped, so a screen re-keyed
+ * ahead of its profile never renders the previous hub's retained client
+ * under the new hub's banner. */
 export function useRenderClient(
 	client: AppwireClient | null,
 	state: ConnectionState,
-	hubId: string,
+	hubId: string | undefined,
 ): AppwireClient | null {
 	const lastClient = useRef<AppwireClient | null>(null);
-	const scope = useRef(hubId);
+	const scope = useRef<string | undefined>(hubId);
 	if (scope.current !== hubId) {
 		scope.current = hubId;
 		lastClient.current = null;

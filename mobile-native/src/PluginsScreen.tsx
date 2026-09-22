@@ -74,16 +74,16 @@ function PluginsScreenBody({
   // render cannot leave behind.
   const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(route.params.hubId, state, fatal);
+  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
   const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   // A flap keeps `client` set (the connection layer's own generation guard -
   // hubConnection.ts), but a manual retry clears it, then reports a fresh
   // client while it is still dialing; the list keeps rendering the previous
   // one through the whole gap, never the not-yet-ready replacement, rather
   // than dropping to the wall for a moment the banner should cover just as
-  // well as a passive reconnect does. Scoped to the hub: see
+  // well as a passive reconnect does. Scoped to the active hub: see
   // useRenderClient's own doc.
-  const renderClient = useRenderClient(client, state, route.params.hubId);
+  const renderClient = useRenderClient(client, state, activeProfile?.id);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>

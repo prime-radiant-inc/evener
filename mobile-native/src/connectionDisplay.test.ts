@@ -94,20 +94,11 @@ it("useConnectionDisplay: never having been ready is a wall, not a banner, even 
 	expect(hook.result.current).toBe("wall");
 });
 
-it("useConnectionDisplay: a hub change resets everReady, even for a screen instance reused across it", () => {
-	let hubId = "hub-1";
-	const state: ConnectionState = "connecting";
-	const hook = renderHook(() => useConnectionDisplay(hubId, state, false));
-	// hub-1 was never ready either, but prove the reset by getting hub-1
-	// ready first, then switching hubId without unmounting the hook.
-	expect(hook.result.current).toBe("wall");
-	hubId = "hub-2";
-	hook.rerender();
-	// A screen instance reused for a different hub must not show hub-1's
-	// banner history for hub-2 - still never ready, still a wall.
-	expect(hook.result.current).toBe("wall");
-});
-
+// This is the reset's own coverage (the hub-change-resets-everReady case):
+// hub-1 must first be ready for the hub-2 wall to prove anything. A sibling
+// case whose state never reached "ready" passed with the reset deleted, so
+// the panel's review retired it as tautological and left this test as the
+// one that actually exercises the reset.
 it("useConnectionDisplay: everReady for the previous hub does not banner the next hub before it is ready", () => {
 	let hubId = "hub-1";
 	let state: ConnectionState = "ready";

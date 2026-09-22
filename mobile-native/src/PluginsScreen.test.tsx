@@ -191,3 +191,42 @@ it("keeps Add marketplace open when readiness is lost during submit", async () =
 		tree.root.findByProps({ accessibilityLabel: "Marketplace source" }).props.value,
 	).toBe("https://example.test/plugins.git");
 });
+
+it("never renders the previous hub's retained client once the route names a hub whose profile is not active", async () => {
+	// The panel-review gap: the route is re-keyed to hub B while the
+	// connection still reports hub A - ready, with hub A's client. The
+	// mismatch window's early return hides that data, but the retention
+	// hooks must not record hub A's readiness under the route's hub either:
+	// when the profile then moves to hub B mid-flap, hub B must meet a wall
+	// for a hub it has never been ready for - not a banner over hub A's
+	// retained client and rows.
+	const hubA = pluginsClient([plugin]);
+	harness.connection = {
+		activeProfile: { id: "hub-a", name: "A hub" },
+		client: hubA.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-b" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("no longer selected");
+
+	harness.connection = {
+		activeProfile: { id: "hub-b", name: "B hub" },
+		client: null,
+		state: "reconnecting",
+		fatal: false,
+		retry: () => {},
+	};
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	const rekeyed = renderedText(tree);
+	expect(rekeyed).toContain("B hub");
+	expect(rekeyed).toContain("to manage plugins.");
+	expect(rekeyed).not.toContain("demo-plugin");
+});
