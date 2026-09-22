@@ -138,6 +138,15 @@ func evaluate(command string) (Result, error) {
 		if err == nil {
 			evaluateMu.Lock()
 			cache[command] = minted
+			// Pruning rides the insertion: an expired entry holds a
+			// secret nobody can be served again, so it leaves memory with
+			// the next command that caches, long before growth could ever
+			// matter.
+			for k, v := range cache {
+				if !now.Before(v.ExpiresAt) {
+					delete(cache, k)
+				}
+			}
 			evaluateMu.Unlock()
 		}
 		return minted, err
@@ -212,8 +221,11 @@ func tokenExpiry(value string) (time.Time, bool) {
 // environment, a closed stdin (a prompting command reads EOF instead of
 // hanging), and no TTY. It returns the raw stdout; trimming the value and
 // refusing empty output is the evaluator's job, so every executor behaves
-// uniformly. Extracting the exact value is the command's job, which is why
-// gateway recipes pipe through what they need.
+// uniformly — with one exception: a run that printed nothing to stdout but
+// complained on stderr reports the complaint as its failure, because the
+// author debugging an empty mint needs the command's own diagnosis, not a
+// bare "no output". Extracting the exact value is the command's job, which
+// is why gateway recipes pipe through what they need.
 func realRunCommand(command string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
@@ -280,6 +292,9 @@ func realRunCommand(command string) (string, error) {
 	}
 	if stdout.overflowed() {
 		return "", &CommandError{Detail: "command output exceeds 1 MiB"}
+	}
+	if stdout.String() == "" && stderr.String() != "" {
+		return "", &CommandError{Detail: firstLine(stderr.String())}
 	}
 	return stdout.String(), nil
 }

@@ -44,6 +44,14 @@ func TestRealExecutorThroughEvaluate(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+
+	t.Run("no stdout with a stderr complaint carries the complaint", func(t *testing.T) {
+		ResetForTest()
+		_, err := evaluate("echo boom >&2")
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("got %v; want the command's stderr as the diagnosis", err)
+		}
+	})
 }
 
 // These drive the real executor directly for the failure taxonomy it owns.

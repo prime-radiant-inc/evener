@@ -196,3 +196,42 @@ func TestTokenExpiryRejectsOutOfRangeClaims(t *testing.T) {
 		}
 	}
 }
+
+// Pruning rides the insertion: a dead entry holds nothing worth keeping,
+// so an expired secret leaves memory with the next command that caches.
+func TestEvaluatePrunesExpiredEntries(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	base := time.Unix(1_800_000_000, 0)
+	now := base
+	Now = func() time.Time { return now }
+	RunCommand = func(cmd string) (string, error) {
+		if cmd == "short-lived" {
+			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
+		}
+		return "plain", nil
+	}
+
+	if _, err := evaluate("short-lived"); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	evaluateMu.Lock()
+	if len(cache) != 1 {
+		evaluateMu.Unlock()
+		t.Fatalf("cache holds %d entries; want the fresh mint alone", len(cache))
+	}
+	evaluateMu.Unlock()
+
+	now = base.Add(10 * time.Minute)
+	if _, err := evaluate("other"); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	evaluateMu.Lock()
+	defer evaluateMu.Unlock()
+	if len(cache) != 1 {
+		t.Fatalf("cache holds %d entries after the prune; want only the fresh one", len(cache))
+	}
+	if _, ok := cache["short-lived"]; ok {
+		t.Fatal("the expired entry survived the prune")
+	}
+}
