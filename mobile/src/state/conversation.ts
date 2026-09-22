@@ -1294,9 +1294,25 @@ export function createConversationStore() {
     itemFoldIdentities?: WeakMap<ItemModel, ReadonlySet<string>>,
     activeTurnId?: string,
   ): TurnModel[] {
-    const retainedIdentities = new Set(
-      retainedItems.flatMap((item) => [...timelineIdentities(item)]),
-    );
+    // RoboRev round 29: the row side carries bare ids too, not just each
+    // row's key-first identity. A KEYLESS backing item matches a keyed row
+    // by bare id under the package's own rule (itemIdentityMatches falls to
+    // the id when one side carries no key), so a keyed row that contributed
+    // only its transcript key left that item outside the window and the
+    // bound shed the payload behind a row still on screen. Clustered
+    // members and attachment sources follow the same rule, and a bare-id
+    // hit against a row the item conflicts with on transcript key only
+    // over-keeps — the same safe direction the item-side check below takes.
+    const retainedIdentities = new Set<string>();
+    for (const row of retainedItems) {
+      for (const identity of timelineIdentities(row)) retainedIdentities.add(identity);
+      retainedIdentities.add(row.id);
+      if (row.kind === "activity" && row.members) {
+        for (const member of row.members) retainedIdentities.add(member.id);
+      }
+      const source = attachmentSourceId(row);
+      if (source !== null) retainedIdentities.add(source);
+    }
     let trimmed = false;
     const bounded = turns.map((turn) => {
       if (turn.items.length === 0) return turn;
@@ -1316,9 +1332,10 @@ export function createConversationStore() {
       // above: a retained row keeps the turn that could supply it alive
       // whether it matches by transcript key or by bare id — the same rule
       // mergeTurnHistory matches fragments by, clustered members included.
-      // Testing the bare id too only ever over-keeps (a row that shares an
-      // id but conflicts on transcript key is not in the retained set under
-      // its id), and over-keeping is the safe direction for merge parity.
+      // Both sides read from above now that the row side carries bare ids:
+      // an item can hit a bare id whose row it conflicts with on transcript
+      // key, but a false hit only over-keeps — the safe direction for merge
+      // parity (round 29).
       // Review round 14: a merged item's own identity is not the only one
       // that backs a row — its fold sources' identities do too. An alias
       // chain can settle content on an identity no row carries while the

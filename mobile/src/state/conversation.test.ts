@@ -9272,6 +9272,82 @@ describe("ConversationStore", () => {
       expect(sessionTokens(conv)).toEqual({ inputTokens: 1201, outputTokens: 91, scope: "loaded" });
     });
 
+    // RoboRev round 29: the window's row side carries bare ids too. A
+    // KEYLESS backing item matches a keyed row by bare id under the
+    // package's own identity rule (itemIdentityMatches falls to the id when
+    // one side carries no key), so a keyed row that contributed only its
+    // transcript key left its keyless backing item outside the window and
+    // the bound shed the payload behind a row still on screen.
+    it("a keyed retained row keeps its keyless backing item's turn in the window", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: Array.from({ length: 480 }, (_, j) => ({
+            kind: "user" as const,
+            id: `f-${j}`,
+            text: `f-${j}`,
+          })),
+          turns: [
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // A page whose display row is keyed while its backing fragment item
+      // arrives keyless — the exact pair itemIdentityMatches still matches
+      // by bare id.
+      service.olderItems = {
+        items: [
+          {
+            kind: "assistant" as const,
+            id: "ra",
+            markdown: "row",
+            streaming: false,
+            transcriptKey: "rk",
+          },
+        ],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt",
+              [
+                {
+                  id: "ra",
+                  turnId: "pt",
+                  type: "agentMessage",
+                  text: "alpha",
+                  position: { entry: 90, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      const conv = store.getState().conversation!;
+      // The keyed row backs the keyless item by bare id, so the turn keeps
+      // its full payload inside the window.
+      expect(conv.turns.find((t) => t.id === "pt")?.items).toEqual([
+        expect.objectContaining({ id: "ra", text: "alpha" }),
+      ]);
+      // Keeping the window seat never changes the accounting: the turn's
+      // stamp counts once either way.
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 501, outputTokens: 21, scope: "loaded" });
+    });
+
     // Review round 11, alias reconciliation at rehydrate: the same
     // duplicate-identity hole the superseded-alias fold opens at loadOlder
     // opens at rehydrate too — the turn carries its restored item under one
