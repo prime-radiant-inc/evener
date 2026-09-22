@@ -1636,6 +1636,82 @@ func TestMarketplaceFreshMutationDuringReconciliationKeepsCloneRemainsWarning(t 
 	}
 }
 
+func TestMarketplaceFreshMutationRetryClearsOrdinaryFailureDuringReconciliation(t *testing.T) {
+	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	kept := appwire.MarketplaceEntry{Name: "kept", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}}, nil
+		})
+	})
+	defer cleanup()
+
+	// The unavailable outcome lands and arms the read boundary (generation
+	// 1) with its reconciliation read (generation 2) still outstanding.
+	m := hubModel{
+		client:                         client,
+		pluginsPanel:                   marketplacePanelWithEntries(t, removed),
+		marketplaceRemovePending:       removed.Name,
+		marketplaceReconcileGeneration: 1,
+	}
+	got, _ := m.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err: marketplaceCloneRemainsError(appwire.MarketplaceUnregisteredCloneRemainsData{
+			EvenerErrorInfo:    appwire.ErrorMarketplaceUnregisteredCloneRemains,
+			AppliedUnavailable: true,
+		}),
+		Action:     "remove",
+		Name:       removed.Name,
+		Generation: 1,
+	})
+	after := got.(hubModel)
+	if !after.marketplaceReconcilePending {
+		t.Fatal("unavailable removal did not arm reconciliation")
+	}
+
+	// A refresh of "kept" (generation 3) fails: the failure becomes the
+	// prominent error, and the fence must keep standing.
+	got, _ = after.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Err:        errors.New("refresh failed"),
+		Action:     "refresh",
+		Name:       kept.Name,
+		Generation: 3,
+	})
+	failed := got.(hubModel)
+	if failed.err == nil || !strings.Contains(failed.err.Error(), "refresh failed") {
+		t.Fatalf("failed refresh did not surface its failure = %v", failed.err)
+	}
+	if failed.marketplaceRemovePending != removed.Name || !failed.marketplaceReconcilePending {
+		t.Fatalf("failed refresh disturbed the fence = %q/%v, want preserved", failed.marketplaceRemovePending, failed.marketplaceReconcilePending)
+	}
+
+	// The retry (generation 4) succeeds: its fresh snapshot settles the
+	// fence, and the superseded ordinary failure must clear - only a
+	// reconciliation outcome's own warning survives a settle.
+	got, cmd := failed.handleMarketplaceMutateResult(launchconfig.MarketplaceMutateResultMsg{
+		Action:     "refresh",
+		Name:       kept.Name,
+		Generation: 4,
+		List:       appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{kept}},
+	})
+	retried := got.(hubModel)
+	if cmd != nil {
+		t.Fatal("fresh retry snapshot needs no replacement read")
+	}
+	if retried.marketplaceRemovePending != "" || retried.marketplaceReconcilePending {
+		t.Fatalf("successful retry left the fence at %q/%v, want settled", retried.marketplaceRemovePending, retried.marketplaceReconcilePending)
+	}
+	if retried.err != nil {
+		t.Fatalf("successful retry left the superseded failure standing: %v", retried.err)
+	}
+	updated, panelCmd := retried.pluginsPanel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if panelCmd == nil || updated.(launchconfig.PluginsPanel).Done() {
+		t.Fatal("fresh retry should leave the marketplace list selectable")
+	}
+	if remove := panelCmd().(launchconfig.MarketplaceRemoveMsg); remove.Name != kept.Name {
+		t.Fatalf("panel row after fresh retry = %q, want %q", remove.Name, kept.Name)
+	}
+}
+
 func TestMarketplaceDelayedRefreshAfterAppliedSettlementKeepsWarning(t *testing.T) {
 	removed := appwire.MarketplaceEntry{Name: "removed", Source: appwire.MarketplaceSourceInput{Kind: "url"}}
 	kept := appwire.MarketplaceEntry{Name: "kept", LastUpdated: 1, Source: appwire.MarketplaceSourceInput{Kind: "url"}}

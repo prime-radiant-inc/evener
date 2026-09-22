@@ -887,19 +887,27 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 	// A fresh add or refresh snapshot is a post-removal list read like any
 	// other: route it through the list-result logic so it settles a
 	// pending reconciliation and advances the applied generation under the
-	// same guards that order every other list response. A pending
-	// reconciliation's standing warning must survive the routing so the
-	// settle can classify it: the clone files an unavailable outcome
-	// reported are still on disk whatever this mutation did, and clearing
-	// the account wholesale here would erase that fact before the
-	// classification could keep it. The guards above already established
-	// this response passes the read boundary, so the routed settle always
-	// reaches the classification when a reconciliation is pending - the
-	// clear runs only when there is nothing left for it to classify,
-	// keeping the rule that a fresh response replaces only the news it
-	// supersedes.
+	// same guards that order every other list response. The clear is
+	// selective about what a fresh response may replace: a pending
+	// reconciliation's removed- or unavailable-outcome warning must
+	// survive the routing so the settle can classify it - the clone files
+	// an unavailable outcome reported are still on disk whatever this
+	// mutation did, and clearing the account wholesale here would erase
+	// that fact before the classification could keep it - while an
+	// ordinary failure the mutation supersedes, and anything standing
+	// once no reconciliation is pending, clears exactly like the fresh
+	// news it is. The guards above already established this response
+	// passes the read boundary, so the routed settle always reaches the
+	// classification when a reconciliation is pending.
 	if !m.marketplaceReconcilePending {
 		m.err = nil
+	} else {
+		switch state, _ := classifyMarketplaceRemovalOutcome(m.err); state {
+		case marketplaceRemovalRemoved, marketplaceRemovalUnavailable:
+			// Kept standing for the routed settle to classify.
+		default:
+			m.err = nil
+		}
 	}
 	return m.handleMarketplaceListResult(launchconfig.MarketplaceListResultMsg{
 		List:                msg.List,
