@@ -1031,6 +1031,23 @@ describe("job rows", () => {
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
   });
 
+  test("a command-outcome job row states the card's display words, not raw snake_case", () => {
+    const node = {
+      ...jobRailNode({ status: "command_exited_nonzero", command: "go test ./...", intent: "Find the failure" }),
+      active: false,
+    };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
+    // The hover tooltip carries the same display words.
+    expect(screen.getByTitle("go test ./... · Find the failure · Command failed")).toBeTruthy();
+  });
+
+  test("pre-existing statuses keep their raw words in the status line", () => {
+    const node = { ...jobRailNode({ status: "completed", command: "make check" }), active: false };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("completed");
+  });
+
   test("renders a separate completed-jobs disclosure", () => {
     const toggle = vi.fn();
     render(

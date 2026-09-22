@@ -229,11 +229,13 @@ func shfz_wantForegroundStatus(in shfz_foregroundInputs) (status, reason string)
 
 // shfz_knownStatuses is the closed set of statuses a shellResult may carry.
 var shfz_knownStatuses = map[string]bool{
-	string(jobstore.StatusRunning):   true,
-	string(jobstore.StatusCompleted): true,
-	string(jobstore.StatusFailed):    true,
-	string(jobstore.StatusStopped):   true,
-	string(jobstore.StatusCancelled): true,
+	string(jobstore.StatusRunning):              true,
+	string(jobstore.StatusCompleted):            true,
+	string(jobstore.StatusFailed):               true,
+	string(jobstore.StatusCommandExitedNonzero): true,
+	string(jobstore.StatusCommandKilled):        true,
+	string(jobstore.StatusStopped):              true,
+	string(jobstore.StatusCancelled):            true,
 }
 
 // shfz_modeInputs is the decoded fuzz program for the mode/fault sweep.
