@@ -176,6 +176,19 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		return { outbox, optimistic, recovery };
 	}
 
+	// The one native recovery write with no dispatcher involvement, so the
+	// runtime publishes the change itself. The notify follows the write's
+	// completion, not its rows-affected count - the zero-included rule the
+	// discard paths carry (docs/design/stop-cancellation-outbox.md §4, and
+	// §6's zero-deletion cleanups): a discard whose DELETE commits over
+	// zero rows still refreshes every projection built on subscribeStorage,
+	// and a failed write stays silent, its error propagating unnotified.
+	async discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean> {
+		const discarded = await this.storage.discardRecovery(clientMutationId, targetRef);
+		this.#notifyStorageChange([targetRef]);
+		return discarded;
+	}
+
 	subscribeStorage(listener: NativeMutationStorageListener): () => void {
 		this.#storageListeners.add(listener);
 		return () => this.#storageListeners.delete(listener);
