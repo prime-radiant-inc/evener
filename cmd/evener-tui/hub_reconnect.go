@@ -109,6 +109,16 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 			cmds = append(cmds, recovery)
 		}
 	}
+	// A scheduled marketplace reconciliation read died with the old
+	// connection: its response will never arrive, so an unconfirmed
+	// removal's fence would stay standing - duplicate removals blocked,
+	// the panel stale - until the user happened to reopen /plugins or a
+	// notification refresh ran. Refresh the open panel's marketplace list
+	// through the model's read decision, so the reconnect itself reissues
+	// the tagged read a stranded reconciliation is waiting on.
+	if m.pluginsPanel != nil {
+		cmds = append(cmds, m.marketplaceListRead())
+	}
 	return tea.Batch(cmds...)
 }
 
