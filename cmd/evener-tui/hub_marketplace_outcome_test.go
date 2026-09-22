@@ -159,12 +159,29 @@ func TestClassifyMarketplaceRemovalOutcomeDiscardsPartialJSONSnapshot(t *testing
 	}
 }
 
-func TestClassifyMarketplaceRemovalOutcomeTypedSnapshotMirrorsJSONPresence(t *testing.T) {
-	// The typed twin of the JSON member that omits lastUpdated: decoding
-	// into the struct erases presence, so the missing field and a zero
-	// timestamp are indistinguishable on a typed entry. The JSON path
-	// degrades that member to unavailable; the typed path must not treat
-	// the same row as authoritative.
+func TestClassifyMarketplaceRemovalOutcomeZeroLastUpdatedByDecodingPath(t *testing.T) {
+	// On the JSON path presence is still observable, and a present zero is
+	// a timestamp the hub really sends - hubcore.UnixSeconds maps a zero
+	// time.Time to 0, and the SDK's member validation deliberately accepts
+	// it (marketplaces.test.ts: member validation must not reject payloads
+	// the hub really sends). The zero must therefore classify applied
+	// exactly like any other present timestamp; the JSON member that omits
+	// lastUpdated stays unavailable via the wire-shape check.
+	explicitZero := map[string]any{
+		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
+		"applied": map[string]any{
+			"marketplaces": []any{map[string]any{"name": "kept", "lastUpdated": 0, "source": map[string]any{"kind": "url"}}},
+		},
+	}
+	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(explicitZero))
+	if state != marketplaceRemovalApplied || len(applied.Marketplaces) != 1 || applied.Marketplaces[0].Name != "kept" || applied.Marketplaces[0].LastUpdated != 0 {
+		t.Fatalf("JSON present-zero lastUpdated snapshot = %v/%+v, want applied kept snapshot", state, applied)
+	}
+
+	// On the typed path decoding has already erased presence: a zero
+	// lastUpdated is indistinguishable from the omitted field the JSON
+	// path rejects, so the snapshot degrades to unavailable rather than
+	// let a possibly-truncated member look authoritative.
 	zeroLastUpdated := appwire.MarketplaceUnregisteredCloneRemainsData{
 		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
 		Applied: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{
@@ -172,14 +189,14 @@ func TestClassifyMarketplaceRemovalOutcomeTypedSnapshotMirrorsJSONPresence(t *te
 			Source: appwire.MarketplaceSourceInput{Kind: "url"},
 		}}},
 	}
-	state, applied := classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(zeroLastUpdated))
+	state, applied = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(zeroLastUpdated))
 	if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
 		t.Fatalf("typed zero-lastUpdated snapshot = %v/%+v, want unavailable zero snapshot", state, applied)
 	}
 
-	// A member whose lastUpdated is present - the wire shape the hub
-	// guarantees - stays authoritative, so the mirror is a presence rule,
-	// not a freshness claim.
+	// A typed member whose lastUpdated is present - the wire shape the hub
+	// guarantees - stays authoritative, so the typed rule is a presence
+	// compensation, not a freshness claim.
 	presentLastUpdated := appwire.MarketplaceUnregisteredCloneRemainsData{
 		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
 		Applied: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{
@@ -191,21 +208,6 @@ func TestClassifyMarketplaceRemovalOutcomeTypedSnapshotMirrorsJSONPresence(t *te
 	state, applied = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(presentLastUpdated))
 	if state != marketplaceRemovalApplied || len(applied.Marketplaces) != 1 || applied.Marketplaces[0].Name != "kept" {
 		t.Fatalf("typed wire-valid snapshot = %v/%+v, want applied kept snapshot", state, applied)
-	}
-
-	// The explicit JSON zero passes the wire-shape check - the field is
-	// present and a number - but once decoded it is the same
-	// indistinguishable zero, so the row re-check degrades it with its
-	// typed twin rather than let a truncated member through.
-	explicitZero := map[string]any{
-		"evenerErrorInfo": string(appwire.ErrorMarketplaceUnregisteredCloneRemains),
-		"applied": map[string]any{
-			"marketplaces": []any{map[string]any{"name": "kept", "lastUpdated": 0, "source": map[string]any{"kind": "url"}}},
-		},
-	}
-	state, applied = classifyMarketplaceRemovalOutcome(marketplaceCloneRemainsError(explicitZero))
-	if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
-		t.Fatalf("JSON zero-lastUpdated snapshot = %v/%+v, want unavailable zero snapshot", state, applied)
 	}
 }
 

@@ -70,15 +70,16 @@ func classifyMarketplaceRemovalOutcome(err error) (marketplaceRemovalState, appw
 // SDK's classifier performs: json.Unmarshal succeeding does not make a null
 // or empty-object member a row, and a snapshot carrying one must never look
 // authoritative - the rule a partially decoded snapshot already follows.
-// Real rows always carry a name, a source kind, and a lastUpdated timestamp;
-// an empty list is a valid one, since the marketplace just removed can be
-// the last. A zero lastUpdated is the typed twin of the JSON member that
-// omits the field: decoding erases presence either way, and the JSON path
-// degrades that member to unavailable, so a zero must never look
-// authoritative on the typed path the wire cannot be re-checked on.
+// Real rows always carry a name and a source kind; an empty list is a valid
+// one, since the marketplace just removed can be the last. The check is
+// presence-blind by design: it runs on decoded values from both wire shapes,
+// and the zero-timestamp rule that compensates for the typed path's erased
+// presence lives in decodeMarketplaceCloneRemainsData's typed branch, where
+// the JSON presence re-check cannot reach - a present zero that crossed the
+// wire is a real timestamp and stays authoritative.
 func validMarketplaceSnapshot(snapshot appwire.MarketplaceListResponse) bool {
 	for _, entry := range snapshot.Marketplaces {
-		if entry.Name == "" || entry.Source.Kind == "" || entry.LastUpdated == 0 {
+		if entry.Name == "" || entry.Source.Kind == "" {
 			return false
 		}
 	}
@@ -116,7 +117,24 @@ func marketplaceRemovalAppliedMarker(raw any) bool {
 // discriminator is not this marker's payload at all, whatever else it holds.
 func decodeMarketplaceCloneRemainsData(raw any) (appwire.MarketplaceUnregisteredCloneRemainsData, bool) {
 	if data, ok := raw.(appwire.MarketplaceUnregisteredCloneRemainsData); ok {
-		return data, data.EvenerErrorInfo == appwire.ErrorMarketplaceUnregisteredCloneRemains
+		if data.EvenerErrorInfo != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+			return appwire.MarketplaceUnregisteredCloneRemainsData{}, false
+		}
+		// The typed payload crossed no wire, so the JSON path's presence
+		// re-check never ran on its members, and decoding into the struct
+		// has erased presence: a zero lastUpdated is indistinguishable
+		// from the omitted field that re-check rejects. Degrade the
+		// snapshot like a partial JSON one - never let it look
+		// authoritative - while the JSON path keeps its own presence rule,
+		// where a present zero is a real timestamp the hub really sends
+		// and the snapshot stays applied.
+		for _, entry := range data.Applied.Marketplaces {
+			if entry.LastUpdated == 0 {
+				data.Applied = appwire.MarketplaceListResponse{}
+				return data, true
+			}
+		}
+		return data, true
 	}
 	encoded, err := json.Marshal(raw)
 	if err != nil || string(encoded) == "null" {
