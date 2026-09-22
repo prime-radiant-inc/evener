@@ -988,11 +988,8 @@ func TestPublicTranscriptLine(t *testing.T) {
 		entry := map[string]any{"turn": "not an object"}
 		line, _ := json.Marshal(entry)
 		_, _, err := publicTranscriptLine(line, 0)
-		// The struct-based projection decodes the whole entry in one step, so
-		// a malformed turn surfaces through the entry decode error rather
-		// than a distinct turn-decode phase.
-		if err == nil || !strings.Contains(err.Error(), "decode public transcript entry") {
-			t.Fatalf("expected decode entry error, got %v", err)
+		if err == nil || !strings.Contains(err.Error(), "decode public transcript turn") {
+			t.Fatalf("expected decode turn error, got %v", err)
 		}
 	})
 }
