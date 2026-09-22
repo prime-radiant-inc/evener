@@ -122,18 +122,24 @@ type Header struct {
 	AgentTasks []task.Task `json:"agent_tasks,omitempty"`
 }
 
-// Entry is a single turn in the transcript JSONL file.
+// Entry is a single turn in the transcript JSONL file. Fields MUST stay
+// declared in alphabetical JSON-key order: the public line projection
+// (agent's publicTranscriptLine) re-marshals through string-keyed maps,
+// which sort keys alphabetically, and relies on the struct's field order
+// matching that sort so a projected line stays byte-identical to the
+// persisted one. TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn
+// pins the round trip.
 type Entry struct {
-	Kind string      `json:"kind"` // Always "entry"
-	Seq  int         `json:"seq"`  // monotonically increasing line sequence number
-	Turn schema.Turn `json:"turn"` // the recorded conversation turn
+	Kind string `json:"kind"` // Always "entry"
 	// MachineryFlagged marks an entry written by a build that flags
 	// machinery parts at construction: its parts' Machinery flags are
 	// authoritative. Entries lacking the marker predate the flag, so
 	// DecodeEntry infers machinery from exact-block text shape for them —
 	// an unflagged block-shaped part in a marked entry is a user's
 	// verbatim paste and must stay unflagged.
-	MachineryFlagged bool `json:"machinery_flagged,omitempty"`
+	MachineryFlagged bool        `json:"machinery_flagged,omitempty"`
+	Seq              int         `json:"seq"`  // monotonically increasing line sequence number
+	Turn             schema.Turn `json:"turn"` // the recorded conversation turn
 }
 
 // ValidateHeader enforces the hard transcript-v2 boundary shared by writers
