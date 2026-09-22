@@ -125,6 +125,18 @@ function PluginsScreenBody({
       client: null,
       names: new Set(),
     }));
+  // The guard's own store is a ref, so the recording paths below check and
+  // store against one synchronous source; the state beside it exists only to
+  // publish each change to renders (appliedRemovalNames below).
+  // markAppliedRemoval's return has to mean the entry was actually stored,
+  // and an updater's view of the guard arrives only when React applies it -
+  // a client switch landing between a passing check and that apply would let
+  // the function answer true for a store the updater then refused. Reading
+  // the same ref the entry lands in, in one synchronous block nothing can
+  // interleave, makes true structural.
+  const appliedRemovalGuardRef = useRef<AppliedRemovalGuard>(
+    appliedRemovalGuard,
+  );
   const appliedRemovalNames =
     appliedRemovalGuard.client === client
       ? appliedRemovalGuard.names
@@ -136,11 +148,15 @@ function PluginsScreenBody({
     // is unsafe under concurrent rendering, and effects run before any
     // outcome a replaced client could send arrives.
     currentClient.current = client ?? null;
-    setAppliedRemovalGuard((current) =>
-      current.client === (client ?? null)
-        ? current
-        : { client: client ?? null, names: new Set() },
-    );
+    if (appliedRemovalGuardRef.current.client !== (client ?? null)) {
+      // A replaced client's fence is not the replacement's: reset the store
+      // and its render mirror together, the way every guard change does.
+      appliedRemovalGuardRef.current = {
+        client: client ?? null,
+        names: new Set(),
+      };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
+    }
     setMarketplaceWarning((current) =>
       current?.client === client ? current : null,
     );
@@ -163,15 +179,17 @@ function PluginsScreenBody({
   // so stale and in-flight replies never retire anything.
   const reconcileAppliedRemovals = useCallback(
     (
-      marketplaces: readonly MarketplaceEntry[],
+      _marketplaces: readonly MarketplaceEntry[],
       owner: ConversationClientLike,
     ): void => {
       if (currentClient.current !== owner) return;
-      setAppliedRemovalGuard((current) => {
-        // The read's contents no longer decide anything - its arrival does.
-        if (current.client !== owner || !current.names.size) return current;
-        return { client: owner, names: new Set() };
-      });
+      // The read's contents no longer decide anything - its arrival does -
+      // so the list it carried goes unread here; the report's shape stays
+      // the browser's contract.
+      const current = appliedRemovalGuardRef.current;
+      if (current.client !== owner || !current.names.size) return;
+      appliedRemovalGuardRef.current = { client: owner, names: new Set() };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
     },
     [],
   );
@@ -187,22 +205,20 @@ function PluginsScreenBody({
       notice: string | null,
       owner: ConversationClientLike,
     ): boolean => {
-      // The outer check reads the same reconciled source the update below
-      // applies - the guard's own client - so `true` can only mean the
-      // entry was actually stored: an owner the guard no longer belongs to
-      // changes nothing here and answers false, for the browser to drop
-      // the outcome whole.
-      if (
-        currentClient.current !== owner ||
-        appliedRemovalGuard.client !== owner
-      )
-        return false;
-      setAppliedRemovalGuard((current) => {
-        if (current.client !== owner) return current;
-        const names = new Set(current.names);
-        names.add(name);
-        return { client: owner, names };
-      });
+      // The check reads the same synchronous store the entry lands in
+      // below, so `true` structurally means the entry was stored: a client
+      // switch that already landed has reset the ref and answers false
+      // here, and one that lands after cannot come between the check and
+      // the store - the block is synchronous. An owner the guard no longer
+      // belongs to changes nothing and answers false, for the browser to
+      // drop the outcome whole.
+      if (currentClient.current !== owner) return false;
+      const current = appliedRemovalGuardRef.current;
+      if (current.client !== owner) return false;
+      const names = new Set(current.names);
+      names.add(name);
+      appliedRemovalGuardRef.current = { client: owner, names };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
       // The warning slot reports the latest outcome for the marketplace it
       // holds: a noticed outcome replaces whatever the slot showed, and a
       // clean one (null notice) retires the warning for its own name,
@@ -216,7 +232,7 @@ function PluginsScreenBody({
       );
       return true;
     },
-    [appliedRemovalGuard],
+    [],
   );
   // A name this screen's own add just registered: the write replaced the
   // registration the fence guards - which the wire's whole-second
@@ -224,12 +240,12 @@ function PluginsScreenBody({
   const clearAddedMarketplace = useCallback(
     (name: string, owner: ConversationClientLike): void => {
       if (currentClient.current !== owner) return;
-      setAppliedRemovalGuard((current) => {
-        if (current.client !== owner || !current.names.has(name)) return current;
-        const names = new Set(current.names);
-        names.delete(name);
-        return { client: owner, names };
-      });
+      const current = appliedRemovalGuardRef.current;
+      if (current.client !== owner || !current.names.has(name)) return;
+      const names = new Set(current.names);
+      names.delete(name);
+      appliedRemovalGuardRef.current = { client: owner, names };
+      setAppliedRemovalGuard(appliedRemovalGuardRef.current);
     },
     [],
   );

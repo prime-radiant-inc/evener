@@ -61,7 +61,13 @@ beforeEach(() => {
  * (fenced from removing again), the warning slot the applied outcome's
  * notice renders in, and a client that never gets replaced. The guard's own
  * client scoping and remount survival is PluginsScreen.test.tsx's to pin. */
-function GuardedBrowser({ client }: { client: ConversationClientLike }) {
+function GuardedBrowser({
+  client,
+  canUseConnection = () => true,
+}: {
+  client: ConversationClientLike;
+  canUseConnection?: () => boolean;
+}) {
   const [names, setNames] = useState<ReadonlySet<string>>(() => new Set());
   const [warning, setWarning] = useState<string | null>(null);
   return (
@@ -74,7 +80,7 @@ function GuardedBrowser({ client }: { client: ConversationClientLike }) {
         installed={createPluginsStore(client)}
         gate={createPluginMutationGate()}
         ready={true}
-        canUseConnection={() => true}
+        canUseConnection={canUseConnection}
         onOpenPlugin={() => {}}
         appliedRemovalNames={names}
         onAppliedRemoval={(name, notice) => {
@@ -82,7 +88,15 @@ function GuardedBrowser({ client }: { client: ConversationClientLike }) {
           if (notice !== null) setWarning(notice);
           return true;
         }}
-        onAuthoritativeMarketplaces={() => {}}
+        onAuthoritativeMarketplaces={() => {
+          // The screen's fallback ruling, in this harness's minimal shape:
+          // the first publication after an outcome retires the fence
+          // whatever it carries - the browser's own watermark decides which
+          // publications count as that first one. The updater bails on an
+          // already-empty fence so the re-render it triggers cannot loop
+          // back into the reporting effect.
+          setNames((current) => (current.size ? new Set() : current));
+        }}
         onMarketplaceAdded={(name) => {
           setNames((current) => {
             if (!current.has(name)) return current;
@@ -176,4 +190,95 @@ it("keeps the retryable write-failed copy for an ordinary failure", async () => 
   );
   expect(renderedText(tree)).toContain("Could not confirm the change");
   expect(listCalls()).toBe(1);
+});
+
+it("keeps the cleanup warning when a removal never runs (readiness lost at the gate)", async () => {
+  const fake = new FakeClient("ready");
+  let removals = 0;
+  fake.on("evener/marketplace/list", () => ({
+    // The mount read and the reconciliation read both answer with the
+    // stale row: the reconciliation read is the first authoritative read
+    // after the applied outcome, so the fallback ruling retires the fence
+    // for it - Remove re-enables under a cleanup warning that still stands.
+    marketplaces: [ACME],
+  }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
+  fake.on("evener/marketplace/remove", () => {
+    removals += 1;
+    // The hub applied the removal but its clone cleanup failed, and the
+    // answer's applied list is unavailable: the outcome records a fence and
+    // raises the screen-level warning.
+    throw new WireError("clone could not be removed", -32603, {
+      evenerErrorInfo: "marketplaceUnregisteredCloneRemains",
+    });
+  });
+  // The press passed whenReady's own recheck; the gate rechecks the same
+  // predicate once more, after readiness was lost between the two - the
+  // sibling AddMarketplace not-ready test's driving pattern, since the
+  // production path is synchronous-latent. The first removal consumes the
+  // first three checks (the action's guard, the confirmation's, the gate's
+  // recheck); the second press loses readiness on the gate's recheck, so
+  // nothing runs.
+  let readinessChecks = 0;
+  const client = fake as unknown as ConversationClientLike;
+  const tree = render(
+    <GuardedBrowser
+      client={client}
+      canUseConnection={() => ++readinessChecks <= 5}
+    />,
+  );
+  await act(async () => {});
+  const row = tree.root.findAllByProps({ accessibilityLabel: "Browse acme" })[0];
+  if (!row) throw new Error("no acme row");
+  await act(async () => {
+    row.props.onPress();
+  });
+  const remove = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  const removePress = remove?.props.onPress;
+  if (!removePress) throw new Error("no Remove marketplace action");
+  act(() => removePress());
+  const firstRequest = alertRequests.at(-1);
+  const firstConfirm = firstRequest?.buttons?.find(
+    (button) => button.text === "Remove",
+  )?.onPress;
+  if (!firstConfirm) throw new Error("no Remove confirm button");
+  await act(async () => {
+    firstConfirm();
+  });
+  await act(async () => {});
+  expect(renderedText(tree)).toContain(
+    "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
+  );
+
+  // The fence retired with the reconciliation read, so Remove re-enables.
+  // Press it again, and lose readiness at the gate's recheck: no removal
+  // ran, so nothing may report one - the outstanding cleanup warning is
+  // about clone files that are still the hub's business.
+  const again = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  if (again?.props.disabled) throw new Error("Remove marketplace did not re-enable");
+  act(() => again.props.onPress());
+  const secondRequest = alertRequests.at(-1);
+  const secondConfirm = secondRequest?.buttons?.find(
+    (button) => button.text === "Remove",
+  )?.onPress;
+  if (!secondConfirm) throw new Error("no Remove confirm button");
+  await act(async () => {
+    secondConfirm();
+  });
+  await act(async () => {});
+  expect(removals).toBe(1);
+  expect(renderedText(tree)).toContain(
+    "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
+  );
+  // The not-ready outcome is neither a refusal nor a failure, and it left
+  // the retired fence exactly as it was: Remove stays pressable.
+  expect(renderedText(tree)).not.toContain("Could not confirm the change");
+  expect(
+    tree.root.findAllByProps({ accessibilityLabel: "Remove marketplace" })[0]
+      ?.props.disabled,
+  ).toBe(false);
 });

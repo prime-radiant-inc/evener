@@ -117,6 +117,28 @@ async function confirmMarketplaceRemoval(tree: ReturnType<typeof render>) {
   });
 }
 
+/** The props the mounted screen hands its Plugins child, for driving the
+ * screen-level recorders directly: `onAppliedRemoval` is the seam whose
+ * return the client-switch tests pin, and `appliedRemovalNames` is the
+ * fence as the browser sees it. */
+function pluginsProps(tree: ReturnType<typeof render>) {
+  const found = tree.root.findAll(
+    (node) => typeof node.props?.onAppliedRemoval === "function",
+  );
+  const props = found.at(-1)?.props as
+    | {
+        onAppliedRemoval: (
+          name: string,
+          notice: string | null,
+          owner: ConversationClientLike,
+        ) => boolean;
+        appliedRemovalNames: ReadonlySet<string>;
+      }
+    | undefined;
+  if (!props) throw new Error("Plugins child was not rendered");
+  return props;
+}
+
 beforeEach(() => {
   alertRequests.length = 0;
 });
@@ -1454,6 +1476,209 @@ it("clears the fence for a wire-indistinguishable blank re-add when no list read
   expect(remove.props.disabled).toBe(false);
   await confirmMarketplaceRemoval(tree);
   expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
+
+it("retires the fence when the read holding a wire-indistinguishable blank re-add lands", async () => {
+  let releaseAdd!: () => void;
+  const pendingAdd = new Promise<{ marketplaces: MarketplaceEntry[] }>(
+    (resolve) => {
+      releaseAdd = () => resolve({ marketplaces: [marketplace] });
+    },
+  );
+  let releaseRefreshRead!: () => void;
+  const heldRead = new Promise<{ marketplaces: MarketplaceEntry[] }>(
+    (resolve) => {
+      // The read resolves with the re-registration under the removed
+      // registration's own identity: the same name, the same source, the
+      // same whole-second stamp - the wire cannot tell it from the stale
+      // row, so neither can any diff.
+      releaseRefreshRead = () => resolve({ marketplaces: [marketplace] });
+    },
+  );
+  let removals = 0;
+  let listCalls = 0;
+  const hub = marketplaceClient({
+    list: () => {
+      listCalls += 1;
+      // The mount read shows the registration the removal targets; the
+      // post-removal reconciliation read fails; a pull-to-refresh read -
+      // issued while the add is still in flight - stays pending, holding
+      // the add's own publication behind it, and every later read carries
+      // the re-registration the add made under the indistinguishable
+      // identity.
+      if (listCalls === 2) return Promise.reject(new Error("list unavailable"));
+      if (listCalls === 3) return heldRead;
+      return Promise.resolve({ marketplaces: [marketplace] });
+    },
+    remove: () => {
+      removals += 1;
+      return removals === 1
+        ? Promise.reject(cloneLitterError(null, false))
+        : Promise.resolve({ marketplaces: [] });
+    },
+    add: () => pendingAdd,
+  });
+  harness.connection = readyConnection(hub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  await confirmMarketplaceRemoval(tree);
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Marketplace removed; clone cleanup failed");
+  expect(renderedText(tree)).toContain("Could not load marketplaces. Try again when connected.");
+
+  // Re-add acme with a BLANK name and its original source - landing within
+  // the same whole second, so the add's own answer is a list the wire cannot
+  // tell from the stale one and no naming can pick the registration out -
+  // while a pull-to-refresh read stays on the wire ahead of the answer, so
+  // the store holds the answer's publication behind it.
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "All marketplaces" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Add marketplace" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "GitHub repository" }).props.onPress();
+  });
+  await act(async () => {
+    tree.root
+      .findByProps({ accessibilityLabel: "Marketplace source" })
+      .props.onChangeText("acme/plugins");
+  });
+  const adds = tree.root.findAllByProps({ accessibilityLabel: "Add marketplace" });
+  const submit = adds.at(-1);
+  if (!submit) throw new Error("Add marketplace submit was not rendered");
+  await act(async () => {
+    submit.props.onPress();
+    await Promise.resolve();
+  });
+  const refresh = tree.root
+    .findAll((node) => typeof node.props?.onRefresh === "function")
+    .at(-1);
+  if (!refresh) throw new Error("no marketplaces list to refresh");
+  await act(async () => {
+    refresh.props.onRefresh();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    releaseAdd();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+  expect(hub.methods.filter((method) => method === "evener/marketplace/add")).toHaveLength(1);
+
+  // The read that held the answer's publication lands with the
+  // re-registration the wire cannot tell from the removed one: it is the
+  // first publication after the outcome either way, so the fallback ruling
+  // retires the fence on its arrival - the exact same-name same-source
+  // same-second case the source fallback used to be documented for, covered
+  // by the read side instead of any naming.
+  await act(async () => {
+    releaseRefreshRead();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+  await act(async () => {
+    tree.root.findByProps({ accessibilityLabel: "Browse acme" }).props.onPress();
+  });
+  await act(async () => {});
+  const remove = tree.root.findByProps({ accessibilityLabel: "Remove marketplace" });
+  expect(remove.props.disabled).toBe(false);
+  await confirmMarketplaceRemoval(tree);
+  expect(hub.methods.filter((method) => method === "evener/marketplace/remove")).toHaveLength(2);
+});
+
+it("answers false for an applied outcome a client switch outran, and records for the client that replaced it", async () => {
+  const oldHub = marketplaceClient({});
+  const newHub = marketplaceClient({ list: async () => ({ marketplaces: [] }) });
+  harness.connection = readyConnection(oldHub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  await browseMarketplace(tree);
+  const notice = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
+
+  // The outcome's recording path, captured through the props the screen
+  // hands the browser: the return says whether the fence was actually
+  // stored, and the browser drops a false outcome whole.
+  const record = pluginsProps(tree).onAppliedRemoval;
+
+  // Replace the client; the switch's effect has run, so the screen now
+  // belongs to the new client's guard.
+  harness.connection = readyConnection(newHub.client);
+  await act(async () => {
+    tree.update(<PluginsScreen {...props} />);
+  });
+  await act(async () => {});
+
+  // A late applied outcome from the replaced client must answer false -
+  // not store the name and answer true, which would send the browser off to
+  // set its watermark and refetch for a fence that never existed.
+  expect(record("acme", notice, oldHub.client)).toBe(false);
+  expect(pluginsProps(tree).appliedRemovalNames.size).toBe(0);
+
+  // The store is alive for the client that replaced it: an outcome of its
+  // own records and fences, so the false above was the switch's, not a dead
+  // store's.
+  let stored = false;
+  await act(async () => {
+    stored = pluginsProps(tree).onAppliedRemoval("acme", notice, newHub.client);
+  });
+  expect(stored).toBe(true);
+  expect(pluginsProps(tree).appliedRemovalNames.has("acme")).toBe(true);
+});
+
+it("stores an applied outcome that recorded before the switch, then drops it with the replaced client", async () => {
+  const oldHub = marketplaceClient({});
+  const newHub = marketplaceClient({ list: async () => ({ marketplaces: [] }) });
+  harness.connection = readyConnection(oldHub.client);
+  const props = {
+    route: { params: { hubId: "hub-1" } },
+  } as unknown as ComponentProps<typeof PluginsScreen>;
+  const tree = render(<PluginsScreen {...props} />);
+  await act(async () => {});
+  const notice = "Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.";
+  const record = pluginsProps(tree).onAppliedRemoval;
+
+  // The outcome records while the screen still belongs to the old client -
+  // the flank of the client-switch window on the other side from the test
+  // above: there the switch outran the outcome's check and the answer had
+  // to be false; here the check and the store both outran the switch, and a
+  // true answer has to mean the entry was actually stored, because the
+  // browser sets its watermark and refetches off that true.
+  let answer: boolean | undefined;
+  act(() => {
+    answer = record("acme", notice, oldHub.client);
+  });
+  expect(answer).toBe(true);
+  // The store the true answered for, as the fence the browser sees: the
+  // name is in the guard, committed.
+  expect(pluginsProps(tree).appliedRemovalNames.has("acme")).toBe(true);
+
+  // The client switch then replaces the guard wholesale: the fence the
+  // replaced client recorded is not the new client's, and nothing of the
+  // old outcome may survive it.
+  harness.connection = readyConnection(newHub.client);
+  await act(async () => {
+    tree.update(<PluginsScreen {...props} />);
+  });
+  expect(pluginsProps(tree).appliedRemovalNames.size).toBe(0);
+  expect(renderedText(tree)).not.toContain("clone cleanup failed");
+  // And the new client's own outcome still records.
+  let fresh = false;
+  await act(async () => {
+    fresh = pluginsProps(tree).onAppliedRemoval("beta", notice, newHub.client);
+  });
+  expect(fresh).toBe(true);
+  expect(pluginsProps(tree).appliedRemovalNames.has("beta")).toBe(true);
 });
 
 it("clears the fence when a same-name re-add registers while reconciliation reads keep failing", async () => {

@@ -111,9 +111,14 @@ export function MarketplaceBrowser({
    * one the hub assigned, so the browser names it off the hub's own list -
    * read directly through the client, never off the store, whose
    * publication of the add a newer read can hold and an unmounted
-   * browser's store drops - and when even that list cannot tell a fresh
-   * same-second registration from the stale row it replaced, off the
-   * fenced row still carrying the source the add submitted. */
+   * browser's store drops. Naming is publication-only: a blank
+   * re-registration no list can tell from the stale row it replaced - the
+   * same name, source, and whole-second stamp - is not named here at all.
+   * Its fence still retires under the fallback ruling
+   * (onAuthoritativeMarketplaces): the first whole-list publication after
+   * the outcome - the add's own answer when it publishes, otherwise the
+   * read that holds or follows it - retires the fence whatever it
+   * carries. */
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
   /** Reports a marketplace removal the hub confirmed outright - the write
    * resolved, so the outcome is neither an applied residue nor a failure.
@@ -305,12 +310,20 @@ export function MarketplaceBrowser({
                 throw error;
               }),
             );
+            if (outcome === "not-ready") {
+              // Nothing ran, so nothing reports: a not-ready removal is
+              // not one the hub confirmed, and reporting it would retire a
+              // cleanup warning that still stands. The status copy the
+              // connection banner already shows covers the reason nothing
+              // ran.
+              return;
+            }
             if (outcome === "refused") {
               if (revision.current !== version) return;
               setError(PLUGIN_MUTATION_BUSY);
               return;
             }
-            if (outcome !== "failed") {
+            if (outcome === "ran") {
               // Report before the revision fence, the way an applied outcome
               // records: the warning is the screen's, so it must survive this
               // view's selection changes and remounts.
@@ -565,11 +578,14 @@ export function MarketplaceBrowser({
             // cannot tell from the stale row it replaced - the same key in
             // the answer as in the list before the add - is invisible to
             // every diff, and the add's submitted source proves nothing
-            // about a row the answer still carries unchanged. That
-            // registration is named the way every other is: the add's own
-            // answer publishes as a trusted whole-list write, and its
-            // report - like any read that follows - retires the fence under
-            // the fallback ruling, whatever it carries.
+            // about a row the answer still carries unchanged. No name is
+            // reported for it: its fence retires without one, under the
+            // fallback ruling - the add's own answer publishes as a trusted
+            // whole-list write, and its report, like any read that follows,
+            // retires the fence whatever it carries. A publication the
+            // answer itself cannot make - held behind a newer read, dropped
+            // with an unmounted store - leaves the fence to the next one:
+            // the read that holds it, or the remount's own.
           }}
         />
       )}
