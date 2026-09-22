@@ -124,17 +124,17 @@ func TestDurableGateRootIsStablePerWorktree(t *testing.T) {
 func TestDurableGateRootResolvesASymlinkedTMPDIR(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
-	real := filepath.Join(base, "real")
-	if err := os.Mkdir(real, 0o700); err != nil {
-		t.Fatalf("mkdir %s: %v", real, err)
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", realDir, err)
 	}
 	link := filepath.Join(base, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	resolved, err := filepath.EvalSymlinks(real)
+	resolved, err := filepath.EvalSymlinks(realDir)
 	if err != nil {
-		t.Fatalf("resolve %s: %v", real, err)
+		t.Fatalf("resolve %s: %v", realDir, err)
 	}
 
 	out, code := runShSource(t, ". "+gateRootsLib+"\nevener_durable_gate_root \"$1\"",
@@ -147,30 +147,38 @@ func TestDurableGateRootResolvesASymlinkedTMPDIR(t *testing.T) {
 	}
 }
 
-// TestClaimGateRootRefusesAnUnownedPathBeforeSideEffects pins the guard's
-// position rather than only its verdict: an argument this library does not own
-// must be refused before anything is created or chmodded, so a bad argument
-// cannot tighten a caller's directory permissions or drop a lock beside it.
-func TestClaimGateRootRefusesAnUnownedPathBeforeSideEffects(t *testing.T) {
+// TestClaimGateRootRefusesBeforeSideEffects pins the guard's position rather
+// than only its verdict: a path the guard refuses must be refused before
+// anything is created or chmodded, so a bad argument cannot tighten a caller's
+// directory permissions or drop a lock beside it.
+//
+// The refusal used here is the parent-naming rule, not "outside the tree":
+// when this suite runs under the gate, TMPDIR is itself inside a gate-roots
+// directory, so every t.TempDir() path satisfies the shape rule and an
+// "outside the tree" fixture would be a legal root instead of a refused one.
+func TestClaimGateRootRefusesBeforeSideEffects(t *testing.T) {
 	t.Parallel()
-	notOurs := filepath.Join(t.TempDir(), "not-ours")
-	if err := os.Mkdir(notOurs, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", notOurs, err)
+	fixture := filepath.Join(t.TempDir(), "evener-gate-roots-fixture")
+	if err := os.Mkdir(fixture, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", fixture, err)
 	}
+	// Names the parent, so the guard refuses it; the pre-guard code would have
+	// chmodded the fixture (its `..`'s parent) and dropped escape.lock in it.
+	root := fixture + "/worktree/../escape"
 
-	out, code := runShSource(t, gateRootsClaim, nil, filepath.Join(notOurs, "root"))
+	out, code := runShSource(t, gateRootsClaim, nil, root)
 	if code == 0 {
-		t.Fatalf("claiming a path this library does not own succeeded; it must refuse:\n%s", out)
+		t.Fatalf("claiming a path naming a parent succeeded; it must refuse:\n%s", out)
 	}
-	info, err := os.Stat(notOurs)
+	info, err := os.Stat(fixture)
 	if err != nil {
-		t.Fatalf("stat %s: %v", notOurs, err)
+		t.Fatalf("stat %s: %v", fixture, err)
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
-		t.Errorf("the refused claim chmodded %s to %o, want 755", notOurs, got)
+		t.Errorf("the refused claim chmodded %s to %o, want 755", fixture, got)
 	}
-	if _, err := os.Stat(filepath.Join(notOurs, "root.lock")); err == nil {
-		t.Errorf("the refused claim created a lock beside an unowned path")
+	if _, err := os.Stat(filepath.Join(fixture, "escape.lock")); err == nil {
+		t.Errorf("the refused claim created a lock for a path it refused")
 	}
 }
 
