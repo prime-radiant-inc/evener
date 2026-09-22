@@ -107,7 +107,14 @@ function analyzeJobNotification(
   const exitCode = optionalSignedInteger(attrs.exit_code);
 
   let disposition: JobDisposition = "unknown";
-  if (status === "failed" || status === "error" || status === "exhausted" || status.includes("fail")) {
+  if (
+    status === "failed" ||
+    status === "command_exited_nonzero" ||
+    status === "command_killed" ||
+    status === "error" ||
+    status === "exhausted" ||
+    status.includes("fail")
+  ) {
     disposition = "failure";
   } else if (status === "cancelled") {
     disposition = "cancelled";
@@ -416,6 +423,26 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
   }
   const status = (attrs.status || attrs.event || "notification").trim();
   if (!status) return "Job notification";
+  return terminalJobTitle(status, attrs.reason ?? "");
+}
+
+// terminalJobTitle names a terminal job frame, keeping the three failure
+// vocabularies apart: "Command failed" / "Command killed" are the supervised
+// command's outcome (the daemon's command_exited_nonzero / command_killed
+// statuses — the job ran the command fine; the COMMAND is what failed), and
+// "Job failed" is reserved for the job system's own failures. Pre-split
+// blocks (status="failed" carrying a command-outcome reason) fall back on
+// the reason so durable history renders under the same words; the reason is
+// producer-escaped (escapeNotificationText), so it is decoded before
+// matching — a reason containing & < > must match decoded.
+function terminalJobTitle(status: string, reason: string): string {
+  if (status === "command_exited_nonzero") return "Command failed";
+  if (status === "command_killed") return "Command killed";
+  if (status === "failed") {
+    const decodedReason = decodeNotificationEntities(reason).trim();
+    if (decodedReason === "exit_nonzero") return "Command failed";
+    if (decodedReason.startsWith("killed_by_signal")) return "Command killed";
+  }
   return `Job ${status}`;
 }
 
@@ -496,7 +523,7 @@ function notificationSecondary(
     // synthesized trigger), with the card prose carrying the full sentence.
     return timerSecondaryFromProse(reason, prose) ?? reason;
   }
-  // A FAILED job's head line is "Job failed <intent>": the caller's stated
+  // A failed job's head line is "<title> <intent>": the caller's stated
   // rationale for the run, and nothing else. The exit code and reason live in
   // the expanded card's metadata, and the description gloss stays off the line
   // because pre-intent blocks shipped the raw command as their description
