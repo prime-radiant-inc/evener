@@ -79,6 +79,12 @@ func TestScriptInstallsTheReleaseFromAnyWhitespaceChecksumLine(t *testing.T) {
 			t.Skip("neither sha256sum nor shasum is on PATH; install.sh refuses to verify without one")
 		}
 	}
+	// An ambient tool-configuration override the harness must NOT forward to
+	// the installer run: inherited TAR_OPTIONS would strip the archive's root
+	// directory and fail the install, so a green run proves the child's
+	// environment is controlled rather than merely filtered of install.sh's
+	// own variables.
+	t.Setenv("TAR_OPTIONS", "--strip-components=1")
 
 	// The release: a real tar.gz holding the archive root install.sh expects,
 	// with the two binaries it ships.
@@ -160,22 +166,19 @@ printf '200\n'
 
 			cmd := exec.Command("sh", scriptPath)
 			cmd.Dir = runDir
-			env := []string{
+			// The child runs with a minimal controlled environment: only PATH is
+			// inherited, so the real tools the LookPath probes found resolve the
+			// same way. Everything else ambient is dropped — BASH_ENV, ENV,
+			// TAR_OPTIONS, or any other tool-behavior override a developer
+			// machine carries must not be able to alter what this run proves,
+			// and the poisoned TAR_OPTIONS set above pins that exclusion.
+			cmd.Env = []string{
 				"HOME=" + home,
 				"TMPDIR=" + runDir,
 				"PATH=" + fakeBin + string(os.PathListSeparator) + os.Getenv("PATH"),
 				"EVENER_TEST_ARCHIVE=" + archivePath,
 				"EVENER_TEST_CHECKSUMS=" + checksumsPath,
 			}
-			for _, kv := range os.Environ() {
-				if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "TMPDIR=") || strings.HasPrefix(kv, "PATH=") ||
-					strings.HasPrefix(kv, "PREFIX=") || strings.HasPrefix(kv, "BINDIR=") ||
-					strings.HasPrefix(kv, "EVENER_SHARE_BINDIR=") || strings.HasPrefix(kv, "EVENER_INSTALL_VERSION=") {
-					continue
-				}
-				env = append(env, kv)
-			}
-			cmd.Env = env
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("install.sh: %v\n%s", err, out)
