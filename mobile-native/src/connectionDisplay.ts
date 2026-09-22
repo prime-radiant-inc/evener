@@ -58,14 +58,44 @@ export function connectionDisplay(
  * derives its display from the current state. `everReady` is a ref, not
  * state: it mutates during render (the ForkScreen.tsx `owner.current`
  * pattern), never causes its own re-render, and only ever needs to be read
- * alongside the state that already re-renders the screen when it changes. */
+ * alongside the state that already re-renders the screen when it changes.
+ *
+ * `hubId` is the hub whose connection `state` reports - the ACTIVE
+ * profile's hub, not the one the route names. The two disagree in the
+ * window where a navigator has already re-keyed a mounted screen to
+ * another hub while the connection still reports the previous one (the
+ * screen's own `activeProfile?.id !== route.params.hubId` early return is
+ * what hides that window's data), and retention recorded for the previous
+ * hub says nothing about the next one: both refs are reset the moment
+ * `hubId` moves, so a hub the profile is still moving toward inherits
+ * neither the banner history nor the fatal wall of the one before it. */
 export function useConnectionDisplay(
+	hubId: string | undefined,
 	state: ConnectionState,
 	fatal: boolean,
 ): ConnectionDisplay {
 	const everReady = useRef(false);
-	if (state === "ready") everReady.current = true;
-	return connectionDisplay(state, everReady.current, fatal);
+	const fatalRecovery = useRef(false);
+	const scope = useRef<string | undefined>(hubId);
+	if (scope.current !== hubId) {
+		scope.current = hubId;
+		everReady.current = false;
+		fatalRecovery.current = false;
+	}
+	if (state === "ready") {
+		everReady.current = true;
+		fatalRecovery.current = false;
+	} else if (fatal) {
+		// A fatal close unmounts ready-only children. Keep that wall in place
+		// until the replacement is ready; clearing the fatal flag while it is
+		// still dialing must not remount a child against the closed client.
+		fatalRecovery.current = true;
+	}
+	return connectionDisplay(
+		state,
+		everReady.current,
+		fatal || fatalRecovery.current,
+	);
 }
 
 /** Wraps a handler so it no-ops unless the live readiness predicate is true: the shared guard an
@@ -83,16 +113,38 @@ export function whenReady<A extends unknown[]>(
 	};
 }
 
-/** The client a ready-only screen renders with while retained through the
- * brief client-null window of a manual retry (hubConnection.ts clears
- * `client` while it dials a fresh one; a passive flap never does - its own
- * generation guard keeps the same client object through the whole flap).
- * Shared by every ready-only screen that needs the fallback, in place of each
- * keeping its own identical ref. */
+/** The client a ready-only screen renders with while retained through a
+ * manual retry: hubConnection.ts clears `client` the instant it starts
+ * dialing a fresh one, then reports the REPLACEMENT while it is still
+ * `"connecting"` - not yet safe to hand to a store, whose mount effect would
+ * issue a request AppWire rejects before the client is `"ready"` (a passive
+ * flap never does either of this - its own generation guard keeps the same
+ * client object, already ready, through the whole flap). A new client is
+ * therefore adopted only once `state` is `"ready"` for it; every other
+ * transition - the null gap AND the whole `"connecting"` window before it -
+ * keeps returning whatever was last adopted, the way the web's
+ * ConnectionBanner (cmd/evener-hub/frontend/src/shell/ConnectionBanner.tsx)
+ * only calls its own `onClientReplaced` - which swaps AppShell's
+ * ClientProvider slot - AFTER `await fresh.connect()` resolves, never on
+ * construction.
+ *
+ * Scoped to `hubId` - the ACTIVE profile's hub, not the route's - for the
+ * same reason `useConnectionDisplay` is: once the connection's hub moves,
+ * whatever client the previous hub adopted is dropped, so a screen re-keyed
+ * ahead of its profile never renders the previous hub's retained client
+ * under the new hub's banner. */
 export function useRenderClient(
 	client: AppwireClient | null,
+	state: ConnectionState,
+	hubId: string | undefined,
 ): AppwireClient | null {
 	const lastClient = useRef<AppwireClient | null>(null);
-	if (client) lastClient.current = client;
-	return client ?? lastClient.current;
+	const scope = useRef<string | undefined>(hubId);
+	if (scope.current !== hubId) {
+		scope.current = hubId;
+		lastClient.current = null;
+	}
+	if (state === "ready") lastClient.current = client;
+	return state === "ready" ? client : lastClient.current;
 }
+
