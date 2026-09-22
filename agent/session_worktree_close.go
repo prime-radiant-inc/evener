@@ -168,6 +168,9 @@ func (s *Session) disposeOneStableDelegateLane(ctx context.Context, local *exece
 		return cleanupNote + " (resumability closed; retained residue)", true
 	}
 	if outcome == laneDeclined {
+		if cleanupNote != "" {
+			return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue: " + cleanupNote + ")", true
+		}
 		return lane.delegateID + " at " + lanePath + " (resumability closed; retained residue because the cleanup lock could not be released or ownership changed)", true
 	}
 	return cleanupNote, false
@@ -387,7 +390,7 @@ func (s *Session) disposeUnchangedLaneMechanics(run worktree.GitRunner, st workt
 		// real branch behind it. Touch nothing; the lane stays exactly as it
 		// is, like a lane whose lock could not be released.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", lane.delegateID)})
-		return laneDeclined, ""
+		return laneDeclined, "its branch was never resolved"
 	}
 	lanePath := filepath.Clean(lane.path)
 	switch worktree.Decide(worktree.EvDisposeUnchanged, st) {

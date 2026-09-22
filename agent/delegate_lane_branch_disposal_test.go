@@ -282,3 +282,70 @@ func TestDelegateLaneBranchCanary_RemoveDeleteBranch(t *testing.T) {
 	}
 	assertCanaryLaneGone(t, r, id, lanePath)
 }
+
+// A branch any existing sidecar claims refuses the spawn even when git no
+// longer has the branch (the residue a failed sidecar delete can leave after a
+// branch collection). Without the refusal a stale sidecar and a new lane would
+// both claim the branch, and prune sweep 2 would judge each claim by its own —
+// possibly outdated — metadata, deleting the new lane's branch. The stale
+// claim itself must be untouched: creation is not prune.
+func TestDelegateLaneBranchCanary_CreationRefusesSidecarClaimedBranch(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLaneOpts(t, canaryLaneBranch)
+	halfRemoveLane(t, r, lanePath)
+	wtGit(t, r.mainRoot, "branch", "-D", canaryLaneBranch)
+
+	args := delegateArgs{Task: "reclaim", DelegationAllowance: new(0), Isolation: "worktree", Name: canaryLaneBranch}
+	runtime, reservation, project := reserveWorktreeIsolatedDelegateArgs(t, r.s, args)
+
+	_, err := runtime.prepareIsolation(context.Background(), reservation, project, nil)
+	if err == nil || !strings.Contains(err.Error(), "claimed") {
+		t.Fatalf("reclaim a sidecar-claimed branch: err = %v, want the claim refusal", err)
+	}
+	if _, scErr := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), reservation.delegateID); !os.IsNotExist(scErr) {
+		t.Errorf("a refused reclaim left a sidecar: %v", scErr)
+	}
+	if r.branchExists(t, canaryLaneBranch) {
+		t.Error("a refused reclaim created the claimed branch")
+	}
+	if r.lanePresent(reservation.worktreePath) {
+		t.Error("a refused reclaim left a lane directory")
+	}
+	if _, scErr := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); scErr != nil {
+		t.Errorf("the refusal deleted the stale claim's sidecar: %v", scErr)
+	}
+}
+
+// The unresolved-branch guard covers the half-removed arm too: a lane record
+// that reaches disposal with no resolved branch must not have its sidecar
+// deleted with the real branch stranded behind it. Today's only production
+// path resolves via Sidecar.BranchOrName(); the guard exists for a future
+// caller that passes an unresolved lane.
+func TestDelegateLaneBranchCanary_HalfRemovedUnresolvedBranchRefuses(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	id, lanePath, _ := r.seedStableIsolationLaneOpts(t, canaryLaneBranch)
+
+	local := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	controlEnv, _, done, ok := laneControlEnv(local, lanePath)
+	if !ok {
+		t.Fatal("laneControlEnv failed")
+	}
+	defer done()
+	run := r.s.newWorktreeGitRunner(context.Background(), controlEnv)
+	metaDir := metaDirForLane(lanePath)
+
+	// lanePresent=false selects the half-removed arm; that arm never touches
+	// the worktree, so the lane's physical presence does not matter to it.
+	_, err := r.s.disposeStableExecute(context.Background(), run, stableDelegateWorktreeSnapshot{delegateID: id}, lanePath, metaDir, "", nil, false, worktree.Unlocked, false, false)
+	if err == nil || !strings.Contains(err.Error(), "branch was never resolved") {
+		t.Fatalf("half-removed disposal with an unresolved branch: err = %v, want the unresolved-branch refusal", err)
+	}
+	if !r.branchExists(t, canaryLaneBranch) {
+		t.Error("the named branch was touched")
+	}
+	if _, serr := worktree.ReadSidecar(metaDir, id); serr != nil {
+		t.Errorf("the sidecar was deleted: %v", serr)
+	}
+}

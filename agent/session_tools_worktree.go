@@ -1195,6 +1195,27 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 	if mkErr := os.MkdirAll(metaDir, 0o755); mkErr != nil {
 		return worktreeCreateCoreResult{}, fmt.Errorf("%s: create metadata dir: %w", errPrefix, mkErr)
 	}
+
+	// A branch claim is identity: refuse a branch an existing sidecar claims,
+	// even a stale one whose branch is already gone from git (the residue a
+	// failed sidecar delete can leave after a branch collection). Otherwise a
+	// stale sidecar and a new lane would both claim the branch, and prune
+	// sweep 2 would judge each claim by its own — possibly outdated —
+	// metadata, deleting the new lane's branch. A stale claim self-heals:
+	// sweep 2 removes it ("no worktree, no branch") on its next run. A
+	// sidecar under this create's own name is the name collision the O_EXCL
+	// sidecar write that follows already refuses with its own message. A
+	// refusal implies the claiming sidecar exists, so the metadata dir above
+	// was not created by this create.
+	if claims, cErr := worktree.ListSidecars(metaDir); cErr == nil {
+		for _, c := range claims {
+			if c.Name != name && c.BranchOrName() == branch {
+				return worktreeCreateCoreResult{}, fmt.Errorf("%s: branch %q is claimed by worktree %q; run manage_worktree prune or pick another branch", errPrefix, branch, c.Name)
+			}
+		}
+	} else if !os.IsNotExist(cErr) {
+		return worktreeCreateCoreResult{}, fmt.Errorf("%s: listing worktree claims: %w", errPrefix, cErr)
+	}
 	sc := worktree.Sidecar{
 		Name:           name,
 		Branch:         branch,

@@ -211,6 +211,14 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		s.subagents.removeSession(state.descriptor.ChildSessionID, sub.sess)
 	}
 	lane := isolationLane{delegateID: id, path: lanePath, branch: branch}
+	if branch == "" {
+		// A lane record that reaches disposal without a resolved branch (a
+		// future caller's omission) must not have its sidecar deleted with the
+		// real branch stranded behind it, whichever arm would run. Touch
+		// nothing; the lane stays exactly as it is, left for prune.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", id)})
+		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s resumability is closed but its branch was never resolved; residue retained at %s; left for prune", id, lanePath)
+	}
 	if !lanePresent {
 		result := s.disposeStableHalfRemoved(run, lane, metaDir)
 		result.AlreadyDisposed = alreadyClosed
