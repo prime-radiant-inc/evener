@@ -1429,6 +1429,40 @@ export function createConversationStore() {
     return changed ? { turns: replacement, injected } : { turns, injected: [] };
   }
 
+  // The structured index behind the strip pass's "was this identity real
+  // anywhere" test — exact under the package's own matching rule, not an
+  // unqualified string set (review round 7): a keyed item is real through
+  // its own transcript key or a KEYLESS source's bare id; a keyless item is
+  // real through any source's id. A keyed source sharing the item's bare id
+  // under a CONFLICTING key is not a match — exactly itemIdentityMatches.
+  type RealIdentityIndex = {
+    keyedTranscriptKeys: Set<string>;
+    bareIdsOfKeylessSources: Set<string>;
+    allIds: Set<string>;
+  };
+  function realIdentityIndexOf(
+    sources: Iterable<{ id: string; transcriptKey?: string }>,
+  ): RealIdentityIndex {
+    const keyedTranscriptKeys = new Set<string>();
+    const bareIdsOfKeylessSources = new Set<string>();
+    const allIds = new Set<string>();
+    for (const source of sources) {
+      if (source.transcriptKey !== undefined) keyedTranscriptKeys.add(source.transcriptKey);
+      else bareIdsOfKeylessSources.add(source.id);
+      allIds.add(source.id);
+    }
+    return { keyedTranscriptKeys, bareIdsOfKeylessSources, allIds };
+  }
+  function itemIsRealSomewhere(
+    item: { id: string; transcriptKey?: string },
+    index: RealIdentityIndex,
+  ): boolean {
+    return item.transcriptKey !== undefined
+      ? index.keyedTranscriptKeys.has(item.transcriptKey) ||
+          index.bareIdsOfKeylessSources.has(item.id)
+      : index.allIds.has(item.id);
+  }
+
   // Remove injected skeleton items the package kept without folding them
   // into real content. Two passes, because folded results are new objects:
   // (1) Reference identity removes skeletons the package left untouched.
@@ -1438,25 +1472,20 @@ export function createConversationStore() {
   //     again, leaves both) match each other in mergePageItems and fold into
   //     an unrestored placeholder that no real side contributed to. Such an
   //     item claims transcript coverage a later rehydrate would read as
-  //     retained evidence. An item survives the pass only when its identity
-  //     was already real before the injection or the other merge side
-  //     actually carried it (a fold with a page/fresh item keeps both sides'
-  //     identities in the allowed set); the both-fields test over-keeps,
-  //     which is the safe direction (review round 6).
+  //     retained evidence. An item survives the pass only when some real
+  //     source — a pre-injection item, a page item, a fresh item — matches
+  //     it by the package's own rule.
   function stripInjectedSkeletons(
     turns: TurnModel[],
     injected: ItemModel[],
-    allowedIdentities: Set<string>,
+    realIdentities: RealIdentityIndex,
   ): TurnModel[] {
     if (injected.length === 0) return turns;
     const injectedRefs = new Set(injected);
     let changed = false;
     const stripped = turns.map((turn) => {
       const kept = turn.items.filter(
-        (item) =>
-          !injectedRefs.has(item) &&
-          (allowedIdentities.has(item.transcriptKey ?? item.id) ||
-            allowedIdentities.has(item.id)),
+        (item) => !injectedRefs.has(item) && itemIsRealSomewhere(item, realIdentities),
       );
       if (kept.length === turn.items.length) return turn;
       changed = true;
@@ -2209,9 +2238,27 @@ export function createConversationStore() {
             // injected, take the gate from the same merge WITHOUT them: the
             // compact turns then contribute exactly what the retained
             // state still holds (nothing, or a restored turn's real items).
+            // Review round 7: turns that are compact-ONLY (no items, only
+            // remembered skeletons) are excluded from that merge's inputs
+            // entirely. mergeTurnHistory counts an unmatched empty turn as
+            // older coverage (usage metadata is claimed even when items
+            // cannot be), so a compact turn that the real, injected merge
+            // folded into a fresh carrier under a different id would still
+            // claim coverage here — and with an unchanged real turn
+            // supplying transcriptOverlap, the stale cursor would override a
+            // fresh read that actually covers everything (sessionTokens then
+            // reports "loaded" for a complete read). A compact turn holds no
+            // transcript content by construction; its usage survives through
+            // the actual merge, not through the cursor gate.
             const coverage =
               injectedFresh.injected.length > 0
-                ? mergeTurnHistory(currentConvForMerge.turns, conversation.turns)
+                ? mergeTurnHistory(
+                    currentConvForMerge.turns.filter(
+                      (turn) =>
+                        !(turn.items.length === 0 && compactedTurnItems.has(turn.id)),
+                    ),
+                    conversation.turns,
+                  )
                 : history;
             if (coverage.olderCoverage && coverage.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
@@ -2220,20 +2267,18 @@ export function createConversationStore() {
             // including skeleton-on-skeleton alias folds no real side
             // contributed to — move folded compact turns' memory and page
             // ownership to their surviving carriers, then bound the payloads.
-            // The allowed set is every identity that was real before the
-            // injection plus every identity the fresh read carries: an item
-            // failing it can only be remembered memory, never content.
-            const rehydrateAllowedIdentities = new Set(freshIdentities);
-            for (const turn of currentConvForMerge.turns) {
-              for (const item of turn.items) {
-                rehydrateAllowedIdentities.add(item.transcriptKey ?? item.id);
-                rehydrateAllowedIdentities.add(item.id);
-              }
-            }
+            // The real sources are every item the retained side held before
+            // the injection plus every item the fresh read carries: an item
+            // matching none of them by the package's rule can only be
+            // remembered memory, never content.
+            const rehydrateRealSources = [
+              ...currentConvForMerge.turns.flatMap((turn) => turn.items),
+              ...conversation.turns.flatMap((turn) => turn.items),
+            ];
             mergedTurns = stripInjectedSkeletons(
               mergedTurns,
               injectedFresh.injected,
-              rehydrateAllowedIdentities,
+              realIdentityIndexOf(rehydrateRealSources),
             );
             transferFoldedCompactedEntries(mergedTurns);
             // #1919 follow-up: bound the merged result AFTER the merge, so
@@ -2463,24 +2508,22 @@ export function createConversationStore() {
             const mergedTurns = result.turnsPage
               ? mergeOlderItemPage(mergeConv, result.turnsPage).turns
               : currentConv.turns;
-            // The allowed set for the strip pass: every identity that was
-            // real before the injection plus every identity the page carries.
-            // An item failing it can only be remembered memory — a skeleton
-            // the merge left behind or a fold of skeletons alone (review
-            // round 6) — never content. Skeletons carry the reducer's
-            // omitted-text semantics, so a fold with a page item keeps the
-            // page's text natively; there is nothing to repair post-merge.
-            const pageAllowedIdentities = new Set(pageIdentities);
-            for (const turn of currentConv.turns) {
-              for (const item of turn.items) {
-                pageAllowedIdentities.add(item.transcriptKey ?? item.id);
-                pageAllowedIdentities.add(item.id);
-              }
-            }
+            // The real sources for the strip pass: every item the retained
+            // side held before the injection plus every item the page
+            // carries. An item matching none of them by the package's rule
+            // can only be remembered memory — a skeleton the merge left
+            // behind or a fold of skeletons alone (review rounds 6-7) —
+            // never content. Skeletons carry the reducer's omitted-text
+            // semantics, so a fold with a page item keeps the page's text
+            // natively; there is nothing to repair post-merge.
+            const pageRealSources = [
+              ...currentConv.turns.flatMap((turn) => turn.items),
+              ...(result.turnsPage?.data ?? []).flatMap((turn) => turn.items ?? []),
+            ];
             const strippedPageTurns = stripInjectedSkeletons(
               mergedTurns,
               injectedPage.injected,
-              pageAllowedIdentities,
+              realIdentityIndexOf(pageRealSources),
             );
             transferFoldedCompactedEntries(strippedPageTurns);
             // #1919 follow-up: bound the retained turn payloads against the

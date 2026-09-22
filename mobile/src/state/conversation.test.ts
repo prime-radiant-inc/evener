@@ -7521,11 +7521,17 @@ describe("ConversationStore", () => {
       await store.getState().rehydrate(service, sink);
       expect(store.getState().conversation?.turns.find((t) => t.id === "pt")?.items).toEqual([]);
 
-      // A PARTIAL page restores only pz. Both remembered px aliases are
-      // injected and fold into each other; the placeholder they form must
-      // not survive the strip, while the real pz fold does.
+      // A PARTIAL page restores only pz — and carries an unrelated turn whose
+      // item shares the FOLDED ALIAS's BARE ID (rx) under a conflicting key.
+      // Both remembered px aliases are injected and fold into each other; the
+      // placeholder they form ({id rx, tk px}) must not survive the strip —
+      // the unrelated item's bare id is not a match under the package's
+      // identity rule — while the real pz fold and the unrelated turn both do.
       service.olderItems = {
-        items: [{ kind: "user" as const, id: "pz", text: "pz row" }],
+        items: [
+          { kind: "user" as const, id: "pz", text: "pz row" },
+          { kind: "user" as const, id: "kk", text: "kk row" },
+        ],
         turnsPage: turnsPage(
           [
             wireTurnFragment(
@@ -7543,6 +7549,21 @@ describe("ConversationStore", () => {
               ],
               { inputTokens: 500, outputTokens: 20 },
             ),
+            wireTurnFragment(
+              "ut",
+              [
+                {
+                  id: "rx",
+                  transcriptKey: "kk",
+                  turnId: "ut",
+                  type: "agentMessage",
+                  text: "unrelated",
+                  position: { entry: 101, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 7, outputTokens: 7 },
+            ),
           ],
           "c2",
         ),
@@ -7555,6 +7576,10 @@ describe("ConversationStore", () => {
       expect(folded[0]?.transcriptKey).toBe("pz");
       expect(folded[0]?.text).toBe("zed page");
       expect(folded.some((item) => item.transcriptKey === "px")).toBe(false);
+      const unrelated = store.getState().conversation?.turns.find((t) => t.id === "ut");
+      expect(unrelated?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "kk", text: "unrelated" }),
+      ]);
     });
 
     // Review round 6, explicit empty text: overlapping page fragments that
@@ -7662,6 +7687,153 @@ describe("ConversationStore", () => {
       expect(folded).toHaveLength(1);
       expect(folded[0]?.transcriptKey).toBe("px");
       expect(folded[0]?.text).toBe("");
+    });
+
+    // Review round 7, cursor coverage: a compact turn that the injected
+    // merge folds into a fresh carrier under a different id must not claim
+    // older coverage in the cursor gate's uninjected merge — an unmatched
+    // empty turn with usage counts as coverage there. With an unchanged real
+    // turn supplying transcriptOverlap, the stale cursor would override a
+    // fresh read that actually covers everything, and sessionTokens would
+    // report "loaded" for a complete read.
+    it("a renamed compact turn does not claim cursor coverage over a complete fresh read", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "user" as const, id: "PK", text: "pk row" },
+            ...Array.from({ length: 480 }, (_, j) => ({
+              kind: "user" as const,
+              id: `f-${j}`,
+              text: `f-${j}`,
+            })),
+          ],
+          turns: [
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Row-less page turn: compacts at its own load and remembers px.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "x-0",
+                  transcriptKey: "px",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ct")?.items).toEqual([]);
+
+      // A COMPLETE fresh read re-issues px under a NEW turn id (the injected
+      // merge folds ct into it) and repeats the unchanged real turn. The
+      // fresh read's own cursor is null — nothing older exists.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          items: [
+            { kind: "user" as const, id: "px", text: "px row" },
+            { kind: "user" as const, id: "PK", text: "pk row" },
+          ],
+          turns: [
+            {
+              id: "f2",
+              status: "completed",
+              items: [
+                {
+                  id: "c9",
+                  transcriptKey: "px",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "fresh px",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // The fold happened: ct folded into the renamed carrier, its usage
+      // preserved through the ACTUAL merge.
+      expect(conv.turns.some((turn) => turn.id === "ct")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "f2")?.items).toEqual([
+        expect.objectContaining({ transcriptKey: "px", text: "fresh px" }),
+      ]);
+      // The complete read's null cursor stands: the compact turn's usage
+      // metadata is not transcript coverage.
+      expect(conv.olderCursor).toBeUndefined();
+      expect(sessionTokens(conv)).toEqual({
+        inputTokens: 510,
+        outputTokens: 30,
+        scope: "session",
+      });
     });
   });
 
