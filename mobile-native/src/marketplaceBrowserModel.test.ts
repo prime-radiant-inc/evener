@@ -7,10 +7,8 @@ import type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/exten
 import {
   addedMarketplaceNames,
   appliedRemovalNotice,
-  carriedByMarketplaces,
   catalogToBrowse,
   refetchAfterRemoval,
-  sameMarketplaceSource,
 } from "./marketplaceBrowserModel";
 
 const entry = (name: string): MarketplaceEntry => ({
@@ -78,53 +76,6 @@ test("an add's answer names every registration it left against the stale list", 
 test("a re-add the wire cannot tell from the stale row hides from the list", () => {
   expect(addedMarketplaceNames([entry("a")], [entry("a")])).toEqual([]);
   expect(addedMarketplaceNames([entry("a")], [])).toEqual([]);
-});
-
-test("sources match by kind and the fields that pin them", () => {
-  expect(
-    sameMarketplaceSource(
-      { kind: "github", repo: "a/plugins" },
-      { kind: "github", repo: "a/plugins" },
-    ),
-  ).toBe(true);
-  expect(
-    sameMarketplaceSource(
-      { kind: "url", url: "https://a.test/plugins.git" },
-      { kind: "url", url: "https://a.test/plugins.git" },
-    ),
-  ).toBe(true);
-  expect(
-    sameMarketplaceSource(
-      { kind: "github", repo: "a/plugins" },
-      { kind: "github", repo: "b/plugins" },
-    ),
-  ).toBe(false);
-  expect(
-    sameMarketplaceSource(
-      { kind: "url", url: "https://a.test" },
-      { kind: "directory", path: "https://a.test" },
-    ),
-  ).toBe(false);
-  expect(
-    sameMarketplaceSource(
-      { kind: "github", repo: "a/plugins", ref: "v1" },
-      { kind: "github", repo: "a/plugins" },
-    ),
-  ).toBe(false);
-});
-
-test("a row the pre-add list already carried, in the wire's own form, is not the add's", () => {
-  expect(carriedByMarketplaces([entry("a")], entry("a"))).toBe(true);
-  expect(
-    carriedByMarketplaces([entry("a")], { ...entry("a"), lastUpdated: 2 }),
-  ).toBe(false);
-  expect(
-    carriedByMarketplaces(
-      [entry("a")],
-      { ...entry("a"), source: { kind: "github", repo: "a/plugins" } },
-    ),
-  ).toBe(false);
-  expect(carriedByMarketplaces([], entry("a"))).toBe(false);
 });
 
 test("a stale list that still carries the removed name refreshes; a reconciled one does not", () => {

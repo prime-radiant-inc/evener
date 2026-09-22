@@ -1,6 +1,5 @@
 import type {
   MarketplaceEntry,
-  MarketplaceSourceInput,
 } from "@evener/appwire-client";
 import {
   type MarketplaceCatalogEntry,
@@ -69,8 +68,9 @@ function marketplaceEntryKey(entry: MarketplaceEntry): string {
  * entry the answer newly carries is the registration the add left, however
  * the hub named it. A re-registration the wire cannot tell from the stale
  * row it replaced - same name, same source, same whole-second stamp - is
- * invisible to any list; the source the add itself submitted is what covers
- * that case. */
+ * invisible to any list, and nothing names it here: the add's own answer
+ * publishes as a trusted whole-list write, and its report retires the
+ * fence the way every such publication does. */
 export function addedMarketplaceNames(
   before: readonly MarketplaceEntry[],
   after: readonly MarketplaceEntry[],
@@ -86,35 +86,3 @@ export function addedMarketplaceNames(
   return added;
 }
 
-/** Whether two marketplace sources name the same registration source: the
- * hub resolves a blank add's name from the source's own catalog, so a
- * fenced row still carrying the submitted source is the registration that
- * add put back. The kind and every field that pins it must match. */
-export function sameMarketplaceSource(
-  a: MarketplaceSourceInput,
-  b: MarketplaceSourceInput,
-): boolean {
-  if (a.kind !== b.kind) return false;
-  return (
-    a.repo === b.repo &&
-    a.url === b.url &&
-    a.path === b.path &&
-    a.ref === b.ref &&
-    a.sha === b.sha
-  );
-}
-
-/** Whether a row an answer carries is one a list the screen already had,
- * compared in the wire's own whole form - the same identity the
- * addedMarketplaceNames diff uses. The blank-name source fallback needs
- * exactly this: only a row the add's answer newly carried can be the
- * registration that add made, so a fenced row the answer still carries
- * unchanged - a stale row sharing the submitted source - never unfences
- * through an add that did not create it. */
-export function carriedByMarketplaces(
-  marketplaces: readonly MarketplaceEntry[],
-  entry: MarketplaceEntry,
-): boolean {
-  const key = marketplaceEntryKey(entry);
-  return marketplaces.some((row) => marketplaceEntryKey(row) === key);
-}

@@ -35,12 +35,10 @@ import {
 } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import {
-  carriedByMarketplaces,
   appliedRemovalNotice,
   addedMarketplaceNames,
   catalogToBrowse,
   refetchAfterRemoval,
-  sameMarketplaceSource,
 } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -556,21 +554,15 @@ export function MarketplaceBrowser({
             if (after === null || before === null) return;
             for (const name of addedMarketplaceNames(before, after))
               onMarketplaceAdded(name, client);
-            // The hub's list is indistinguishable from the stale one: the
-            // add re-registered a name within the same whole second its
-            // removed registration was stamped, so the add's own source is
-            // the only thing that names it. Only a row the answer NEWLY
-            // carries - absent from the list before the add, in the wire's
-            // own form - can be the registration this add made, so a fenced
-            // row the answer still carries unchanged never unfences through
-            // an add that did not create it.
-            for (const entry of after)
-              if (
-                appliedRemovalNames.has(entry.name) &&
-                !carriedByMarketplaces(before, entry) &&
-                sameMarketplaceSource(entry.source, params.source)
-              )
-                onMarketplaceAdded(entry.name, client);
+            // Nothing else names anything here. A re-registration the wire
+            // cannot tell from the stale row it replaced - the same key in
+            // the answer as in the list before the add - is invisible to
+            // every diff, and the add's submitted source proves nothing
+            // about a row the answer still carries unchanged. That
+            // registration is named the way every other is: the add's own
+            // answer publishes as a trusted whole-list write, and its
+            // report - like any read that follows - retires the fence under
+            // the fallback ruling, whatever it carries.
           }}
         />
       )}
