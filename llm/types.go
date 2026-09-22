@@ -173,6 +173,11 @@ type ToolCallData struct {
 	Arguments       json.RawMessage `json:"arguments,omitempty"`        // raw JSON object
 	ParsedArguments map[string]any  `json:"parsed_arguments,omitempty"` // populated by Parse()
 	Type            string          `json:"type,omitempty"`             // usually "function"
+	// RawArguments preserves the model's original argument bytes when they
+	// were not valid JSON and Arguments was replaced with the replay-safe {}
+	// form. It is a diagnostic record — the durable transcript keeps what the
+	// model actually sent — and never feeds provider requests.
+	RawArguments string `json:"raw_arguments,omitempty"`
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
