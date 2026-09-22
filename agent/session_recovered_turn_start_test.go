@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -65,14 +66,18 @@ func TestAcceptClientMutationStartBehindRecoveredTurn(t *testing.T) {
 		t.Fatalf("durable new prompt input = %#v, want the caller's text", pending.Input)
 	}
 
-	// Only the inherited turn earns the pass. A third start arriving while the
-	// accepted follow-up names the active turn is still refused: the web
-	// composer's routing contract depends on that answer.
+	// A third start is admitted the same way, because the follow-up accepted
+	// above did NOT take the active slot: the slot still names the inherited,
+	// still-running turn, and the admission precondition keeps comparing against
+	// it for as long as it runs. The refusal that protects the web composer's
+	// routing contract -- "turn is already active" -- belongs to a turn THIS
+	// process started, and TestAcceptClientMutationStartStillRefusedForLiveTurn
+	// pins it.
 	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: "cm-third-prompt",
 		Input:            []appwire.InputItem{{Type: "text", Text: "a third prompt"}},
-	}); !isClientMutationConflict(err) {
-		t.Fatalf("third turn/start error = %v, want Conflict(\"turn is already active\")", err)
+	}); err != nil {
+		t.Fatalf("third turn/start behind the still-running recovered turn = %v, want accepted", err)
 	}
 }
 
@@ -101,4 +106,210 @@ func TestAcceptClientMutationStartStillRefusedForLiveTurn(t *testing.T) {
 func isClientMutationConflict(err error) bool {
 	var wire appwire.WireError
 	return errors.As(err, &wire) && wire.Code == appwire.CodeConflict
+}
+
+// recoveredTurnSession builds the reported flow's durable state: a turn/start
+// accepted into a session whose process then died before the turn ever ran. It
+// returns the restored session (closed by t.Cleanup), the stable id of the turn
+// this process inherited, and the client mutation id the dead prompt was
+// accepted under.
+func recoveredTurnSession(t *testing.T) (restored *Session, inheritedTurnID, deadMutationID string) {
+	t.Helper()
+	dir := t.TempDir()
+	crashed := newQueuePersistTestSession(t, dir)
+	id := crashed.ID()
+	deadMutationID = "cm-dead-turn"
+	started, err := crashed.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: deadMutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "the prompt that died mid-turn"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart (dead turn): %v", err)
+	}
+	// The process dies here: the turn/start is durably accepted and names the
+	// active turn, but nothing ever ran it.
+	crashed.Close()
+
+	restored = restoreQueuePersistTestSession(t, dir, id)
+	t.Cleanup(restored.Close)
+	if got := restored.recoveredTurnID; got != started.Turn.ID {
+		t.Fatalf("recoveredTurnID = %q, want the inherited turn %q", got, started.Turn.ID)
+	}
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != started.Turn.ID {
+		t.Fatalf("restored ActiveTurnID = %q, want the inherited turn %q", got, started.Turn.ID)
+	}
+	return restored, started.Turn.ID, deadMutationID
+}
+
+// TestAcceptBehindRecoveredTurnKeepsTheRunningName pins the ownership rule the
+// review finding broke: an accepted follow-up does NOT rename the active slot.
+//
+// The slot names the turn that is RUNNING, not merely one a client mutation
+// reserved. Repointing it at an accepted-but-not-yet-running follow-up aims a
+// Stop at the wrong turn and clears the guard the follow-up was admitted
+// through, so the follow-up names the slot when it is CLAIMED instead.
+func TestAcceptBehindRecoveredTurnKeepsTheRunningName(t *testing.T) {
+	restored, inheritedTurnID, _ := recoveredTurnSession(t)
+
+	response, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-new-prompt",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the prompt sent after the crash"}},
+	})
+	if err != nil {
+		t.Fatalf("turn/start behind the recovered turn was refused: %v", err)
+	}
+	if response.Turn.ID == inheritedTurnID {
+		t.Fatalf("the follow-up reused the inherited turn id %q", inheritedTurnID)
+	}
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != inheritedTurnID {
+		t.Fatalf("ActiveTurnID after accepting the follow-up = %q, want the inherited running turn %q", got, inheritedTurnID)
+	}
+}
+
+// TestClaimBehindRecoveredTurnClaimsInReservedTurnOrder pins FIFO claim order.
+//
+// Ranging over a Go map has no ordering guarantee, so the inherited turn and
+// the follow-up admitted behind it were both claimable in arbitrary order --
+// and the serve loop runs whatever it claims. The reserved turn sequence is the
+// order the user spoke: the inherited turn's id was reserved before the crash,
+// so it is claimed first and the follow-up runs after it.
+func TestClaimBehindRecoveredTurnClaimsInReservedTurnOrder(t *testing.T) {
+	restored, inheritedTurnID, _ := recoveredTurnSession(t)
+
+	response, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-follow-up",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the follow-up"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart(follow-up): %v", err)
+	}
+	followUpTurnID := response.Turn.ID
+
+	first, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("first claim: claimed=%#v ok=%v err=%v", first, ok, err)
+	}
+	if first.StableTurnID != inheritedTurnID {
+		t.Fatalf("first claim = %q, want the inherited turn %q claimed first", first.StableTurnID, inheritedTurnID)
+	}
+	second, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("second claim: claimed=%#v ok=%v err=%v", second, ok, err)
+	}
+	if second.StableTurnID != followUpTurnID {
+		t.Fatalf("second claim = %q, want the follow-up %q claimed next", second.StableTurnID, followUpTurnID)
+	}
+}
+
+// TestClaimAfterRecoveredTurnReleasedNamesTheFollowUpActive pins the other half
+// of the ownership rule: a turn claimed after the previous one released the
+// slot names itself active. Without it the follow-up would run with an empty
+// slot, where a concurrent turn/start is wrongly admitted and a Stop finds
+// nothing to fence.
+func TestClaimAfterRecoveredTurnReleasedNamesTheFollowUpActive(t *testing.T) {
+	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
+
+	response, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-follow-up",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the follow-up"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart(follow-up): %v", err)
+	}
+	followUpTurnID := response.Turn.ID
+
+	first, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("first claim: claimed=%#v ok=%v err=%v", first, ok, err)
+	}
+	if first.StableTurnID != inheritedTurnID {
+		t.Fatalf("first claim = %q, want the inherited turn %q", first.StableTurnID, inheritedTurnID)
+	}
+
+	// The inherited turn runs and settles through the ordinary path: the
+	// transcript incorporation mark, then the completion hook the serve loop
+	// calls when the turn returns.
+	if err := restored.markClaimedUserTranscriptIncorporated(deadMutationID); err != nil {
+		t.Fatalf("mark inherited turn incorporated: %v", err)
+	}
+	if err := restored.completeClientMutationTurn(deadMutationID); err != nil {
+		t.Fatalf("complete inherited turn: %v", err)
+	}
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID after the inherited turn settled = %q, want the slot released", got)
+	}
+
+	second, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("second claim: claimed=%#v ok=%v err=%v", second, ok, err)
+	}
+	if second.StableTurnID != followUpTurnID {
+		t.Fatalf("second claim = %q, want the follow-up %q", second.StableTurnID, followUpTurnID)
+	}
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != followUpTurnID {
+		t.Fatalf("ActiveTurnID after claiming the follow-up = %q, want it named active as %q", got, followUpTurnID)
+	}
+	// The named follow-up keeps the admission guard: a turn/start arriving while
+	// it runs is refused exactly as it is during any other process-local turn.
+	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-during-follow-up",
+		Input:            []appwire.InputItem{{Type: "text", Text: "a prompt while the follow-up runs"}},
+	}); !isClientMutationConflict(err) {
+		t.Fatalf("turn/start while the claimed follow-up runs = %v, want Conflict(\"turn is already active\")", err)
+	}
+}
+
+// TestInterruptWhileRecoveredTurnRunsFencesTheInheritedTurn pins the review's
+// second finding: the accepted follow-up must not steal the Stop.
+//
+// The interrupt names no turn; it fences whatever the durable slot names. If
+// accepting the follow-up renamed the slot while the inherited turn was still
+// in flight, a Stop would fence the follow-up -- cancelling the running turn
+// while marking the user's brand-new pending start interrupted and clearing the
+// slot, silently dropping the prompt they just sent.
+func TestInterruptWhileRecoveredTurnRunsFencesTheInheritedTurn(t *testing.T) {
+	restored, inheritedTurnID, _ := recoveredTurnSession(t)
+
+	response, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-follow-up",
+		Input:            []appwire.InputItem{{Type: "text", Text: "the follow-up"}},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart(follow-up): %v", err)
+	}
+	followUpTurnID := response.Turn.ID
+
+	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
+		t.Fatalf("claim the inherited turn: ok=%v err=%v", ok, err)
+	}
+
+	cancels := 0
+	interrupt, err := restored.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+		ClientMutationID: "cm-stop",
+	}, func() { cancels++ })
+	if err != nil {
+		t.Fatalf("interrupt while the inherited turn runs: %v", err)
+	}
+	if cancels != 1 {
+		t.Fatalf("interrupt cancelled %d times, want 1", cancels)
+	}
+	if interrupt.Receipt.TurnID != inheritedTurnID {
+		t.Fatalf("Stop fenced %q, want the inherited running turn %q (the follow-up is %q)",
+			interrupt.Receipt.TurnID, inheritedTurnID, followUpTurnID)
+	}
+	snapshot := restored.clientMutations.snapshot()
+	if record := snapshot.Journal["cm-dead-turn"]; record.ExecutionState != "interrupted" {
+		t.Fatalf("inherited turn record after the Stop = %#v, want it interrupted", record)
+	}
+	if _, still := snapshot.PendingExecutions["cm-dead-turn"]; still {
+		t.Fatal("the interrupted inherited turn remained a pending execution")
+	}
+	followUp, ok := snapshot.PendingExecutions["cm-follow-up"]
+	if !ok || followUp.ExecutionState != "accepted" {
+		t.Fatalf("follow-up pending after the Stop = %#v ok=%v, want it still accepted", followUp, ok)
+	}
+	if record := snapshot.Journal["cm-follow-up"]; record.ExecutionState == "interrupted" ||
+		record.OperationState == clientMutationOperationTerminal {
+		t.Fatalf("the Stop retired the follow-up's pending start: %#v", record)
+	}
 }

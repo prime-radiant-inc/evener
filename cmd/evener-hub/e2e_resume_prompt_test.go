@@ -22,11 +22,12 @@ import (
 //
 // The daemon is retired through the daemon's own retirement authority
 // (evener/daemon/retire), which is the same exit an idle retirement produces
-// and leaves no recovery fence behind. The prompt is then sent at several
-// offsets into that exit: the moment retirement is accepted (the daemon is
-// still alive and retiring), shortly after, and once the daemon is gone. A
-// user sends whenever they happen to hit the keyboard, so every offset in
-// that window is a real one.
+// and leaves no recovery fence behind. The prompt is then sent at the two ends
+// of that exit: the moment retirement is accepted (the daemon is still alive
+// and retiring), and once the roster reports the daemon gone. Fixed sleeps only
+// sampled arbitrary offsets into the window -- and sampled them by wall-clock
+// timing, so on a slow machine they could miss the state they named -- while
+// these two are the deterministic ends of it.
 func TestE2E_SendPromptToARetiredSession(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
@@ -81,9 +82,10 @@ func TestE2E_SendPromptToARetiredSession(t *testing.T) {
 		return thread.Status.Type != "active"
 	})
 
-	// Each round retires the daemon and then sends a prompt at a different
-	// offset into the resulting exit.
-	for round, delay := range []time.Duration{0, 250 * time.Millisecond, 1500 * time.Millisecond, 0} {
+	// Each round retires the daemon and then sends a prompt at one of the two
+	// deterministic points in the resulting exit: waitGone false is "retirement
+	// was just accepted", and true is "the roster reports the daemon gone".
+	for round, waitGone := range []bool{false, true} {
 		prompt := fmt.Sprintf("EVENER-E2E-RETIRED-PROMPT-%d", round)
 
 		list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
@@ -98,10 +100,24 @@ func TestE2E_SendPromptToARetiredSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("round %d: evener/daemon/retire: %v", round, err)
 		}
-		t.Logf("round %d (delay %v): retire accepted=%v phase=%q", round, delay, retired.Accepted, retired.Lifecycle.Phase)
+		t.Logf("round %d (waitGone=%v): retire accepted=%v phase=%q", round, waitGone, retired.Accepted, retired.Lifecycle.Phase)
 
-		if delay > 0 {
-			time.Sleep(delay)
+		if waitGone {
+			// Poll the roster rather than sleep: the send below must land after
+			// the exit is complete, and the roster is what says so.
+			goneAt := time.Now()
+			for {
+				list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
+				if err == nil {
+					if _, still := residentIdentityForRef(list, ref); !still {
+						break
+					}
+				}
+				if time.Since(goneAt) > 30*time.Second {
+					t.Fatalf("round %d: the retired daemon never left the roster", round)
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
 		}
 
 		resp, startErr := clientRequest[appwire.TurnStartResponse](ctx, client, appwire.MethodTurnStart, appwire.TurnStartParams{
@@ -110,7 +126,7 @@ func TestE2E_SendPromptToARetiredSession(t *testing.T) {
 			ExpectedInstanceID: localInstanceIDForTestRef(ref),
 			Input:              []appwire.InputItem{{Type: "text", Text: prompt}},
 		})
-		t.Logf("round %d (delay %v): turn/start err=%v disposition=%q threadID=%q", round, delay, startErr, resp.Receipt.Disposition, resp.Receipt.ThreadID)
+		t.Logf("round %d (waitGone=%v): turn/start err=%v disposition=%q threadID=%q", round, waitGone, startErr, resp.Receipt.Disposition, resp.Receipt.ThreadID)
 
 		// Decisive: the prompt must reach the model, whether or not the call
 		// above reported an error.
@@ -118,11 +134,11 @@ func TestE2E_SendPromptToARetiredSession(t *testing.T) {
 		next, nextErr := provider.Next(waitCtx.Done())
 		cancelWait()
 		if nextErr != nil {
-			t.Fatalf("round %d (delay %v): the prompt never reached the model (turn/start err=%v): %v", round, delay, startErr, nextErr)
+			t.Fatalf("round %d (waitGone=%v): the prompt never reached the model (turn/start err=%v): %v", round, waitGone, startErr, nextErr)
 		}
 		if !next.Contains(prompt) {
-			t.Fatalf("round %d (delay %v): the model request does not carry the prompt; messages:\n%s",
-				round, delay, strings.Join(next.Texts(), "\n"))
+			t.Fatalf("round %d (waitGone=%v): the model request does not carry the prompt; messages:\n%s",
+				round, waitGone, strings.Join(next.Texts(), "\n"))
 		}
 		next.RespondToolCall("communicate", communicateArgs("done"))
 		awaitThread(ctx, t, client, ref, "the turn to finish", func(thread appwire.Thread) bool {

@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +21,12 @@ import (
 // load deliberately preserves it) can instead reject the new turn/start with
 // Conflict("turn is already active") — the session is live, the new prompt is
 // refused, and the client returns the text to the composer.
+//
+// The assertion is made in two steps at the model boundary, the only place that
+// cannot lie, and it pins ORDER as well as delivery: the recovered prompt must
+// reach the model first and the user's new prompt after it. The recovered
+// turn's id was reserved before the crash, so it is the older of the two, and
+// the new prompt was admitted behind it.
 func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
@@ -112,20 +117,38 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	})
 	t.Logf("turn/start after the mid-turn kill: err=%v disposition=%q", startErr, resp.Receipt.Disposition)
 
-	// Whichever turn the resumed session runs first, the NEW prompt must be
-	// what reaches the model next (after at most the re-run of the dead turn).
+	// Ordering is the claim under test, not merely delivery. The resumed
+	// session's first model request must be the recovered (dead) prompt: that
+	// turn was reserved first -- its id has the lower sequence, minted before
+	// the crash -- and the user's new prompt was admitted behind it. A resume
+	// that runs them in the other order executes the user's latest words against
+	// the dead turn's state and leaves the stale prompt trailing after them,
+	// which is not what was promised.
 	waitCtx, cancelWait := context.WithTimeout(ctx, 60*time.Second)
 	defer cancelWait()
-	for attempt := 0; attempt < 2; attempt++ {
-		next, nextErr := provider.Next(waitCtx.Done())
-		if nextErr != nil {
-			t.Fatalf("the new prompt never reached the model (turn/start err=%v): %v", startErr, nextErr)
-		}
-		t.Logf("model request %d carries dead=%v new=%v", attempt, next.Contains(deadPrompt), next.Contains(newPrompt))
-		if next.Contains(newPrompt) {
-			return
-		}
-		next.RespondToolCall("communicate", communicateArgs(fmt.Sprintf("run %d done", attempt)))
+	recovered, recoveredErr := provider.Next(waitCtx.Done())
+	if recoveredErr != nil {
+		t.Fatalf("the recovered turn never reached the model (turn/start err=%v): %v", startErr, recoveredErr)
 	}
-	t.Fatalf("the new prompt never reached the model after the resume; turn/start err=%v", startErr)
+	t.Logf("model request 1 carries dead=%v new=%v", recovered.Contains(deadPrompt), recovered.Contains(newPrompt))
+	if !recovered.Contains(deadPrompt) {
+		t.Fatalf("the resumed session ran the new prompt BEFORE the recovered one; turn/start err=%v messages:\n%s",
+			startErr, strings.Join(recovered.Texts(), "\n"))
+	}
+	recovered.RespondToolCall("communicate", communicateArgs("recovered turn done"))
+
+	// Only then does the prompt the user sent run. There is deliberately no wait
+	// for the thread to fall idle here: the follow-up it was admitted behind is
+	// already the next active turn and is sitting at its own model request, so
+	// waiting for an idle thread would wait for a request this test is the one
+	// that must answer.
+	next, nextErr := provider.Next(waitCtx.Done())
+	if nextErr != nil {
+		t.Fatalf("the new prompt never reached the model after the recovered turn (turn/start err=%v): %v", startErr, nextErr)
+	}
+	t.Logf("model request 2 carries dead=%v new=%v", next.Contains(deadPrompt), next.Contains(newPrompt))
+	if !next.Contains(newPrompt) {
+		t.Fatalf("the model request after the recovered turn does not carry the new prompt; turn/start err=%v messages:\n%s",
+			startErr, strings.Join(next.Texts(), "\n"))
+	}
 }

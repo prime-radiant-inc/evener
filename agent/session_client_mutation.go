@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -148,12 +150,16 @@ type clientMutationSnapshot struct {
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Queue and steering transitions only compare it.
 	//
-	// Three runtime sites SET it, each while holding this store's serializer:
-	// AcceptClientMutationStart and popQueueHead for turns a client asked for,
-	// and mintRunningTurnID (session_active_turn.go) for the turns
-	// the agent starts for itself — a goal continuation and a notification wake
-	// — which have no mutation to name them and would otherwise publish an id
-	// these preconditions reject.
+	// Four runtime sites SET it, each while holding this store's serializer:
+	// AcceptClientMutationStart and claimClientMutationStart for turns a client
+	// asked for, popQueueHead for one claimed off the input queue, and
+	// mintRunningTurnID (session_active_turn.go) for the turns the agent starts
+	// for itself — a goal continuation and a notification wake — which have no
+	// mutation to name them and would otherwise publish an id these
+	// preconditions reject. Both start sites name it only when the slot is FREE:
+	// a running turn keeps its name, so a follow-up accepted behind the turn a
+	// dead process left running cannot steal the slot — which would aim a Stop at
+	// the wrong turn — nor clear the guard it was admitted through.
 	//
 	// Four runtime sites CLEAR it, also serialized, and the list matters more
 	// than it looks, because
@@ -327,7 +333,16 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 		if marshalErr != nil {
 			return marshalErr
 		}
-		snapshot.ActiveTurnID = record.StableTurnID
+		// Name the new turn ONLY when the slot is free. The slot names the
+		// turn that is RUNNING, and a running turn keeps its name: an
+		// accepted follow-up admitted behind the recovered turn (see the
+		// precondition above) has not run yet, so repointing the slot at it
+		// would aim a Stop at the wrong turn and clear the guard the
+		// follow-up was admitted through. claimClientMutationStart names the
+		// follow-up when it is claimed and the slot is free.
+		if snapshot.ActiveTurnID == "" {
+			snapshot.ActiveTurnID = record.StableTurnID
+		}
 		snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
 			ClientMutationID: record.ClientMutationID,
 			Method:           record.Method,
@@ -380,6 +395,16 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	var claimed queuedInput
 	claimedQueue := false
 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		// Collect the claimable starts, then claim them in reserved turn
+		// sequence order. Turn ids are appwire.ClientMutationTurnID(sequence)
+		// ("turn_m<N>"), reserved monotonically from snapshot.NextTurnSequence,
+		// so the numeric suffix orders them exactly. That order is the order the
+		// user spoke: the lowest sequence is the oldest prompt, and it puts an
+		// inherited turn ahead of every follow-up admitted behind it because its
+		// id was reserved before the crash. Ranging the map directly gives no
+		// order at all, so the serve loop could claim and run a follow-up before
+		// the turn the user spoke first.
+		startIDs := make([]string, 0, len(snapshot.PendingExecutions))
 		for id, pending := range snapshot.PendingExecutions {
 			if pending.Method != clientMutationMethodStart ||
 				(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
@@ -388,6 +413,31 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
 				continue
 			}
+			startIDs = append(startIDs, id)
+		}
+		slices.SortFunc(startIDs, func(a, b string) int {
+			aSeq, aOK := clientMutationStartSequence(snapshot.PendingExecutions[a].TurnID)
+			bSeq, bOK := clientMutationStartSequence(snapshot.PendingExecutions[b].TurnID)
+			switch {
+			case aOK && bOK:
+				if order := cmp.Compare(aSeq, bSeq); order != 0 {
+					return order
+				}
+			case aOK != bOK:
+				// An id that does not parse -- a hand-written or legacy name --
+				// has no sequence to order by, so it sorts last.
+				if aOK {
+					return -1
+				}
+				return 1
+			}
+			// Deterministic tie-break: equal sequences cannot happen (a
+			// sequence is reserved once) and two unparsed ids have no order of
+			// their own, so the mutation id decides rather than the map.
+			return strings.Compare(a, b)
+		})
+		for _, id := range startIDs {
+			pending := snapshot.PendingExecutions[id]
 			record, ok := snapshot.Journal[id]
 			if !ok {
 				return fmt.Errorf("accepted client start %q has no journal record", id)
@@ -415,6 +465,15 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 				// set earlier is left untouched.
 				record.ProjectionState = acceptedClientMutationProjection(record.Method)
 				pending.ProjectionState = acceptedClientMutationProjection(record.Method)
+			}
+			// A turn claimed after the previous one released the slot names
+			// itself active: the slot names the turn that is RUNNING, and this
+			// one is about to. Leaving it empty would drop the admission guard
+			// the accepted-start precondition reads -- a concurrent turn/start
+			// would be admitted into a session already running a turn -- and
+			// leave a Stop with nothing to fence.
+			if snapshot.ActiveTurnID == "" {
+				snapshot.ActiveTurnID = pending.TurnID
 			}
 			snapshot.Journal[id] = record
 			snapshot.PendingExecutions[id] = pending
@@ -486,6 +545,22 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 		s.reflectDurableInputQueue()
 	}
 	return claimed, claimed.ClientMutationID != "", nil
+}
+
+// clientMutationStartSequence parses the reserved turn sequence out of
+// appwire.ClientMutationTurnID's "turn_m<N>" spelling, so accepted starts can be
+// claimed in the order they were reserved. It reports false for any id that is
+// not one of these, which callers order last rather than treat as sequence 0.
+func clientMutationStartSequence(turnID string) (uint64, bool) {
+	digits, ok := strings.CutPrefix(turnID, "turn_m")
+	if !ok || digits == "" {
+		return 0, false
+	}
+	sequence, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return sequence, true
 }
 
 // ClientMutationStartPhase says which side of the durable claim a
