@@ -132,6 +132,12 @@ test-api-package:
 # stable per-worktree root so the HOME/TMPDIR/XDG values its cache key includes
 # do not change between runs. Gates that measure durations or drive live/fuzz
 # probes still pass -count=1; see docs/developing-evener/testing.md.
+#
+# GATE_TEST_COUNT is how CI asks for an execution rather than a cached pass: the
+# cache only hits when the commit left the Go code unchanged, and a required
+# check that reports "(cached)" did not run the suite for the commit it gates.
+# Empty locally, so a developer's repeat run reuses the cache.
+GATE_TEST_COUNT ?=
 ## The default local test gate: Go modules (short mode) plus the frontend,
 ## run concurrently.
 ## proves: Root short-mode tests, other module tests, and frontend
@@ -142,7 +148,7 @@ test-api-package:
 ##   stream.
 ## fails-when: Any module, frontend stream, or setup failure is nonzero.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short $(GATE_TEST_COUNT)
 
 ## Alias for `make test`.
 test-short:
@@ -193,7 +199,7 @@ test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
 		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
-			MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short
+			MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short $(GATE_TEST_COUNT)
 
 ## go vet across every non-fuzz workspace module.
 ## proves: go vet diagnostics for every module, independent of the tagged

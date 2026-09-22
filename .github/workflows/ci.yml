@@ -192,6 +192,11 @@ jobs:
 
   race-root:
     runs-on: ubuntu-latest
+    env:
+      # A required check must execute the suite for the commit under test:
+      # -count=1 keeps Go's test cache from reporting a pass restored from
+      # another branch. Local runs leave GATE_TEST_COUNT unset and keep it.
+      GATE_TEST_COUNT: "-count=1"
     steps:
       - name: Record pull request candidate identity
         if: github.event_name == 'pull_request'
@@ -219,6 +224,8 @@ jobs:
       matrix:
         scope: [agent, nonagent]
     runs-on: ubuntu-latest
+    env:
+      GATE_TEST_COUNT: "-count=1"
     steps:
       - uses: actions/checkout@v7
 
@@ -241,6 +248,8 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    env:
+      GATE_TEST_COUNT: "-count=1"
     steps:
       - uses: actions/checkout@v7
 
