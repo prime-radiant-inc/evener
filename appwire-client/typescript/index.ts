@@ -323,7 +323,7 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey } from "./reducer";
+export type { NotificationRoutingKey, TurnHistoryMergeResult } from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -335,6 +335,7 @@ export {
   joinedReasoningParagraphs,
   joinWarningParts,
   mergeOlderItemPage,
+  mergeTurnHistory,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
@@ -420,7 +421,7 @@ export {
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
-export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,

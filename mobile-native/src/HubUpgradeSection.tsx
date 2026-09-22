@@ -9,6 +9,12 @@ export interface HubUpgradeSectionProps {
 	onStart: () => void;
 	onRefresh: () => void;
 	onReviewAnother: () => void;
+	/** Gates the start alone: it is the one control that persists a
+	 * checkpoint before its RPC (hubUpgrade.ts's start), so while the hub
+	 * connection is away it must not be pressable - an offline attempt would
+	 * strand a false "uncertain" upgrade in storage. The reads stay
+	 * available: they fail honestly while away, and the refresh is
+	 * reconcileAfterReconnect, the remedy path itself. */
 	disabled?: boolean;
 	runningIdentity?: { version?: string; commit?: string };
 }
@@ -104,10 +110,10 @@ export function HubUpgradeSection({
 			)}
 			{(state.kind === "installed" || state.kind === "uncertain") && (
 				<>
-					<Action disabled={disabled} tone="quiet" onPress={onRefresh}>
+					<Action tone="quiet" onPress={onRefresh}>
 						Refresh running version
 					</Action>
-					<Action disabled={disabled} tone="quiet" onPress={onReviewAnother}>
+					<Action tone="quiet" onPress={onReviewAnother}>
 						Review another update
 					</Action>
 				</>

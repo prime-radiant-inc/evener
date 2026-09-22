@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
@@ -705,14 +707,31 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 // of cutting the newer generation's grace short. Grace is measured from the
 // most recent finalize, never from an earlier one.
 //
-// The timer is deliberately NOT tracked by any WaitGroup a session's Close
-// joins: Close's bounded joins must never wait out a grace period, and a
-// timer that fires after the session or tree has closed is harmless — the
-// stale-generation guard and the release claim refuse on a closing
-// controller, a superseded generation, or an already-released runtime, and
-// every gate re-checks state at fire time. A delegate that runs again within
-// the grace supersedes this timer with its own finalize's, so no
-// cancellation path is needed.
+// At most one grace timer per delegate is ever armed: the arm swaps the
+// delegate's outstanding handle and stops the replaced one, so the finalize
+// tail's timer and each refusal's retry collapse into a single timer instead
+// of stacking one per refusal. An arm paused between creating its timer and
+// installing it cannot displace a newer generation's install, and a same-
+// generation arm cannot displace a newer retry of its own generation — the
+// displaced live timer would leave the delegate with no grace window at all
+// when the displacer has already fired (the stale timer is stopped instead).
+// An arm whose callback already ran before the install step is never
+// installed: a spent timer must not become the delegate's outstanding handle,
+// because its own retire found no entry to drop and nothing else would retire
+// it. A closing controller rejects every arm — the close's sweep empties the
+// map exactly once, so a post-sweep install would arm a callback the teardown
+// already promised to stop. The fired callback retires its own entry, so a
+// spent handle never pins the arm's closure — and the *Session it captures —
+// for the life of the process. The handle lives on the controller keyed by
+// delegate: a cold restore replaces the *Session, and the new generation's
+// arm must still retire the window the previous runtime armed, which a
+// session-keyed map could not find. It is
+// deliberately NOT joined by any WaitGroup a session's Close joins: Close's
+// bounded joins must never wait out a grace period, and a timer that fires
+// after the session or tree has closed is harmless — the stale-generation
+// guard and the release claim refuse on a closing controller, a superseded
+// generation, or an already-released runtime, and every gate re-checks state
+// at fire time.
 func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 	if s == nil || s.delegateController == nil {
 		return
@@ -721,12 +740,119 @@ func (s *Session) scheduleIdleRuntimeRelease(finalizedGeneration uint64) {
 	if override := s.cfg.testOnly.delegateIdleReleaseDelay; override != nil {
 		delay = *override
 	}
-	s.sclock().AfterFunc(delay, func() {
+	arm := s.delegateController.nextIdleReleaseArmID()
+	fired := new(atomic.Bool)
+	timer := s.sclock().AfterFunc(delay, func() {
+		// Mark this arm's handle spent before anything else: a callback that
+		// runs before its arm finishes installing must leave the install step
+		// nothing to install — the already-fired timer would otherwise be
+		// installed as the delegate's outstanding handle and pin this closure
+		// (and the *Session it captures) until some later arm displaced it.
+		fired.Store(true)
+		// A fired callback retires its own installed handle so the entry
+		// cannot outlive the arm it belongs to.
+		s.delegateController.retireIdleReleaseTimer(s.owningDelegateID, arm)
 		if !s.delegateController.idleReleaseGenerationCurrent(s.owningDelegateID, finalizedGeneration) {
 			return
 		}
 		_ = s.releaseIdleRuntimeAfterFinalize()
 	})
+	// Stop the displaced timer outside the controller mutex: Timer.Stop takes
+	// the clock seam's own lock, and callbacks dispatch on their own
+	// goroutines, so holding c.mu across the stop buys nothing. The displaced
+	// timer is whichever of the two lost the swap: the window this arm
+	// replaced, or this arm's own timer when a newer generation already
+	// installed — the stale arm's callback would decline on the generation
+	// guard, leaving the newer generation with no timer at all.
+	if displaced := s.delegateController.swapIdleReleaseTimer(s.owningDelegateID, timer, finalizedGeneration, arm, fired); displaced != nil {
+		displaced.Stop()
+	}
+}
+
+// idleReleaseTimerHandle is one delegate's installed idle-release grace
+// window: the armed timer, the generation whose finalize armed it, and the arm
+// identity its fired callback uses to retire the entry.
+type idleReleaseTimerHandle struct {
+	timer      clock.Timer
+	generation uint64
+	arm        uint64
+}
+
+// swapIdleReleaseTimer installs handle as delegateID's one outstanding
+// idle-release grace timer and returns the timer the caller must stop: the
+// one this arm displaced, or the newly armed one when the install is stale.
+// Every arm site — the finalize tail and each transient-refusal retry —
+// funnels through this swap, so a delegate holds at most one armed grace
+// timer. Arming and installing are two steps, so an older arm paused between
+// them can resume after something newer installed its own: a stale arm must
+// not displace it — a newer generation's callback would decline on the
+// generation guard, and a same-generation arm's displacement of a newer retry
+// leaves the delegate with no live window when the displacer has already
+// fired — so the stale timer is the one stopped instead. An arm whose callback
+// already ran never installs, and a closing controller rejects every arm: the
+// close's sweep empties the map once, and a post-sweep install would arm a
+// callback nothing would stop.
+func (c *delegateTreeController) swapIdleReleaseTimer(delegateID string, handle clock.Timer, generation, arm uint64, fired *atomic.Bool) clock.Timer {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closing {
+		return handle
+	}
+	if fired != nil && fired.Load() {
+		return handle
+	}
+	installed := c.idleReleaseTimers[delegateID]
+	if installed.timer != nil && (installed.generation > generation ||
+		(installed.generation == generation && installed.arm > arm)) {
+		return handle
+	}
+	c.idleReleaseTimers[delegateID] = idleReleaseTimerHandle{timer: handle, generation: generation, arm: arm}
+	return installed.timer
+}
+
+// nextIdleReleaseArmID mints the identity of one grace-timer arm. The fired
+// callback carries it so the entry it retires is provably its own, even when
+// a same-generation arm has since replaced it.
+func (c *delegateTreeController) nextIdleReleaseArmID() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.idleReleaseArmSeq++
+	return c.idleReleaseArmSeq
+}
+
+// retireIdleReleaseTimer drops delegateID's installed arm when it is still
+// this one, so a fired or stood-down callback leaves no handle behind: a
+// spent clock timer can otherwise pin the arm's callback closure — and the
+// *Session it captures — for the life of the process.
+func (c *delegateTreeController) retireIdleReleaseTimer(delegateID string, arm uint64) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if installed := c.idleReleaseTimers[delegateID]; installed.timer != nil && installed.arm == arm {
+		delete(c.idleReleaseTimers, delegateID)
+	}
+}
+
+// takeIdleReleaseTimersLocked empties the idle-release timer map on a
+// controller that is closing. The caller stops the returned handles outside
+// c.mu — Timer.Stop takes the clock seam's lock. A timer that slips a fire in
+// before the stop is refused by the closing controller's claim guard, so the
+// sweep is hygiene, not correctness.
+func (c *delegateTreeController) takeIdleReleaseTimersLocked() []idleReleaseTimerHandle {
+	taken := make([]idleReleaseTimerHandle, 0, len(c.idleReleaseTimers))
+	for _, handle := range c.idleReleaseTimers {
+		taken = append(taken, handle)
+	}
+	c.idleReleaseTimers = make(map[string]idleReleaseTimerHandle)
+	return taken
 }
 
 // idleReleaseGenerationCurrent reports whether the delegate's durable

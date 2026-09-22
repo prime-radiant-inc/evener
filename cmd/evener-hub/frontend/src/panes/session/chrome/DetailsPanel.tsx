@@ -35,7 +35,7 @@ import { formatTokenCount } from "@evener/appwire-client";
 import { forwardRef, useImperativeHandle, useState } from "react";
 import { Button, InspectorCard, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { formatTimestamp, sessionTokens } from "./detailsAccounting";
+import { formatTimestamp, sessionTokens, tokenUnitLabel } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
 import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
@@ -126,8 +126,9 @@ export function DetailsPanelBody({ model, now }: DetailsPanelBodyProps) {
   const tokens = sessionTokens(model);
   // A derived sum over a windowed transcript covers only the turns in hand
   // (thread/read's itemLimit), so its label says exactly that rather than
-  // passing a partial figure off as the session's total.
-  const tokensLabel = tokens?.scope === "loaded" ? "tokens (loaded turns)" : "tokens";
+  // passing a partial figure off as the session's total (tokenUnitLabel,
+  // shared with the native transcript footer).
+  const tokensLabel = tokenUnitLabel(tokens?.scope);
   const createdAt = formatTimestamp(model.createdAt);
   const updatedAt = formatTimestamp(model.updatedAt);
   // A project path identical to the cwd is the common case (a session in its
