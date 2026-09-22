@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -116,6 +117,128 @@ func TestClassifyMarketplaceRemoveAppliedMarkerData(t *testing.T) {
 	}))
 	if state != marketplaceRemovalNotMarked {
 		t.Fatalf("unmarked removal outcome = %v, want ordinary", state)
+	}
+}
+
+// hubWireErrorThroughJSONRPC carries a hub-built WireError across the AppWire
+// JSON-RPC serialization boundary the way production does: the hub's server
+// wraps a handler error in appwire.ErrorMessage (internal/appserver), the frame
+// marshals through Message.MarshalJSON onto the wire, and a client's receive
+// loop decodes it with Message.UnmarshalJSON before Client.request returns the
+// decoded WireError. After the crossing, Data is the map a JSON-RPC client
+// sees - not the hub's typed struct - which is exactly the input
+// classifyMarketplaceRemovalOutcome's map paths exist to read.
+func hubWireErrorThroughJSONRPC(t *testing.T, hubBuilt appwire.WireError) error {
+	t.Helper()
+	frame := appwire.ErrorMessage(appwire.NewIntID(1), hubBuilt)
+	encoded, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("marshal the hub's JSON-RPC error frame: %v", err)
+	}
+	var decoded appwire.Message
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode the hub's JSON-RPC error frame: %v", err)
+	}
+	if decoded.Error == nil {
+		t.Fatal("decoded frame is not an error response")
+	}
+	wire := decoded.Error.Error
+	if _, ok := wire.Data.(map[string]any); !ok {
+		t.Fatalf("decoded Data = %#v (%T), want the map a JSON-RPC client decodes", wire.Data, wire.Data)
+	}
+	return wire
+}
+
+// TestClassifyMarketplaceRemovalOutcomeAcrossTheJSONRPCBoundary covers the
+// #1944 wire-level Low: the #1940 hub tests pin
+// MarketplaceUnregisteredCloneRemainsData and MarketplaceRemoveAppliedData as
+// typed Go error values, and the classifier's own tests build their maps by
+// hand - neither crosses the actual AppWire JSON-RPC serialization boundary.
+// This drives the hub's exact construction sites (app_plugins.go's litter
+// branch and success path) through the real codec and inspects decoded
+// behavior only, for both post-apply outcomes: an available authoritative
+// marketplace array - including an empty one, the shape listMarketplaces
+// builds when the removed marketplace was the last - and AppliedUnavailable
+// with no authoritative list, plus the success path's own
+// marketplaceRemoveApplied marker. The existing discriminator and Go
+// omitempty wire shapes are preserved untouched: whatever the boundary does to
+// them shows up as decoded behavior here.
+func TestClassifyMarketplaceRemovalOutcomeAcrossTheJSONRPCBoundary(t *testing.T) {
+	// The hub's available-list shape (the litter branch's Data.Applied built
+	// from a successful listMarketplaces read): a real array is authoritative,
+	// with its members decoded back whole.
+	hubLitterWithKeptEntries := appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: "marketplace \"acme\": removed, but its clone could not be cleaned up",
+		Data: appwire.MarketplaceUnregisteredCloneRemainsData{
+			EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+			Applied: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{
+				{Name: "kept", LastUpdated: 1, Source: appwire.MarketplaceSourceInput{Kind: "url", URL: "https://example.invalid/kept.git"}},
+			}},
+		},
+	}
+	state, applied := classifyMarketplaceRemovalOutcome(hubWireErrorThroughJSONRPC(t, hubLitterWithKeptEntries))
+	if state != marketplaceRemovalApplied || len(applied.Marketplaces) != 1 ||
+		applied.Marketplaces[0].Name != "kept" || applied.Marketplaces[0].Source.Kind != "url" {
+		t.Fatalf("boundary crossing with a kept-entry snapshot = %v/%+v, want applied with the decoded row", state, applied)
+	}
+
+	// An authoritative EMPTY array: listMarketplaces allocates its slice with
+	// make([]MarketplaceEntry, 0, len(names)), so the removal of the last
+	// marketplace sends a real [] on the wire. The client fixture must accept
+	// that array as applied-empty - a marketplace list with nothing left is a
+	// list, not an absent one.
+	hubLitterWithEmptyList := hubLitterWithKeptEntries
+	hubLitterWithEmptyList.Data = appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+		Applied:         appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{}},
+	}
+	state, applied = classifyMarketplaceRemovalOutcome(hubWireErrorThroughJSONRPC(t, hubLitterWithEmptyList))
+	if state != marketplaceRemovalApplied || applied.Marketplaces == nil || len(applied.Marketplaces) != 0 {
+		t.Fatalf("boundary crossing with an authoritative empty array = %v/%+v, want applied with a real empty snapshot", state, applied)
+	}
+
+	// AppliedUnavailable with no authoritative list (the litter branch's
+	// reconcile-read failure): the zero Applied marshals with a null
+	// marketplaces member, and the marker's flag says why. Never an
+	// authoritative empty list.
+	hubLitterUnavailable := hubLitterWithKeptEntries
+	hubLitterUnavailable.Data = appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo:    appwire.ErrorMarketplaceUnregisteredCloneRemains,
+		AppliedUnavailable: true,
+	}
+	state, applied = classifyMarketplaceRemovalOutcome(hubWireErrorThroughJSONRPC(t, hubLitterUnavailable))
+	if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
+		t.Fatalf("boundary crossing with an unavailable list = %v/%+v, want unavailable with no snapshot", state, applied)
+	}
+
+	// Null data without the unavailable flag - a payload whose applied member
+	// carries JSON null, which the hub never builds on these paths but a
+	// malformed or future peer could - must not read as an authoritative
+	// empty list either: the client fixture treats a null array as no array.
+	hubLitterNullApplied := hubLitterWithKeptEntries
+	hubLitterNullApplied.Data = appwire.MarketplaceUnregisteredCloneRemainsData{
+		EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+	}
+	state, applied = classifyMarketplaceRemovalOutcome(hubWireErrorThroughJSONRPC(t, hubLitterNullApplied))
+	if state != marketplaceRemovalUnavailable || applied.Marketplaces != nil {
+		t.Fatalf("boundary crossing with null applied data = %v/%+v, want unavailable, never applied-empty", state, applied)
+	}
+
+	// The success path's own failed re-list (the marketplaceRemoveApplied
+	// discriminator): the marker alone is the proof, and it survives the
+	// boundary as the removed state - no litter, no snapshot to reconcile.
+	hubRemovedWithoutList := appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: "marketplace \"acme\": removed, but the updated list could not be read",
+		Data: appwire.MarketplaceRemoveAppliedData{
+			EvenerErrorInfo:    appwire.ErrorMarketplaceRemoveApplied,
+			AppliedUnavailable: true,
+		},
+	}
+	state, applied = classifyMarketplaceRemovalOutcome(hubWireErrorThroughJSONRPC(t, hubRemovedWithoutList))
+	if state != marketplaceRemovalRemoved || applied.Marketplaces != nil {
+		t.Fatalf("boundary crossing with the remove-applied marker = %v/%+v, want removed with no snapshot", state, applied)
 	}
 }
 
