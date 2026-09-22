@@ -632,14 +632,18 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 			}
 			if err != nil {
 				if errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
-					// A row install mirrors init's reacquire pass: a lease held
-					// elsewhere in this process stays with its holder and is marked
-					// contended so adoption borrows or skips instead of erroring. A
-					// stale-claim probe that finds the lease held proves the claim
-					// live, and the record stays untouched.
-					if installRows {
-						contended[canonicalScratchDir(ref.Dir)] = struct{}{}
-					}
+					// A lease held elsewhere in this process stays with its
+					// holder and is marked contended so adoption borrows or
+					// skips instead of erroring. A row install mirrors init's
+					// reacquire pass. A stale-claim probe that finds the lease
+					// held proves the claim live — and for an adopted claim,
+					// whose lease the idle-release teardown still holds across
+					// the runtime-pointer window, that proof is the only
+					// contention record the replacement guard will ever see:
+					// unstamped, the guard passes the replacement through and
+					// the adoption fails "already transferred" against the
+					// session's own stale claim (round 7).
+					contended[canonicalScratchDir(ref.Dir)] = struct{}{}
 					continue
 				}
 				// The leases this pass already reacquired are going nowhere —

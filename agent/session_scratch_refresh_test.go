@@ -469,6 +469,78 @@ func TestRestoreAdoptsPoolOwnedHandleDespiteStaleContentionMark(t *testing.T) {
 	}
 }
 
+// TestRestoreKeepsFreshScratchWhenStaleAdoptedClaimStillHeld pins the round-7
+// teardown window: a slot this session previously adopted, whose lease the
+// idle-release teardown still holds while the runtime pointers are already
+// cleared, must read as contended to the replacement guard. The refresh's
+// stale-claim probe finds the lease held and must stamp the contention it
+// proved — an adopted claim carries no contended record to fall back on, so an
+// unstamped proof leaves the guard blind: the replacement disposes the fresh
+// scratch and the adoption then fails "already transferred" against the
+// session's own stale claim, a user-visible restore failure for every send
+// inside the teardown window. Stamped, the restore keeps its fresh scratch and
+// the next refresh re-probes the settled lease, re-pools the handle, and
+// clears both records.
+func TestRestoreKeepsFreshScratchWhenStaleAdoptedClaimStillHeld(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RESTOREADOPTED1"
+	const bindingID = "b-adopted-held"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	releaseRefreshFixtureLeases(t, slots)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	key := canonicalScratchDir(retainedDir)
+
+	// The idle-release window: the session's previous runtime adopted the slot
+	// (the claim recorded, the handle gone from the pool) and its teardown
+	// still holds the lease while the runtime pointers are already cleared — a
+	// concurrent send cold-restores now, with rows current so the refresh
+	// takes the stale-claim probe path.
+	teardownLease, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: retainedDir, Kind: sandbox.ScratchKindSandbox})
+	if err != nil {
+		t.Fatalf("teardown-held fixture lease: %v", err)
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{key: consumerID},
+	})
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	t.Cleanup(func() { _ = teardownLease.Retain() })
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, true); err != nil {
+		t.Fatalf("restore over a teardown-held adopted claim: %v", err)
+	}
+	pool := s.retainedScratch.Load()
+	pool.mu.Lock()
+	_, marked := pool.contended[key]
+	pool.mu.Unlock()
+	if !marked {
+		t.Fatal("the stale-claim probe left the teardown-held adopted slot unstamped; the replacement guard is blind to the contention it proved")
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(fresh) {
+		t.Fatalf("the teardown-held adopted slot's replacement disposed the fresh scratch %q; the restored session now runs on %q", fresh, got)
+	}
+}
+
 // TestScratchRefreshNeverContendsPoolOwnedHandle pins the round-5 ownership
 // invariant at the refresh's reacquire: a slot whose lease the POOL already
 // holds — a handle a prior refresh reacquired and never adopted — is not
