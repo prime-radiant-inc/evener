@@ -810,8 +810,8 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		}
 		return m, nil
 	}
-	m.err = nil
 	if msg.Action == "remove" {
+		m.err = nil
 		// Every landed remove response - the success this client issued,
 		// a settled duplicate the fence no longer knows, or an out-of-band
 		// removal another client performed - converges the panel through
@@ -845,7 +845,11 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		// before the newest applied read carries a list that predates
 		// state the panel already holds, so applying it would resurrect
 		// what the settled list dropped. Discard it and schedule the
-		// replacement read that lands the mutation's own effect.
+		// replacement read that lands the mutation's own effect. A
+		// discarded response is not this model's news either: like a list
+		// read, it must not erase the prominent warning a landed removal
+		// outcome left standing - the clone-remains or removed-outcome
+		// notice the user still has to act on.
 		if m.client != nil {
 			m.marketplaceReconcileGeneration++
 			m.marketplaceListReadIssued = m.marketplaceReconcileGeneration
@@ -853,6 +857,7 @@ func (m hubModel) handleMarketplaceMutateResult(msg launchconfig.MarketplaceMuta
 		}
 		return m, nil
 	}
+	m.err = nil
 	// A fresh add or refresh snapshot is a post-removal list read like any
 	// other: route it through the list-result logic so it settles a
 	// pending reconciliation and advances the applied generation under the

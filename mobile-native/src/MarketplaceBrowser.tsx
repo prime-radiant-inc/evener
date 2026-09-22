@@ -12,8 +12,9 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { marketplaceSourceLabel, type ConnectionState } from "@evener/appwire-client";
+import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
+  ConnectionState,
   MarketplaceAddParams,
   PluginRefParams,
 } from "@evener/appwire-client";
@@ -149,6 +150,7 @@ export function MarketplaceBrowser({
       }),
     );
     if (revision.current !== version) return;
+    if (outcome === "not-ready") return;
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setError(onFailed ? onFailed(caught) : WRITE_FAILED);
@@ -173,7 +175,7 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current !== version) return;
+          if (revision.current !== version || !canUseConnection()) return;
           // An applied removal (appliedRemovalNotice's doc) never reads as
           // a failed write: reconcile a stale list, show at most the litter
           // warning, never a retry hint.
@@ -385,7 +387,7 @@ export function MarketplaceBrowser({
   );
 }
 
-function AddMarketplace({
+export function AddMarketplace({
   connectionState,
   client,
   hubName,
@@ -441,6 +443,13 @@ function AddMarketplace({
     );
     if (!alive.current) return;
     setBusy(false);
+    if (outcome === "not-ready") {
+      // A readiness refusal means nothing ran: the modal keeps its draft
+      // for the connection it was opened on, and the status it already
+      // shows covers the reason nothing ran. Only a write that ran closes
+      // it.
+      return;
+    }
     if (outcome === "refused") {
       setError(PLUGIN_MUTATION_BUSY);
       return;
