@@ -12,6 +12,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/w
 import { navigationStore } from "../../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { ToolIcon } from "../../../../widgets/toolicon";
 import { NotificationCard } from "./NotificationCard";
 import type { ParsedNotification } from "./steeringClassify";
@@ -178,12 +179,11 @@ test("renders the title and tags the tone", () => {
 
 // The head leads with a status glyph seated in the transcript's icon rail
 // (the same seat ToolRow's kind icon and ThinkBlock's bulb occupy). Shape
-// carries the status; the chip keeps spending colour on warning/error, and
-// success/neutral stay quiet by the card's color-is-attention law - so the
-// assertion set pins the tone->glyph mapping, not any hue.
+// carries the status for the quiet tones; ERROR renders FailureGlyph - the
+// red cross that IS the failure signal now that the error chip is gone -
+// so the assertion set pins each tone's glyph, not any hue.
 const TONE_KINDS = {
   success: "check",
-  error: "cross",
   warning: "alert",
   neutral: "info",
 } as const;
@@ -207,6 +207,20 @@ test("the head leads with a status icon mapped from the tone, before any chip or
     // without it the next iteration's queries would match two cards.
     cleanup();
   }
+});
+
+test("an error head leads with the FailureGlyph cross, not the neutral rail cross", () => {
+  render(<NotificationCard notification={notif({ tone: "error", title: "Job failed" })} />);
+  const head = screen.getByTestId("notification-card");
+  const statusIcon = head.querySelector('[data-testid="notification-status-icon"]');
+  expect(statusIcon, "error tone rendered no status icon").toBeTruthy();
+  // First child of the head: the rail slot precedes the chip and title.
+  expect(head.firstElementChild).toBe(statusIcon);
+  // The glyph is the FailureGlyph widget's cross (the red failure signal),
+  // never the neutral ToolIcon cross the quiet rail uses.
+  const kindProbe = render(<FailureGlyph />);
+  expect(renderedIconPath(statusIcon)).toBe(renderedIconPath(kindProbe.container));
+  cleanup();
 });
 
 test("the status icon is decorative: aria-hidden, no accessible name of its own", () => {
@@ -281,15 +295,16 @@ test("warning tone chip is visible even when collapsed", () => {
   expect(screen.getByTestId("notification-card").textContent).toContain("warning");
 });
 
-test("a success/neutral notification recedes: no tone chip (color spent only on warning/error)", () => {
+test("a success/neutral notification recedes: no tone chip (color spent on the warning chip and the failure glyph)", () => {
   render(<NotificationCard notification={notif({ tone: "success" })} />);
   expect(screen.queryByText("error")).toBe(null);
   expect(screen.queryByText("warning")).toBe(null);
 });
 
-test("an error notification earns a danger chip", () => {
+test("an error notification carries no chip: the failure glyph is the whole signal", () => {
   render(<NotificationCard notification={notif({ tone: "error" })} />);
-  expect(screen.getByText("error")).toBeTruthy();
+  expect(screen.queryByText("error")).toBeNull();
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
 });
 
 test("the secondary line surfaces the demoted metadata", () => {

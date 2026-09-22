@@ -1,9 +1,11 @@
 // In-transcript job-notification card (contracts §17). Renders one parsed
 // <job-notification> / observer-callback block (steeringClassify.ts) as a card
 // that RECEDES when nothing went wrong (color-is-attention: a completed job is
-// the expected state, so success/neutral get no tint - only warning earns
-// attention, only error earns danger, each via a Chip tone). The verbatim block
-// is always kept inspectable in a raw disclosure, and the excerpt is
+// the expected state, so success/neutral get no tint - warning earns an
+// attention Chip, and error announces itself with the red FailureGlyph cross
+// seated at full strength in the head's rail: an "error" pill beside a title
+// that already says "Job failed" restated the fact without carrying anything
+// the glyph doesn't). The verbatim block is always kept inspectable in a raw disclosure, and the excerpt is
 // entity-decoded then rendered as ESCAPED text (React's default), never as live
 // HTML - a communicate message is the one thing rendered as markdown, through
 // the sanitizing Markdown widget.
@@ -24,6 +26,7 @@ import { Card, Chevron, Chip, Markdown, ToolIcon, type ToolIconKind } from "../.
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
@@ -57,26 +60,29 @@ const CLASS = {
   summary: requireClass(styles.summary, "notificationcard.module.css", "summary"),
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
   statusIcon: requireClass(styles.statusIcon, "notificationcard.module.css", "statusIcon"),
+  statusIconError: requireClass(styles.statusIconError, "notificationcard.module.css", "statusIconError"),
 };
 
 const EXCERPT_PREVIEW = 500;
 const MESSAGE_MAX = 8000;
 
-// Only warning/error earn colour (attention/danger); success + neutral recede
-// with no chip at all (the done glyph is the same neutral as any other card).
-function toneChip(tone: NotificationTone): { chipTone: "attention" | "danger"; label: string } | null {
-  if (tone === "error") return { chipTone: "danger", label: "error" };
+// Only warning earns a Chip; success + neutral recede with no chip at all (the
+// done glyph is the same neutral as any other card). Error announces itself
+// with the red FailureGlyph in the head's rail seat instead - a pill reading
+// "error" beside a title that already says "Job failed" carried nothing the
+// glyph doesn't.
+function toneChip(tone: NotificationTone): { chipTone: "attention"; label: string } | null {
   if (tone === "warning") return { chipTone: "attention", label: "warning" };
   return null;
 }
 
-// The head's status glyph, one line-art shape per parsed tone. Shape carries
-// the status; colour stays where the card's color-is-attention law already
-// spends it (the Chip on warning/error) - success and neutral recede in
-// neutral ink, at the rail's ambient 50% opacity like every other row icon.
-const STATUS_ICON_KIND: Record<NotificationTone, ToolIconKind> = {
+// The head's status glyph for every tone except error: one line-art shape per
+// parsed tone, receding in neutral ink at the rail's ambient 50% opacity like
+// every other row icon. Error is deliberately absent - it renders
+// FailureGlyph (see statusIcon below), the red cross that carries the
+// failure's hue as the card's one attention signal.
+const STATUS_ICON_KIND: Record<Exclude<NotificationTone, "error">, ToolIconKind> = {
   success: "check",
-  error: "cross",
   warning: "alert",
   neutral: "info",
 };
@@ -279,14 +285,21 @@ export function NotificationCard({
     </span>
   );
   // Seated first in the summary, before the chip and title: the glyph rides
-  // the transcript's icon rail (see notificationcard.module.css's
-  // .statusIcon). Decorative - the title's own words ("Job completed", "Job
-  // failed") already name the status for assistive tech, so exposing the
-  // glyph would announce the same fact twice (the same ruling as every
-  // other rail icon and ThinkBlock's bulb).
+  // the transcript's icon rail (see notificationcard.module.css's .statusIcon;
+  // error's full-strength variant is .statusIconError). Decorative - the
+  // title's own words ("Job completed", "Job failed") already name the status
+  // for assistive tech, so exposing the glyph would announce the same fact
+  // twice (the same ruling as every other rail icon and ThinkBlock's bulb) -
+  // which is also why FailureGlyph's own accessible name is silenced by the
+  // aria-hidden seat here, unlike its inline use on failed tool rows where it
+  // is the only failure signal.
   const statusIcon = (
-    <span className={CLASS.statusIcon} data-testid="notification-status-icon" aria-hidden="true">
-      <ToolIcon kind={STATUS_ICON_KIND[notification.tone]} />
+    <span
+      className={notification.tone === "error" ? CLASS.statusIconError : CLASS.statusIcon}
+      data-testid="notification-status-icon"
+      aria-hidden="true"
+    >
+      {notification.tone === "error" ? <FailureGlyph /> : <ToolIcon kind={STATUS_ICON_KIND[notification.tone]} />}
     </span>
   );
   return (
