@@ -187,6 +187,8 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			hubName="Work hub"
 			installed={createPluginsStore(client)}
 			gate={createPluginMutationGate()}
+			ready={state === "ready"}
+			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
 		/>
 	);
@@ -327,6 +329,8 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 			hubName="Work hub"
 			installed={createPluginsStore(client)}
 			gate={createPluginMutationGate()}
+			ready={state === "ready"}
+			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
 		/>
 	);

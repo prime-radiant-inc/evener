@@ -1,9 +1,16 @@
 // The decision every ready-only screen's wall used to make inline
 // (`!client || state !== "ready"`), extracted so it is testable without
 // mounting a screen (mobile-native has no RTL harness yet - #1908).
-import { expect, it } from "vitest";
-import type { ConnectionState } from "@evener/appwire-client";
-import { connectionDisplay, useConnectionDisplay } from "./connectionDisplay";
+import { expect, it, vi } from "vitest";
+import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
+import {
+	connectionDisplay,
+	isReady,
+	useConnectionDisplay,
+	useLiveReadiness,
+	useRenderClient,
+	whenReady,
+} from "./connectionDisplay";
 import { renderHook } from "./renderNative.testkit";
 
 it("shows nothing once ready, regardless of history or a fatal flag", () => {
@@ -23,6 +30,12 @@ it("banners a flap once something has already been shown", () => {
 
 it("walls a fatal failure even after something has been shown", () => {
 	expect(connectionDisplay("closed", true, true)).toBe("wall");
+});
+
+it("isReady: only \"ready\" is ready", () => {
+	expect(isReady("ready")).toBe(true);
+	for (const state of ["idle", "connecting", "reconnecting", "closed"] as ConnectionState[])
+		expect(isReady(state)).toBe(false);
 });
 
 it("useConnectionDisplay: ready -> reconnecting keeps the screen tree mounted and shows the banner", () => {
@@ -60,4 +73,52 @@ it("useConnectionDisplay: never having been ready is a wall, not a banner, even 
 	const state: ConnectionState = "connecting";
 	const hook = renderHook(() => useConnectionDisplay(state, false));
 	expect(hook.result.current).toBe("wall");
+});
+
+it("useRenderClient: falls back to the last client through a null gap", () => {
+	const first = {} as AppwireClient;
+	let client: AppwireClient | null = first;
+	const hook = renderHook(() => useRenderClient(client));
+	expect(hook.result.current).toBe(first);
+	client = null;
+	hook.rerender();
+	expect(hook.result.current).toBe(first);
+});
+
+it("useLiveReadiness rejects a deferred callback after the client or hub changes", () => {
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const hook = renderHook(() => useLiveReadiness(hubId, client, state));
+	const deferred = hook.result.current;
+	hubId = "hub-2";
+	client = second;
+	hook.rerender();
+	expect(deferred()).toBe(false);
+	expect(hook.result.current()).toBe(true);
+	state = "reconnecting";
+	hook.rerender();
+	expect(hook.result.current()).toBe(false);
+});
+
+it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
+	const handler = vi.fn();
+	whenReady(() => false, handler)("a", 1);
+	expect(handler).not.toHaveBeenCalled();
+	whenReady(() => true, handler)("a", 1);
+	expect(handler).toHaveBeenCalledExactlyOnceWith("a", 1);
+});
+
+it("whenReady reads readiness when the deferred callback runs", () => {
+	let ready = true;
+	const handler = vi.fn();
+	const deferred = whenReady(() => ready, handler);
+	ready = false;
+	deferred();
+	expect(handler).not.toHaveBeenCalled();
+	ready = true;
+	deferred();
+	expect(handler).toHaveBeenCalledOnce();
 });
