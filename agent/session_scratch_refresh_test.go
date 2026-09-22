@@ -15,7 +15,10 @@ import (
 // pass fails mid-way, a concurrent pool seed folds into the first publish
 // instead of displacing it, the parked worktree binding read takes the pool
 // lock, rows the manifest moved after the pool was built are re-adopted, and
-// the manifest revision is rechecked before anything is installed.
+// the manifest revision is rechecked before anything is installed. Round 2
+// adds: the install window serializes with manifest updates (no update can
+// commit between the recheck and the rows landing), and the fold refuses a
+// pool a terminal release detached mid-pass.
 
 // mintRefreshScratchBinding mints one owning scratch per kind and publishes
 // bindingID with every slot pinned, the leases left held by the returned
@@ -319,7 +322,7 @@ func TestParkedWorktreeBindingIDReadsUnderConcurrentPoolMutation(t *testing.T) {
 					return
 				default:
 				}
-				s.retainedScratch.Load().installConsumerRefresh(
+				s.installConsumerRefresh(s.retainedScratch.Load(),
 					sandbox.ScratchConsumerBinding{SessionID: s.id, WorktreeRestoreBindingID: bindingID},
 					sandbox.ScratchBinding{BindingID: bindingID},
 					nil, nil,
@@ -347,4 +350,112 @@ func TestParkedWorktreeBindingIDReadsUnderConcurrentPoolMutation(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+// TestScratchRefreshInstallWindowBlocksManifestUpdates pins the round-2
+// serialization: the revision recheck and the row install hold the manifest's
+// durable update lock, so a manifest update cannot commit between them —
+// without the hold, an update landing in that window installs rows a
+// revision the manifest already superseded.
+func TestScratchRefreshInstallWindowBlocksManifestUpdates(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHWINLOCK1"
+	const firstBinding = "b-window-first"
+	const movedBinding = "b-window-moved"
+	firstSlots, _ := mintRefreshScratchBinding(t, s, firstBinding, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, firstBinding)
+	movedSlots, _ := mintRefreshScratchBinding(t, s, movedBinding, sandbox.ScratchKindSandbox)
+	releaseRefreshFixtureLeases(t, firstSlots)
+	releaseRefreshFixtureLeases(t, movedSlots)
+
+	// The in-window update attempt runs synchronously inside the hook: the
+	// manifest's update lock is fail-fast (a contended writer is refused with
+	// "locked by another writer", the API's existing contention model), so
+	// the attempt either commits — the unserialized red — or is refused
+	// because the refresh's install hold owns the lock.
+	var windowErr error
+	s.cfg.testOnly.scratchRefreshAfterRecheck = func() {
+		manifest, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Errorf("in-window load: %v", err)
+			return
+		}
+		consumer := sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: movedBinding}
+		windowErr = sandbox.UpdateScratchBindings(owner, manifest.Revision, nil, []sandbox.ScratchConsumerBinding{consumer})
+	}
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("refresh of %q: %v", consumerID, err)
+	}
+	if windowErr == nil {
+		t.Fatal("a manifest update committed inside the refresh's recheck-to-install window; the install is not serialized against manifest writers")
+	}
+	// The refusal was the install hold, not a broken manifest: once the
+	// refresh returns and releases the lock, the same update commits.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("post-window load: %v", err)
+	}
+	consumer := sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: movedBinding}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision, nil, []sandbox.ScratchConsumerBinding{consumer}); err != nil {
+		t.Fatalf("post-window update after the install hold released: %v", err)
+	}
+}
+
+// TestScratchRefreshFoldSkipsDetachedPool pins the round-2 fold guard: a
+// terminal release can swap the published pool out between a pass's load and
+// its fold, and a fold that lands in the detached pool strands the pass's
+// reacquired leases — the release never clears them again. The guarded fold
+// declines, the pass releases its handles and retries, and the rows land in
+// the pool the session publishes next.
+func TestScratchRefreshFoldSkipsDetachedPool(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01REFRESHDETACHED1"
+	const bindingID = "b-detached-fold"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{},
+		consumers: map[string]sandbox.ScratchConsumerBinding{},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+	releaseRefreshFixtureLeases(t, slots)
+
+	// A terminal release detaches and drops the published pool from inside
+	// the pass's window.
+	var hooked atomic.Bool
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func() {
+		if hooked.Load() {
+			return
+		}
+		hooked.Store(true)
+		releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
+	}
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("refresh of %q: %v", consumerID, err)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the fold landed in the detached pool and nothing published a replacement; the rows and reacquired handles went nowhere")
+	}
+	pool.mu.Lock()
+	row := pool.consumers[consumerID]
+	_, slotHeld := pool.handles[canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)]
+	pool.mu.Unlock()
+	if row.CurrentBindingID != bindingID {
+		t.Fatalf("republished consumer row maps onto %q, want %q", row.CurrentBindingID, bindingID)
+	}
+	if !slotHeld {
+		t.Fatal("the retry did not reacquire and pool the slot after the detached fold")
+	}
 }

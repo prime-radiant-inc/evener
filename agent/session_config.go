@@ -619,6 +619,12 @@ type testConfig struct {
 	// manifest update or pool publish must be observable. Nil in production.
 	scratchRefreshBeforeInstall func()
 
+	// scratchRefreshAfterRecheck runs inside the refresh's install hold,
+	// after the revision recheck passes and before the rows land — the exact
+	// window a manifest update must not be able to commit inside. Nil in
+	// production.
+	scratchRefreshAfterRecheck func()
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose

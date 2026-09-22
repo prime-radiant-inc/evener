@@ -633,54 +633,89 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 		if hook := s.cfg.testOnly.scratchRefreshBeforeInstall; hook != nil {
 			hook()
 		}
-		// Recheck the revision before installing: the rows above came from one
-		// snapshot, and a binding or consumer update that landed during the
-		// reacquire would otherwise be overwritten with rows a superseded
-		// revision produced. Drop this pass's reacquires and re-derive from the
-		// moved manifest instead.
-		fresh, err := sandbox.LoadScratchRetention(owner)
-		if err != nil {
-			releaseRefreshHandles(handles)
-			return fmt.Errorf("retained scratch refresh recheck: %w", err)
-		}
-		if fresh.Revision != manifest.Revision {
+		// Recheck the revision and install under the manifest's durable update
+		// lock, one atomic step against every writer: the rows above came from
+		// one snapshot, and a binding or consumer update that committed between
+		// a bare recheck and the install would leave the pool adopting rows a
+		// superseded revision produced. PinScratchBinding, UpdateScratchBindings
+		// and the release path all serialize on this lock to write, so holding
+		// it means no update can land in that window.
+		installErr := sandbox.WithScratchRetentionLock(owner, func() error {
+			fresh, err := sandbox.LoadScratchRetention(owner)
+			if err != nil {
+				return err
+			}
+			if fresh.Revision != manifest.Revision {
+				return errScratchRefreshStaleRevision
+			}
+			if hook := s.cfg.testOnly.scratchRefreshAfterRecheck; hook != nil {
+				hook()
+			}
+			if pool != nil {
+				if !s.installConsumerRefresh(pool, consumer, binding, handles, contended) {
+					return errScratchRefreshPoolDetached
+				}
+				return nil
+			}
+			// No pool was ever published — the root initialized before the
+			// manifest held a single row — so seed one from this consumer's
+			// rows the way prepareRetainedScratch would have. The publish is a
+			// compare-and-swap against nil: a concurrent restore may publish
+			// its own seed between the load above and here, and displacing that
+			// pool would release the handles it reacquired mid-restore and drop
+			// its rows — fold into it instead.
+			seeded := &retainedScratchPool{
+				owner:     owner,
+				handles:   handles,
+				bindings:  map[string]sandbox.ScratchBinding{binding.BindingID: binding},
+				consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: consumer},
+				contended: contended,
+				adopted:   make(map[string]string),
+			}
+			for {
+				if s.retainedScratch.CompareAndSwap(nil, seeded) {
+					return nil
+				}
+				published := s.retainedScratch.Load()
+				if published == nil {
+					// The pointer went back to nil — a terminal release or
+					// init cleanup swept the published pool — so retry the CAS
+					// with this pass's seed.
+					continue
+				}
+				if s.installConsumerRefresh(published, consumer, binding, handles, contended) {
+					return nil
+				}
+				// The published pool was detached between the load and the
+				// fold; loop to re-load and try the fold again.
+			}
+		})
+		switch {
+		case installErr == nil:
+			return nil
+		case errors.Is(installErr, errScratchRefreshStaleRevision),
+			errors.Is(installErr, errScratchRefreshPoolDetached):
+			// This pass's reacquired leases are nobody's now — hand them back
+			// before the next pass re-derives its own against the moved
+			// manifest or the current pool.
 			releaseRefreshHandles(handles)
 			continue
-		}
-		if pool != nil {
-			pool.installConsumerRefresh(consumer, binding, handles, contended)
-			return nil
-		}
-		// No pool was ever published — the root initialized before the manifest
-		// held a single row — so seed one from this consumer's rows the way
-		// prepareRetainedScratch would have. The publish is a compare-and-swap
-		// against nil: a concurrent restore may publish its own seed between the
-		// load above and here, and displacing that pool would release the
-		// handles it reacquired mid-restore and drop its rows — fold into it
-		// instead.
-		seeded := &retainedScratchPool{
-			owner:     owner,
-			handles:   handles,
-			bindings:  map[string]sandbox.ScratchBinding{binding.BindingID: binding},
-			consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: consumer},
-			contended: contended,
-			adopted:   make(map[string]string),
-		}
-		for {
-			if s.retainedScratch.CompareAndSwap(nil, seeded) {
-				return nil
-			}
-			if published := s.retainedScratch.Load(); published != nil {
-				published.installConsumerRefresh(consumer, binding, handles, contended)
-				return nil
-			}
-			// The pointer went back to nil — a terminal release or init
-			// cleanup swept the published pool — so retry the CAS with this
-			// pass's seed.
+		default:
+			releaseRefreshHandles(handles)
+			return fmt.Errorf("retained scratch refresh install: %w", installErr)
 		}
 	}
 	return fmt.Errorf("retained scratch refresh: rows for %q stayed stale", sessionID)
 }
+
+var (
+	// errScratchRefreshStaleRevision marks a refresh pass whose manifest
+	// revision was superseded before its install hold, so the pass re-derives.
+	errScratchRefreshStaleRevision = errors.New("agent: retained scratch refresh revision superseded")
+	// errScratchRefreshPoolDetached marks a pass whose target pool was swapped
+	// out from the session before the fold landed, so the pass retries.
+	errScratchRefreshPoolDetached = errors.New("agent: retained scratch refresh pool detached")
+)
 
 // scratchConsumerRowsCurrent reports whether the pool's consumer row is the
 // live manifest's: any drift — a moved current binding, a changed parked or
@@ -724,24 +759,43 @@ func releaseRefreshHandles(handles map[string]*sandbox.SessionScratch) {
 	}
 }
 
-// installConsumerRefresh folds one consumer's refreshed manifest rows into the
-// pool under its lock: the consumer and its current binding become adoptable,
-// reacquired handles join the pool and drop any adoption record their reacquire
-// proves stale — the previous adopter gave the lease back — and contended marks
-// record slots whose leases are held elsewhere in this process, so an adoption
-// that finds no handle borrows or skips instead of erroring.
-func (p *retainedScratchPool) installConsumerRefresh(consumer sandbox.ScratchConsumerBinding, binding sandbox.ScratchBinding, handles map[string]*sandbox.SessionScratch, contended map[string]struct{}) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.consumers[consumer.SessionID] = consumer
-	p.bindings[binding.BindingID] = binding
+// installConsumerRefresh folds one consumer's refreshed manifest rows into
+// pool and reports whether the fold landed in the published one: the consumer
+// and its current binding become adoptable, reacquired handles join the pool
+// and drop any adoption record their reacquire proves stale — the previous
+// adopter gave the lease back — and contended marks record slots whose leases
+// are held elsewhere in this process, so an adoption that finds no handle
+// borrows or skips instead of erroring.
+//
+// The fold is guarded by the session's published-pool identity, checked under
+// the same mutex hold that guards the maps: a terminal release can swap the
+// pointer out and drop the pool at any moment, and a fold that lands in a
+// detached pool strands its reacquired leases — the release either already
+// cleared the map (rows lost with the closing tree, moot) or never will again
+// (the handles leak for the life of the process). Checking the pointer inside
+// the hold serializes the fold with the release's clear, so the fold either
+// happens while the pool is still the published one or not at all, and the
+// caller — which keeps ownership of un-folded handles — retries against the
+// now-current pointer.
+func (s *Session) installConsumerRefresh(pool *retainedScratchPool, consumer sandbox.ScratchConsumerBinding, binding sandbox.ScratchBinding, handles map[string]*sandbox.SessionScratch, contended map[string]struct{}) bool {
+	if pool == nil {
+		return false
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if s.retainedScratch.Load() != pool {
+		return false
+	}
+	pool.consumers[consumer.SessionID] = consumer
+	pool.bindings[binding.BindingID] = binding
 	for key, handle := range handles {
-		p.handles[key] = handle
-		delete(p.adopted, key)
+		pool.handles[key] = handle
+		delete(pool.adopted, key)
 	}
 	for key := range contended {
-		p.contended[key] = struct{}{}
+		pool.contended[key] = struct{}{}
 	}
+	return true
 }
 
 // validateRetainedScratchGraph fails closed on an incomplete or contradictory

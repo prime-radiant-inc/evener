@@ -128,6 +128,24 @@ func scratchRetentionLockPath(owner ScratchOwner) string {
 	return filepath.Join(scratchRetentionDir(owner), owner.RootSessionID+".lock")
 }
 
+// WithScratchRetentionLock runs fn holding the manifest's durable update lock
+// — the same one PinScratchBinding, UpdateScratchBindings and the release
+// path serialize on — so a reader can load, validate, and act with no
+// manifest update committing in between. The retained-scratch refresh needs
+// exactly this: its revision recheck and its row install must be one atomic
+// step against every manifest writer.
+func WithScratchRetentionLock(owner ScratchOwner, fn func() error) error {
+	if err := owner.validate(); err != nil {
+		return err
+	}
+	lock, err := acquireScratchRetentionLock(owner)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+	return fn()
+}
+
 // canonicalScratchPath normalizes an allocation or reference path without
 // requiring it to exist (a failed/never-exposed allocation still has a name).
 func canonicalScratchPath(path string) (string, error) {
