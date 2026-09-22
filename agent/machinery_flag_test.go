@@ -24,8 +24,8 @@ func TestBuildUserInputMessageFlagsPersistedAttachmentNote(t *testing.T) {
 	images := []ImageAttachment{{
 		MediaType: "image/png",
 		Data:      []byte{0x89, 0x50, 0x4e, 0x47},
-		Name:       "shot.png",
-		Path:       "/state/sessions/s1/attachments/abcdef0123456789-shot.png",
+		Name:      "shot.png",
+		Path:      "/state/sessions/s1/attachments/abcdef0123456789-shot.png",
 	}}
 	msg := buildUserInputMessage("what is in this picture?", images)
 	if len(msg.Content) != 3 {
