@@ -234,6 +234,18 @@ function PluginsScreenBody({
     },
     [],
   );
+  // A removal the hub confirmed outright: the outcome is neither a residue
+  // nor a failure, and the screen-level warning reports the latest removal
+  // outcome - a clean success retires whatever earlier outcome raised, the
+  // same way an applied outcome with a null notice does (markAppliedRemoval
+  // above).
+  const clearMarketplaceWarning = useCallback(
+    (_name: string, owner: ConversationClientLike): void => {
+      if (currentClient.current !== owner) return;
+      setMarketplaceWarning(null);
+    },
+    [],
+  );
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -260,6 +272,7 @@ function PluginsScreenBody({
         onAppliedRemoval={markAppliedRemoval}
         onAuthoritativeMarketplaces={reconcileAppliedRemovals}
         onMarketplaceAdded={clearAddedMarketplace}
+        onRemovedMarketplace={clearMarketplaceWarning}
       />
     </>
   );
@@ -275,6 +288,7 @@ function Plugins({
   onAppliedRemoval,
   onAuthoritativeMarketplaces,
   onMarketplaceAdded,
+  onRemovedMarketplace,
   canUseConnection,
 }: {
   client: ConversationClientLike;
@@ -294,6 +308,7 @@ function Plugins({
     owner: ConversationClientLike,
   ): void;
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
+  onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
   canUseConnection: () => boolean;
 }) {
   const colors = useColors();
@@ -424,6 +439,7 @@ function Plugins({
           onAppliedRemoval={onAppliedRemoval}
           onAuthoritativeMarketplaces={onAuthoritativeMarketplaces}
           onMarketplaceAdded={onMarketplaceAdded}
+          onRemovedMarketplace={onRemovedMarketplace}
         />
       ) : (
         <FlatList

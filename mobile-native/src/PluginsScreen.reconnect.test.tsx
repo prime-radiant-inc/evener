@@ -200,6 +200,7 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			onAppliedRemoval={() => true}
 			onAuthoritativeMarketplaces={() => {}}
 			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));
@@ -346,6 +347,7 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 			onAppliedRemoval={() => true}
 			onAuthoritativeMarketplaces={() => {}}
 			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));

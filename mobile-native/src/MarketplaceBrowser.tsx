@@ -66,6 +66,7 @@ export function MarketplaceBrowser({
   onAppliedRemoval,
   onAuthoritativeMarketplaces,
   onMarketplaceAdded,
+  onRemovedMarketplace,
 }: {
   client: ConversationClientLike;
   connectionState: ConnectionState;
@@ -115,6 +116,13 @@ export function MarketplaceBrowser({
    * same-second registration from the stale row it replaced, off the
    * fenced row still carrying the source the add submitted. */
   onMarketplaceAdded(name: string, owner: ConversationClientLike): void;
+  /** Reports a marketplace removal the hub confirmed outright - the write
+   * resolved, so the outcome is neither an applied residue nor a failure.
+   * The screen owns the cleanup warning, and the latest removal outcome
+   * decides what it shows: a clean success retires whatever earlier outcome
+   * raised, the same way an applied outcome with nothing to say does
+   * (onAppliedRemoval's null notice). */
+  onRemovedMarketplace(name: string, owner: ConversationClientLike): void;
 }) {
   const colors = useColors();
   // The hub's add answer is the one place that names what the write
@@ -283,7 +291,13 @@ export function MarketplaceBrowser({
               setError(PLUGIN_MUTATION_BUSY);
               return;
             }
-            if (outcome !== "failed") return;
+            if (outcome !== "failed") {
+              // Report before the revision fence, the way an applied outcome
+              // records: the warning is the screen's, so it must survive this
+              // view's selection changes and remounts.
+              onRemovedMarketplace(name, client);
+              return;
+            }
             // An applied removal (appliedRemovalNotice's doc) never reads as
             // a failed write: record it with the parent's guard - the notice
             // becomes the screen-level warning, null shows nothing - and

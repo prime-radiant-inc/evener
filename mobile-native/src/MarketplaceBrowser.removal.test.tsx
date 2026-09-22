@@ -91,6 +91,7 @@ function GuardedBrowser({ client }: { client: ConversationClientLike }) {
             return next;
           });
         }}
+        onRemovedMarketplace={() => setWarning(null)}
       />
     </>
   );
