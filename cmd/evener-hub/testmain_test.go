@@ -233,20 +233,19 @@ func chdirTemp(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(abs); err != nil {
-		t.Fatal(err)
-	}
-	// Register the restore before anything that can fail: t.Setenv panics on a
-	// parallel test, and a panic between the chdir and this cleanup would leave
-	// the working directory changed for every test that ran after it.
+	// Set PWD before changing directory: t.Setenv carries T.Chdir's
+	// parallel-test guard (checkParallel), and it has to fire while the process
+	// is still where it started, or a parallel test could resolve relative
+	// paths against the changed directory in the window before the panic.
+	t.Setenv("PWD", abs)
+	// Registered before the chdir so a failed one cannot leave the process in
+	// the new directory.
 	t.Cleanup(func() {
 		if err := os.Chdir(old); err != nil {
 			t.Errorf("restore working directory to %s: %v", old, err)
 		}
 	})
-	// Keep PWD consistent with the new working directory, as testing.T.Chdir
-	// does, and set it on every platform: PWD is a POSIX convention, but
-	// t.Setenv is also what carries T.Chdir's parallel-test guard, because it
-	// panics for a test with a parallel ancestor and denies a later t.Parallel.
-	t.Setenv("PWD", abs)
+	if err := os.Chdir(abs); err != nil {
+		t.Fatal(err)
+	}
 }
