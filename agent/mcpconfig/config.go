@@ -201,7 +201,11 @@ func expandEnvVars(s string) (string, error) {
 // runs commands on the host, so a $(command) expression there is refused at
 // load rather than executed.
 func expandEnvVarsUntrusted(s string) (string, error) {
-	if scan, err := valueexpr.Scan(s); err == nil && len(scan.Commands) > 0 {
+	// The refusal keys on the command pieces alone, never on a clean scan:
+	// Scan reports what it found even when a later syntax error aborts it,
+	// and Expand executes command pieces as it walks, so a value like
+	// "$(evil) ${unterminated" would run evil before its own error surfaces.
+	if scan, _ := valueexpr.Scan(s); len(scan.Commands) > 0 {
 		return "", errors.New("command expressions $(...) are allowed only in config you author yourself (the global mcp.json or --mcp-config files)")
 	}
 	return expandEnvVars(s)

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 // protocolDefaults are the endpoint paths a protocol uses when the
@@ -322,10 +324,8 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
-	cred, cw := r.credential(rec)
+	cred, credHeaders, cw := r.resolveCredentials(rec)
 	warnings = append(warnings, cw...)
-	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders)
-	warnings = append(warnings, hw...)
 	if rec.head.Hidden {
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
 	}
@@ -599,10 +599,8 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
-	cred, cw := r.credential(rec)
+	cred, credHeaders, cw := r.resolveCredentials(rec)
 	warnings = append(warnings, cw...)
-	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders)
-	warnings = append(warnings, hw...)
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
 
@@ -905,19 +903,47 @@ func templatePlaceholders(tpl string) []string {
 	return out
 }
 
-// expandCredentialHeaders expands a record's credential headers, the
-// headers whose values carry credential material. A header whose value
-// resolves to nothing is dropped with a warning: an unset reference or a
-// failed command silently dropping it would leave an auth failure with no
-// local hint.
-func (r *Registry) expandCredentialHeaders(headers map[string]string) (map[string]string, []string) {
+// resolveCredentials expands a record's credential fields once per
+// resolution: the Authorization header's expansion feeds both the credential
+// and the header map, so a failing command runs once (a second run could
+// also race the first and split the outcome between credential and header).
+func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]string, []string) {
+	auth, authOK, unresolved := r.authorization(rec)
+	cred, cw := r.credentialWithAuth(rec, auth, authOK, unresolved)
+	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth, authOK, unresolved)
+	return cred, credHeaders, append(cw, hw...)
+}
+
+// expandCredentialHeaders builds the resolved credential-header map. The
+// Authorization header arrives pre-expanded from resolveCredentials, so its
+// command expressions run once per resolution; every other header expands
+// here. A header that expands to empty is not present — it drops with a
+// warning naming it — while a raw-empty value is spec §10's removal of an
+// inherited header and stays silent.
+func (r *Registry) expandCredentialHeaders(headers map[string]string, auth string, authOK bool, authUnresolved []valueexpr.Unresolved) (map[string]string, []string) {
 	credHeaders := map[string]string{}
 	var warnings []string
 	for k, v := range headers {
+		if v == "" {
+			continue
+		}
+		if authOK && k == "Authorization" {
+			switch {
+			case len(authUnresolved) > 0:
+				warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(authUnresolved)))
+			case auth != "":
+				credHeaders[k] = auth
+			default:
+				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
+			}
+			continue
+		}
 		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
 			credHeaders[k] = e
 		} else if len(missing) > 0 {
 			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
 		}
 	}
 	return credHeaders, warnings

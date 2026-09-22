@@ -306,3 +306,17 @@ func TestCheckAPIKeyEnvName(t *testing.T) {
 		}
 	}
 }
+
+// The refusal must survive a syntax error later in the same value: Scan
+// reports the command piece it already found before the error aborts the
+// walk, and a guard keyed on a clean scan would pass "$(evil)
+// ${unterminated" — and Expand would run evil on the way to surfacing the
+// error.
+func TestCheckNoCommandsSeesPartialScan(t *testing.T) {
+	if err := checkNoCommands(`$(evil) ${unterminated`, `providers.gw.headers."X"`); err == nil {
+		t.Fatal("checkNoCommands passed a value whose later syntax error hides a command piece")
+	}
+	if err := checkNoCommands("Bearer $KEY", "x"); err != nil {
+		t.Fatalf("checkNoCommands refused a plain reference value: %v", err)
+	}
+}

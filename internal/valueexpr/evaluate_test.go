@@ -220,3 +220,29 @@ func TestRealRunCommand(t *testing.T) {
 		}
 	})
 }
+
+// mint anchors a plain value's TTL at the moment the command finished, not
+// when the resolve began: a slow command must not eat into the value's own
+// freshness window.
+func TestMintAnchorsTTLAtCompletion(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	base := time.Unix(1_800_000_000, 0)
+	calls := 0
+	Now = func() time.Time {
+		calls++
+		if calls == 1 { // the resolve start
+			return base
+		}
+		return base.Add(20 * time.Second) // the completion instant
+	}
+	RunCommand = func(string) (string, error) { return "plain-value", nil }
+
+	res, err := evaluate("get-key")
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if want := base.Add(20 * time.Second).Add(defaultTTL); !res.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v; want %v (the TTL must start at completion)", res.ExpiresAt, want)
+	}
+}

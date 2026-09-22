@@ -27,7 +27,11 @@ func checkEnvRefs(value, what string) error {
 // treat it as ordinary text, so those fields refuse a command outright. It
 // never echoes the value, which may hold a secret.
 func checkNoCommands(value, what string) error {
-	if scan, err := valueexpr.Scan(value); err == nil && len(scan.Commands) > 0 {
+	// The refusal keys on the command pieces alone, never on a clean scan:
+	// Scan reports what it found even when a later syntax error aborts it,
+	// and Expand executes command pieces as it walks, so a value like
+	// "$(evil) ${unterminated" would run evil before its own error surfaces.
+	if scan, _ := valueexpr.Scan(value); len(scan.Commands) > 0 {
 		return fmt.Errorf("%s: command expressions are reserved for credential fields (api_key, credential_headers); this field's value is not treated as a secret", what)
 	}
 	return nil

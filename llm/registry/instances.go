@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 // instance is a usable named provider (spec §5.1).
@@ -474,8 +476,30 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 // schemes). It performs no I/O beyond a file-existence check and the
 // $(command) expressions an api_key or credential-header value carries,
 // which the shared evaluator resolves against the process environment with
-// its process-wide cache (spec §10).
+// its process-wide cache (spec §10). The Authorization header expands here;
+// resolve.go's resolveCredentials supplies that expansion for the resolution
+// paths that also build the credential header map, so it runs once.
 func (r *Registry) credential(rec *record) (Credential, []string) {
+	auth, authOK, unresolved := r.authorization(rec)
+	return r.credentialWithAuth(rec, auth, authOK, unresolved)
+}
+
+// authorization expands the Authorization credential header once, shared by
+// credential() and resolveCredentials so its command expressions run once
+// per resolution.
+func (r *Registry) authorization(rec *record) (expanded string, ok bool, unresolved []valueexpr.Unresolved) {
+	raw, present := rec.head.CredentialHeaders["Authorization"]
+	if !present || raw == "" {
+		return "", false, nil
+	}
+	expanded, unresolved = expandEnv(raw, r.env)
+	return expanded, true, unresolved
+}
+
+// credentialWithAuth is credential with the Authorization header's expansion
+// supplied, so the resolution path that also builds the credential header map
+// never runs the header's command expressions twice.
+func (r *Registry) credentialWithAuth(rec *record, auth string, authOK bool, authUnresolved []valueexpr.Unresolved) (Credential, []string) {
 	h := rec.head
 	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
 	none := func(reason string) (Credential, []string) {
@@ -533,17 +557,16 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		}
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
-	if auth, ok := h.CredentialHeaders["Authorization"]; ok && auth != "" {
-		v, missing := expandEnv(auth, r.env)
-		if len(missing) > 0 {
-			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(missing)))
+	if authOK {
+		if len(authUnresolved) > 0 {
+			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(authUnresolved)))
 			cred.AuthoredLayer = "credential_headers"
 			return cred, warns
 		}
-		if v == "" {
+		if auth == "" {
 			return none("no credential (the Authorization credential header expands to an empty value)")
 		}
-		return Credential{Value: v, Source: "credential_headers"}, nil
+		return Credential{Value: auth, Source: "credential_headers"}, nil
 	}
 	if r.creds != nil {
 		if v, ok := r.creds.Lookup(rec.name); ok && v != "" {

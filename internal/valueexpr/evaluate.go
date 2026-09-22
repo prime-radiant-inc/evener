@@ -122,7 +122,7 @@ func evaluate(command string) (Result, error) {
 			return cached, nil
 		}
 		evaluateMu.Unlock()
-		minted, err := mint(command, now)
+		minted, err := mint(command)
 		if err == nil {
 			evaluateMu.Lock()
 			cache[command] = minted
@@ -136,11 +136,14 @@ func evaluate(command string) (Result, error) {
 	return res.(Result), nil
 }
 
-func mint(command string, now time.Time) (Result, error) {
+func mint(command string) (Result, error) {
 	raw, err := RunCommand(command)
 	if err != nil {
 		return Result{}, err
 	}
+	// The freshness clock starts when the command finishes, not when the
+	// resolve began: a slow command must not eat into the value's own TTL.
+	now := Now()
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return Result{}, &CommandError{Detail: "command produced no output"}
@@ -208,11 +211,21 @@ func realRunCommand(command string) (string, error) {
 	// calls Cancel at the deadline, before the process is reaped, so the pid
 	// still names our child then.
 	cmd.SysProcAttr = procgroup.SysProcAttr()
-	cmd.Cancel = func() error { procgroup.Kill(cmd.Process.Pid); return nil }
+	// os/exec invokes Cancel only from the goroutine Start spawns, so
+	// Process is always set; the nil check keeps the kill safe in this
+	// closure without depending on the stdlib's internal contract.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
 	// WaitDelay makes the timeout a hard bound: a descendant that escaped
 	// the process group and still holds the captured pipes cannot keep Wait
 	// — and with it a request or a session start — blocked past the budget.
-	cmd.WaitDelay = commandTimeout
+	// The drain grace stays a small fraction of the command budget, so the
+	// whole run costs about one timeout, not two.
+	cmd.WaitDelay = min(commandTimeout, 5*time.Second)
 	var stdout cappedBuffer
 	var stderr cappedBuffer
 	stdout.max = maxOutput

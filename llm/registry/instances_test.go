@@ -801,3 +801,57 @@ func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
 		t.Fatalf("warnings = %v; want the header failure wording", res.Warnings)
 	}
 }
+
+// A credential header that expands to empty (an empty ${VAR:-} default) is
+// not a present header: it drops out of the map with a warning naming it,
+// never sent on the wire as an empty-valued header.
+func TestCredentialHeaderEmptyExpansionWarns(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Gateway-Key\"\n" +
+		"credential_headers = { \"X-Gateway-Key\" = '''${MISSING:-}''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
+		t.Fatal("an empty expansion must drop the credential header")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), `credential header "X-Gateway-Key": expands to an empty value`) {
+		t.Fatalf("warnings = %v; want the empty-expansion warning naming the header", res.Warnings)
+	}
+}
+
+// The Authorization header's command expression runs once per resolution:
+// the one expansion feeds both the credential and the credential-header map,
+// so the two can never disagree, and a failing command is not retried (and
+// not raced) within the same resolution.
+func TestAuthorizationCommandRunsOncePerResolution(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "", errors.New("command timed out")
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''$(flaky)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	if _, err := r.Resolve("gw/house-model"); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("the Authorization command ran %d time(s) in one resolution; want 1", runs)
+	}
+}
