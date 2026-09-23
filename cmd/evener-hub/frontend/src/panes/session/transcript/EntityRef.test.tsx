@@ -324,6 +324,49 @@ test("focusing the OpenButton reveals the entity card after the shared delay", (
   expect(screen.getByRole("tooltip").textContent).toContain("Compile the frontend");
 });
 
+test("job card states an exited-nonzero run as Command failed", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_cen",
+    "Compile the frontend",
+    {},
+    {
+      status: "command_exited_nonzero",
+      outcome: "failure",
+      exitCode: 2,
+    },
+  );
+  render(<EntityRef view={view} id="job_cen" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  const card = screen.getByRole("tooltip");
+  expect(card.textContent).toContain("Command failed");
+  expect(card.textContent).not.toContain("command_exited_nonzero");
+});
+
+test("job card states a signal-killed run as Command killed", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_kil",
+    "Compile the frontend",
+    {},
+    {
+      status: "command_killed",
+      outcome: "failure",
+    },
+  );
+  render(<EntityRef view={view} id="job_kil" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  const card = screen.getByRole("tooltip");
+  expect(card.textContent).toContain("Command killed");
+  expect(card.textContent).not.toContain("command_killed");
+});
+
 test("falls back to the shared render-context entity map", () => {
   vi.useFakeTimers();
   const view = jobView("job_context", "From context");
