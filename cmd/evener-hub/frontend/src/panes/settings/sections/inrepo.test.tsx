@@ -3,6 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { installLocalStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { InRepoSection } from "./inrepo";
 
@@ -28,7 +29,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function connectFakeClient(): FakeClient {

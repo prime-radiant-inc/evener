@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { installLocalStorage } from "../../storageTestUtils";
 import { RECENT_COMMANDS_KEY, readRecentCommandIds, rememberCommand } from "./recentCommands";
 
 // Recent commands live at localStorage["evener.search.recentCommands"] as a
@@ -27,7 +28,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

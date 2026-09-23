@@ -55,6 +55,7 @@ import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from ".
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
 import "./testing/editorGeometry";
+import { installLocalStorage } from "../../storageTestUtils";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
 
@@ -298,7 +299,7 @@ function latestStubIntersectionObserver(): StubIntersectionObserver {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

@@ -15,6 +15,7 @@ import { parseKeybinding } from "tinykeys";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
+import { installLocalStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -42,7 +43,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function resetRegistryToDefaults(): void {

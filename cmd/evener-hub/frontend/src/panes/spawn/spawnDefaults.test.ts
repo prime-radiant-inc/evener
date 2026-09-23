@@ -1,5 +1,6 @@
 import type { ModelDescriptor } from "@evener/appwire-client";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { installLocalStorage } from "../../storageTestUtils";
 import {
   defaultsKeyFor,
   GLOBAL_LAST_WORKING_DIR_KEY,
@@ -40,7 +41,7 @@ class MemoryStorage {
 }
 
 beforeAll(() => {
-  globalThis.localStorage = new MemoryStorage() as unknown as Storage;
+  installLocalStorage(new MemoryStorage() as unknown as Storage);
 });
 
 beforeEach(() => localStorage.clear());

@@ -1,6 +1,7 @@
 import { decodeLocalConfig, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../storageTestUtils";
 import {
   clampSidebarWidth,
   dualWriteTranscriptDisplayLegacy,
@@ -41,7 +42,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 // Every key this store reads/writes lives under this prefix - the plan's own

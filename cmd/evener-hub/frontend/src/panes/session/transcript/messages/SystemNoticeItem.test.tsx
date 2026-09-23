@@ -5,6 +5,7 @@ import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { formatCharCount, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { installLocalStorage } from "../../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
@@ -34,7 +35,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

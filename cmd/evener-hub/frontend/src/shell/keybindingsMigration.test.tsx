@@ -22,6 +22,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
+import { installLocalStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
@@ -188,7 +189,7 @@ beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
   // @ts-expect-error MemoryStorage deliberately implements only the Storage
   // methods the stores actually call - see AppShell.test.tsx's own stub.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   // Await the lazy pane/dock modules once up front, then pay react-dom's
   // per-boundary fallback throttle in one warm render per route shape - see
   // AppShell.test.tsx's warmRoute for the full reasoning (the cost is real
@@ -224,7 +225,7 @@ beforeEach(() => {
   navigationStore.setState({ mode: "v2" });
   resetPrefsStoreForTests();
   // @ts-expect-error see the beforeAll stub.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   localStorage.clear();
 });
 
