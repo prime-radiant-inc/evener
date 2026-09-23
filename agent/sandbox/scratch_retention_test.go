@@ -1413,6 +1413,88 @@ func TestResetReleasedCarriesAValidGraph(t *testing.T) {
 	}
 }
 
+// TestResetReportsACommittedWrite pins round 45's Medium: the reset's
+// manifest write can report the post-rename failure class — an error for a
+// reset the rename already committed — and the reset returned reset=false
+// with that error, so the install aborted over a manifest the reset had
+// already repaired: Released false with the carried rows at the advanced
+// revision, but no restored consumer to re-probe them, pinning the carried
+// directories indefinitely. The reset must recognize its committed write —
+// the single-writer retention lock means an unreleased manifest at fresh's
+// advanced revision is this reset's commit — and report it.
+func TestResetReportsACommittedWrite(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-commit-45", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); err != nil {
+		t.Fatalf("publish the pre-release consumer: %v", err)
+	}
+	// The scratch's own lease stays held, so the terminal release leaves the
+	// pin behind and the committed reset must carry its reference.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	released, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !released.Released {
+		t.Fatal("fixture: the manifest was not released")
+	}
+
+	// Fail the reset's manifest write exactly once, after its rename has
+	// committed: the post-rename fsync failure class the write probe
+	// simulates.
+	var fired bool
+	old := scratchManifestWriteProbe
+	scratchManifestWriteProbe = func() error {
+		if fired {
+			return nil
+		}
+		fired = true
+		return errors.New("probe: post-rename fsync failure")
+	}
+	t.Cleanup(func() { scratchManifestWriteProbe = old })
+
+	fresh, reset, err := ResetScratchRetentionIfReleased(owner)
+
+	// The committed-reset evidence first: the durable manifest must be the
+	// reset this call wrote — unreleased, at the advanced revision — or the
+	// report below would be judging a write that never committed.
+	current, cerr := LoadScratchRetention(owner)
+	if cerr != nil {
+		t.Fatalf("fixture: load the committed manifest: %v", cerr)
+	}
+	if current.Released {
+		t.Fatalf("fixture: the reset write did not commit (still released)")
+	}
+	if current.Revision != released.Revision+1 {
+		t.Fatalf("fixture: the reset write did not commit (revision %d, want %d)", current.Revision, released.Revision+1)
+	}
+	if err != nil {
+		t.Fatalf("the reset reported a committed write as failed: %v", err)
+	}
+	if !reset {
+		t.Fatal("the reset reported a committed write as not-reset")
+	}
+	if fresh.Revision != current.Revision {
+		t.Fatalf("the reported manifest is not the committed one: %d vs %d", fresh.Revision, current.Revision)
+	}
+	if len(fresh.References) == 0 {
+		t.Fatal("the committed reset dropped every carried reference")
+	}
+}
+
 // TestResetReleasedCarriesWrapperBindingsAndTheirConsumers pins round 24's
 // second Medium: the reset's carry narrowed to the lease-owning binding, so a
 // wrapper-only binding — a distinct consumer's identity for the same retained

@@ -1445,6 +1445,23 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 			}
 		}
 		if err := writeScratchRetention(owner, fresh); err != nil {
+			// A write whose rename already committed can still report the
+			// post-rename failure class (writeScratchRetention's probe fires
+			// after atomicWritePrivateFile): the reset then committed —
+			// Released false with the carried rows at the advanced revision —
+			// and reporting reset=false aborts the install over a manifest
+			// the reset already repaired, leaving carried references pinned
+			// with no restored consumer to re-probe them. This closure holds
+			// the single-writer retention lock, so an unreleased manifest at
+			// exactly fresh's revision is this reset's commit; anything else
+			// keeps the error (round 45; the rounds 39/43 commit
+			// discriminators applied to the reset).
+			if current, rerr := loadScratchRetention(owner); rerr == nil &&
+				!current.Released && current.Revision == fresh.Revision {
+				out = current
+				reset = true
+				return nil
+			}
 			return err
 		}
 		out = fresh
