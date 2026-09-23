@@ -243,39 +243,42 @@ type Unresolved struct {
 // without a default, and a failed command, substitute the empty string and
 // are reported in the unresolved list. A syntax error returns the error and
 // an empty value; callers that validated the value at load time can treat it
-// as unreachable.
+// as unreachable. Commands run only after the whole value has scanned
+// clean: the pieces are collected first, so a malformed tail fails the
+// expansion before any side effect.
 func Expand(value string, lookup func(string) (string, bool)) (string, []Unresolved, error) {
 	// Same fast path as Scan: a value with no $ expands to itself.
 	if strings.IndexByte(value, '$') < 0 {
 		return value, nil, nil
 	}
-	var b strings.Builder
-	var unresolved []Unresolved
-	err := scan(value, sink{
-		lit: func(s string) { b.WriteString(s) },
-		ref: func(name, def string, hasDef bool) {
-			v, ok := lookup(name)
-			if !ok || v == "" {
-				if hasDef {
-					b.WriteString(def)
-					return
-				}
-				unresolved = append(unresolved, Unresolved{Name: name})
-				return
-			}
-			b.WriteString(v)
-		},
-		cmd: func(command string) {
-			res, err := evaluate(command)
-			if err != nil {
-				unresolved = append(unresolved, Unresolved{Command: command, Err: err})
-				return
-			}
-			b.WriteString(res.Value)
-		},
-	})
+	pieces, err := Pieces(value)
 	if err != nil {
 		return "", nil, err
+	}
+	var b strings.Builder
+	var unresolved []Unresolved
+	for _, p := range pieces {
+		switch p.Kind {
+		case PieceLit:
+			b.WriteString(p.Lit)
+		case PieceRef:
+			if v, ok := lookup(p.Ref.Name); ok && v != "" {
+				b.WriteString(v)
+				continue
+			}
+			if p.Ref.HasDefault {
+				b.WriteString(p.Ref.Default)
+				continue
+			}
+			unresolved = append(unresolved, Unresolved{Name: p.Ref.Name})
+		case PieceCommand:
+			res, err := evaluate(p.Command)
+			if err != nil {
+				unresolved = append(unresolved, Unresolved{Command: p.Command, Err: err})
+				continue
+			}
+			b.WriteString(res.Value)
+		}
 	}
 	return b.String(), unresolved, nil
 }

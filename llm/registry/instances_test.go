@@ -338,7 +338,7 @@ api_key_env = ["FAKE_VERTEX_KEY"]
 	if cred.Source != "none" {
 		t.Fatalf("gcp-adc with no ADC reachable must resolve none, got %q", cred.Source)
 	}
-	if got := r.shadowedEnvVar(rec, cred); got != "" {
+	if got := r.shadowedEnvVar(rec, rec.head.Transport, cred); got != "" {
 		t.Fatalf("an unresolved gcp-adc scheme must never report a shadow, got %q", got)
 	}
 }
@@ -1197,6 +1197,72 @@ func TestRowAuthHeaderOverrideCarriesTheCredential(t *testing.T) {
 			}
 			t.Fatal("the gw instance is missing from the listing")
 		})
+	}
+}
+
+// The row's auth override selects the scheme the credential resolves under:
+// a default row overriding auth to none makes the instance's no-credential
+// quiet — optional schemes warn nothing — where the provider-level header
+// scheme would have warned.
+func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-K\"\n" +
+		"credential_headers = { \"X-K\" = \"$MISSING\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" {
+		t.Fatalf("credential = %+v; want none", res.Credential)
+	}
+	if strings.Contains(strings.Join(res.Warnings, ";"), "no credential") {
+		t.Fatalf("warnings = %v; the row's none scheme needs no credential warning", res.Warnings)
+	}
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if strings.Contains(strings.Join(inst.Warnings, ";"), "no credential") {
+			t.Fatalf("listing warnings = %v; the row's none scheme is quiet about the missing credential", inst.Warnings)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// The model-less resolve reports the shadowed variable against the same
+// transport it resolved the credential with — the provider-level one — not
+// the default row's merged shape, which may name a different header.
+func TestResolveInstanceShadowedVarFollowsRowlessTransport(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-A\"\n" +
+		"api_key_env = [\"V\"]\n" +
+		"credential_headers = { \"X-A\" = \"$V\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"auth_header = \"X-B\"\n"
+	r := fixtureLoad(t, map[string]string{"V": "v-1"}, config)
+	res, err := r.ResolveInstance("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	if res.Credential.Source != "credential_headers" {
+		t.Fatalf("credential = %+v; want the header the row-less transport names", res.Credential)
+	}
+	if res.ShadowedEnvVar != "" {
+		t.Fatalf("shadowed env var = %q; X-A consumed V, so nothing was shadowed", res.ShadowedEnvVar)
 	}
 }
 

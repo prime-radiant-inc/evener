@@ -336,7 +336,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		Instance: rec.name, ProviderID: providerID, Protocol: rec.head.Protocol, Surface: rec.head.Surface,
 		Transport: transport, HostDerivedByRule: hostDerived, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
 		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
-		ShadowedEnvVar: r.shadowedEnvVar(rec, cred),
+		ShadowedEnvVar: r.shadowedEnvVar(rec, transport, cred),
 		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
 	}, nil
 }
@@ -910,7 +910,7 @@ func templatePlaceholders(tpl string) []string {
 // kept only on the listing path, which builds no header map.
 func (r *Registry) resolveCredentials(rec *record, transport Transport) (Credential, map[string]string, []string) {
 	auth := r.authorization(rec, transport)
-	cred, cw := r.credentialWithAuth(rec, auth, true)
+	cred, cw := r.credentialWithAuth(rec, auth, transport, true)
 	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth)
 	return cred, credHeaders, append(cw, hw...)
 }

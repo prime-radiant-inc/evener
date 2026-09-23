@@ -137,23 +137,22 @@ func evaluate(command string) (Result, error) {
 		}
 		evaluateMu.Unlock()
 		minted, err := mint(command)
+		evaluateMu.Lock()
 		if err == nil {
-			evaluateMu.Lock()
 			cache[command] = minted
-			// Pruning rides the insertion: an expired entry holds a
-			// secret nobody can be served again, so it leaves memory with
-			// the next command that caches, long before growth could ever
-			// matter. The prune clock is read under the lock like every
-			// other judgment: a mint that ran past an expiry must not
-			// leave the dead entry measured against arrival time.
-			prune := Now()
-			for k, v := range cache {
-				if !prune.Before(v.ExpiresAt) {
-					delete(cache, k)
-				}
-			}
-			evaluateMu.Unlock()
 		}
+		// Pruning rides the flight's return, success or failure: an
+		// expired entry holds a secret nobody can be served again, so it
+		// leaves memory with the next flight that ran, and a stream of
+		// failing mints must not pin it forever. The prune clock is read
+		// under the lock like every other judgment.
+		prune := Now()
+		for k, v := range cache {
+			if !prune.Before(v.ExpiresAt) {
+				delete(cache, k)
+			}
+		}
+		evaluateMu.Unlock()
 		return minted, err
 	})
 	if err != nil {

@@ -363,3 +363,52 @@ func TestEvaluatePruneClockIsReadUnderTheLock(t *testing.T) {
 		t.Fatal("the prune judged the expired entry with the caller's arrival time; the clock must be read after the wait")
 	}
 }
+
+// A syntax error anywhere in the value fails the whole expansion before any
+// command runs: commands execute only after the value scans clean, so a
+// malformed tail cannot leave earlier side effects behind.
+func TestExpandRunsNoCommandOnSyntaxError(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	runs := 0
+	RunCommand = func(string) (string, error) {
+		runs++
+		return "x", nil
+	}
+	_, _, err := Expand("$(echo hi) ${unterminated", func(string) (string, bool) { return "", false })
+	if err == nil {
+		t.Fatal("Expand returned nil; want the syntax error")
+	}
+	if runs != 0 {
+		t.Fatalf("the malformed value executed %d command(s) before failing; commands run only after the value scans clean", runs)
+	}
+}
+
+// Pruning follows the flight, not the success: a stream of failing mints
+// must not pin an expired secret in memory forever.
+func TestFailedMintStillPrunesExpiredEntries(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(func() { ResetForTest() })
+	base := time.Unix(1_800_000_000, 0)
+	now := base
+	Now = func() time.Time { return now }
+	RunCommand = func(cmd string) (string, error) {
+		if cmd == "short-lived" {
+			return makeJWT(base.Unix() + 120), nil // fresh for a minute, no longer
+		}
+		return "", errors.New("command exited with status 1: broken")
+	}
+	if _, err := evaluate("short-lived"); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	now = base.Add(10 * time.Minute)
+	if _, err := evaluate("broken"); err == nil {
+		t.Fatal("evaluate succeeded on a failing command")
+	}
+	evaluateMu.Lock()
+	_, ok := cache["short-lived"]
+	evaluateMu.Unlock()
+	if ok {
+		t.Fatal("the expired entry survived a failed mint's prune")
+	}
+}

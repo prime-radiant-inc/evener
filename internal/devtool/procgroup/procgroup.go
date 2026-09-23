@@ -21,14 +21,16 @@ import (
 // Start starts cmd in its own process group. The caller keeps ownership of
 // Wait; Stop only signals.
 //
-// Start assigns the shared process-group attr wholesale: a SysProcAttr the
-// caller pre-populated is replaced, not merged, so every spawned-command
-// surface gets the identical group discipline. Callers must not
-// pre-populate SysProcAttr; the one surface that needs extra attributes
-// (execenv's sandbox configuration) applies its own attr deliberately,
-// separate from this helper.
+// The group discipline is merged into whatever SysProcAttr the caller
+// brought: a pre-populated attr keeps its fields with the own-group flag
+// set on top, so a surface that needs extra attributes never has to choose
+// between them and the shared discipline.
 func Start(cmd *exec.Cmd) error {
-	cmd.SysProcAttr = baseprocgroup.SysProcAttr()
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = baseprocgroup.SysProcAttr()
+	} else {
+		cmd.SysProcAttr.Setpgid = true
+	}
 	return cmd.Start()
 }
 

@@ -450,8 +450,8 @@ func consumedEnvVars(rec *record, t Transport, source string) []string {
 // actually in contention.
 // Empty when nothing shadows it: no remaining candidate is set, or an env
 // source is itself what won.
-func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
-	if rec.head.Transport.Auth == AuthGCPADC {
+func (r *Registry) shadowedEnvVar(rec *record, t Transport, cred Credential) string {
+	if t.Auth == AuthGCPADC {
 		return ""
 	}
 	switch cred.Source {
@@ -459,7 +459,7 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 	default:
 		return ""
 	}
-	consumed := consumedEnvVars(rec, r.listingTransport(rec), cred.Source)
+	consumed := consumedEnvVars(rec, t, cred.Source)
 	for _, name := range r.envCandidates(rec) {
 		if slices.Contains(consumed, name) {
 			continue
@@ -485,10 +485,14 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 // (resolveCredentials), so there the header runs once per resolution.
 func (r *Registry) credential(rec *record) (Credential, []string) {
 	h := rec.head
-	if h.Transport.Auth == AuthOAuthOpenAICodex || h.Transport.Auth == AuthGCPADC || h.APIKey != "" {
-		return r.credentialWithAuth(rec, authExpansion{}, false)
+	// The listing reads the default row's transport, the launch a bare
+	// instance name makes; the guard and the branches below read the same
+	// one, so the oauth and adc terminals and the header's own name agree.
+	t := r.listingTransport(rec)
+	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || h.APIKey != "" {
+		return r.credentialWithAuth(rec, authExpansion{}, t, false)
 	}
-	return r.credentialWithAuth(rec, r.authorization(rec, r.listingTransport(rec)), false)
+	return r.credentialWithAuth(rec, r.authorization(rec, t), t, false)
 }
 
 // authHeaderName is the header the auth scheme of the transport a launch
@@ -619,23 +623,26 @@ func (r *Registry) schemeWordDefault(raw string) bool {
 	return true
 }
 
-// credentialWithAuth is credential with the Authorization header's expansion
-// supplied, so the resolution path that also builds the credential header map
-// never runs the header's command expressions twice. suppressAuthReason
-// drops the no-credential reason from a failing Authorization header: the
-// resolution path passes it because its header loop reports the same
-// failure naming the header — one condition, one warning — while the
-// listing path builds no header map and passes false to keep the reason.
-func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, suppressAuthReason bool) (Credential, []string) {
+// credentialWithAuth is credential with the auth header's expansion
+// supplied, so the resolution path that also builds the credential header
+// map never runs the header's command expressions twice. The transport a
+// launch resolves governs the scheme branches — oauth and adc are terminal,
+// none and optional-bearer need no credential — under the same transport
+// that names the header. suppressAuthReason drops the no-credential reason
+// from a failing auth header: the resolution path passes it because its
+// header loop reports the same failure naming the header — one condition,
+// one warning — while the listing path builds no header map and passes
+// false to keep the reason.
+func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transport, suppressAuthReason bool) (Credential, []string) {
 	h := rec.head
-	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
+	optional := t.Auth == AuthNone || t.Auth == AuthOptionalBearer
 	none := func(reason string) (Credential, []string) {
 		if optional {
 			return Credential{Source: "none"}, nil
 		}
 		return Credential{Source: "none"}, []string{reason}
 	}
-	switch h.Transport.Auth {
+	switch t.Auth {
 	case AuthOAuthOpenAICodex:
 		if fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
 			return Credential{Source: "oauth"}, nil
@@ -749,7 +756,8 @@ func (r *Registry) computeInstances() {
 		if _, shadowed := r.explicit[id]; shadowed {
 			continue
 		}
-		if cred, _ := r.credential(rec); cred.Source == "none" && rec.head.Transport.Auth != AuthNone && rec.head.Transport.Auth != AuthOptionalBearer {
+		auth := r.listingTransport(rec).Auth
+		if cred, _ := r.credential(rec); cred.Source == "none" && auth != AuthNone && auth != AuthOptionalBearer {
 			continue
 		}
 		pos, ok := rank[id]
@@ -861,7 +869,7 @@ func (r *Registry) Instances() []Instance {
 			Auth: h.Transport.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
 			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 			CredentialSource: cred.Source, Warnings: warns,
-			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, cred),
+			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, r.listingTransport(inst.rec), cred),
 		})
 	}
 	return out

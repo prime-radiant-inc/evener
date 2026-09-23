@@ -1916,7 +1916,8 @@ the store never expands them, so one stored there would be sent as the
 literal text — the refusal points at the credential-header field
 (amended 2026-09-22).
 
-Compatibility (amended 2026-09-21, with the shared parser):
+Compatibility (amended 2026-09-21 with the shared parser; 2026-09-22 with
+the row-merged credential slot):
 
 - `$` followed by `(` used to be silently literal in every value; it is
   a command expression now. Escape with `$$`: `$$(echo)` writes a literal
@@ -1928,12 +1929,20 @@ Compatibility (amended 2026-09-21, with the shared parser):
   is a load error now; a `:-` default filled only an unset variable and
   now fills an empty one too (POSIX `:-`).
 - Both files gain the `$$` escape.
+- The credential slot used to read `credential_headers.Authorization`
+  unconditionally; it now comes from the header the row-merged transport
+  sends (`Authorization` for the bearer schemes, the `auth_header` entry
+  for header auth, case-insensitive), so a row whose transport overrides
+  `auth_header` moves the credential slot with it.
 
 Credential resolution order, for every scheme that takes a key: the
 instance's own `api_key` (a literal or `$VAR`, today's
-`load_client.go:74-77` rule that the file wins); else a
-`credential_headers.Authorization` (which also suppresses any bearer); else
-the credentials-store file entry under the instance name; else the
+`load_client.go:74-77` rule that the file wins); else the credential
+header the launch's merged transport names —
+`credential_headers.Authorization` for the bearer schemes, the
+`auth_header` entry for header auth, matched case-insensitively (which
+also suppresses any bearer); else the credentials-store file entry under
+the instance name; else the
 environment: the instance's resolved `APIKeyEnv` (which the endpoint stop
 above empties), plus `<NAME>_API_KEY` under the §6.2 uppercase rule **only
 for instance names that are not registry ids** (so `[providers.anthropic]
