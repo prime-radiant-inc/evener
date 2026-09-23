@@ -2,8 +2,10 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +55,9 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	if dest == "" {
 		t.Skip("set EVENER_SSH_E2E_HOST to a disposable ssh destination to run the live remote-session test")
 	}
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+
 	// This check creates and removes its OWN directory on the host, and spawns the
 	// session with it as the working directory. That is what makes cleanup reliable:
 	// the daemon's argv carries `--dir <this path>`, so this run can stop exactly
@@ -66,10 +71,12 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	}
 	token := fmt.Sprintf("evener-session-e2e-%d-%d", os.Getpid(), time.Now().UnixNano())
 	hostDir := home + "/" + token
-	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
-		t.Fatalf("host %s already has %s; this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir)
+	// Plain `mkdir`, not `test -e` followed by `mkdir -p`: the atomic form refuses an
+	// existing path, while the two-step form would adopt a directory created in the
+	// gap — and this check's cleanup deletes whatever is in that directory.
+	if out, err := host.run("mkdir " + shellquote.RemoteWord(hostDir)); err != nil {
+		t.Fatalf("host %s refused to create %s (%v: %s); this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir, err, strings.TrimSpace(string(out)))
 	}
-	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir))
 
 	// Two constraints on this pattern, both learned the hard way. It must not begin
 	// with a dash: macOS pkill reads a leading `--` as an option and refuses the
@@ -88,8 +95,18 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
-		if out, err := host.run("pgrep -f " + daemonPattern); err == nil {
+		// pgrep exits 1 for "nothing matched" and higher for its own failures, and only
+		// the first means the host is clean: a missing pgrep, a permission refusal, or
+		// a transport error must not read as success. Treating any error as no-match
+		// would let a leaked daemon pass — which is exactly how the first version of
+		// this check reported success while leaving one behind.
+		out, err := host.run("pgrep -f " + daemonPattern)
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
 			t.Errorf("host %s still has a process serving %s after cleanup: %s", host.target, hostDir, strings.TrimSpace(string(out)))
+		case !errors.As(err, &exitErr) || exitErr.ExitCode() != 1:
+			t.Errorf("could not verify that no process serves %s on host %s: %v (%s)", hostDir, host.target, err, strings.TrimSpace(string(out)))
 		}
 	})
 	e2ecap.RequireLoopbackBind(t)
@@ -136,10 +153,14 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	t.Logf("attached %s: os=%s arch=%s hubVersion=%s", hostE2EName, attached.OS, attached.Arch, attached.HubVersion)
 
 	// The check (the premise is in the file comment): the controller spawns, the
-	// HOST resolves. A spawn and a fleet read are fast when they work at all, so
-	// they carry their own lease rather than the attach budget above.
-	sessionCtx, cancelSession := context.WithTimeout(ctx, time.Minute)
-	defer cancelSession()
+	// HOST resolves. This lease has to be generous, because the host runs several
+	// sequentially bounded shell-outs to resolve the launch (two launch-checks and
+	// the daemon spawn): a short one can expire during legitimate work and surface as
+	// "the host cannot resolve a model" — a misleading failure that reads like a
+	// product bug. The reads below reuse the flow's own context so a slow spawn
+	// cannot starve them.
+	startCtx, cancelStart := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancelStart()
 	// No Input is sent, and that is the boundary this check keeps: an input item
 	// starts a real TURN against the HOST's own provider and credentials — a live
 	// model call this test would neither assert nor be entitled to spend. The spawn
@@ -148,7 +169,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// own models, and that enumeration calls each configured provider's model
 	// endpoint (launchCheckModels). So a run needs the host's credentials, network,
 	// and quota to be healthy. What it never does is ask for a completion.
-	started, err := clientRequest[appwire.ThreadStartResponse](sessionCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
+	started, err := clientRequest[appwire.ThreadStartResponse](startCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness: "evener",
 		Source:  hostE2EName,
 		CWD:     hostDir,
@@ -198,7 +219,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// user sees: the fleet fan-out lists the host's sessions beside the local
 	// ones. A spawn that worked but never appeared here would leave the session
 	// unreachable from the UI.
-	listed, err := clientRequest[appwire.ThreadListResponse](sessionCtx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
+	listed, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatalf("step thread/list after spawning %q: %v", ref, err)
 	}
@@ -218,7 +239,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	// answering — so it cannot by itself say anything is running on the host. A read
 	// goes to the session's own daemon there, which is the cheap proof of liveness:
 	// it starts no turn, so the host's provider is never called.
-	read, err := clientRequest[appwire.ThreadReadResponse](sessionCtx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatalf("step thread/read of %s: %v (the fleet list alone cannot prove the host's daemon is answering)", ref, err)
 	}
