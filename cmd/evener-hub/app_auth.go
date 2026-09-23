@@ -811,12 +811,12 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		// which asks only whether the record file exists — and the Conflict's
 		// own remedy ("re-read the instance and start the push again") is one
 		// re-reading cannot deliver, because every read reproduces the pair.
-		switch {
-		case inst.Auth == registry.AuthOAuthOpenAICodex:
+		switch inst.Auth {
+		case registry.AuthOAuthOpenAICodex:
 			return skipConditionalSet(&resp, name+" authenticates with an OAuth record; sign in on the host instead of pushing a key")
-		case inst.Auth == registry.AuthGCPADC:
+		case registry.AuthGCPADC:
 			return skipConditionalSet(&resp, name+" authenticates with Google application-default credentials, which do not read an API key")
-		case inst.Auth == registry.AuthNone:
+		case registry.AuthNone:
 			return skipConditionalSet(&resp, name+" authenticates without a credential; a stored key would be one nothing sends")
 		}
 		// The fences are checked before the classification below: a client whose
@@ -838,7 +838,7 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		// over any key the scheme would derive, so a key this set stores is one
 		// nothing ever sends: ask the predicate itself, not the source string.
 		case resolvedOK && llm.CredentialHeaderShadowsKey(resolved):
-			return skipConditionalSet(&resp, fmt.Sprintf("%s's own auth header is supplied by its authored credential_headers in providers.toml, which win over any key a push could store", name))
+			return skipConditionalSet(&resp, name+"'s own auth header is supplied by its authored credential_headers in providers.toml, which win over any key a push could store")
 		case source == "store":
 			resp.Action = appwire.ApiKeyConditionalSetActionUpdated
 		case source == "none":
