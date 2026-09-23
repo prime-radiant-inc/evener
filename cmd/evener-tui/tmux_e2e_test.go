@@ -158,14 +158,15 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// test do.
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
-	app.TypeText("/tmp/evener-e2e/custom")
-	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
+	customDir := filepath.Join(tuiE2EFixtureRoot, "custom")
+	app.TypeText(customDir)
+	app.WaitFor("Dir:      " + customDir)
 	app.SendKeys("Enter", "Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].CWD != "/tmp/evener-e2e/custom" {
-		t.Fatalf("dashboard spawn cwd=%q, want /tmp/evener-e2e/custom", spawns[0].CWD)
+	if spawns[0].CWD != customDir {
+		t.Fatalf("dashboard spawn cwd=%q, want %s", spawns[0].CWD, customDir)
 	}
 	if testInputText(spawns[0].Input) != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", testInputText(spawns[0].Input))
