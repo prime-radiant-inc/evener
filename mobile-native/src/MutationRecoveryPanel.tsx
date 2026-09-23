@@ -196,17 +196,26 @@ export function useRecoveryPanel({
 	const [runtime, setRuntime] = useState<NativeMutationRecoveryRuntime | null>(
 		null,
 	);
-	const [failure, setFailure] = useState<unknown>(null);
+	// The surface's own failure is scoped to the target (and the retry attempt):
+	// a discard that rejects after the screen moved to another target must not
+	// hide the new target's rows. `scope` is derived, so it changes with the
+	// target and with a retry, and a failure is exposed only while its scope is
+	// still current.
+	const [failure, setFailure] = useState<{
+		scope: string;
+		error: unknown;
+	} | null>(null);
 	const [attempt, setAttempt] = useState(0);
+	const scope = `${targetKey}::${attempt}`;
 
 	useEffect(() => {
 		if (!connected || runtime !== null) return;
 		try {
 			setRuntime(acquire());
 		} catch (error) {
-			setFailure(error);
+			setFailure({ scope, error });
 		}
-	}, [connected, runtime, acquire, attempt]);
+	}, [connected, runtime, acquire, scope]);
 
 	const projection = useNativeMutationRecovery(runtime, targetKey);
 	// Retry re-acquires: the landed hook re-reads whenever its runtime identity
@@ -221,13 +230,15 @@ export function useRecoveryPanel({
 		(row: NativeMutationRecoveryRow) => {
 			void discardRecoveredMutation(projection, row).then(
 				() => undefined,
-				(error) => setFailure(error),
+				(error) => setFailure({ scope, error }),
 			);
 		},
-		[projection],
+		[projection, scope],
 	);
 
-	const error = failure ?? projection.error;
+	const localFailure =
+		failure !== null && failure.scope === scope ? failure.error : null;
+	const error = localFailure ?? projection.error;
 	return {
 		targetKey,
 		snapshot: projection.snapshot,

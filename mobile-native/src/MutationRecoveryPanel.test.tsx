@@ -461,3 +461,39 @@ it("refreshes a failed read on retry", async () => {
 	expect(result.current.error).toBeNull();
 	expect(result.current.count).toBe(1);
 });
+
+it("scopes a discard failure to its target, so switching targets shows the new target's rows", async () => {
+	const runtime = fakeRuntime({
+		discardRecovery: async () => {
+			throw new Error("discard failed");
+		},
+	});
+	let hubId = "hub-a";
+	let targetRef = "ref-a";
+	const { result, rerender } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId,
+			targetRef,
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	const row = projectNativeMutationRecovery(
+		result.current.targetKey,
+		result.current.snapshot,
+	)[0];
+	act(() => {
+		result.current.discard(row);
+	});
+	await flush();
+	expect(result.current.error).toBeInstanceOf(Error);
+
+	hubId = "hub-b";
+	targetRef = "ref-b";
+	rerender();
+	await flush();
+
+	expect(result.current.error).toBeNull();
+	expect(result.current.count).toBe(1);
+});
