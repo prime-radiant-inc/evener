@@ -752,7 +752,11 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	}
 	t.Cleanup(sess.Close)
 
-	timersBefore := fake.BlockedCount()
+	// Grace windows are one-shot AfterFunc callbacks. The delegate also parks a
+	// quiet-watchdog ticker on this clock, and that ticker's Stop runs on a
+	// context.AfterFunc goroutine nothing here can await, so a count of every
+	// waiter is racy; PendingCallbacks counts only the grace windows.
+	callbacksBefore := fake.PendingCallbacks()
 	res := sess.createDelegate(context.Background(), delegateArgs{Task: "idle sentinel"})
 	if res.Err != nil {
 		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
@@ -769,9 +773,12 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 	case <-time.After(10 * time.Second): // TRIPWIRE: fixture rendezvous normally takes milliseconds; this only bounds a deadlock.
 		t.Fatal("delegate runner did not finish")
 	}
-	// The finalize tail arms the grace timer after the done handshake, so wait
-	// for exactly one waiter above the pre-delegate baseline.
-	fake.BlockUntil(timersBefore + 1)
+	// The finalize tail arms the grace timer after the done handshake.
+	// TRIPWIRE: the arm follows the handshake by a goroutine handoff; 15s only
+	// bounds a genuine hang.
+	waitForCondition(t, 15*time.Second, "finalize tail to arm the grace timer", func() bool {
+		return fake.PendingCallbacks()-callbacksBefore == 1
+	})
 	tree := sess.delegateController
 	runtime := sub.sess
 
@@ -790,7 +797,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 			t.Fatal("release succeeded with queued residue; the pre-gate must refuse")
 		}
 	}
-	if got := fake.BlockedCount() - timersBefore; got != 1 {
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 1 {
 		t.Fatalf("two transient refusals left %d grace timers armed, want the single re-armed one", got)
 	}
 
@@ -810,7 +817,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 		return released
 	})
 	fake.Drain()
-	if got := fake.BlockedCount() - timersBefore; got != 0 {
+	if got := fake.PendingCallbacks() - callbacksBefore; got != 0 {
 		t.Fatalf("successful release left %d grace timers armed, want none", got)
 	}
 }
