@@ -1608,6 +1608,25 @@ func TestAuthFingerprintRotatesGlobRowHeaders(t *testing.T) {
 	}
 }
 
+// A row can pin its own auth scheme, and the listing resolves every row
+// at full depth through that row's own transport: the mint predicate
+// must see what the rows would execute, not only the provider-level
+// scheme, or an automatic view mints through the override.
+func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"auth = \"bearer\"\n"
+	r := fixtureLoad(t, nil, config)
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate missed the row's auth override: the listing's full-depth row resolution executes the api_key command under the row's bearer scheme")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never

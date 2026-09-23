@@ -322,6 +322,32 @@ func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
 	}
 }
 
+// A stale default row must not break the listing and the endpoint view:
+// the same fallback listingTransport already makes — the provider's own
+// transport — carries them, instead of an error. A Codex-based instance
+// whose default names a model the transport does not serve is the shape
+// that errors today.
+func TestResolveInstanceListingFallsBackWhenDefaultUnresolvable(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-codex\"\n" +
+		"default_model = \"gpt-not-a-real-codex-model\"\n"
+	r := fixtureLoad(t, nil, config)
+	listing, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatalf("the listing broke on a stale default row: %v", err)
+	}
+	if listing.Protocol == "" || listing.Transport.BaseURL == "" {
+		t.Fatalf("listing = %q/%q; want the provider transport's fallback shape", listing.Protocol, listing.Transport.BaseURL)
+	}
+	transport, err := r.ResolveInstanceTransport("gw")
+	if err != nil {
+		t.Fatalf("the endpoint view broke on a stale default row: %v", err)
+	}
+	if transport.Transport.BaseURL != listing.Transport.BaseURL || transport.Protocol != listing.Protocol {
+		t.Fatal("the endpoint view's fallback drifted from the listing's")
+	}
+}
+
 // An empty instance names the default instance, the rule Resolve applies:
 // a legacy session recorded without a profile still resolves through the
 // default at facts depth, or it loses every hub-side read.

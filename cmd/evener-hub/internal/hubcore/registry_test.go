@@ -331,6 +331,41 @@ func TestInstanceIdentityChangesOnSameLengthRotation(t *testing.T) {
 	}
 }
 
+// The identity carries the protocol the listing actually resolves
+// through — the default row's — so a row protocol override with an
+// unchanged endpoint still rotates the identity.
+func TestInstanceIdentityUsesListingRowProtocol(t *testing.T) {
+	mk := func(t *testing.T, rowProtocol string) *registry.Registry {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "providers.toml")
+		cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\nprotocol = \"openai-chat\"\napi_key_env = [\"WORK_KEY\"]\ndefault_model = \"m\"\n" +
+			"[providers.gw.models.\"m\"]\nprotocol = \"" + rowProtocol + "\"\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := registry.Load(
+			registry.WithConfigPath(path),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "WORK_KEY" {
+					return "sk-test", true
+				}
+				return "", false
+			}),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if instanceIdentity(mk(t, "openai-chat"), "gw") == instanceIdentity(mk(t, "openai-responses"), "gw") {
+		t.Fatal("identity unchanged across a default-row protocol override")
+	}
+}
+
 // The identity fingerprint never executes a credential command: the hub
 // fingerprints at load, before any session exists, so running one would
 // prompt the user's password manager with no session launched and spend

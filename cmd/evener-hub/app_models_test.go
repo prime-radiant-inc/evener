@@ -215,6 +215,69 @@ func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	}
 }
 
+// A row that pins its own auth scheme reaches the command credential
+// under the row's transport, whatever the provider-level scheme says:
+// the picker must refuse the live fetch on the predicate that sees the
+// override, or the automatic view mints through the row.
+func TestFetchLiveModelsSkipsRowAuthOverrideInstances(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\nprotocol = \"openai-chat\"\nauth = \"none\"\napi_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\nauth = \"bearer\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(tomlPath),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			client.Register(&modelMetadataAdapter{name: inst.Name})
+		}
+	}
+	oldLoadClient := liveModelLoadClient
+	liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+	models := NewWebServer(hubcore.WebConfig{}).fetchLiveModels(context.Background())
+	found := false
+	for _, m := range models {
+		if m.Model == "house-model" && m.Provider == "gw" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the picker dropped the instance's registry rows; refusing the live fetch must refuse the mint, not the models")
+	}
+	if runs != 0 {
+		t.Fatalf("the picker executed the credential command %d time(s) through the row's auth override", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the picker fetched a live listing through the row's auth override")
+	}
+}
+
 // TestFetchLiveModels_BindsTheRegistrysCodexScope pins the model-list half of
 // a wrong-record bug: the fetch must authenticate with the registry client's
 // own state root, not whatever root the process-global Codex holds. The

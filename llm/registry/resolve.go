@@ -385,8 +385,24 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 	}
 	switch r.listingTransport(rec).Auth {
 	case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
-		// The terminal schemes never expand api_key, and the none
-		// scheme never sends a credential at all.
+		// The provider scheme never sends api_key, but a row can pin
+		// its own: the listing resolves every row at full depth through
+		// the row's merged transport, so the predicate must cover the
+		// schemes the rows can actually reach, not only the one the
+		// listing's transport carries. A row that overrides onto a
+		// scheme that sends api_key mints; rows that stay terminal do
+		// not.
+		for id := range rec.head.Models {
+			rowRes, err := r.resolveLayersMode(rec, Ref{Model: id}, nil, resolveTransport)
+			if err != nil {
+				continue
+			}
+			switch rowRes.Transport.Auth {
+			case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+			default:
+				return true
+			}
+		}
 		return false
 	}
 	return true
@@ -413,10 +429,13 @@ func (r *Registry) LaunchMintsCredentialCommand(instance string) bool {
 // child resolves it — so the fetch, the listing row, and the instance
 // identity all name one transport. A provider with no default model (or
 // a glob one) keeps ResolveInstance's model-less shape: no single row
-// names the launch, so the provider's own transport speaks for it. This
-// is the caller's resolve: the agent and CLI paths it serves may mint a
-// command credential (the child alone runs credential commands), so the
-// hub's own prefetch refuses elsewhere, through
+// names the launch, so the provider's own transport speaks for it. A
+// default row the transport cannot serve falls back to the same
+// provider shape — the judgment listingTransport already makes — so a
+// stale default does not break the listing. This is the caller's
+// resolve: the agent and CLI paths it serves may mint a command
+// credential (the child alone runs credential commands), so the hub's
+// own prefetch refuses elsewhere, through
 // LaunchMintsCredentialCommand (spec §10.1).
 func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 	rec, ok := r.recordFor(name)
@@ -426,7 +445,11 @@ func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
 		return r.ResolveInstance(name)
 	}
-	return r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil)
+	res, err := r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil)
+	if err == nil {
+		return res, nil
+	}
+	return r.ResolveInstance(name)
 }
 
 // ResolveInstanceTransport resolves an instance's bare-launch destination
@@ -435,7 +458,9 @@ func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 // ResolveInstanceListing fetches through, with no credential stage at
 // all, so a hub-side view that reads only the destination executes no
 // command expression (spec §10.1). A provider with no default model (or
-// a glob one) resolves the provider's own shape, like the listing seam.
+// a glob one) resolves the provider's own shape, like the listing seam;
+// so does one whose default row the transport cannot serve, so a stale
+// default does not break the endpoint fingerprint either.
 func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
 	rec, ok := r.recordFor(name)
 	if !ok {
@@ -448,7 +473,12 @@ func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
 		transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
 		return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
 	}
-	return r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport)
+	res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport)
+	if err == nil {
+		return res, nil
+	}
+	transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
 }
 
 // ResolveInstanceModelFacts resolves one model reference at facts depth:

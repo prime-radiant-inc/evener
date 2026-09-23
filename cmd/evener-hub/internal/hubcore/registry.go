@@ -286,21 +286,21 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, new
 }
 
 // instanceIdentity fingerprints what a live listing is fetched from:
-// the provider, protocol, fully resolved endpoint routing (base URL
-// plus the protocol models endpoint -- a models_endpoint change
-// re-points the fetch as surely as a base_url change), and a
-// non-secret fingerprint of the credential material behind the source
-// label. A Reload that removes, renames, re-points, or re-credentials
-// an instance changes its identity, and rows fetched from the old
-// transport must not publish into the new one. Display fields
-// (default, warnings, vars) do not affect where rows come from and
-// are not part of it. The fingerprint hashes stable material (SHA-256,
-// in-memory only) so even a same-length rotation changes the identity,
-// while command-bearing material contributes its authored text — the
-// minted value rotates with the cache TTL, and an identity that
-// followed it would prune the cached live rows on every rollover and
-// force a re-fetch. Only the digest enters the identity string, never
-// the secrets.
+// the provider, the protocol and endpoint routing the listing's own
+// resolve carries (the default row's, falling back to the provider's
+// own shape — a models_endpoint, base_url, or row protocol change
+// re-points the fetch all the same), and a non-secret fingerprint of
+// the credential material behind the source label. A Reload that
+// removes, renames, re-points, or re-credentials an instance changes
+// its identity, and rows fetched from the old transport must not
+// publish into the new one. Display fields (default, warnings, vars)
+// do not affect where rows come from and are not part of it. The
+// fingerprint hashes stable material (SHA-256, in-memory only) so even
+// a same-length rotation changes the identity, while command-bearing
+// material contributes its authored text — the minted value rotates
+// with the cache TTL, and an identity that followed it would prune the
+// cached live rows on every rollover and force a re-fetch. Only the
+// digest enters the identity string, never the secrets.
 func instanceIdentity(r *registry.Registry, name string) string {
 	inst, ok := r.Instance(name)
 	if !ok {
@@ -308,8 +308,12 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	}
 	endpoint := ""
 	authprint := ""
-	if res, err := r.ResolveGateCredential(name, ""); err == nil {
+	proto := inst.Protocol
+	// The endpoint view the listing resolves through: row-aware and
+	// mint-free, the same shape ResolveInstanceListing fetches with.
+	if res, err := r.ResolveInstanceTransport(name); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
+		proto = res.Protocol
 		if fp, ok := r.AuthFingerprint(name); ok {
 			authprint = fp
 		}
@@ -320,7 +324,7 @@ func instanceIdentity(r *registry.Registry, name string) string {
 			authprint += "\x00" + adcFingerprint(r, res)
 		}
 	}
-	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
+	return strings.Join([]string{inst.ProviderID, proto, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
 // CredentialConfigRevision returns name's effective credential-configuration
