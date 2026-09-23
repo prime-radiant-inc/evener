@@ -1885,14 +1885,18 @@ five-minute TTL; concurrent callers single-flight onto one run.
 The hub resolves command expressions only on the agent path: the launch
 preflight, the instance listings, and the load-time fingerprints all count
 a command-bearing credential as present — or, for a fingerprint, as its
-authored text — and never execute it. The child alone runs credential
-commands, so a hub-side execution would mint a second token for stateful
-or one-time commands and prompt the user's password manager with no
-session launched, a transient failure there would block a launch the
-child's own retry would survive, and a fingerprint keyed on the minted
-value would rotate with the cache TTL and prune the cached live rows on
-every rollover (amended 2026-09-22: the contract now covers the listings
-and the fingerprints, not only the preflight).
+authored text — and never execute it, and the hub's live-model prefetch
+is refused outright for a command-credentialed instance, whose listing
+the hub cannot fetch without spending the mint — the last-known rows
+stay.
+The child alone runs credential commands, so a hub-side execution would
+mint a second token for stateful or one-time commands and prompt the
+user's password manager with no session launched, a transient failure
+there would block a launch the child's own retry would survive, and a
+fingerprint keyed on the minted value would rotate with the cache TTL and
+prune the cached live rows on every rollover (amended 2026-09-22: the
+contract now covers the listings, the live-model prefetch, and the
+fingerprints, not only the preflight).
 
 Failure. A failed command behaves like an unset variable: the value
 resolves to nothing and the warning carries the command's exit status and

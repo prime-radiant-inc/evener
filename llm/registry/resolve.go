@@ -341,13 +341,55 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}, nil
 }
 
+// recordMintsCommandCredential reports whether a full-depth resolve of
+// this record would execute a command expression: api_key under a scheme
+// that sends it, or any credential-header entry — each goes on the wire
+// map whatever the scheme, and the auth header's expansion runs before
+// the scheme branches (spec §10.1).
+func (r *Registry) recordMintsCommandCredential(rec *record) bool {
+	for _, v := range rec.head.CredentialHeaders {
+		if hasCommandMaterial(v) {
+			return true
+		}
+	}
+	if !hasCommandMaterial(rec.head.APIKey) {
+		return false
+	}
+	switch r.listingTransport(rec).Auth {
+	case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+		// The terminal schemes never expand api_key, and the none
+		// scheme never sends a credential at all.
+		return false
+	}
+	return true
+}
+
+// LaunchMintsCredentialCommand is the hub's judgment of whether resolving
+// this instance's credential would execute a command expression: the
+// agent path may (the child alone runs credential commands, spec §10.1),
+// but a hub-side fetch that materialized the credential would spend a
+// one-time mint and prompt the user's password manager with no session
+// launched — so the hub's live-model prefetch asks this first and skips
+// instances it refuses (the last-known rows stay).
+func (r *Registry) LaunchMintsCredentialCommand(instance string) bool {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return false
+	}
+	return r.recordMintsCommandCredential(rec)
+}
+
 // ResolveInstanceListing resolves the live listing's fetch the way the
 // hub describes the instance (spec §8.1): the launch a bare instance
 // name makes — the default model's row at full depth, exactly as the
 // child resolves it — so the fetch, the listing row, and the instance
 // identity all name one transport. A provider with no default model (or
 // a glob one) keeps ResolveInstance's model-less shape: no single row
-// names the launch, so the provider's own transport speaks for it.
+// names the launch, so the provider's own transport speaks for it. This
+// is the caller's resolve: the agent and CLI paths it serves may mint a
+// command credential (the child alone runs credential commands), so the
+// hub's own prefetch refuses elsewhere, through
+// LaunchMintsCredentialCommand (spec §10.1).
 func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 	rec, ok := r.recordFor(name)
 	if !ok {

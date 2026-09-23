@@ -2,6 +2,8 @@ package hub
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
@@ -29,6 +32,45 @@ func TestPrefetchLiveModelsPopulatesHeldRegistry(t *testing.T) {
 	}
 	if slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "text-embedding-3-small" }) {
 		t.Fatalf("entry models = %+v, want the embedding id filtered out", got.Models)
+	}
+}
+
+// The hub never executes a credential command (spec §10.1): the prefetch
+// pass skips an instance whose credential material is command-backed
+// rather than mint for it — no command runs, no request leaves, and the
+// holder keeps whatever rows it already has. The agent's own live
+// listing is the child's to make and stays untouched.
+func TestPrefetchSkipsCommandCredentialedInstances(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = '''$(gw-mint)'''\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	prefetchAllLiveModels(context.Background(), ctl.reg, func() {})
+	if runs != 0 {
+		t.Fatalf("the prefetch executed the credential command %d time(s); the hub never runs credential commands", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the prefetch contacted the endpoint for an instance whose credential it never materializes")
 	}
 }
 

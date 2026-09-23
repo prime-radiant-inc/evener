@@ -820,6 +820,12 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		cred, reasons := none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)")
 		return cred, append(warn, reasons...)
 	}
+	if t.Auth == AuthNone {
+		// The none scheme never sends a credential, so no slot needs
+		// materializing: expanding api_key here would run a command the
+		// wire never carries.
+		return Credential{Source: "none"}, nil
+	}
 	if h.APIKey != "" {
 		if presence && hasCommandMaterial(h.APIKey) {
 			// The gate's judgment: a well-formed command is credential

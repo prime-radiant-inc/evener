@@ -1491,6 +1491,38 @@ func TestAuthFingerprintRotatesEnvValuesWithStoreWired(t *testing.T) {
 	}
 }
 
+// The none scheme never sends a credential, so its resolution never
+// expands the api_key slot: a command there is authored for a scheme the
+// instance does not use, and running it would spend a mint the wire never
+// carries.
+func TestAuthNoneNeverExpandsAPIKey(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(none-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" {
+		t.Fatalf("credential = %+v; want none", res.Credential)
+	}
+	if runs != 0 {
+		t.Fatalf("the none scheme executed the api_key command %d time(s); it never sends a credential", runs)
+	}
+}
+
 // Credential-header names are case-insensitive on the wire, so two that
 // differ only by case would collide into one header while resolution picks
 // a single entry for the credential: the load refuses the pair.
