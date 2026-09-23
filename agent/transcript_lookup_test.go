@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -626,5 +627,176 @@ func TestResolveTranscript_AmbiguousBareIDTwoLegacyBuckets(t *testing.T) {
 	}
 	if !strings.Contains(msg, "fedcba9876543210") {
 		t.Errorf("ambiguity error does not name legacy bucket fedcba9876543210: %q", msg)
+	}
+}
+
+// --- roborev fix round 2: RED tests ---
+
+// TestReadMarkdownTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef asserts
+// that a markdown read_transcript against a legacy-bucket bare session ID
+// (whose refFor returns "") does NOT emit "transcript_ref": "" in the JSON
+// envelope. The field must be absent (omitempty), not present-but-empty — a
+// model reusing an empty transcript_ref would silently read the CURRENT
+// session via resolveTranscript.
+func TestReadMarkdownTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	writeFindSession(t, legacy, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "legacy read test",
+		updated: time.Now().UTC(),
+	}, "legacy content")
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	result, err := execReadTranscript(deps, map[string]any{
+		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
+		"format":         "markdown",
+	})
+	if err != nil {
+		t.Fatalf("read_transcript markdown: %v", err)
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if ref, ok := env["transcript_ref"]; ok && ref == "" {
+		t.Fatal("readMarkdownEnvelope emitted empty transcript_ref; must be omitted (omitempty) for legacy-bucket bare-ID reads")
+	}
+}
+
+// TestReadOutlineTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef asserts
+// the same omitempty invariant for the outline read format.
+func TestReadOutlineTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	writeFindSession(t, legacy, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "legacy read test",
+		updated: time.Now().UTC(),
+	}, "legacy content")
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	result, err := execReadTranscript(deps, map[string]any{
+		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
+		"format":         "outline",
+	})
+	if err != nil {
+		t.Fatalf("read_transcript outline: %v", err)
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if ref, ok := env["transcript_ref"]; ok && ref == "" {
+		t.Fatal("readOutlineEnvelope emitted empty transcript_ref; must be omitted (omitempty) for legacy-bucket bare-ID reads")
+	}
+}
+
+// TestReadRawTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef asserts the
+// same omitempty invariant for the jsonl (raw) read format.
+func TestReadRawTranscript_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	writeFindSession(t, legacy, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "legacy read test",
+		updated: time.Now().UTC(),
+	}, "legacy content")
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	result, err := execReadTranscript(deps, map[string]any{
+		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
+		"format":         "jsonl",
+	})
+	if err != nil {
+		t.Fatalf("read_transcript jsonl: %v", err)
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if ref, ok := env["transcript_ref"]; ok && ref == "" {
+		t.Fatal("readRawEnvelope emitted empty transcript_ref; must be omitted (omitempty) for legacy-bucket bare-ID reads")
+	}
+}
+
+// TestResolveTranscript_AmbiguityMessageDoesNotPresentBucketNamesAsRefs
+// asserts that the ambiguity error does NOT present raw bucket dirnames as
+// "candidate refs" — a proj:<name>:<id> ref is rejected by the explicit-ref
+// branch for legacy names, so they are not usable selectors. The message
+// must present bucket names as context (where the session was found), not
+// as refs the model can pass back.
+func TestResolveTranscript_AmbiguityMessageDoesNotPresentBucketNamesAsRefs(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	legacy1 := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	legacy2 := filepath.Join(sh, "evener", "projects", "fedcba9876543210")
+	writeTranscript(t, legacy1, "02wMz5Txv5aIxgf9yVdd0N")
+	writeTranscript(t, legacy2, "02wMz5Txv5aIxgf9yVdd0N")
+
+	_, _, err := resolveTranscript("02wMz5Txv5aIxgf9yVdd0N", current, "02wMz5TxvEMoJEDTDGOTil")
+	if err == nil {
+		t.Fatal("expected ambiguity error for session in two legacy buckets")
+	}
+	msg := err.Error()
+	// Bucket names must be present as context.
+	if !strings.Contains(msg, "0123456789abcdef") {
+		t.Errorf("ambiguity error does not name legacy bucket 0123456789abcdef: %q", msg)
+	}
+	if !strings.Contains(msg, "fedcba9876543210") {
+		t.Errorf("ambiguity error does not name legacy bucket fedcba9876543210: %q", msg)
+	}
+	// Must NOT present them as "candidate refs" — they are not usable selectors.
+	if strings.Contains(msg, "candidate refs") {
+		t.Errorf("ambiguity error presents bucket names as candidate refs: %q", msg)
+	}
+}
+
+// TestFind_LegacyBucketTextFormatShowsBareIDAddressing asserts that the find
+// text-format output for a legacy-bucket session (no transcript_ref) tells
+// the model the session is addressable by its bare session ID. The record
+// already carries the session id; the text format must make the addressing
+// explicit so a model knows how to read the session without a proj: ref.
+func TestFind_LegacyBucketTextFormatShowsBareIDAddressing(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+
+	now := time.Now().UTC().Truncate(time.Second)
+	legacyID := "02wMz5Txv5aIxgf9yVdd0N"
+	writeFindSession(t, legacy, findMetaSpec{
+		id:      legacyID,
+		name:    "legacy bucket session",
+		updated: now,
+	}, "legacy content")
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	v, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	if err != nil {
+		t.Fatalf("execFindSessionTranscripts: %v", err)
+	}
+	text := formatSessionFindings(v.(findSessionsEnvelope))
+	if !strings.Contains(text, legacyID) {
+		t.Fatalf("find text format does not mention the bare session ID %q; model cannot address the session:\n%s", legacyID, text)
 	}
 }

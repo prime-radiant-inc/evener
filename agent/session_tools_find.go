@@ -85,7 +85,10 @@ func (c *snippetCollector) add(s snippet) bool {
 // sessionRecord is one find_session_transcripts match. Field order follows
 // spec §"Response". Only the fields explicitly listed in the spec are included;
 // session_id, model, profile_id, created_at, has_transcript, and default_read
-// are intentionally absent.
+// are intentionally absent. When TranscriptRef is empty (legacy-named bucket
+// whose name the ref grammar rejects), the session is still addressable by
+// its bare session ID via read_transcript; the text format surfaces the ID
+// so the model knows how to read it without a proj: ref.
 type sessionRecord struct {
 	TranscriptRef string    `json:"transcript_ref,omitempty"`
 	Kind          string    `json:"kind"`
@@ -96,6 +99,10 @@ type sessionRecord struct {
 	Project       string    `json:"project,omitempty"`
 	IsCurrent     bool      `json:"is_current,omitempty"`
 	Snippets      []snippet `json:"snippets,omitempty"`
+	// SessionID is not part of the JSON wire format (intentionally absent per
+	// spec) but is carried for the text-format renderer so it can tell the
+	// model how to address a legacy-bucket session that has no transcript_ref.
+	SessionID string `json:"-"`
 }
 
 // findSessionsEnvelope is the find_session_transcripts response. Scanned and
@@ -144,7 +151,11 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 		if m.TranscriptRef != "" {
 			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, m.TranscriptRef, m.Title)
 		} else {
-			fmt.Fprintf(&b, "%d. (no ref) — %s\n", i+1, m.Title)
+			// No transcript_ref: the session lives in a legacy-named
+			// bucket whose name the ref grammar rejects. It is still
+			// addressable by its bare session ID — surface it so the
+			// model can pass it to read_transcript.
+			fmt.Fprintf(&b, "%d. (no ref, bare id: %s) — %s\n", i+1, m.SessionID, m.Title)
 		}
 		meta := fmt.Sprintf("   %s · ~%d turns · updated %s", m.Kind, m.ApproxTurns, m.UpdatedAt.Format("2006-01-02 15:04"))
 		if m.Project != "" {
@@ -234,6 +245,7 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string, curr
 		Project:       projectName(c.meta),
 		IsCurrent:     c.meta.ID == currentID,
 		Snippets:      snips,
+		SessionID:     c.meta.ID,
 	}
 }
 

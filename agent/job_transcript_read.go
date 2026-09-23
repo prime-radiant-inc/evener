@@ -80,7 +80,13 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 			stateDir := filepath.Join(projectsPath, entry.Name())
 			candidate, found, err := findLocalJobInProject(stateDir, ownerSessionID, jobID)
 			if err != nil {
-				return localJobLocation{}, err
+				// A sibling bucket whose jobs.jsonl is missing or unreadable
+				// is not the target — skip it. Only a corruption error from
+				// a bucket that actually contains the target job should fail
+				// the lookup; a stray or corrupt non-target sibling must not
+				// abort the search (the removed ValidateProjectID filter was
+				// accidentally protective against this).
+				continue
 			}
 			if !found {
 				continue

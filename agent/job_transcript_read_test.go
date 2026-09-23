@@ -369,3 +369,68 @@ func (r *localJobDirReader) Close() error {
 	r.closed = true
 	return nil
 }
+
+// TestLocateLocalJob_StraySiblingDirDoesNotBreakLookup asserts that a stray
+// directory (with no jobs.jsonl) beside the real target bucket does not abort
+// the entire lookup. After round 1 removed the ValidateProjectID filter, the
+// sweep visits every directory; a missing jobs.jsonl in a sibling must be
+// treated as not-found, not as a hard error that aborts the search.
+func TestLocateLocalJob_StraySiblingDirDoesNotBreakLookup(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	// Real target: a valid sibling bucket with the job.
+	sibling := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, sibling, owner, jobID, "", "sibling job output\n", true)
+
+	// Stray: a directory under projects/ with no jobs.jsonl at all.
+	_ = localJobProjectBucket(t, stateHome, "stray-dir-no-jobs")
+
+	loc, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("stray sibling dir broke lookup: %v", err)
+	}
+	if filepath.Base(loc.StateDir) != localJobSiblingProject {
+		t.Fatalf("located job in %q, want %q", filepath.Base(loc.StateDir), localJobSiblingProject)
+	}
+}
+
+// TestLocateLocalJob_CorruptSiblingDirDoesNotBreakLookup asserts that a
+// corrupt jobs.jsonl in a sibling directory (for the same owner session) does
+// not abort the lookup when the target exists in another sibling. After
+// round 1 removed the ValidateProjectID filter, the sweep visits every
+// directory; a corrupt jobs.jsonl in a non-target sibling must be treated as
+// not-found (skipped), not as a hard error that aborts the search for the
+// real target.
+func TestLocateLocalJob_CorruptSiblingDirDoesNotBreakLookup(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	// Real target: a valid sibling bucket with the job.
+	sibling := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, sibling, owner, jobID, "", "sibling job output\n", true)
+
+	// Corrupt sibling: a directory with a corrupt jobs.jsonl for the SAME
+	// owner session (so findLocalJobInProject tries to read it). The file
+	// exists but contains invalid JSON, which ReadEvents reports as an error.
+	corruptDir := localJobProjectBucket(t, stateHome, "corrupt-bucket")
+	corruptPath := filepath.Join(jobsDir(corruptDir, owner), "jobs.jsonl")
+	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corruptPath, []byte("NOT VALID JSON\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("corrupt sibling dir broke lookup: %v", err)
+	}
+	if filepath.Base(loc.StateDir) != localJobSiblingProject {
+		t.Fatalf("located job in %q, want %q", filepath.Base(loc.StateDir), localJobSiblingProject)
+	}
+}
