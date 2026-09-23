@@ -132,7 +132,7 @@ func entryIndexReservedTurns(doc transcriptDoc) []ReservedTurn {
 // across every bucket, ordered by bucket then session id so two sweeps of an
 // unchanged state root produce the same list.
 func allSessions(stateBase string) ([]Paths, error) {
-	buckets, err := resolveBuckets(stateBase)
+	buckets, _, err := resolveBuckets(stateBase)
 	if err != nil {
 		return nil, err
 	}

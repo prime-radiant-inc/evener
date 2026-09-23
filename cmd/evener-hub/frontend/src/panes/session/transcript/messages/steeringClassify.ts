@@ -25,8 +25,9 @@ export interface ParsedNotification {
   tone: NotificationTone;
   // The head line's label, assembled by notificationSecondary below:
   // intent (preferred) or description, then job type; warning heads may
-  // append the exit code and reason, and an error head shows the intent
-  // alone.
+  // append the exit code and reason, and an error head shows the intent,
+  // or the description gloss when an explicit empty intent marks the
+  // block post-split.
   secondary: string;
   jobId?: string;
   jobType?: string;
@@ -551,13 +552,19 @@ function notificationSecondary(
     return timerSecondaryFromProse(reason, prose) ?? reason;
   }
   // A failed job's head line is "<title> <intent>": the caller's stated
-  // rationale for the run, and nothing else. The exit code and reason live in
-  // the expanded card's metadata, and the description gloss stays off the line
-  // because pre-intent blocks shipped the raw command as their description
-  // attr (the producer's old display-label fallback, agent/job_notify.go) —
-  // a shape the parser cannot tell from a real gloss, so the error head
-  // trusts the intent attribute alone.
-  if (tone === "error") return intent;
+  // rationale for the run. The exit code and reason live in the expanded
+  // card's metadata. The description attr earns a place on the error head
+  // only when an explicit empty intent marks the block post-split (the
+  // producer now always stamps intent, so that description is a
+  // producer-written gloss, never the command). A block with no intent
+  // attribute at all is pre-split history, whose description may BE the
+  // raw command (the producer's old display-label fallback,
+  // agent/job_notify.go) — a shape the parser cannot tell from a real
+  // gloss, so those show nothing rather than risk the command.
+  if (tone === "error") {
+    if (intent) return intent;
+    return attrs.intent !== undefined ? description : "";
+  }
   const bits: string[] = [];
   const type = (attrs.job_type ?? "").trim();
   if (intent) bits.push(intent);

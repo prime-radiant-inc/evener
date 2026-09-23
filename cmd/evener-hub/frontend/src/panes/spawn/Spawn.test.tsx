@@ -26,7 +26,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
-import { installLocalStorage } from "../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -44,28 +44,6 @@ import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDra
 import { SPAWN_SLASH_CATALOG_DEBOUNCE_MS } from "./useSpawnSlashCatalog";
 
 let modelListOverride: ModelDescriptor[] | null = null;
-
-class MemoryStorage {
-  private store = new Map<string, string>();
-  get length(): number {
-    return this.store.size;
-  }
-  key(index: number): string | null {
-    return Array.from(this.store.keys())[index] ?? null;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 const NO_CAPABILITIES: ThreadCapabilities = {
   send: false,
@@ -1327,7 +1305,7 @@ test("restoring a project's effort never clamps it against the previous project'
 });
 
 beforeAll(() => {
-  installLocalStorage(new MemoryStorage() as unknown as Storage);
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {
