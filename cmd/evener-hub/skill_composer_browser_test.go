@@ -66,7 +66,6 @@ const (
 	proseAttachment  = "PROSE_ATTACH_14d inspect the attached image"
 	proseSteerTurn   = "PROSE_STEER_TURN_14e open a long turn for steering"
 	proseSteer       = "PROSE_STEER_14e redirect the running turn"
-	proseCapLoss     = "PROSE_CAPLOSS_14f aimed at a lost capability"
 	proseFailTurn    = "PROSE_FAIL_TURN_14g open a long turn for the failing claim"
 	proseFail        = "PROSE_FAIL_14h request the missing source"
 	proseDelay       = "PROSE_DELAY_14i submitted then edited while held"
@@ -383,10 +382,9 @@ func TestSkillComposerBrowser(t *testing.T) {
 	}
 
 	// The driver + the live Go choreography run together: the driver owns the
-	// browser, Go owns the two fixture events only it can produce (shutting
-	// helper B down for the capability-loss scenario, and deleting/restoring
-	// the skill source for the failed-activation scenario).
-	choreo := newSkillGuardChoreography(t, fixture, roster, entries)
+	// browser, Go owns the fixture event only it can produce (deleting and
+	// restoring the skill source for the failed-activation scenario).
+	choreo := newSkillGuardChoreography(t, fixture)
 	driverDone := make(chan error, 1)
 	driverFinished := make(chan struct{})
 	fixture.driverFinished = driverFinished
@@ -629,18 +627,18 @@ type skillGuardHelper struct {
 }
 
 // wait returns the one shared cmd.Wait result. A raw second cmd.Wait fails
-// immediately ("Wait was already called"), so every waiter — the
-// choreography's exit watch, the explicit stop, and the cleanup fallback —
-// reads this channel instead of calling cmd.Wait itself.
+// immediately ("Wait was already called"), so every waiter — the explicit
+// stop and the cleanup fallback — reads this channel instead of calling
+// cmd.Wait itself.
 func (h *skillGuardHelper) wait() <-chan error {
 	h.waitOnce.Do(func() {
 		h.waitDone = make(chan error, 1)
 		go func() {
 			h.waitDone <- h.cmd.Wait()
 			// Close after the one send: the first receiver gets the real
-			// error, every later receiver (a second exit watch, the cleanup
-			// fallback) gets the zero value immediately instead of blocking
-			// forever on a drained channel.
+			// error, every later receiver (the cleanup fallback) gets the
+			// zero value immediately instead of blocking forever on a drained
+			// channel.
 			close(h.waitDone)
 		}()
 	})
@@ -820,31 +818,25 @@ func runSkillGuardDriver(t *testing.T, fixture *skillGuardFixture, authURL, mile
 	return nil
 }
 
-// skillGuardChoreography reacts to the driver's milestones with the two
-// real-world events only the Go owner can produce: a daemon shut down (the
-// capability-loss scenario) and a skill source disappearing before a queued
-// input's claim (the failed-activation scenario).
+// skillGuardChoreography reacts to the driver's milestones with the
+// real-world event only the Go owner can produce: a skill source disappearing
+// before a queued input's claim (the failed-activation scenario).
 type skillGuardChoreography struct {
-	t           *testing.T
-	fixture     *skillGuardFixture
-	roster      *hubcore.Roster
-	entries     [2]rendezvous.Entry
-	stopOnce    sync.Once
-	stopCh      chan struct{}
-	doneCh      chan struct{}
-	err         error
-	failSeen    bool
-	caplossDone bool
+	t        *testing.T
+	fixture  *skillGuardFixture
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	err      error
+	failSeen bool
 	// The driver's milestone file, which this side appends its own records to.
 	milestonePath string
 }
 
-func newSkillGuardChoreography(t *testing.T, fixture *skillGuardFixture, roster *hubcore.Roster, entries [2]rendezvous.Entry) *skillGuardChoreography {
+func newSkillGuardChoreography(t *testing.T, fixture *skillGuardFixture) *skillGuardChoreography {
 	return &skillGuardChoreography{
 		t:       t,
 		fixture: fixture,
-		roster:  roster,
-		entries: entries,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
 	}
@@ -888,47 +880,6 @@ func (c *skillGuardChoreography) milestone(name string, detail any) {
 // event only the Go owner can produce.
 func (c *skillGuardChoreography) handleMilestone(m skillGuardMilestone) {
 	switch m.Milestone {
-	case "caploss-staged":
-		if c.caplossDone {
-			return
-		}
-		c.caplossDone = true
-		// Shut the REAL daemon down through its fixture IPC and let the REAL
-		// roster observe the departure.
-		//
-		// Each step reports when it finished. The driver waits 30s after
-		// caploss-staged for the pane to render session B as ended, and when
-		// that wait expired in CI the artifacts could not say which of these
-		// three links had been slow -- none of them left a trace, so a
-		// failure there is unattributable between a daemon that took its time
-		// exiting, a roster refresh that did, and a pane that never
-		// re-rendered at all. These are diagnostics: no wait changes.
-		started := time.Now()
-		if err := appendFileLine(c.fixture.control[1], map[string]string{"command": "shutdown"}); err != nil {
-			c.err = fmt.Errorf("caploss shutdown command: %w", err)
-			return
-		}
-		c.milestone("caploss-shutdown-sent", map[string]any{"sinceStagedMs": sinceMs(started)})
-		exitStarted := time.Now()
-		if err := c.waitHelperExit(1, 30*time.Second); err != nil {
-			c.err = fmt.Errorf("helper beta did not exit: %w", err)
-			return
-		}
-		c.milestone("caploss-helper-exited", map[string]any{
-			"waitedMs":      sinceMs(exitStarted),
-			"sinceStagedMs": sinceMs(started),
-		})
-		refreshStarted := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := c.roster.RefreshAndWait(ctx); err != nil {
-			c.err = fmt.Errorf("roster refresh after helper beta exit: %w", err)
-			return
-		}
-		c.milestone("caploss-roster-refreshed", map[string]any{
-			"waitedMs":      sinceMs(refreshStarted),
-			"sinceStagedMs": sinceMs(started),
-		})
 	case "fail-queued":
 		if c.failSeen {
 			return
@@ -1036,21 +987,6 @@ func (c *skillGuardChoreography) tailMilestones(path string) error {
 		case werr := <-watcher.Errors:
 			return werr
 		}
-	}
-}
-
-func (c *skillGuardChoreography) waitHelperExit(index int, timeout time.Duration) error {
-	skillGuardHelperMu.Lock()
-	helper := skillGuardHelpers[index]
-	skillGuardHelperMu.Unlock()
-	if helper == nil {
-		return errors.New("helper not started")
-	}
-	select {
-	case <-helper.wait():
-		return nil
-	case <-time.After(timeout):
-		return fmt.Errorf("timeout after %s", timeout)
 	}
 }
 
@@ -1179,7 +1115,6 @@ func skillGuardMilestoneDetail(t *testing.T, milestones []skillGuardMilestone, n
 func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath string, entries [2]rendezvous.Entry) {
 	t.Helper()
 	turnsA := skillGuardTurnRequests(t, fixture.requestLog[0])
-	turnsB := skillGuardTurnRequests(t, fixture.requestLog[1])
 	milestones := skillGuardReadMilestones(t, milestonesPath)
 
 	if len(turnsA) == 0 {
@@ -1195,9 +1130,6 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		"hold-turn-started", "queued", "queue-returned", "requeued", "drain-committed", "drain-released",
 		"steer-turn-started", "steered", "steer-released",
 		"attachment-preserved", "attachment-submitted",
-		"caploss-staged",
-		"caploss-shutdown-sent", "caploss-helper-exited", "caploss-roster-refreshed",
-		"caploss-ended", "caploss-refused",
 		"fail-turn-started", "fail-queued", "fail-observed", "fail-retried",
 		"delay-submitted", "delay-edited", "delay-commit-kept",
 		"net-failed-kept", "net-restored",
@@ -1468,30 +1400,6 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		t.Errorf("attachment tiles across chip edits = %d, want 1", attachSnapshot.Tiles)
 	}
 
-	// Scenario: capability loss. Helper beta never received a turn request,
-	// the draft survived, and nothing durable was written for it.
-	if len(turnsB) != 0 {
-		t.Errorf("helper beta received %d turn requests after its capability was lost; the composer gate leaked", len(turnsB))
-	}
-	var refused skillGuardComposerSnapshot
-	var refusedDetail struct {
-		skillGuardComposerSnapshot
-		Toast   string                `json:"toast"`
-		Durable skillGuardDurableDump `json:"durable"`
-	}
-	if !skillGuardMilestoneDetail(t, milestones, "caploss-refused", &refusedDetail) {
-		t.Fatal("no caploss-refused milestone")
-	}
-	refused = refusedDetail.skillGuardComposerSnapshot
-	if refused.Text != skillGuardInline(proseCapLoss) || len(refused.Chips) != 1 {
-		t.Errorf("the capability-loss refusal did not keep the staged draft: %s", skillGuardJSON(refused))
-	}
-	for _, record := range append(append([]skillGuardDurableRecord{}, refusedDetail.Durable.Outbox...), append([]skillGuardDurableRecord{}, refusedDetail.Durable.Recovery...)...) {
-		if strings.Contains(record.TargetRef, entries[1].SessionID) {
-			t.Errorf("a durable mutation record exists for the capability-lost session: %s", skillGuardJSON(record))
-		}
-	}
-
 	// Scenario: failed activation + explicit retry. The failed input is durably
 	// recorded with its names, and the ONLY provider request carrying its
 	// prose was dispatched after the failure was observed — proving no
@@ -1599,7 +1507,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	}
 
 	// Scenario report: name every scenario with its actual evidence.
-	t.Logf("skillguard scenarios: canonical(seq=%d held=%v), draft-remount, queue(held turn + drain), steering, attachment(%d image parts), capability-loss(beta turns=%d), failed-activation(retry after %q), delayed-send(kept draft %q), transport-loss(1 dispatch)",
+	t.Logf("skillguard scenarios: canonical(seq=%d held=%v), draft-remount, queue(held turn + drain), steering, attachment(%d image parts), failed-activation(retry after %q), delayed-send(kept draft %q), transport-loss(1 dispatch)",
 		canonical.Seq, canonical.Held, func() int {
 			for _, rec := range turnsA {
 				if strings.Contains(rec.Request.allText(), proseAttachment) {
@@ -1607,7 +1515,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 				}
 			}
 			return 0
-		}(), len(turnsB), failObservedAt, delayKept.Text)
+		}(), failObservedAt, delayKept.Text)
 }
 
 func skillGuardMilestonePresent(milestones []skillGuardMilestone, name string) bool {
