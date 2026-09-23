@@ -2518,10 +2518,7 @@ export function ConversationScreen({
 										{draft.loaded ? "Retry saving" : "Retry loading draft"}
 									</Action>
 								) : null}
-								{!connected ||
-								snapshot.error ||
-								actionError ||
-								unconfirmedSend !== null ? (
+									{!connected || deliveryConcern ? (
 									<Action
 										tone="quiet"
 										onPress={() => {

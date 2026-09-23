@@ -50,6 +50,17 @@ const labels = {
 	orphaned: "Needs review",
 } satisfies Record<NativeMutationRecoveryStatus, string>;
 
+function isTextInputItem(
+	item: unknown,
+): item is { type: "text"; text: string } {
+	return (
+		typeof item === "object" &&
+		item !== null &&
+		(item as { type?: unknown }).type === "text" &&
+		typeof (item as { text?: unknown }).text === "string"
+	);
+}
+
 // The text a rejected mutation restores to the composer. `composerText` is the
 // composer's own text with "[image N]" anchors intact; a record written before
 // that field existed falls back to the payload's text items - the same
@@ -61,16 +72,7 @@ export function recoveredComposerText(
 		return record.composerText;
 	const input = record.payload.input;
 	if (!Array.isArray(input)) return "";
-	return input
-		.filter(
-			(item): item is { type: "text"; text: string } =>
-				typeof item === "object" &&
-				item !== null &&
-				(item as { type?: unknown }).type === "text" &&
-				typeof (item as { text?: unknown }).text === "string",
-		)
-		.map((item) => item.text)
-		.join("\n");
+	return input.filter(isTextInputItem).map((item) => item.text).join("\n");
 }
 
 // A rejected row restores only when there is text to restore; an orphaned row
