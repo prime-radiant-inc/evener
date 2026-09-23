@@ -40,6 +40,7 @@ import Welcome from "../welcome/Welcome";
 import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
 import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import { SPAWN_SLASH_CATALOG_DEBOUNCE_MS } from "./useSpawnSlashCatalog";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -4108,6 +4109,13 @@ test("auth notification retires global cleanup before the instance refresh compl
     return instanceRefresh.promise;
   });
   expect(modelValue().textContent).toBe("openai/newly-visible");
+  // The obsolete global catalog must already be in flight (parked on
+  // oldCatalog) before the notification, or resolving it later is a no-op.
+  await waitFor(() =>
+    expect(modelListRequests(client).some((params) => params.harness === "evener" && params.cwd === undefined)).toBe(
+      true,
+    ),
+  );
   notified = true;
   await act(async () => client.emitNotification({ method: "evener/auth/updated", params: {} }));
   // The instance refetch is coalesced behind a timer; fire it, then await the
@@ -5459,6 +5467,11 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   fake.calls.splice(0);
 
   await user.type(promptField(), "/goal");
+  // Run the fake clock past the debounce so a timer the switch failed to
+  // cancel would fire here and be caught.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SPAWN_SLASH_CATALOG_DEBOUNCE_MS + 1);
+  });
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
 });
@@ -5746,6 +5759,9 @@ test("a /model value from the previous cwd does not validate after switching dir
   // new scoped load lands. A model valid only for the old scope must not
   // validate against the stale snapshot.
   await setWorkingDir(user, "/tmp/other");
+  // The new scope's catalog request must actually be pending when the submit
+  // validates: wait for it to be issued (its debounce runs on the fake clock).
+  await waitFor(() => expect(modelListRequests(fake).some((params) => params.cwd === "/tmp/other")).toBe(true));
 
   await user.type(promptField(), "/model openai/gpt-5");
   await user.keyboard("{Escape}");
@@ -5795,6 +5811,9 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
   // until the new scoped load lands. "high" validates against the stale
   // ladder but must fail closed.
   await setWorkingDir(user, "/tmp/other");
+  // The new scope's catalog request must actually be pending when the submit
+  // validates: wait for it to be issued (its debounce runs on the fake clock).
+  await waitFor(() => expect(modelListRequests(fake).some((params) => params.cwd === "/tmp/other")).toBe(true));
 
   await user.type(promptField(), "/reasoning-effort high");
   await user.keyboard("{Escape}");
