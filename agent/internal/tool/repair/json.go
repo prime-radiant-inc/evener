@@ -19,9 +19,9 @@ var (
 	// after '{' or ',' (with optional JSON whitespace) followed by ':'. The
 	// anchor keeps value-position identifiers out; starting the identifier at
 	// [A-Za-z_] keeps digit-leading names out, which the caller's json.Valid
-	// gate cannot do: quoting {2id: 1} would yield valid JSON. A match inside
-	// a string value can only break that string, so the gate rejects those
-	// rewrites whole instead of repairing around them.
+	// gate cannot do: quoting {2id: 1} would yield valid JSON. Matches that
+	// start inside a string value are skipped against stringSpans, so
+	// key-like text in a value never poisons a legitimate key's repair.
 	bareKeyRe = regexp.MustCompile(`([{,][ \t\n\r]*)([A-Za-z_][A-Za-z0-9_]*)([ \t\n\r]*:)`)
 )
 
@@ -77,17 +77,76 @@ func RepairJSON(raw []byte) ([]byte, []Change) {
 }
 
 // quoteBareObjectKeys wraps bare identifier object keys — a key position
-// holding [A-Za-z_][A-Za-z0-9_]* followed by ':' — in double quotes. Only
-// quotes are inserted, so the caller's json.Valid gate stays the sole
-// authority on whether the rewrite repairs the input: a match that landed in
-// a string value breaks that string and the gate refuses the rewrite whole.
+// holding [A-Za-z_][A-Za-z0-9_]* followed by ':' — in double quotes. Matches
+// that start inside a string value (key-like text the model quoted as data)
+// are skipped, so only real keys are rewritten and the caller's json.Valid
+// gate stays the sole authority on whether the result repairs the input.
 // Returns the input unchanged when no key is quoted.
 func quoteBareObjectKeys(s string) (string, int) {
-	locs := bareKeyRe.FindAllStringIndex(s, -1)
+	locs := bareKeyRe.FindAllStringSubmatchIndex(s, -1)
 	if len(locs) == 0 {
 		return s, 0
 	}
-	return bareKeyRe.ReplaceAllString(s, `${1}"${2}"${3}`), len(locs)
+	spans := stringSpans(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	last := 0
+	quoted := 0
+	si := 0
+	for _, loc := range locs {
+		// Both spans and matches are position-sorted, so one forward walk
+		// classifies every match: skip ones that start inside a string value.
+		for si < len(spans) && spans[si][1] <= loc[0] {
+			si++
+		}
+		if si < len(spans) && spans[si][0] <= loc[0] {
+			continue
+		}
+		b.WriteString(s[last:loc[0]])
+		b.WriteString(s[loc[2]:loc[3]]) // '{' or ',' plus whitespace
+		b.WriteByte('"')
+		b.WriteString(s[loc[4]:loc[5]]) // the bare identifier
+		b.WriteByte('"')
+		b.WriteString(s[loc[6]:loc[7]]) // whitespace plus ':'
+		last = loc[1]
+		quoted++
+	}
+	if quoted == 0 {
+		return s, 0
+	}
+	b.WriteString(s[last:])
+	return b.String(), quoted
+}
+
+// stringSpans returns the [lo, hi) byte ranges of string literals in s.
+// Escape-aware: a backslash inside a string skips the next byte, so an
+// escaped quote never closes it. An unterminated string runs to the end of
+// the input — conservative, since the caller's json.Valid gate is the final
+// authority and nothing after the opening quote is treated as structural.
+func stringSpans(s string) [][2]int {
+	var spans [][2]int
+	start := -1
+	for i := 0; i < len(s); {
+		switch c := s[i]; {
+		case start < 0:
+			if c == '"' {
+				start = i
+			}
+			i++
+		case c == '\\':
+			i += 2
+		case c == '"':
+			spans = append(spans, [2]int{start, i + 1})
+			start = -1
+			i++
+		default:
+			i++
+		}
+	}
+	if start >= 0 {
+		spans = append(spans, [2]int{start, len(s)})
+	}
+	return spans
 }
 
 func fixLoneSurrogates(s string) (string, []Change) {

@@ -103,6 +103,37 @@ func TestRepairJSON_UnquotedKeyCombinedWithSurrogateRepair(t *testing.T) {
 	}
 }
 
+// TestRepairJSON_UnquotedKeyBesideKeyLikeTextInString is the shepherd-round-1
+// regression (PR #2162): a legitimate bare key alongside syntax-like text
+// inside a string value must still repair. Rewriting every regex match
+// together used to break the string, and the json.Valid gate then discarded
+// the legitimate repair along with the bogus one — the tool call failed
+// where a structure-aware repair succeeds.
+func TestRepairJSON_UnquotedKeyBesideKeyLikeTextInString(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{msg: "example {id: 2}"}`, `{"msg": "example {id: 2}"}`},
+		{`{"a": "x {id: 1", id: 2}`, `{"a": "x {id: 1", "id": 2}`},
+		{`{"msg": "note, id: 5", id: 2}`, `{"msg": "note, id: 5", "id": 2}`},
+		{`{"a": "b\" c, d: 1", e: 2}`, `{"a": "b\" c, d: 1", "e": 2}`},
+		{`{ msg: "a, id: 1" }`, `{ "msg": "a, id: 1" }`},
+		{`{"a": "x {id: 1", id: 2, "b": "y {k: 1}", c: 3}`,
+			`{"a": "x {id: 1", "id": 2, "b": "y {k: 1}", "c": 3}`},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			out, changes := RepairJSON([]byte(tc.in))
+			if string(out) != tc.want {
+				t.Fatalf("RepairJSON(%q) = %q, want %q", tc.in, out, tc.want)
+			}
+			if !json.Valid(out) {
+				t.Fatalf("repaired %q is not valid JSON", out)
+			}
+			if len(changes) != 1 || changes[0].Kind != ChangeQuoteObjectKey {
+				t.Fatalf("changes = %+v, want exactly one %s change", changes, ChangeQuoteObjectKey)
+			}
+		})
+	}
+}
+
 // TestRepairJSON_UnquotedKeyScopeGuard pins what the repair must NOT do:
 // bare values, single-quoted keys, trailing commas, comments, digit-leading
 // keys, keys without colons, and inputs needing a second kind of fix (missing
