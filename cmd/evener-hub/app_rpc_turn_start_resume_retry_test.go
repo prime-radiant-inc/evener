@@ -1304,6 +1304,273 @@ func TestAdoptResponseClientMutationIDAdoptsFailureID(t *testing.T) {
 	}
 }
 
+// TestAdoptResponseClientMutationIDStampsUnnamedTargetDeletion pins that a direct
+// mutation path's ID-LESS target deletion comes back naming the caller's own id
+// -- with the deletion's outcome intact -- while a deletion that names a
+// DIFFERENT mutation is left exactly as it is and an ID-LESS error that is not a
+// deletion never acquires an id.
+//
+// An id-less deletion is the shape a remote hub relays: the preflight thread/read
+// that discovered the deleted target names no mutation, so without the stamp the
+// client cannot correlate the failure and the record stays submitting instead of
+// being reconciled as orphaned.
+func TestAdoptResponseClientMutationIDStampsUnnamedTargetDeletion(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	deletion := func(data any) error {
+		return appwire.WireError{
+			Code:    appwire.CodeUnavailable,
+			Message: "target has been deleted: local:th",
+			Data:    data,
+		}
+	}
+
+	cases := []struct {
+		name            string
+		callerID        string
+		err             error
+		wantID          string
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+	}{
+		{
+			name:     "an id-less typed deletion is stamped with the caller's verbatim id",
+			callerID: verbatim,
+			err: deletion(appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+				MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			}),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:     "an id-less relayed (map-shaped) deletion is stamped too",
+			callerID: verbatim,
+			err: deletion(map[string]any{
+				"evenerErrorInfo":  string(appwire.ErrorActionUnavailable),
+				"mutationOutcome":  string(appwire.MutationOutcomeTargetDeleted),
+				"retryDisposition": string(appwire.RetryDispositionNone),
+			}),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:     "a deletion naming a different mutation is untouched",
+			callerID: verbatim,
+			err: deletion(appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+				ClientMutationID: "some-other-mutation",
+				MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			}),
+			wantID:          "some-other-mutation",
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:     "a deletion naming the caller's normalized id adopts the verbatim id",
+			callerID: verbatim,
+			err: deletion(appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+				ClientMutationID: normalized,
+				MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			}),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:     "an id-less non-deletion error is left alone",
+			callerID: verbatim,
+			err: appwire.WireError{
+				Code:    appwire.CodeInternalError,
+				Message: "the daemon failed without naming a mutation",
+				Data:    appwire.ErrorData{EvenerErrorInfo: appwire.ErrorInternal},
+			},
+			wantID: "",
+		},
+		{
+			name:     "an empty caller id leaves the deletion alone",
+			callerID: "",
+			err: deletion(appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+				MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			}),
+			wantID:          "",
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}
+			gotResp, gotErr := adoptResponseClientMutationID[appwire.TurnStartResponse](resp, tc.err, tc.callerID)
+			if gotErr == nil {
+				t.Fatal("the adapter dropped the failure")
+			}
+			if !reflect.DeepEqual(gotResp, resp) {
+				t.Fatalf("response = %+v, want the given response unchanged (%+v)", gotResp, resp)
+			}
+			var wire appwire.WireError
+			if !errors.As(gotErr, &wire) {
+				t.Fatalf("adopted error %T=%v, want a WireError", gotErr, gotErr)
+			}
+			data := relayedWireDataMap(t, wire.Data)
+			if gotID, _ := data["clientMutationId"].(string); gotID != tc.wantID {
+				t.Fatalf("error names clientMutationId %q, want %q (wire=%+v)", gotID, tc.wantID, wire)
+			}
+			if gotOutcome, _ := data["mutationOutcome"].(string); gotOutcome != string(tc.wantOutcome) {
+				t.Fatalf("mutationOutcome=%q, want %q: only the id may change (wire=%+v)", gotOutcome, tc.wantOutcome, wire)
+			}
+			if gotDisposition, _ := data["retryDisposition"].(string); gotDisposition != string(tc.wantDisposition) {
+				t.Fatalf("retryDisposition=%q, want %q: only the id may change (wire=%+v)", gotDisposition, tc.wantDisposition, wire)
+			}
+		})
+	}
+}
+
+// deletionPreflightSource is a scripted source whose preflight thread read fails
+// with a target-deletion error, so a direct turn/start can be driven into the
+// relay's own preflight deletion branch (app_relay.go's startTurn) without any
+// resume or retry in play.
+type deletionPreflightSource struct {
+	*scriptedAppSource
+	readErr error
+}
+
+func (s *deletionPreflightSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, s.readErr
+}
+
+// TestHubRPCTurnStartPreflightDeletionStampsCallerID drives the ID-LESS
+// target-deletion shape through the real turn/start direct path: the relay's
+// preflight thread read discovers a deleted target and names no mutation, so the
+// caller must get that deletion back carrying its own id and the deletion's
+// outcome. A deletion naming a different mutation is handed back untouched.
+func TestHubRPCTurnStartPreflightDeletionStampsCallerID(t *testing.T) {
+	const verbatim = " mutation-padded "
+
+	cases := []struct {
+		name    string
+		readErr error
+		wantID  string
+	}{
+		{
+			name: "an id-less preflight deletion is stamped with the caller's id",
+			readErr: appwire.WireError{
+				Code:    appwire.CodeUnavailable,
+				Message: "target has been deleted: local:th",
+				Data: appwire.ErrorData{
+					EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+					MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+					RetryDisposition: appwire.RetryDispositionNone,
+				},
+			},
+			wantID: verbatim,
+		},
+		{
+			name: "a preflight deletion naming a different mutation is untouched",
+			readErr: appwire.WireError{
+				Code:    appwire.CodeUnavailable,
+				Message: "target has been deleted: local:th",
+				Data: appwire.ErrorData{
+					EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+					ClientMutationID: "some-other-mutation",
+					MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+					RetryDisposition: appwire.RetryDispositionNone,
+				},
+			},
+			wantID: "some-other-mutation",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+			t.Cleanup(func() {
+				resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+			})
+
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + sessionID
+
+			startCalls := 0
+			source := &deletionPreflightSource{
+				scriptedAppSource: &scriptedAppSource{
+					id: "local",
+					thread: appwire.Thread{
+						ID:        sessionID,
+						SessionID: sessionID,
+						Source:    "local",
+						Evener: appwire.EvenerThread{
+							Ref:          ref,
+							Capabilities: appwire.ThreadCapabilities{Send: true},
+						},
+					},
+					startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+						startCalls++
+						return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+					},
+				},
+				readErr: tc.readErr,
+			}
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+				return source, nil
+			}
+			resumeCalls := 0
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				resumeCalls++
+				return appwire.ThreadResumeResponse{Thread: source.thread}, nil
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				Ref:              ref,
+				ClientMutationID: verbatim,
+				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+			})
+			if err == nil {
+				t.Fatal("turn/start reported success although the target is deleted")
+			}
+			if startCalls != 0 {
+				t.Fatalf("start calls=%d, want 0 (the preflight deletion refused before the send)", startCalls)
+			}
+			if resumeCalls != 0 {
+				t.Fatalf("resume calls=%d, want 0 (a deletion is not a session-unavailable failure)", resumeCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+			}
+			data := relayedWireDataMap(t, wire.Data)
+			if gotID, _ := data["clientMutationId"].(string); gotID != tc.wantID {
+				t.Fatalf("deletion names clientMutationId %q, want %q: the client cannot reconcile the record (wire=%+v)", gotID, tc.wantID, wire)
+			}
+			if gotOutcome, _ := data["mutationOutcome"].(string); gotOutcome != string(appwire.MutationOutcomeTargetDeleted) {
+				t.Fatalf("mutationOutcome=%q, want %q (wire=%+v)", gotOutcome, appwire.MutationOutcomeTargetDeleted, wire)
+			}
+			if gotDisposition, _ := data["retryDisposition"].(string); gotDisposition != string(appwire.RetryDispositionNone) {
+				t.Fatalf("retryDisposition=%q, want %q (wire=%+v)", gotDisposition, appwire.RetryDispositionNone, wire)
+			}
+		})
+	}
+}
+
 // TestHubRPCTurnStartDirectRefusalKeepsPaddedCallerID drives a DIRECT refusal
 // (no resume in play) through turn/start with a padded caller id: the source's
 // startTurn refuses naming the id the daemon normalized, and the caller must get

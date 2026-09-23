@@ -497,10 +497,43 @@ func adoptCallerMutationReceipt(receipt appwire.MutationReceipt, clientMutationI
 	return receipt
 }
 
+// adoptFailureClientMutationID adopts the caller's own id onto a failure a
+// direct mutation path returned: first nameTargetDeletedFailure's stamp for an
+// ID-LESS target deletion, then adoptCallerMutationID's canonical rewrite.
+//
+// A target deletion is the one failure the hub can always attribute to the
+// caller whose mutation hit it, even when the error says nothing about which
+// mutation that was: a preflight thread/read deletion relayed from a remote hub
+// reaches the hub with no clientMutationId at all (app_relay.go's startTurn
+// hands it back untouched when the hub holds no deletion record of its own), and
+// the deleting client's record is the caller's. Stamping the caller's id keeps
+// the deletion's own outcome (targetDeleted / none) so the client reconciles the
+// record as orphaned instead of leaving it submitting. nameTargetDeletedFailure
+// is reused exactly as the retry path uses it -- it already refuses to touch a
+// deletion that names a different mutation.
+//
+// Nothing else acquires an id here. An error that already names a DIFFERENT
+// mutation is not this caller's to own (adoptCallerMutationID leaves it, and
+// nameTargetDeletedFailure declines it), and an ID-LESS error that is not a
+// deletion could belong to any caller, so it is left exactly as it is rather
+// than claimed for this one.
+func adoptFailureClientMutationID(err error, clientMutationID string) error {
+	if err == nil || clientMutationID == "" {
+		return err
+	}
+	if isTargetDeletedError(err) {
+		if enriched := nameTargetDeletedFailure(clientMutationID, err); enriched != nil {
+			return enriched
+		}
+	}
+	return adoptCallerMutationID(err, clientMutationID)
+}
+
 // adoptResponseClientMutationID adopts the caller's own clientMutationId onto
-// BOTH halves of a hub mutation result: the error with adoptCallerMutationID and
-// the response's mutation receipt with adoptCallerMutationReceipt. Everything
-// else passes through untouched.
+// BOTH halves of a hub mutation result: the error with
+// adoptFailureClientMutationID (which also stamps an id-less target deletion, see
+// there) and the response's mutation receipt with adoptCallerMutationReceipt.
+// Everything else passes through untouched.
 //
 // Both halves need it for the same reason. The daemon trims the caller's id at
 // its own boundary before it mints a receipt OR a refusal
@@ -529,7 +562,7 @@ func adoptResponseClientMutationID[R any](resp R, err error, clientMutationID st
 		return resp, err
 	}
 	if err != nil {
-		return resp, adoptCallerMutationID(err, clientMutationID)
+		return resp, adoptFailureClientMutationID(err, clientMutationID)
 	}
 	adopt := func(receipt appwire.MutationReceipt) appwire.MutationReceipt {
 		return adoptCallerMutationReceipt(receipt, clientMutationID)
