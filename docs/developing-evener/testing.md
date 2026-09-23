@@ -439,8 +439,18 @@ build that cannot run fails loudly naming the command to run. It also asserts
 the hub answers with the built SPA, not `webnext.go`'s documented 503. It needs
 `node` and a Chrome on the controller.
 
+The controller also needs its Chrome profile to live somewhere SHORT. Chrome
+derives its process-singleton socket path from the profile directory
+(`<user-data-dir>/com.google.Chrome.<id>/SingletonSocket`) and a unix socket path
+is capped at about 108 bytes, so a deep `TMPDIR` — a sandboxed run whose scratch
+directory is nested well below `/tmp`, for instance — pushes that past the cap and
+Chrome aborts (`FATAL:...process_singleton_posix.cc: Socket path too long`) before
+DevTools is ready. The driver creates its profile under `os.tmpdir()`, so it
+reports that as an environment problem rather than a case failure, but the run
+still does not happen: set a short `TMPDIR` when yours is deep.
+
 ~~~sh
-EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_UI=1 \
+TMPDIR=/tmp EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_UI=1 \
   go test ./cmd/evener-hub/ -run 'TestHostSettingsUIDisposableHostE2E' -count=1 -v
 ~~~
 
