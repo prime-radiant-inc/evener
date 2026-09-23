@@ -674,10 +674,15 @@ export function createConversationStore() {
   // rows; this store's rows are a projection of the model, so a row the
   // model cannot hold lives here, as transient display state outside it.
   // Every timeline rebuild passes through capAndTruncate, the display
-  // boundary, which re-appends them at the tail (they are the newest
-  // evidence), and the conversation transitions that clear the page
-  // history clear these with it, so a notice never crosses threads.
-  const transientWarningRows: MobileTimelineItem[] = [];
+  // boundary, which seats each notice at the position it arrived at
+  // (round 35: re-appended at the tail, a notice sank below rows that
+  // arrived later and the retained window could never evict it), and
+  // the conversation transitions that clear the page history clear
+  // these with it, so a notice never crosses threads.
+  const transientWarnings: {
+    row: MobileTimelineItem;
+    anchor: string | null;
+  }[] = [];
   let liveNoticeSerial = 0;
   // The row an idle warning displays as: the same attention row the
   // canonical projection builds for a model warning item (project.ts's
@@ -692,6 +697,14 @@ export function createConversationStore() {
       title: folded.title ?? "Warning",
       detail: joinWarningParts([folded.text, folded.hint]),
     };
+  }
+
+  // The position a notice arrived at: the identity of the row that was
+  // last on screen when the notice landed, or null when the timeline
+  // was empty (the notice predates every row the model has produced
+  // since).
+  function arrivalAnchor(items: MobileTimelineItem[]): string | null {
+    return items.length === 0 ? null : timelineIdentity(items[items.length - 1]);
   }
 
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
@@ -709,24 +722,46 @@ export function createConversationStore() {
       if (bounded !== text) next.set(bounded, bounded);
       return bounded;
     };
-    // The transient notices rejoin the timeline here: appended at the tail
-    // once (a rebuild whose input rows already carry one — loadOlder merges
-    // the current items — must not duplicate it), inside the cap so the
-    // window that evicts them is the one that evicts every row, and pruned
-    // back to what the cap kept so an evicted notice stays evicted.
+    // The transient notices rejoin the timeline here, each seated at
+    // the position it arrived at (after its anchor's row) rather than
+    // at the tail: a notice is evidence of a moment, so it stays above
+    // the rows that arrived later, and the cap that slides past its
+    // position evicts it with it — the notice enters the window as a
+    // row like any other. A rebuild whose input rows already carry one
+    // — loadOlder merges the current items — must not duplicate it (the
+    // carried filter); a notice whose anchor left the model rows (a
+    // withdrawal, a reread window that starts past it) has no position
+    // to sit at and retires with the prune; and the prune back to what
+    // the cap kept means an evicted notice stays evicted.
     const carriedIdentities = new Set(conversation.items.map(timelineIdentity));
-    const items = capItems([
-      ...conversation.items,
-      ...transientWarningRows.filter(
-        (row) => !carriedIdentities.has(timelineIdentity(row)),
-      ),
-    ]).map((item) => truncateItem(item, bound));
+    const noticesByAnchor = new Map<string, MobileTimelineItem[]>();
+    const noticesBeforeEverything: MobileTimelineItem[] = [];
+    for (const notice of transientWarnings) {
+      if (carriedIdentities.has(timelineIdentity(notice.row))) continue;
+      if (notice.anchor === null) {
+        noticesBeforeEverything.push(notice.row);
+        continue;
+      }
+      const bucket = noticesByAnchor.get(notice.anchor);
+      if (bucket === undefined) {
+        noticesByAnchor.set(notice.anchor, [notice.row]);
+      } else {
+        bucket.push(notice.row);
+      }
+    }
+    const seated: MobileTimelineItem[] = [...noticesBeforeEverything];
+    for (const item of conversation.items) {
+      seated.push(item);
+      const bucket = noticesByAnchor.get(timelineIdentity(item));
+      if (bucket !== undefined) seated.push(...bucket);
+    }
+    const items = capItems(seated).map((item) => truncateItem(item, bound));
     const retainedIdentities = new Set(items.map(timelineIdentity));
-    for (let index = transientWarningRows.length - 1; index >= 0; index -= 1) {
+    for (let index = transientWarnings.length - 1; index >= 0; index -= 1) {
       if (
-        !retainedIdentities.has(timelineIdentity(transientWarningRows[index]))
+        !retainedIdentities.has(timelineIdentity(transientWarnings[index].row))
       ) {
-        transientWarningRows.splice(index, 1);
+        transientWarnings.splice(index, 1);
       }
     }
     boundedText = next;
@@ -1689,7 +1724,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
-        transientWarningRows.length = 0;
+        transientWarnings.length = 0;
         releaseBoundedTextCache();
         set({
           status: "opening",
@@ -1750,7 +1785,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
-        transientWarningRows.length = 0;
+        transientWarnings.length = 0;
         releaseBoundedTextCache();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
@@ -2745,7 +2780,7 @@ export function createConversationStore() {
             pageOwnedTurnIds.clear();
             pageOwnedCompactTurnIds.clear();
             compactedTurnItems.clear();
-            transientWarningRows.length = 0;
+            transientWarnings.length = 0;
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are its
@@ -3585,7 +3620,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
-        transientWarningRows.length = 0;
+        transientWarnings.length = 0;
         releaseBoundedTextCache();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
@@ -3693,7 +3728,8 @@ export function createConversationStore() {
         // EventWarning unconditionally, and a prompt-render failure on a
         // model change lands exactly here, while idle. The store keeps it
         // itself: the notice goes to the transient surface capAndTruncate
-        // re-appends to every rebuild, and this frame takes the full
+        // reseats at its arrival position on every rebuild, and this
+        // frame takes the full
         // publish path below so the row reaches the screen at once. A
         // warning WITH an active turn needs none of this — the reducer
         // folds it into the turn's items and the projection renders it.
@@ -3702,7 +3738,10 @@ export function createConversationStore() {
             ? idleWarningRow(n.params)
             : null;
         if (idleWarningNotice !== null) {
-          transientWarningRows.push(idleWarningNotice);
+          transientWarnings.push({
+            row: idleWarningNotice,
+            anchor: arrivalAnchor(state.conversation.items),
+          });
         }
         if (applied !== state.conversation) {
           if (
@@ -3764,7 +3803,7 @@ export function createConversationStore() {
         // conversion), so the canonical read cannot carry that warning either.
         // Nothing is missing from the transcript and there is nothing to
         // fetch — the store displays the dropped warning from its own
-        // transient surface instead (transientWarningRows, above).
+        // transient surface instead (transientWarnings, above).
         const droppedByTheWiresOwnRule =
           n.method === "warning" && !state.conversation.activeTurnId;
         if (
@@ -3813,7 +3852,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
-        transientWarningRows.length = 0;
+        transientWarnings.length = 0;
         releaseBoundedTextCache();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {

@@ -4109,6 +4109,87 @@ describe("ConversationStore", () => {
       ).toEqual([]);
     });
 
+    // RoboRev round 35: a transient notice is evidence of a moment, not
+    // the newest row forever. Re-appended at the tail, an old diagnostic
+    // would sink below every response that arrived later, and the
+    // retained window could never evict it — accumulated notices crowd
+    // out real messages. The notice keeps the position it arrived at and
+    // leaves with that position when the window slides past it.
+    it("seats an idle warning at its arrival position, above later messages, and evicts it with that position", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                userMessageItem("u1", "first"),
+                agentMessageItem("a1", "second"),
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1"]);
+      store.getState().applyNotification({
+        method: "warning",
+        params: { threadId: "thread-1", ref: "ref-1", title: "Provider", message: "careful" },
+      } as AnyNotification);
+      // Newer messages arrive after the notice did.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: userMessageItem("u2", "newer"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: agentMessageItem("a2", "newer reply"),
+        },
+      } as AnyNotification);
+      // The notice sits where it arrived: after a1, above u2 and a2.
+      expect(rows(store).map((row) => row.kind)).toEqual([
+        "user",
+        "assistant",
+        "failure",
+        "user",
+        "assistant",
+      ]);
+      expect(rows(store).map((row) => row.id)[2]).toMatch(/^warning:/);
+      // Grow the transcript past the retained cap: the window keeps the
+      // newest 500 rows, and the arrival position — with the notice —
+      // leaves it.
+      for (let i = 3; i <= 502; i++) {
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: agentMessageItem(`a${i}`, `message ${i}`),
+          },
+        } as AnyNotification);
+      }
+      const after = rows(store);
+      expect(after.filter((row) => row.kind === "failure")).toEqual([]);
+      expect(after).toHaveLength(500);
+      expect(after[0]?.id).toBe("a3");
+      expect(after[after.length - 1]?.id).toBe("a502");
+    });
+
     it("preserves a command description through live item projection", async () => {
       const { store } = await openRunningTurn();
       store.getState().applyNotification({
