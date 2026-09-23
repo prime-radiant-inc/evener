@@ -28,6 +28,14 @@ import (
 
 const evenerLaunchCheckTimeout = 30 * time.Second
 
+// evenerLaunchCheckWaitDelay bounds how long a launch-check's output pipe may
+// stay open after the check exits or its context ends. Killing the check does
+// not close a pipe a grandchild inherited (a wrapper script around evener is
+// enough), and without this the call would wait for that grandchild however
+// long it lives, turning evenerLaunchCheckTimeout into no bound at all. A
+// check with no stray children reaches EOF at exit and never waits on it.
+const evenerLaunchCheckWaitDelay = time.Second
+
 // daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
 // quoted back to the operator as the reason it would not start.
 const daemonLaunchOutputLimit = 64 * 1024
@@ -933,6 +941,20 @@ func launchCheckWaitError(ctx context.Context) error {
 	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
+// runLaunchCheck runs a launch-check and returns its combined output, bounding
+// the wait for its output pipe with evenerLaunchCheckWaitDelay. When that bound
+// is what ended the wait but the check itself exited 0, the check answered: a
+// child it left behind merely held the pipe open after the complete response
+// was written, so exec's ErrWaitDelay is not a failure of the check.
+func runLaunchCheck(cmd *exec.Cmd) ([]byte, error) {
+	cmd.WaitDelay = evenerLaunchCheckWaitDelay
+	out, err := cmd.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil
+	}
+	return out, err
+}
+
 // requiredLaunchFlag is the serve flag the hub passes on every spawn and
 // resume (the api_log floor pins both directions), so every child binary
 // must advertise it in launch-check's launch_flags before the hub will
@@ -953,7 +975,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
 		return launchCheckWaitError(checkCtx)
 	}
@@ -988,7 +1010,7 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
 		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
 	}
