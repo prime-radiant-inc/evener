@@ -4453,6 +4453,109 @@ describe("ConversationStore", () => {
       ]);
     });
 
+    // RoboRev panel round 2: an attachment row's own identity is GENERATED
+    // from its source's wire id (`<id>:attachments`), so a notice that
+    // arrives after one anchors to that generated id. The hub can reissue
+    // the source item under a NEW wire id while its transcript key stands:
+    // the projection re-keys the attachment row to the new id, the anchor
+    // matches nothing the seating walk can resolve, and the next rebuild
+    // pruned the notice — a silent diagnostic loss. Attachment rows must
+    // anchor through their stable source identity, which the reissue keeps.
+    it("keeps a warning seated across a reissue of the source item its attachment row was keyed to", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                {
+                  type: "userMessage",
+                  id: "wire-old",
+                  transcriptKey: "stable-message",
+                  text: "old",
+                  images: [{ type: "image", url: "https://hub.test/old" }],
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      // The user row, then its attachments row keyed to the wire id.
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["user", "wire-old"],
+        ["attachments", "wire-old:attachments"],
+      ]);
+      // An idle warning lands while the attachments row is the nearest
+      // model row: the notice is displayed at once.
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.title === "Provider"),
+      ).toBe(true);
+      // The source is reissued under a new wire id with the same transcript
+      // key and says nothing about images: the reducer folds it by identity,
+      // the projection re-keys both the user row and the attachments row,
+      // and the notice must stay seated.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "wire-new",
+            transcriptKey: "stable-message",
+            text: "reissued",
+          },
+        },
+      } as AnyNotification);
+      const reissued = rows(store);
+      expect(
+        reissued
+          .filter((row) => row.kind === "attachments")
+          .map((row) => row.id),
+      ).toEqual(["wire-new:attachments"]);
+      // The notice seats through the source identity the SOURCE row owns,
+      // so it sits after the source row, above the attachments row it
+      // arrived after.
+      expect(reissued.map((row) => [row.kind, row.id])).toEqual([
+        ["user", "wire-new"],
+        ["failure", "warning:1"],
+        ["attachments", "wire-new:attachments"],
+      ]);
+      // A later row-changing rebuild keeps the notice seated.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: userMessageItem("u2", "newer"),
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["user", "wire-new"],
+        ["failure", "warning:1"],
+        ["attachments", "wire-new:attachments"],
+        ["user", "u2"],
+      ]);
+    });
+
     it("preserves a command description through live item projection", async () => {
       const { store } = await openRunningTurn();
       store.getState().applyNotification({

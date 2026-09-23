@@ -707,13 +707,22 @@ export function createConversationStore() {
   // walk matches anchors against model rows only, so that notice never
   // seated and the prune deleted it) — consecutive notices stack at the
   // same arrival position in arrival order instead, and leave it
-  // together.
+  // together. An attachment row's own identity is GENERATED from its
+  // source's wire id, which a reissue (the same source under a new wire
+  // id, transcript key standing) re-keys — an anchor to it matched
+  // nothing after the reissue and the next rebuild pruned the notice
+  // (RoboRev panel round 2) — so attachment rows anchor through their
+  // STABLE source identity (attachmentSourceIdentity), which the reissue
+  // keeps. The seating walk resolves that anchor on the source row, so
+  // the notice seats after the source row, above the attachments row it
+  // arrived after: the position its anchor names, as for any other row.
   function arrivalAnchor(
     items: MobileTimelineItem[],
     noticeIdentities: ReadonlySet<string>,
   ): string | null {
     for (let index = items.length - 1; index >= 0; index -= 1) {
-      const identity = timelineIdentity(items[index]);
+      const item = items[index];
+      const identity = attachmentSourceIdentity(item) ?? timelineIdentity(item);
       if (!noticeIdentities.has(identity)) return identity;
     }
     return null;
