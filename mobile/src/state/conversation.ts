@@ -953,6 +953,71 @@ export function createConversationStore() {
     }
   }
 
+  // RoboRev round 24: a refresh can NAME the live working set's turn while
+  // its own bounded snapshot omits the turn itself. Before any pagination
+  // exists there is no page merge to carry that turn, and the replace path
+  // would discard the live turn and every row it streamed — leaving later
+  // item frames no containing turn to update, so the transcript stops
+  // following a stream the wire itself still reports active. The snapshot
+  // naming the turn active is the same authority the paged merge reads (the
+  // round-22 wholesale rule), so the live turn survives the refresh
+  // independently of page ownership: preserved from the current model,
+  // together with the rows it owns there, whenever the fresh read names it
+  // active but does not carry it. The web store reads the same carve-out
+  // (preserveLiveActiveTurn). Rows the projection already carries — under
+  // any wire id, hub reissues included — and rows a page already front-loaded
+  // do not append twice.
+  function withLiveActiveTurn(
+    previous: MobileConversation | null,
+    sameInstance: boolean,
+    projected: MobileConversation,
+  ): MobileConversation {
+    const activeId = projected.activeTurnId;
+    if (
+      activeId === undefined ||
+      previous === null ||
+      !sameInstance ||
+      projected.turns.some((turn) => turn.id === activeId)
+    ) {
+      return projected;
+    }
+    const liveTurn = previous.turns.find((turn) => turn.id === activeId);
+    if (liveTurn === undefined) return projected;
+    // Every identity the projection carries, in both spellings — the
+    // round-29 rule: a keyless reissue matches a keyed row by bare id.
+    const identities = new Set<string>();
+    for (const row of projected.items) {
+      for (const identity of timelineIdentities(row)) identities.add(identity);
+      identities.add(row.id);
+      if (row.kind === "activity" && row.members) {
+        for (const member of row.members) identities.add(member.id);
+      }
+    }
+    const projectedAttachmentSources = new Set(
+      projected.items
+        .map((row) => attachmentSourceIdentity(row))
+        .filter((id): id is string => id !== null),
+    );
+    // Every identity the live turn owns: its items' identities in both
+    // spellings, plus the turn id a projected failure row would carry.
+    const liveIdentities = new Set([liveTurn.id]);
+    for (const item of liveTurn.items) {
+      liveIdentities.add(item.transcriptKey ?? item.id);
+      liveIdentities.add(item.id);
+    }
+    const liveRows = previous.items.filter(
+      (row) =>
+        [...timelineIdentities(row), row.id].some((id) =>
+          liveIdentities.has(id),
+        ) && !supersededBy(row, identities, projectedAttachmentSources),
+    );
+    return {
+      ...projected,
+      turns: [...projected.turns, liveTurn],
+      items: [...projected.items, ...liveRows],
+    };
+  }
+
   // #1919 follow-up: bound retained page-turn data. The keep-window is the
   // retained display set itself — the final capped rows at the publish site
   // (loadOlder's pageMerged, rehydrate's rehydrateCapped). A turn whose items
@@ -1911,9 +1976,13 @@ export function createConversationStore() {
           const preserveTurnHistory =
             sameInstance &&
             (pageOwnedTurnIds.size > 0 || pageOwnedCompactTurnIds.size > 0);
-          const merged = preservePageHistory
-            ? withPageHistory(currentConvForMerge, conversation)
-            : conversation;
+          const merged = withLiveActiveTurn(
+            currentConvForMerge,
+            sameInstance,
+            preservePageHistory
+              ? withPageHistory(currentConvForMerge, conversation)
+              : conversation,
+          );
           // The page's cursor is the newer one when its history is kept: the
           // reread's reflects the full readProjection, which does not include
           // the paged rows.
@@ -1967,7 +2036,10 @@ export function createConversationStore() {
           // store's own capped pagination cursor (currentSnapshot.olderCursor
           // — a UI-only concern, set below via mergedCursor). Reading that
           // capped value here would flip a partial sum's scope to "session".
-          let mergedTurns = conversation.turns;
+          // The live-active carve-out above may have appended the named
+          // active turn to merged.turns; the page merge below reassigns
+          // this from its own fold inputs when it runs.
+          let mergedTurns = merged.turns;
           let wireOlderCursor = conversation.olderCursor;
           const rehydrateCapped = capItems(merged.items);
           if (preserveTurnHistory && currentConvForMerge !== null) {
@@ -2228,12 +2300,18 @@ export function createConversationStore() {
                 }
               }
               // The lifecycle is the snapshot's to settle too: a retained
-              // inProgress claim cannot outlive a fresh copy the activity
-              // rule reads as settled — the rank merge would keep the
-              // stale claim and every later frame would reproject
-              // "Writing…" on the finished response (RoboRev round 16).
+              // status claim cannot outlive a fresh copy the activity
+              // rule reads as settled. The stale path is exactly the
+              // nullish fallback — a fresh copy carrying NO status of its
+              // own inherits the retained one, "inProgress" reprojectioning
+              // "Writing…" on the finished response (RoboRev round 16) and
+              // "failed"/"interrupted" flipping a completed activity back
+              // to a failure on the next row-changing frame (round 24).
+              // A fresh copy that carries its own status needs no help:
+              // the rank merge reconciles explicit statuses by rank.
               if (
-                item.status === "inProgress" &&
+                item.status !== undefined &&
+                fresh.status === undefined &&
                 !isActiveItem(fresh, match.turnStatus)
               ) {
                 stripped ??= copyItemTextPresence(item, { ...item });
@@ -2285,8 +2363,15 @@ export function createConversationStore() {
                 // coverage fields, so a snapshot whose covering turn
                 // carries no error must not inherit the retained failure:
                 // the next row-changing frame would project a failure
-                // row neither side holds (RoboRev round 23). Page-owned
-                // turns keep their history (the round-31 rule).
+                // row neither side holds (RoboRev round 23). The
+                // exemption keys on ownership of the failure CONTENT,
+                // not of the turn: the failure row's identity IS the turn
+                // id (failureItem), so a page that carried the failure
+                // owns it as retained history (the round-31 rule) — but
+                // a page that loaded only a usage FRAGMENT of the turn
+                // owns nothing of a failure the turn acquired live, and
+                // shielding it would resurrect the failure the snapshot
+                // removed (RoboRev round 24).
                 const covering =
                   turnCoveredBySnapshot(turn) === false
                     ? undefined
@@ -2299,8 +2384,7 @@ export function createConversationStore() {
                   turn.error !== undefined &&
                   covering !== undefined &&
                   covering.error === undefined &&
-                  !pageOwnedTurnIds.has(turn.id) &&
-                  !pageOwnedCompactTurnIds.has(turn.id)
+                  !pageOwnedIds.has(turn.id)
                 ) {
                   return { ...reconciled, error: undefined };
                 }

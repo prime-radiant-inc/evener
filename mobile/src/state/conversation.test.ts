@@ -17168,6 +17168,257 @@ describe("ConversationStore", () => {
       expect(failureRows()).toHaveLength(0);
     });
 
+    it("a refresh that names the active turn but omits it keeps the live turn working", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // No loadOlder: no page history exists yet.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            id: "live-1",
+            turnId: "t1",
+            type: "agentMessage",
+            text: "live text",
+            status: "inProgress",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      expect(rowById(store, "live-1")).toBeDefined();
+
+      // The reread NAMES t1 active while its bounded snapshot omits the
+      // turn itself (RoboRev round 24): before any pagination exists there
+      // is no page merge to carry the live working set, and the replace
+      // path must not discard the turn the wire still reports active.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t9", status: "completed", items: [userMessageItem("later", "fresh")] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "live-1")).toBeDefined();
+      expect(
+        store.getState().conversation?.turns.some((turn) => turn.id === "t1"),
+      ).toBe(true);
+
+      // A later item frame finds its containing turn and updates the
+      // transcript instead of only triggering rereads.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "live-1",
+          delta: " more",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "live-1")).toMatchObject({
+        kind: "assistant",
+        markdown: "live text more",
+      });
+    });
+
+    it("a paged fragment of a turn does not shield its live-acquired failure from a clean reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // The page owns a bare usage FRAGMENT of the live turn — no failure
+      // content among it.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t1", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // The turn fails live: its error projects a failure row.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "",
+            status: "failed",
+            error: { message: "boom" },
+          },
+        },
+      } as AnyNotification);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      expect(failureRows()).not.toHaveLength(0);
+
+      // The reread's turn completed cleanly — no error: the snapshot's
+      // copy of the turn is authoritative, and the page owned no failure
+      // CONTENT for the turn — only a usage fragment — so the error must
+      // not survive the merge (RoboRev round 24: ownership of the turn
+      // is not ownership of its failure).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("done", "finished")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(failureRows()).toHaveLength(0);
+
+      // And no later row-changing frame resurrects it.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(failureRows()).toHaveLength(0);
+    });
+
+    it("a settled snapshot withdraws a matched item's retained failure status", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "act",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  status: "inProgress",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // The call fails locally: its item settles "failed" and the row
+      // shows it.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            id: "act",
+            turnId: "t1",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "c1",
+            status: "failed",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      expect((rowById(store, "act") as { state?: string }).state).toBe("failed");
+
+      // The reread's turn completed; its copy of the item carries NO
+      // status of its own: the snapshot reads it settled-clean, and the
+      // retained "failed" must not outlive that copy (RoboRev round 24:
+      // the nullish fallback kept the failure, and the next row-changing
+      // frame reprojected the completed activity as failed again).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "act",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect((rowById(store, "act") as { state?: string }).state).toBe("completed");
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "act")?.status,
+      ).toBeUndefined();
+
+      // And the clean state survives an unrelated row-changing frame.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect((rowById(store, "act") as { state?: string }).state).toBe("completed");
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
