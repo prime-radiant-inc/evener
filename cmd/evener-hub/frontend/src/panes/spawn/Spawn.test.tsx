@@ -41,6 +41,7 @@ import Welcome from "../welcome/Welcome";
 import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
 import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import { SPAWN_SLASH_CATALOG_DEBOUNCE_MS } from "./useSpawnSlashCatalog";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -297,7 +298,7 @@ function effortControl(): HTMLElement {
 // must still resolve each control unambiguously, so the card's own label
 // carries its surface ("Prompt reasoning effort").
 test("the card effort control keeps a distinct accessible name with Advanced options open", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const advancedOption: LaunchOption = {
     field: "reasoning_effort",
     wireField: "reasoningEffort",
@@ -351,6 +352,17 @@ async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: str
  * the sentinel because it renders unconditionally and is not itself one of the
  * awaited catalogs' outputs - unlike the harness select, which now lives INSIDE
  * that collapsed panel and so isn't in the tree at rest. */
+// The pane debounces its catalog, slash-catalog and plugin-preview loads by
+// 250ms. Fake timers own that clock, and the stubbed `jest` global lets Testing
+// Library's findBy/waitFor polls advance it, so each debounce costs a poll
+// rather than a quarter second of real time.
+// vi.dynamicImportSettled() is unaffected: Vitest waits on its own saved real
+// timers (getSafeTimers), not the faked globals, so the lazy chunk loads these
+// tests await still settle.
+function setupUser() {
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
+
 async function settled(): Promise<void> {
   await screen.findByRole("button", { name: "Advanced options" });
 }
@@ -363,7 +375,7 @@ async function visitSpawnURL(url: string): Promise<void> {
 }
 
 test("draft survives unmount and bare /new return before any successful start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const client = readyClient();
   const mounted = renderSpawn(client);
@@ -382,7 +394,7 @@ test("draft survives unmount and bare /new return before any successful start", 
 });
 
 test("project navigation isolates drafts and ignores non-new URL prefill", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   renderSpawn(readyClient());
   await settled();
@@ -400,7 +412,7 @@ test("project navigation isolates drafts and ignores non-new URL prefill", async
 });
 
 test("re-entering the same /new URL after leaving /new re-applies its explicit prefill", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/reentry-a");
   const client = readyClient();
   const mounted = renderSpawn(client);
@@ -426,7 +438,7 @@ test("re-entering the same /new URL after leaving /new re-applies its explicit p
 });
 
 test("remounting the same /new URL without leaving /new keeps the picker-selected draft", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/reentry-a");
   const client = readyClient();
   const mounted = renderSpawn(client);
@@ -468,7 +480,7 @@ async function completionNavigate(url: string): Promise<void> {
 test.each(["unchanged", "picker", "picker return", "away", "route return", "remount", "focus return"])(
   "completion ownership: %s while thread/start is pending",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
     const started = deferred<ThreadStartResponse>();
     const fake = readyClient((f) => f.on("thread/start", () => started.promise));
@@ -514,7 +526,7 @@ test.each(["unchanged", "picker", "picker return", "away", "route return", "remo
 );
 
 test.each(["A first", "B first"])("completion ownership: concurrent launches finish %s", async (order) => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
   const startA = deferred<ThreadStartResponse>();
   const startB = deferred<ThreadStartResponse>();
@@ -553,7 +565,7 @@ test.each(["A first", "B first"])("completion ownership: concurrent launches fin
 test.each(["preflight", "create confirmation"])(
   "completion ownership: departure during %s cannot reacquire navigation on return",
   async (boundary) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
     const validation = deferred<{ path: string; valid: boolean }>();
     const creation = deferred<{ path: string; created: boolean }>();
@@ -593,7 +605,7 @@ test.each(["preflight", "create confirmation"])(
 );
 
 test("completion ownership: late missing-directory preflight cannot open a dialog over settings", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
   const validation = deferred<{ path: string; valid: boolean }>();
   const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
@@ -616,7 +628,7 @@ test("completion ownership: late missing-directory preflight cannot open a dialo
 });
 
 test("completion ownership: a query-only navigation retires a pending launch's claim to the view", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
@@ -634,7 +646,7 @@ test("completion ownership: a query-only navigation retires a pending launch's c
 });
 
 test("completion menu ownership: a remounted prompt's cleared snapshot retires its menu", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => {
@@ -656,7 +668,7 @@ test("completion menu ownership: a remounted prompt's cleared snapshot retires i
 });
 
 test.each(["unchanged", "newer prompt", "other draft"])("completion menu ownership: %s", async (scenario) => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => {
@@ -737,7 +749,7 @@ test.each(["unknown", "empty", "error"])("global cleanup fails open for an %s ca
 });
 
 test("a draft's discard notice survives another draft selecting a model and clears on its own selection", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/lifecycle-a");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/lifecycle-a", JSON.stringify({ model: "openai/retired-a" }));
   renderSpawn(readyClient());
@@ -876,7 +888,7 @@ test.each([false, true])("stale-model sweep retires its originating draft (navig
 });
 
 test("stale-model sweep preserves a newer user selection in its originating draft and isolates B", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/review-a");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/review-a", JSON.stringify({ model: "openai/retired" }));
   localStorage.setItem("evener-hub.spawn-defaults./tmp/review-b", JSON.stringify({ model: "openai/gpt-5" }));
@@ -984,7 +996,7 @@ test("project navigation clears the old default-model gate while the new resolve
 test.each(["settled error", "late error"])(
   "project navigation isolates advanced path validation: %s",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/review-a");
     const validation = deferred<{ path: string; valid: boolean; error: string }>();
     const fake = readyClient((f) => {
@@ -1026,7 +1038,7 @@ test.each(["settled error", "late error"])(
 test.each(["settled success", "settled error", "late success", "late error"])(
   "project navigation isolates advanced config preview: %s",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/review-a");
     const preview = deferred<LaunchConfigResolved>();
     let previewRequested = false;
@@ -1067,7 +1079,7 @@ test.each(["settled success", "settled error", "late success", "late error"])(
 test.each(["%20/tmp/review-a%20", "%20%20"])(
   "URL directory normalization preserves draft and launch identity: %s",
   async (dir) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/review-a");
     const fake = readyClient();
     renderSpawn(fake);
@@ -1084,7 +1096,7 @@ test.each(["%20/tmp/review-a%20", "%20%20"])(
 );
 
 test("directory picker assigns the unscoped draft and restores each project's launch settings", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new");
   const fake = readyClient();
   const mounted = renderSpawn(fake);
@@ -1113,7 +1125,7 @@ test("directory picker assigns the unscoped draft and restores each project's la
 });
 
 test("URL prefill is applied to its project but not replayed over edits on remount", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a&prompt=seed");
   const fake = readyClient();
   const mounted = renderSpawn(fake);
@@ -1130,7 +1142,7 @@ test("URL prefill is applied to its project but not replayed over edits on remou
 });
 
 test("unchanged URL directory prefill does not replace a picker-selected draft on remount", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/review-a");
   const fake = readyClient();
   const mounted = renderSpawn(fake);
@@ -1148,7 +1160,7 @@ test("unchanged URL directory prefill does not replace a picker-selected draft o
 test.each(["unrelated field", "newer same field", "other project"])(
   "late advanced path validation preserves %s edits after remount",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/review-a");
     const validation = deferred<{ path: string; valid: boolean }>();
     const fake = readyClient((f) => {
@@ -1210,7 +1222,7 @@ test.each(["unrelated field", "newer same field", "other project"])(
 );
 
 test("successful creation preserves edits made while directory preflight was pending", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const validation = deferred<{ path: string; valid: boolean }>();
   const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
@@ -1228,7 +1240,7 @@ test("successful creation preserves edits made while directory preflight was pen
 });
 
 test("late missing-directory preflight keeps Create and start with its originating draft", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const validation = deferred<{ path: string; valid: boolean }>();
   const fake = readyClient((f) => f.on("evener/path/validate", () => validation.promise));
@@ -1253,7 +1265,7 @@ test("late missing-directory preflight keeps Create and start with its originati
 
 test("late successful creation clears only the originating draft across remount and project navigation", async () => {
   installCanvasStubs();
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
@@ -1284,7 +1296,7 @@ test("late successful creation clears only the originating draft across remount 
 });
 
 test("restoring a project's effort never clamps it against the previous project's catalog", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const fake = readyClient((f) => {
     f.on("model/list", ({ cwd }) => ({
@@ -1319,6 +1331,8 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   localStorage.clear();
   resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
@@ -1327,7 +1341,7 @@ beforeEach(() => {
 });
 
 test("missing credentials surface setup in the composer without opening a dialog or losing its draft", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
   });
@@ -1352,7 +1366,7 @@ test("missing credentials surface setup in the composer without opening a dialog
 });
 
 test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let saved = false;
   const row = {
     name: "team-local",
@@ -1435,7 +1449,7 @@ test("connection handoff shows the actual instance models and preserves draft un
 });
 
 test("fresh guided connection waits for Continue and explicit model choice without changing the draft", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let saved = false;
   const setup = {
     name: "openai",
@@ -1517,7 +1531,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
 });
 
 test("closing the handoff without choosing requires an explicit model before Start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let saved = false;
   const setup = {
     name: "openai",
@@ -1604,7 +1618,7 @@ test("closing the handoff without choosing requires an explicit model before Sta
 });
 
 test("retrying missing provider setup discovers a local server started afterward", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let available = false;
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
@@ -1643,7 +1657,7 @@ test("retrying missing provider setup discovers a local server started afterward
 });
 
 test("successful keyless testing refreshes availability without an auth notification", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let available = false;
   const keyless = {
     name: "ollama",
@@ -1704,7 +1718,7 @@ test("successful keyless testing refreshes availability without an auth notifica
 });
 
 test("credential changes reload the cached model catalog and re-enter setup after removal", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let configured = false;
   let modelRequests = 0;
   const client = readyClient((fake) => {
@@ -1750,6 +1764,7 @@ test("credential changes reload the cached model catalog and re-enter setup afte
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
   resetNavigationStoreForTests();
@@ -1777,7 +1792,7 @@ test("the directory is established before composing the prompt", async () => {
 });
 
 test("the desktop directory trigger announces the confirmed path", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(readyClient());
   await settled();
   await setWorkingDir(user, "/tmp/project");
@@ -1832,7 +1847,7 @@ test("mobile Spawn sets attachments, the model, and effort from inside the promp
 // The card's trigger says what the Model field says: "(default)" while the
 // hub's own default will do, the chosen id once someone picks one.
 test("the card's model trigger reads (default) until a model is picked, then names it", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(readyClient());
   await settled();
 
@@ -1851,7 +1866,7 @@ test("the card's model trigger reads (default) until a model is picked, then nam
 // anywhere, including on the card - the word reads exactly like Effort's own
 // working default and invites a submit the daemon refuses.
 test("the card's model trigger names the required choice when the hub has no default", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(
     readyClient((f) => {
       f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
@@ -1865,7 +1880,7 @@ test("the card's model trigger names the required choice when the hub has no def
 });
 
 test("mobile Spawn keeps the approved prompt hierarchy visible while the prompt is typed", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(readyClient());
   await settled();
 
@@ -1922,7 +1937,7 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
 // functional there - the switch still blanks a non-evener model (see the harness
 // tests in spawnHarnessModels.test.ts for that rule's own coverage).
 test("harness moved into Advanced options, and still works there", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(readyClient());
   await settled();
 
@@ -2063,7 +2078,7 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
 });
 
 test("Access mode moved from the top-level bar into Advanced options (9ct0)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(readyClient());
   await settled();
 
@@ -2073,7 +2088,7 @@ test("Access mode moved from the top-level bar into Advanced options (9ct0)", as
 });
 
 test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes to /s/{ref}", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -2096,7 +2111,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
 });
 
 test("Spawn preview omits enabledPlugins while selection remains untouched", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -2158,7 +2173,7 @@ const SPAWN_PLUGIN_PREVIEW: PluginPreviewResponse = {
 };
 
 test("desktop plugin summary lists the configured plugin names", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
   });
@@ -2190,7 +2205,7 @@ async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setu
 test.each(["bare return", "picker return", "remount", "unchanged"])(
   "completion issue ownership: known-invalid selection survives %s and failed previews",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
     let previewMode: "invalid" | "error" | "valid" = "invalid";
     const fake = readyClient((f) => {
@@ -2253,7 +2268,7 @@ test.each(["bare return", "picker return", "remount", "unchanged"])(
 test.each(["failed", "loading then failed", "ready invalid", "newer origin selection"])(
   "completion issue ownership: late A preserves B's %s preview gate",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
     const started = deferred<ThreadStartResponse>();
     const refresh = deferred<PluginPreviewResponse>();
@@ -2316,7 +2331,7 @@ test.each(["failed", "loading then failed", "ready invalid", "newer origin selec
 test.each(["remove plugin", "unsupported harness"])(
   "completion issue ownership: %s retires known issues",
   async (scenario) => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/completion-a");
     let failPreview = false;
     const fake = readyClient((f) =>
@@ -2366,7 +2381,7 @@ for (const navigation of ["picker", "URL"] as const) {
   };
 
   test(`${navigation}: a ready preview from A cannot invalidate B's restored selection after B's preview fails`, async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", `/new?dir=${projectB}`);
     let returningToB = false;
     let rejectB: ((error: Error) => void) | undefined;
@@ -2410,7 +2425,7 @@ for (const navigation of ["picker", "URL"] as const) {
   });
 
   test(`${navigation}: a ready preview from A cannot block default B while B's preview is pending`, async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", `/new?dir=${projectA}`);
     const fake = readyClient((f) => {
       f.on("evener/plugin/preview", ({ cwd }) =>
@@ -2440,7 +2455,7 @@ for (const navigation of ["picker", "URL"] as const) {
 }
 
 test("explicit plugin selection reaches Preview, resolve, and Thread Start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
     f.on("evener/launch/resolve", () => ({
@@ -2480,7 +2495,7 @@ test("explicit plugin selection reaches Preview, resolve, and Thread Start", asy
 });
 
 test("a missing working directory still exposes plugin selection before Create & start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", (params) => {
       if (params.cwd === "/tmp/new") return SPAWN_PLUGIN_PREVIEW;
@@ -2515,7 +2530,7 @@ test("a missing working directory still exposes plugin selection before Create &
 });
 
 test("explicit selection blocks while refresh is pending but preview failure still submits to server validation", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let rejectRefresh!: (reason?: unknown) => void;
   const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
     rejectRefresh = reject;
@@ -2566,7 +2581,7 @@ test("explicit selection blocks while refresh is pending but preview failure sti
 });
 
 test("known-invalid explicit selection stays blocked when an unrelated edit's refresh fails", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let rejectRefresh!: (reason?: unknown) => void;
   const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
     rejectRefresh = reject;
@@ -2615,7 +2630,7 @@ test("known-invalid explicit selection stays blocked when an unrelated edit's re
 });
 
 test("explicit empty plugin selection reaches Thread Start as an empty list", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW));
   renderSpawn(fake);
   await settled();
@@ -2635,7 +2650,7 @@ test("explicit empty plugin selection reaches Thread Start as an empty list", as
 });
 
 test("selection survives Advanced-options updates and failed Start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const advancedOption: LaunchOption = {
     field: "maxRounds",
     wireField: "maxRounds",
@@ -2672,7 +2687,7 @@ test("selection survives Advanced-options updates and failed Start", async () =>
 });
 
 test("preview failure exposes retry without guessing zero or blocking default Start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", () => {
       throw new Error("preview unavailable");
@@ -2690,7 +2705,7 @@ test("preview failure exposes retry without guessing zero or blocking default St
 });
 
 test("retained stale plugin names block every submit path until removed", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const stalePreview: PluginPreviewResponse = {
     plugins: [
       { ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" },
@@ -2748,7 +2763,7 @@ test("retained stale plugin names block every submit path until removed", async 
 });
 
 test("switching to a non-Evener harness hides plugins and clears explicit selection from start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
   });
@@ -2779,7 +2794,7 @@ test("switching to a non-Evener harness hides plugins and clears explicit select
 });
 
 test("clearing an invalid selection after preview failure reaches Create & start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let previewAvailable = true;
   const invalidPreview: PluginPreviewResponse = {
     ...SPAWN_PLUGIN_PREVIEW,
@@ -2833,7 +2848,7 @@ test("clearing an invalid selection after preview failure reaches Create & start
 // drops a blank prompt, so the wire carries input: [] - the session is created
 // and no turn is started.
 test("an empty prompt starts a dormant session rather than erroring", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -2851,7 +2866,7 @@ test("an empty prompt starts a dormant session rather than erroring", async () =
 // non-empty AFTER trimming, so "   " takes the same dormant path rather than
 // starting a turn that says nothing.
 test("a whitespace-only prompt starts a dormant session too", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -2866,7 +2881,7 @@ test("a whitespace-only prompt starts a dormant session too", async () => {
 });
 
 test("loads sticky defaults from localStorage on mount", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/saved/project");
   localStorage.setItem("evener-hub.spawn-defaults./saved/project", JSON.stringify({ access_mode: "workspace-write" }));
   renderSpawn(readyClient());
@@ -2955,7 +2970,7 @@ test("kata 11ee: a second ?prompt= navigation while already mounted still prefil
 // contract (urlPrefill.test.ts) has to keep holding on every later
 // navigation, not just the first mount.
 test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed values untouched", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
   await waitFor(() => expectWorkingDir("/home/me/app"));
@@ -2971,18 +2986,20 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
 });
 
 test("only confirming a directory updates the launch defaults", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   renderSpawn(readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
   await settled();
   await user.click(workingDir());
   await user.click(await screen.findByRole("button", { name: "Open /tmp/project/src" }));
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  const confirm = screen.getByRole("button", { name: "Use this folder" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src");
 });
 
 test("Escape discards directory browsing while preserving the prompt and launch directory", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=%2Ftmp%2Fproject");
   const fake = readyClient((f) => f.on("evener/paths/complete", () => ({ data: ["/tmp/project/src"] })));
   renderSpawn(fake);
@@ -3005,7 +3022,7 @@ test("Escape discards directory browsing while preserving the prompt and launch 
 // per-project blob the field is empty, and the panel opens on the last
 // directory a session was launched in rather than on $HOME.
 test("the browse panel opens on the stamped last-working-directory global", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/me/lastone");
   const complete = vi.fn((_params: { prefix: string }) => ({ data: ["/home/me/lastone/src"] }));
   renderSpawn(readyClient((f) => f.on("evener/paths/complete", complete)));
@@ -3025,7 +3042,7 @@ test("the browse panel opens on the stamped last-working-directory global", asyn
 // remembered projects, or a directory with no children, answers `null`. Caught
 // against a real hub: the panel crashed on mount reading .length of null.
 test("survives a null data payload from either list RPC", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const nulled = { data: null as unknown as string[] };
   renderSpawn(
     readyClient((f) => {
@@ -3043,7 +3060,7 @@ test("survives a null data payload from either list RPC", async () => {
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/path/validate", () => ({
       path: "/tmp/new",
@@ -3071,7 +3088,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
 });
 
 test("aborts with the validator message for a non-fixable working dir, then a corrected retry actually spawns", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let dirIsValid = false;
   const fake = readyClient((f) => {
     f.on("evener/path/validate", () =>
@@ -3122,7 +3139,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
   // route literally, so the test keeps that starting state explicitly; a
   // validation abort never reaches navigation on any route.
   window.history.pushState({}, "", "/");
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     // path: "" is the real wire shape too - ValidateLaunchPath's early
     // return leaves the Go struct's Path field at its zero value.
@@ -3161,7 +3178,7 @@ test("kata xkp2: Spawn with the working directory left at its placeholder aborts
 // Spawn) - only a CONFIRMED empty default does.
 
 test("Model keeps reading '(default)' and Spawn stays untouched when the hub resolves a real default (kata xgk8, happy path)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -3186,7 +3203,7 @@ test("Model keeps reading '(default)' and Spawn stays untouched when the hub res
 });
 
 test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled when the hub has no default model", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
@@ -3208,7 +3225,7 @@ test("kata xgk8: Model reads as required (not '(default)') and Spawn is disabled
 });
 
 test("kata xgk8: choosing a model clears the required state and lets Start proceed", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
@@ -3242,7 +3259,7 @@ test("kata xgk8: choosing a model clears the required state and lets Start proce
 // here must agree - an override set ONLY through Advanced options satisfies
 // the requirement without the top-level chip ever leaving "(default)".
 test("kata xgk8: an Advanced-options model override satisfies the requirement without touching the top-level Model field", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
       options: [
@@ -3288,7 +3305,7 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
 // top-level control is the user's newest intent and must clear the stale
 // Advanced override (and its displayed value).
 test("changing the top-level Model clears a standing Advanced-options model override (roborev)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
       options: [
@@ -3330,7 +3347,7 @@ test("changing the top-level Model clears a standing Advanced-options model over
 // The same mismatch for reasoning effort: the visible top-level Effort select
 // was inert while an Advanced-options reasoning_effort override stood.
 test("changing the top-level Effort clears a standing Advanced-options effort override (roborev)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) =>
     f.on("evener/launch/schema", () => ({
       options: [
@@ -3374,7 +3391,7 @@ test("changing the top-level Effort clears a standing Advanced-options effort ov
 // The reverse order stays intact: an Advanced override set AFTER the
 // top-level control is the user's newest intent and still wins at submit.
 test("an Advanced-options model override set after the top-level Model still wins (roborev)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
       options: [
@@ -3405,7 +3422,7 @@ test("an Advanced-options model override set after the top-level Model still win
 });
 
 test("an Advanced-options effort override set after the top-level Effort still wins (roborev)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) =>
     f.on("evener/launch/schema", () => ({
       options: [
@@ -3453,7 +3470,7 @@ function effortOptionLabels(): (string | null)[] {
 }
 
 test("Effort, Model, and the mobile rows name the resolved default once launch/resolve lands", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5", reasoningEffort: "high" },
@@ -3482,7 +3499,7 @@ test("Effort, Model, and the mobile rows name the resolved default once launch/r
 // the resolved default's ("high (default)"), not the bare "(default)" the
 // empty value renders before the resolve lands.
 test("the card's effort readout names the resolved default once launch/resolve lands", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5", reasoningEffort: "high" },
@@ -3505,7 +3522,7 @@ test("the card's effort readout names the resolved default once launch/resolve l
 // (floor §1.8), so it follows the same resolved-default rule: its empty
 // option names the inherited sandbox in the chip's own friendly wording.
 test("Access mode names the resolved sandbox default once launch/resolve lands", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { sandbox: "workspace-write" },
@@ -3539,7 +3556,7 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
 });
 
 test("the (default) labels stay plain when the resolve fails", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => {
       throw new Error("resolve down");
@@ -3561,7 +3578,7 @@ test("the (default) labels stay plain when the resolve fails", async () => {
 // resolve the pane already runs: a boolean field reads "On (default)"/"Off
 // (default)" per the effective value.
 test("an Advanced-options boolean names the resolved default (On/Off)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
       options: [
@@ -3604,7 +3621,7 @@ test("an Advanced-options boolean names the resolved default (On/Off)", async ()
 // real model instead of leaving Model blank.
 
 test("preselects the first launchable model when the resolved default's provider isn't in the launchable set", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("model/list", () => ({
       data: [
@@ -3647,7 +3664,7 @@ test("preselects the first launchable model when the resolved default's provider
 // state a removed credential leaves behind - and the untouched chip must not
 // be rewritten.
 test("an advanced model override stops the uncredentialed-default fallback from rewriting the chip", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let openaiLaunchable = true;
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
@@ -3713,7 +3730,7 @@ test("an advanced model override stops the uncredentialed-default fallback from 
 });
 
 test("entering onboarding for one draft scope does not suppress the fallback for the next", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   // The first scope resolves a credentialed default, so no fallback runs and
   // Model stays empty. The working-directory switch starts a new catalog scope
   // whose default is uncredentialed - exactly when the fallback must apply.
@@ -3764,7 +3781,7 @@ test("entering onboarding for one draft scope does not suppress the fallback for
   renderSpawn(fake);
   await settled();
 
-  await user.click(screen.getByRole("button", { name: "Connect provider" }));
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
   await act(async () => {
     await vi.dynamicImportSettled();
   });
@@ -3778,7 +3795,7 @@ test("entering onboarding for one draft scope does not suppress the fallback for
 });
 
 test("onboarding a second draft scope does not forget the first scope's explicit choice", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   // Both scopes start with a credentialed default so nothing auto-fills while
   // onboarding is opened; the first scope's default turns uncredentialed only
   // after both have been onboarded, which is when the fallback would replace
@@ -3892,7 +3909,7 @@ test("an unmanaged harness whose hub resolves no default model still starts", as
 });
 
 test("an unmanaged harness is never auto-filled by the uncredentialed-default fallback", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/unmanaged-fallback");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/unmanaged-fallback", JSON.stringify({ harness: "external" }));
   const fake = readyClient((f) => {
@@ -3927,7 +3944,7 @@ test("an unmanaged harness is never auto-filled by the uncredentialed-default fa
 });
 
 test("an Advanced-options model override after onboarding satisfies the requirement", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let saved = false;
   const setup = {
     name: "openai",
@@ -4016,7 +4033,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
 });
 
 test("keeps the form usable and leaves Model at '(default)' when no provider is credentialed at all", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("model/list", () => ({ data: [] })); // nothing launchable to fall back to
     f.on("evener/launch/resolve", () => ({
@@ -4093,9 +4110,21 @@ test("auth notification retires global cleanup before the instance refresh compl
     return instanceRefresh.promise;
   });
   expect(modelValue().textContent).toBe("openai/newly-visible");
+  // The obsolete global catalog must already be in flight (parked on
+  // oldCatalog) before the notification, or resolving it later is a no-op.
+  await waitFor(() =>
+    expect(modelListRequests(client).some((params) => params.harness === "evener" && params.cwd === undefined)).toBe(
+      true,
+    ),
+  );
   notified = true;
   await act(async () => client.emitNotification({ method: "evener/auth/updated", params: {} }));
-  await act(async () => refreshStarted.promise);
+  // The instance refetch is coalesced behind a timer; fire it, then await the
+  // request it issues.
+  await act(async () => {
+    await vi.runOnlyPendingTimersAsync();
+    await refreshStarted.promise;
+  });
   try {
     await act(async () => oldCatalog.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
     // Assert before releasing instance/list: its completion cannot repair
@@ -4183,7 +4212,7 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string
 }
 
 test("the Effort select offers the selected model's own ladder and re-derives it on a model switch", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   scriptModelList([
     {
       provider: "anthropic",
@@ -4217,7 +4246,7 @@ test("the Effort select offers the selected model's own ladder and re-derives it
 });
 
 test("a model the catalog says cannot reason disables the Effort select and clears a chosen effort", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   scriptModelList([
     {
       provider: "anthropic",
@@ -4250,7 +4279,7 @@ test("a model the catalog says cannot reason disables the Effort select and clea
 // the state (not just the transparent select inside it), so it drops its
 // hover face and pointer cursor like every other disabled control.
 test("a disabled effort control renders its disabled state on the visible wrapper", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   scriptModelList([
     {
       provider: "openai",
@@ -4283,7 +4312,7 @@ test("the effort overlay select inherits the wrapper cursor", () => {
 });
 
 test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   scriptModelList([
     {
       provider: "anthropic",
@@ -4321,7 +4350,7 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
 });
 
 test("the classic ladder remains when the hub can't enumerate the model's own levels", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   // The default model/list fixture has no reasoning metadata, so the catalog
   // degrades to label-only entries - the select must keep working.
   renderSpawn(readyClient());
@@ -4335,7 +4364,7 @@ test("the classic ladder remains when the hub can't enumerate the model's own le
 // model/list promise. A rich response therefore reaches both consumers
 // without the old REST enrichment request or a two-source merge race.
 test("the Effort select and picker share one scoped model/list response", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let resolve: ((response: ModelListResponse) => void) | undefined;
   const fake = readyClient((f) => {
     f.on("model/list", ({ harness }) =>
@@ -4385,7 +4414,7 @@ test("the Effort select and picker share one scoped model/list response", async 
 // model/list cache must not outlive evener/auth/updated: the catalog reloads
 // and the picker sees the new listing without a remount.
 test("evener/auth/updated drops the pane's model/list cache so the catalog and picker reload", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -4467,7 +4496,7 @@ function installCanvasStubs(): void {
 
 test("failed creation retains images and advanced/plugin settings through remount", async () => {
   installCanvasStubs();
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
@@ -4526,7 +4555,7 @@ test("failed creation retains images and advanced/plugin settings through remoun
 
 test("successful submitted snapshot clears only its images and preserves newer edits after remount", async () => {
   installCanvasStubs();
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
   const started = deferred<ThreadStartResponse>();
   const fake = readyClient((f) => f.on("thread/start", () => started.promise));
@@ -4575,7 +4604,7 @@ test.each([
         }
       },
     );
-    const user = userEvent.setup();
+    const user = setupUser();
     window.history.pushState({}, "", "/new?dir=/tmp/draft-a");
     const fake = readyClient();
     const mounted = renderSpawn(fake);
@@ -4623,7 +4652,7 @@ test.each([
 
 test("resets the prompt and attachments after a successful spawn, but keeps sticky defaults (floor §1.14 L186)", async () => {
   installCanvasStubs();
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -4650,7 +4679,7 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
 
 test("a failed spawn leaves the prompt and attachment staged (failure paths keep everything)", async () => {
   installCanvasStubs();
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("thread/start", () => {
       throw new Error("boom");
@@ -4684,7 +4713,7 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
 // text is replaced with copy a person can act on, distinct from a genuinely
 // unreachable hub.
 test("a spawn that fails because no agent daemon could be reached shows actionable copy, not the raw launch-check text", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("thread/start", () => {
       throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
@@ -4706,7 +4735,7 @@ test("a spawn that fails because no agent daemon could be reached shows actionab
 // must keep the existing hub-unreachable sentence, not the daemon-missing
 // copy above - the two are not interchangeable advice.
 test("a spawn that fails because the hub connection is down keeps the hub-unreachable message", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("thread/start", () => {
       throw new Error('AppwireClient: cannot call "thread/start" while state is "closed"');
@@ -4723,7 +4752,7 @@ test("a spawn that fails because the hub connection is down keeps the hub-unreac
 });
 
 test("re-enables the Spawn button after a successful start (post-success state hygiene, same class as §1.14)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -4912,7 +4941,7 @@ test("focus on a staged attachment's remove button survives its decode settling 
 // an actually-disabled DOM button is a browser-level no-op, so a genuinely
 // laggy render is what turns an ordinary double-click into this).
 test("kata 61v2: three clicks in the same tick still spawn only one session", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -4932,7 +4961,7 @@ test("kata 61v2: three clicks in the same tick still spawn only one session", as
 });
 
 test("kata 61v2 corollary: a successful spawn releases the guard for the next one", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -4955,7 +4984,7 @@ test("kata 61v2 corollary: a successful spawn releases the guard for the next on
 // instead of static text - a genuinely indeterminate, user-initiated wait is
 // exactly what Loader exists for.
 test("shows a Loader, not static text, while the spawn request is in flight", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -4989,7 +5018,7 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
 // "(default)" while thread/start still received xhigh. What is shown and what
 // is sent must be the same value.
 test("an effort the fallback ladder cannot name is still offered, not silently sent as (default)", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   scriptModelList([
     {
       provider: "openai",
@@ -5034,7 +5063,7 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
 
 // The model catalog follows the committed directory, not the picker's draft.
 test("typing a working directory reloads the model catalog only after confirmation", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -5061,7 +5090,7 @@ test("typing a working directory reloads the model catalog only after confirmati
 });
 
 test.each(["desktop", "mobile"])("%s directory picker follows route directory changes while open", async (surface) => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
   await waitFor(() => expectWorkingDir("/home/me/app"));
@@ -5116,7 +5145,7 @@ async function typeSlashQuery(user: ReturnType<typeof userEvent.setup>, fake: Fa
 }
 
 test("typing /re opens the menu with builtin and catalog matches but not /simplify", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5148,7 +5177,7 @@ test("typing /re opens the menu with builtin and catalog matches but not /simpli
 });
 
 test("typing further narrows the spawn slash menu live", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5177,7 +5206,7 @@ test("typing further narrows the spawn slash menu live", async () => {
 });
 
 test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5217,7 +5246,7 @@ test("Tab and plain Enter commit the spawn menu; Mod+Enter submits instead", asy
 });
 
 test("a successful submit closes the slash menu with the cleared prompt", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5236,11 +5265,11 @@ test("a successful submit closes the slash menu with the cleared prompt", async 
   await user.keyboard("{Meta>}{Enter}{/Meta}");
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   expect((promptField() as HTMLTextAreaElement).value).toBe("");
-  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+  await waitFor(() => expect(screen.queryByTestId("composer-slash-menu")).toBeNull());
 });
 
 test("a same-cwd catalog refresh hides stale rows until the new response lands", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let resolveRefresh!: (response: { commands: { name: string; description: string }[]; skills: never[] }) => void;
   let requests = 0;
   const fake = readyClient((f) => {
@@ -5283,7 +5312,7 @@ test("a same-cwd catalog refresh hides stale rows until the new response lands",
 });
 
 test("Shift+Tab does not commit the spawn menu", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5305,7 +5334,7 @@ test("Shift+Tab does not commit the spawn menu", async () => {
 });
 
 test("reopening the identical token restarts the highlight at the first option", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5332,7 +5361,7 @@ test("reopening the identical token restarts the highlight at the first option",
 });
 
 test("catalog entries colliding with pre-session builtins are not offered twice", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [
@@ -5390,7 +5419,7 @@ test("a prefilled slash token opens its menu without waiting for a keystroke", a
 });
 
 test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5423,7 +5452,7 @@ test("Escape, no-match, mid-word slash, and blur all close the spawn slash menu"
 });
 
 test("a non-evener harness sends no slashCatalog call and typing /goal shows no menu", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -5439,12 +5468,17 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   fake.calls.splice(0);
 
   await user.type(promptField(), "/goal");
+  // Run the fake clock past the debounce so a timer the switch failed to
+  // cancel would fire here and be caught.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SPAWN_SLASH_CATALOG_DEBOUNCE_MS + 1);
+  });
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(fake.calls.some((call) => call.method === "evener/spawn/slashCatalog")).toBe(false);
 });
 
 test("the open spawn menu wires listbox roles, aria-controls, and aria-activedescendant on the prompt", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5472,7 +5506,7 @@ test("the open spawn menu wires listbox roles, aria-controls, and aria-activedes
 });
 
 test("ArrowDown/ArrowUp move the spawn menu highlight and wrap at both ends", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5504,7 +5538,7 @@ test("ArrowDown/ArrowUp move the spawn menu highlight and wrap at both ends", as
 });
 
 test("clicking a spawn menu option commits it without ever blurring the prompt", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/spawn/slashCatalog", () => ({
       commands: [{ name: "review", description: "review the diff" }],
@@ -5532,7 +5566,7 @@ test("clicking a spawn menu option commits it without ever blurring the prompt",
 // navigates. Everything else spawns exactly as today.
 
 test("a /goal prompt starts a dormant session and applies goal/set on the new ref", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("goal/set", () => ({ started: true }));
   });
@@ -5560,7 +5594,7 @@ test("a /goal prompt starts a dormant session and applies goal/set on the new re
 });
 
 test("a /model prompt starts a dormant session with the model on thread/start and no follow-up set", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -5604,7 +5638,7 @@ test("a /model prompt starts a dormant session with the model on thread/start an
 });
 
 test("a /model prompt bootstraps past the required-model guard with the value on thread/start and no literal first turn", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
     f.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] }));
@@ -5638,7 +5672,7 @@ test("a /model prompt bootstraps past the required-model guard with the value on
 });
 
 test("a /model prompt wins over a matching Advanced Options model override on thread/start with no literal first turn", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
       options: [
@@ -5685,7 +5719,10 @@ test("a /model prompt wins over a matching Advanced Options model override on th
 });
 
 test("a /model value from the previous cwd does not validate after switching directories", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
+  // Held until the assertions below: the new scope's catalog must still be
+  // pending when the submit validates.
+  const otherCatalog = deferred<void>();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -5700,7 +5737,7 @@ test("a /model value from the previous cwd does not validate after switching dir
     // fail-closes before any load state matters.
     f.on("model/list", async (params) => {
       if ((params as { cwd?: string }).cwd === "/tmp/other") {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await otherCatalog.promise;
         return {
           data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
         };
@@ -5723,6 +5760,9 @@ test("a /model value from the previous cwd does not validate after switching dir
   // new scoped load lands. A model valid only for the old scope must not
   // validate against the stale snapshot.
   await setWorkingDir(user, "/tmp/other");
+  // The new scope's catalog request must actually be pending when the submit
+  // validates: wait for it to be issued (its debounce runs on the fake clock).
+  await waitFor(() => expect(modelListRequests(fake).some((params) => params.cwd === "/tmp/other")).toBe(true));
 
   await user.type(promptField(), "/model openai/gpt-5");
   await user.keyboard("{Escape}");
@@ -5730,10 +5770,14 @@ test("a /model value from the previous cwd does not validate after switching dir
 
   await waitFor(() => expect(screen.getByText(/\/model: unknown value "openai\/gpt-5"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  otherCatalog.resolve();
 });
 
 test("a /reasoning-effort value from the previous cwd does not validate after switching directories", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
+  // Held until the assertions below: the new scope's catalog must still be
+  // pending when the submit validates.
+  const otherCatalog = deferred<void>();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -5744,7 +5788,7 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
     // runs in the stale window deterministically.
     f.on("model/list", async (params) => {
       if ((params as { cwd?: string }).cwd === "/tmp/other") {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await otherCatalog.promise;
       }
       return {
         data: [
@@ -5768,6 +5812,9 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
   // until the new scoped load lands. "high" validates against the stale
   // ladder but must fail closed.
   await setWorkingDir(user, "/tmp/other");
+  // The new scope's catalog request must actually be pending when the submit
+  // validates: wait for it to be issued (its debounce runs on the fake clock).
+  await waitFor(() => expect(modelListRequests(fake).some((params) => params.cwd === "/tmp/other")).toBe(true));
 
   await user.type(promptField(), "/reasoning-effort high");
   await user.keyboard("{Escape}");
@@ -5775,10 +5822,11 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
 
   await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "high"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  otherCatalog.resolve();
 });
 
 test("a model picked after a failed background load validates for /model", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   let listCalls = 0;
   const fake = readyClient((f) => {
     f.on("model/list", () => {
@@ -5813,7 +5861,7 @@ test("a model picked after a failed background load validates for /model", async
 });
 
 test("an unknown /model value toasts, starts nothing, and leaves Start usable", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -5831,7 +5879,7 @@ test("an unknown /model value toasts, starts nothing, and leaves Start usable", 
 });
 
 test("a known /model value starts before the pane catalog lands instead of fail-closing", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new");
   // The pane catalog settles 250ms after mount (CATALOG_SETTLE_MS). A deferred
   // model/list holds it null for the whole test, so this reproduces that window
@@ -5858,7 +5906,7 @@ test("a known /model value starts before the pane catalog lands instead of fail-
 });
 
 test("a shapeless /model value still refuses while the pane catalog is unloaded", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new");
   // Pending catalog = the unloaded window. The value never resolves against a
   // catalog here, so only the provider/model shape check can refuse it: an
@@ -5879,7 +5927,7 @@ test("a shapeless /model value still refuses while the pane catalog is unloaded"
 });
 
 test("a /model value bootstraps past the required-model guard after a failed catalog load", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   window.history.pushState({}, "", "/new");
   // The background model/list rejects, so the pane catalog never commits (null
   // stamp). The hub also reports no default, so Start is gated on a model -
@@ -5911,7 +5959,7 @@ test("a /model value bootstraps past the required-model guard after a failed cat
 });
 
 test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("goal/set", () => ({ started: true }));
   });
@@ -5932,7 +5980,7 @@ test("a bare /goal toasts, starts nothing, and leaves Start usable", async () =>
 });
 
 test("plain text spawns with no goal/set call", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("goal/set", () => ({ started: true }));
   });
@@ -5950,7 +5998,7 @@ test("plain text spawns with no goal/set call", async () => {
 });
 
 test("a /goal prompt on a non-evener harness spawns verbatim with no goal/set call", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("goal/set", () => ({ started: true }));
   });
@@ -5972,7 +6020,7 @@ test("a /goal prompt on a non-evener harness spawns verbatim with no goal/set ca
 });
 
 test("a bare /model with no catalog spawns with no model follow-up and no error toast", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
@@ -5991,7 +6039,7 @@ test("a bare /model with no catalog spawns with no model follow-up and no error 
 });
 
 test("a /reasoning-effort prompt starts a dormant session with the effort on thread/start and no follow-up set", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -6031,7 +6079,7 @@ test("a /reasoning-effort prompt starts a dormant session with the effort on thr
 });
 
 test("an unknown /reasoning-effort value toasts, starts nothing, and leaves Start usable", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -6049,7 +6097,7 @@ test("an unknown /reasoning-effort value toasts, starts nothing, and leaves Star
 });
 
 test("a bare /reasoning-effort toasts, starts nothing, applies nothing, and leaves Start usable", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
@@ -6118,7 +6166,7 @@ test("the branch readout never shows the previous project's branch after a draft
 // was dropped even though its field value still lives in A's own draft (the
 // validation still wrote its `invalid` flag, silently hiding the message).
 test("a draft re-entered after another keeps its late path-validation error", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const validation = deferred<{ path: string; valid: boolean; error: string }>();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
@@ -6160,7 +6208,7 @@ test("a draft re-entered after another keeps its late path-validation error", as
 // no error to show when the draft is revisited. The field must not be silently
 // excluded with no message.
 test("a path-validation error that settles while its draft is inactive appears when the draft is revisited", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const validation = deferred<{ path: string; valid: boolean; error: string }>();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
@@ -6212,7 +6260,7 @@ test("a path-validation error that settles while its draft is inactive appears w
 // recreates the component, so local `errors` starts empty even though the
 // draft still holds the invalid field.
 test("a remounted draft still shows the path-validation error stored with its invalid field", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => {
     f.on("evener/launch/schema", () => ({
       options: [
@@ -6471,7 +6519,7 @@ test("no host picker renders when the manifest has only local", async () => {
 });
 
 test("choosing a non-local host sends source and persists it in the draft", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6492,7 +6540,7 @@ test("choosing a non-local host sends source and persists it in the draft", asyn
 });
 
 test("a local host choice omits source from the thread/start request", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6516,7 +6564,7 @@ test("a local host choice omits source from the thread/start request", async () 
 // submission must carry the draft's own source; reading the empty list as a
 // fallback would start the session locally with no indication (Component 06b).
 test("a draft naming a remote host submits it while the manifest is loading", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6561,7 +6609,7 @@ test("a draft naming a remote host submits it while the manifest is loading", as
 // be submittable once it goes offline - otherwise thread/start is rejected
 // with "spawn source is not available".
 test("a host that goes offline while a draft names it falls back to local", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6599,7 +6647,7 @@ test("a host that goes offline while a draft names it falls back to local", asyn
 // host id would be the only thing that flips both the picker and the submitted
 // source back to the remote host.
 test("a host that returns online after its offline fallback stays on local", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6642,7 +6690,7 @@ test("a host that returns online after its offline fallback stays on local", asy
 // entirely (removed while the draft lived). The picker shows local and the
 // wire omits source rather than launching the unknown host.
 test("a draft naming a host removed from the manifest shows local and omits source", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6676,7 +6724,7 @@ test("a draft naming a host removed from the manifest shows local and omits sour
 // start" would create the directory on THIS host before the remote launch still
 // failed on its own cwd. The remote hub validates its own cwd via thread/start.
 test("a remote host submission skips the controller-local directory preflight", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6704,7 +6752,7 @@ test("a remote host submission skips the controller-local directory preflight", 
 // The gate is the TARGET, not the mere presence of a picker: a local submission
 // keeps the controller-local preflight and its Create & start offer.
 test("a local submission keeps the controller-local directory preflight", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6743,7 +6791,7 @@ test("a remote host submission is not blocked by missing controller-local provid
   // Remote: that same controller-local state must not block the launch.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
   // Switching back restores the local block.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
@@ -6758,7 +6806,7 @@ test("a remote host submission is not blocked by missing controller-local provid
 // controller (the remote hub runs its own hubThreadStart, which canonicalizes
 // and rejects a cwd it cannot see).
 test("a remote launch rejected by the selected host surfaces that host's own error", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6790,7 +6838,7 @@ test("a remote launch rejected by the selected host surfaces that host's own err
 // submit" and "actually succeeded" stay distinguishable, and no session is
 // navigated to on the failure path.
 test("a remote launch the selected host cannot serve reports that host's own failure", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6825,7 +6873,7 @@ test("a remote launch the selected host cannot serve reports that host's own fai
 // start, the same authority model the launch already follows for cwd,
 // providers and models.
 test("a remote host submission is not blocked by controller-local plugin issues", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6899,7 +6947,7 @@ test("a remote host submission is not blocked by controller-local plugin issues"
 // selected host must not be refused locally - the value rides thread/start and
 // the remote hub validates it.
 test("a remote host does not pre-validate /model against the controller catalog", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6927,7 +6975,7 @@ test("a remote host does not pre-validate /model against the controller catalog"
 });
 
 test("a remote host does not pre-validate /reasoning-effort against the controller ladder", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6960,7 +7008,7 @@ test("a remote host does not pre-validate /reasoning-effort against the controll
 // host's credentials and catalog, so injecting the controller's pick would ride
 // thread/start and stop the selected host from resolving its own default.
 test("a remote host does not inherit the controller's uncredentialed-default fallback model", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7005,7 +7053,7 @@ test("a remote host does not inherit the controller's uncredentialed-default fal
   );
   // Outlast the settle window: a still-armed fallback would fire in here.
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await vi.advanceTimersByTimeAsync(400);
   });
 
   expect(modelTrigger().textContent).toContain("(default)");
@@ -7026,7 +7074,7 @@ test("a remote host does not inherit the controller's uncredentialed-default fal
 // target was local must be retired when the person switches to a remote host.
 // Only a still-fallback-derived value is cleared - a person's own pick is not.
 test("a controller-catalog fallback model is retired when the target becomes remote", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7070,7 +7118,7 @@ test("a controller-catalog fallback model is retired when the target becomes rem
 // It is refused pre-launch with the same unknown-value message the local path
 // uses.
 test("a remote /model value without a provider is refused before launch", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7094,7 +7142,7 @@ test("a remote /model value without a provider is refused before launch", async 
 // LOCAL spawn reads - the remote cwd would default the next local Spawn to a
 // path that usually does not exist here.
 test("a remote launch does not persist its cwd as the controller's global working directory", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7134,7 +7182,7 @@ const MODEL_A_FALLBACK = "anthropic/claude-sonnet-4-5";
 // harness/access layer is still remembered (round seven's blob disposition,
 // minus the host-specific model).
 test("a remote launch's model does not become the cwd's local project default", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7177,7 +7225,7 @@ test("a remote launch's model does not become the cwd's local project default", 
 // default was cleared when B went remote even though the fallback never touched
 // B's model.
 test("a fallback installed for one draft does not retire another draft's identical sticky model", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7225,7 +7273,7 @@ test("a fallback installed for one draft does not retire another draft's identic
 // draft map outlives the form). A form-local ref lost it there, which left the
 // controller's fallback model to ride a remote launch after all.
 test("a controller-catalog fallback model is still retired after a pane remount", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7270,7 +7318,7 @@ test("a controller-catalog fallback model is still retired after a pane remount"
 // drops the draft's fallback mark), so it is never retired on a remote switch -
 // not even in a draft where the fallback had installed a different model.
 test("a user's explicit model pick is preserved when the target becomes remote", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7320,7 +7368,7 @@ test("a user's explicit model pick is preserved when the target becomes remote",
 // launch on a different host than the picker shows. The picker is disabled
 // while busy instead.
 test("the host picker cannot change while a submit is in flight", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7343,7 +7391,7 @@ test("the host picker cannot change while a submit is in flight", async () => {
 // browse history: recording a cwd picked while a remote host is selected would
 // open the next LOCAL picker at a path that usually does not exist here.
 test("a cwd picked for a remote target is not recorded as the controller's picker seed", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7383,7 +7431,7 @@ test("a cwd picked for a remote target is not recorded as the controller's picke
 // preflight already defers to), so the controller must not make the judgment at
 // all (round nine).
 test("a remote target can select a directory this controller cannot see", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7425,7 +7473,7 @@ test("a remote target can select a directory this controller cannot see", async 
 // to the selected host, so the request is forwarded there (component 07b)
 // instead of materializing the folder on the controller.
 test("the picker creates a folder on the selected host, never on the controller", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7470,7 +7518,7 @@ test("the picker creates a folder on the selected host, never on the controller"
 // silently vanished from launchOverrides. For a remote target the value is
 // forwarded for the selected host to judge (round nine).
 test("a remote target's advanced path value is not dropped for being invisible here", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7541,7 +7589,7 @@ test("a remote target's advanced path value is not dropped for being invisible h
 // decision still has to come from the settled list, which is what the second
 // half of this test pins (round nine).
 test("the host picker keeps its host while the manifest revalidates", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const sources: NavigationManifest["sources"] = [
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7585,7 +7633,7 @@ test("the host picker keeps its host while the manifest revalidates", async () =
 // started as local. The local half is unchanged and stays pinned by the
 // existing sweep tests above.
 test("a remote target keeps the draft's model this controller's catalog calls stale", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7700,7 +7748,7 @@ test("a draft already on a remote host is never swept by the controller's catalo
 // path typed while local stayed dropped and kept showing the controller's
 // stale error. The mode change re-validates the stored value (round ten).
 test("a path marked invalid while local reaches the launch after switching host without re-typing", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -7739,21 +7787,23 @@ test("a path marked invalid while local reaches the launch after switching host 
 
   // Local: the controller's verdict marks the field invalid, shows the reason,
   // and excludes the value from the launch.
-  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
+  fireEvent.change(await screen.findByLabelText("Agent"), { target: { value: "host-only-agent" } });
   expect(await screen.findByText("no such file or directory")).toBeTruthy();
   await waitFor(() =>
     expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
   );
 
   // The Host picker moves to the remote source WITHOUT re-typing the value.
+  // The host switch re-reads the launch schema, so the Advanced fields remount;
+  // wait for the value to land in the draft before judging the field.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  await waitFor(() => expect(screen.queryByText("no such file or directory")).toBeNull());
-  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("host-only-agent");
   await waitFor(() =>
     expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
       agent: "host-only-agent",
     }),
   );
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("host-only-agent");
+  expect(screen.queryByText("no such file or directory")).toBeNull();
 
   // Back to local, the controller is the judge again: the same stored value is
   // re-marked and dropped rather than left silently flagged or silently kept.
@@ -7984,7 +8034,7 @@ test("a revalidating manifest does not hand the controller's catalog the sweep",
 // empty catalog rather than the previous host's, which the user could otherwise
 // select and only discover is missing at thread/start.
 test("a failed remote catalog load shows an empty harness list, not the previous host's", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => answerRemoteHost(f, { fail: ["evener/harnesses/list", "evener/launch/schema"] }));
   connectionStore.getState().connect(fake);
@@ -8011,7 +8061,7 @@ test("a failed remote catalog load shows an empty harness list, not the previous
 // directory picker's recent-projects list and path completion are proxied, and
 // the controller's own methods are never called.
 test("a remote spawn reads recent projects and completes paths from the selected host", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) =>
     answerRemoteHost(f, {
@@ -8202,7 +8252,7 @@ test("a wrapper from a draft host the offline fallback replaced does not reload 
   // tripwire past the pane's 250ms catalog debounce (a generation bump re-runs
   // the catalog effect and issues a request), not the mechanism.
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await vi.advanceTimersByTimeAsync(400);
   });
 
   // Neither the replaced host's scope nor the controller's catalog moved: the
@@ -8217,7 +8267,7 @@ test("a wrapper from a draft host the offline fallback replaced does not reload 
 // offering the controller editor for a remote host would "connect" the wrong
 // machine and leave Start disabled. The controller's own path is unchanged.
 test("a remote spawn never offers the controller's Connect provider editor", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     answerRemoteHost(f);
@@ -8250,7 +8300,7 @@ test("a remote spawn never offers the controller's Connect provider editor", asy
 // hosts with the same directory must drop the previous host's HEAD immediately,
 // not display it until (or after) the new host's evener/git/head resolves.
 test("switching hosts with the same directory drops the previous host's branch readout", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     f.on("evener/git/head", () => ({ head: "local-branch" }));
@@ -8278,7 +8328,7 @@ test("switching hosts with the same directory drops the previous host's branch r
 // already answered for the draft's host, for the length of every revalidation
 // (component 07b review, residual).
 test("the branch readout keeps the draft's host while the manifest revalidates", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     f.on("evener/git/head", () => ({ head: "local-branch" }));
@@ -8305,7 +8355,7 @@ test("the branch readout keeps the draft's host while the manifest revalidates",
 // previous host's default satisfy -- or fail -- the Start model check while the
 // new host's evener/launch/resolve is pending.
 test("switching hosts with the same directory drops the previous host's default-model verdict", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     // The controller has no default model: Start reads as model-required.
@@ -8332,7 +8382,7 @@ test("switching hosts with the same directory drops the previous host's default-
 // cannot even show the mismatch, because an empty harness catalog renders the
 // "evener" fallback label. buildbox offers only "evener".
 test("switching to a host that does not offer the draft's harness drops it from the launch", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => readyRemoteHost(f));
   connectionStore.getState().connect(fake);
@@ -8363,7 +8413,7 @@ test("switching to a host that does not offer the draft's harness drops it from 
 // Advanced fields at all - so a stale override would ride thread/start with
 // nothing on screen to account for it.
 test("switching to a host whose schema lacks the draft's advanced options drops them", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const controllerOption: LaunchOption = {
     field: "agent",
@@ -8401,7 +8451,7 @@ test("switching to a host whose schema lacks the draft's advanced options drops 
 // catalog is an answer, so a host that refuses one can never hold Start
 // hostage).
 test("Start is blocked only until the selected host's catalog answers settle", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   let releaseHarnesses!: (result: HostForwardedResult) => void;
   const fake = readyClient((f) =>
@@ -8437,7 +8487,7 @@ test("Start is blocked only until the selected host's catalog answers settle", a
 // later LOCAL spawn of the same path must not inherit any of them - and a remote
 // submit must not delete a local project's stored layer for that path either.
 test("a remote submit writes no controller spawn defaults", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => readyRemoteHost(f));
   connectionStore.getState().connect(fake);
@@ -8475,7 +8525,7 @@ test("a remote submit writes no controller spawn defaults", async () => {
 // submit time, so the launch - and the defaults it persists - can belong to a
 // different host than the one on screen.
 test("the host picker is locked while a submit is in flight", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => readyRemoteHost(f));
   // The start never resolves, so the submit stays in flight and the picker's
@@ -8506,7 +8556,7 @@ test("the host picker is locked while a submit is in flight", async () => {
 // new host's preview, slash catalog and thread/start - handing that host
 // plugins it may not provide.
 test("a host switch drops an explicit plugin selection the new host never previewed", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) => {
     f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
@@ -8597,7 +8647,7 @@ test("a mount that starts on a remote draft waits for that host's catalogs", asy
 // catalogs and silently wipes the harness and every Advanced-options value the
 // restored host still offers - never restored once A's answers land.
 test("a switch away and back before the middle host answers keeps the draft", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const controllerOption: LaunchOption = {
     field: "agent",
@@ -8646,7 +8696,7 @@ test("a switch away and back before the middle host answers keeps the draft", as
 // would seed the next local spawn with a directory this hub usually does not
 // have. The controller's own picks keep seeding it.
 test("a remote directory pick never seeds the controller's last-working-dir", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) =>
     answerRemoteHost(f, { overrides: { "evener/projects/recent": { data: ["/srv/remote-pick"] } } }),
@@ -8672,7 +8722,7 @@ test("a remote directory pick never seeds the controller's last-working-dir", as
 // the error of a KEPT field must survive the filter - it explains a validation
 // the user still has to fix - while a dropped field's error goes with it.
 test("host reconciliation keeps the errors of the advanced fields it keeps", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const agentOption: LaunchOption = {
     field: "agent",
@@ -8762,7 +8812,7 @@ test("a failed catalog load leaves the draft's harness and advanced options alon
 // request SETTLED, so the submit gate opens - the host refuses what it cannot
 // serve at start rather than leaving Start disabled forever.
 test("a host whose catalogs all fail still releases Start", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) =>
     answerRemoteHost(f, {
@@ -8792,7 +8842,7 @@ test("a host whose catalogs all fail still releases Start", async () => {
 // controller. The draft's own source is the last host that was confirmed, and
 // it stays the launch AND discovery target until the manifest says otherwise.
 test("a remote draft is not silently converted to local while the manifest is unavailable", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   const fake = readyClient((f) => readyRemoteHost(f));
   connectionStore.getState().connect(fake);
   const draft = selectSpawnDirectory("/srv/manifest-gap");
@@ -8816,7 +8866,7 @@ test("a remote draft is not silently converted to local while the manifest is un
 // submitted while the new host's model list was still in flight. A model is
 // host-derived like the harness: the gate has to include its host's settlement.
 test("a previous host's model cannot be submitted while the new host's model list is outstanding", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const remoteModelList = deferred<{ data: ModelDescriptor[] }>();
   const fake = readyClient((f) => readyRemoteHost(f, { "model/list": remoteModelList.promise }));
@@ -8855,7 +8905,7 @@ test("a previous host's model cannot be submitted while the new host's model lis
 // the user had switched hosts. The superseded answer must never land: the field
 // is judged by the host that is selected NOW.
 test("a late path validation from the previous host never marks the field on the new host", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const agentOption: LaunchOption = {
     field: "agent",
@@ -8919,7 +8969,7 @@ test("a late path validation from the previous host never marks the field on the
 // goes on the validator's "ok" verdict, so a superseded host's late acceptance
 // re-added an entry the selected host never accepted.
 test("a late pathList validation from the previous host cannot re-add its entry on the new host", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const pathListOption: LaunchOption = {
     field: "pluginDirs",
@@ -8973,7 +9023,7 @@ test("a late pathList validation from the previous host cannot re-add its entry 
 // at a path the controller last accepted validates a directory that need not
 // exist on the selected host. Only a local launch may seed from it.
 test("a remote directory picker does not start from the controller's last working directory", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/controller/last");
   const fake = readyClient((f) =>
@@ -9004,7 +9054,7 @@ test("a remote directory picker does not start from the controller's last workin
 // the answered harness half must drop "external", while the half whose request
 // never answered leaves the Advanced-options maps alone (the round-five rule).
 test("a host that answers its harness list reconciles the draft even when its schema rejects", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) =>
     answerRemoteHost(f, {
@@ -9114,7 +9164,7 @@ function createDirCallHosts(fake: FakeClient): string[] {
 // took over, with a draft that host never offered. A host switch now dismisses
 // the pending create instead of re-homing it.
 test("a host that drops offline while the create dialog is open never creates or starts on the host that took over", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   const fake = readyClient((f) =>
     readyRemoteHost(f, { "evener/path/validate": { path: "/srv/taken-over", valid: false } }),
@@ -9162,7 +9212,7 @@ test("a host that drops offline while the create dialog is open never creates or
 // host selected now. Here buildbox went offline while the pane was unmounted,
 // so the restored dialog is bound to buildbox while hostChoice is "local".
 test("a restored create dialog whose preflight host is no longer selected aborts instead of creating the path", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
@@ -9192,7 +9242,7 @@ test("a restored create dialog whose preflight host is no longer selected aborts
 // binding is intact, so the dialog stays for the next click) and releases on the
 // answers - settlement, not success (round five), so it can never dead-end.
 test("a create confirmation waits for the selected host's catalogs before creating and starting", async () => {
-  const user = userEvent.setup();
+  const user = setupUser();
   seedSources(REMOTE_SOURCES);
   let releaseHarnesses!: (result: HostForwardedResult) => void;
   const fake = readyClient((f) =>
