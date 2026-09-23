@@ -222,6 +222,10 @@ export default defineConfig({
         `${appwirePackageDir}/fixtures/**`,
         `${appwirePackageDir}/testing/**`,
         "src/testSetup.ts",
+        // Test rigging, and the one-line reload seam every test spies on so
+        // no test can execute it: both would only ever score 0%.
+        "src/storageTestUtils.ts",
+        "src/shell/pageReload.ts",
         // A benchmark is not run by `vitest run`, so counting it only ever
         // reports 0% for code no test was ever meant to execute.
         "src/**/*.bench.ts",
