@@ -1,6 +1,7 @@
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../../../../storageTestUtils";
 import { readSeenWatermark, writeSeenWatermark } from "./seenWatermark";
 import { useSeenDivider } from "./useSeenDivider";
 
@@ -24,7 +25,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

@@ -19,6 +19,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { installLocalStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
 import {
@@ -413,7 +414,7 @@ beforeAll(async () => {
   // @ts-expect-error MemoryStorage deliberately implements only the Storage
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
@@ -440,7 +441,7 @@ beforeEach(() => {
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.
   // @ts-expect-error MemoryStorage implements the subset used by DockHost.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   localStorage.clear();
   // The settings pane's last-visited-section memory (prefs.ts's
   // lastSettingsSection) is a module-singleton field backed by this same

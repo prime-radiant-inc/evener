@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
+import { installLocalStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
@@ -183,7 +184,7 @@ beforeAll(async () => {
   // @ts-expect-error MemoryStorage deliberately implements only the Storage
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   // connectionStore has no resetXForTests helper (see this file's other
   // stores) - every other file that touches it resets it inline in its own
   // beforeEach/beforeAll instead. This warm-up render is this file's first

@@ -149,7 +149,21 @@ export default defineConfig({
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],
-    pool: "threads",
+    // vmThreads keeps each file's module registry and jsdom isolated in its own
+    // VM context but reuses the worker, so jsdom itself (~450ms to load) loads
+    // once per worker instead of once per file: the threads pool spent more CPU
+    // re-loading jsdom than running tests (113s -> 41s wall at 8 workers). The
+    // global is then the jsdom window itself, so a test cannot replace its
+    // non-configurable members (location) or assign getter-only ones
+    // (localStorage: use installLocalStorage), and `instanceof` fails for
+    // objects built in the runner's realm, such as vi.mock's wrapper errors.
+    pool: "vmThreads",
+    // VM contexts grow a worker's memory file after file, and the default
+    // recycle point is 1/maxWorkers of SYSTEM memory - effectively never on a
+    // big host, and the whole machine on a small one. Recycling at 512MB held
+    // the suite to ~3GB peak RSS at 4 workers (8.3GB unbounded; 2GB on the
+    // threads pool) with no measurable wall-time cost.
+    vmMemoryLimit: "512MB",
     // Frontend stores, pane registrations, and module mocks are deliberately
     // module-scoped. Keep each file's module registry and jsdom isolated: a
     // worker-count change otherwise changes file-to-worker assignment and can
@@ -163,8 +177,10 @@ export default defineConfig({
     // Vitest use on many-core hosts; the canonical npm test command instead
     // sizes itself from the host's spare capacity (scripts/lib/load-aware-workers.sh),
     // keeping four workers on an idle host so the root gate retains capacity
-    // for its Go streams.
-    maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
+    // for its Go streams. Never fewer than two, whatever the entry point: with
+    // one worker vitest shares a single VM context across every file (see
+    // src/testSetup.ts), so a one-CPU container must still get two.
+    maxWorkers: Math.max(2, Math.min(os.availableParallelism(), 12)),
     setupFiles: ["./src/testSetup.ts"],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in
@@ -206,6 +222,10 @@ export default defineConfig({
         `${appwirePackageDir}/fixtures/**`,
         `${appwirePackageDir}/testing/**`,
         "src/testSetup.ts",
+        // Test rigging, and the one-line reload seam every test spies on so
+        // no test can execute it: both would only ever score 0%.
+        "src/storageTestUtils.ts",
+        "src/shell/pageReload.ts",
         // A benchmark is not run by `vitest run`, so counting it only ever
         // reports 0% for code no test was ever meant to execute.
         "src/**/*.bench.ts",

@@ -208,3 +208,26 @@ func TestFakeClockDeadlineGating(t *testing.T) {
 		t.Fatalf("after 3s: only c should fire")
 	}
 }
+
+// TestFakeClockPendingCallbacksCountsOnlyArmedAfterFuncs pins what
+// PendingCallbacks counts: armed one-shot AfterFunc callbacks, not tickers or
+// channel timers, and not a callback that was stopped or has fired.
+func TestFakeClockPendingCallbacksCountsOnlyArmedAfterFuncs(t *testing.T) {
+	c := NewFakeClock()
+	ticker := c.NewTicker(time.Second)
+	defer ticker.Stop()
+	c.NewTimer(time.Minute)
+	stopped := c.AfterFunc(time.Minute, func() {})
+	c.AfterFunc(time.Minute, func() {})
+	fires := c.AfterFunc(time.Second, func() {})
+	_ = fires
+	if got := c.PendingCallbacks(); got != 3 {
+		t.Fatalf("PendingCallbacks = %d, want the 3 armed AfterFuncs", got)
+	}
+	stopped.Stop()
+	c.Advance(time.Second)
+	c.Drain()
+	if got := c.PendingCallbacks(); got != 1 {
+		t.Fatalf("PendingCallbacks = %d after a stop and a fire, want 1", got)
+	}
+}

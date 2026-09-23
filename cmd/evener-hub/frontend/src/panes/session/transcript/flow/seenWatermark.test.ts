@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../../../../storageTestUtils";
 import { readSeenWatermark, seenWatermarkKey, writeSeenWatermark } from "./seenWatermark";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
@@ -21,7 +22,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {
