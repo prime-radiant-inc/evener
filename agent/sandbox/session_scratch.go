@@ -132,7 +132,11 @@ func sessionScratchBase(requested, workspaceRoot string) (string, error) {
 // no workspace — so a base the filter would refuse for allocation (a workspace
 // that CONTAINS /tmp, or is /tmp itself) still holds containers, and dropping it
 // from this list would leave them unreclaimable forever.
-func sessionScratchBases(requested, workspaceRoot string) []string {
+//
+// A malformed EVENER_HOST_TEMP_BASES is returned as the error beside the scratch
+// bases, which are still listed: the world temp bases are then left out
+// entirely rather than replaced by the defaults.
+func sessionScratchBases(requested, workspaceRoot string) ([]string, error) {
 	var bases []string
 	add := func(base string) {
 		if base != "" && !slices.Contains(bases, base) {
@@ -152,15 +156,20 @@ func sessionScratchBases(requested, workspaceRoot string) []string {
 	// Only where a session temp container can exist: elsewhere the bases are
 	// meaningless names, and walking them would let the reclaim scan directories
 	// evener never allocated in.
-	if SessionTmpSupported {
-		for _, candidate := range worldTempBases {
-			base, ok := validWorldTempBase(candidate)
-			if ok {
-				add(base)
-			}
+	if !SessionTmpSupported {
+		return bases, nil
+	}
+	candidates, err := worldTempBaseCandidates()
+	if err != nil {
+		return bases, err
+	}
+	for _, candidate := range candidates {
+		base, ok := validWorldTempBase(candidate)
+		if ok {
+			add(base)
 		}
 	}
-	return bases
+	return bases, nil
 }
 
 // preferredSessionScratchCandidate is the base a caller asked for, or the temp
@@ -243,11 +252,11 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	if err != nil {
 		return err
 	}
-	bases := sessionScratchBases("", canonicalWorkspace)
+	bases, basesErr := sessionScratchBases("", canonicalWorkspace)
 	if len(bases) == 0 {
-		return noSessionScratchBaseError(workspaceRoot)
+		return errors.Join(basesErr, noSessionScratchBaseError(workspaceRoot))
 	}
-	var failures []error
+	failures := []error{basesErr}
 	for _, base := range bases {
 		if err := sweepCrashedSessionScratch(base); err != nil {
 			failures = append(failures, err)

@@ -60,6 +60,7 @@ func (v Var) Assignment(value string) string {
 var (
 	EVENERAllowedDecisions            = Var{Name: "EVENER_ALLOWED_DECISIONS", Summary: "Restricts tool-decision modes allowed by the active profile.", Visibility: Public}
 	EVENERFluencyModel                = Var{Name: "EVENER_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
+	EVENERHostTempBases               = Var{Name: "EVENER_HOST_TEMP_BASES", Summary: "OS path list of absolute directories that replaces /tmp and /var/tmp as the world-usable host temp bases session temp containers are created in and the startup crashed-scratch sweep walks; each must be a world-writable sticky directory. Set but empty or malformed is refused, never replaced by the defaults.", Visibility: Public}
 	EVENERHubAddr                     = Var{Name: "EVENER_HUB_ADDR", Summary: "Default hub address for evener-tui.", Visibility: Public}
 	EVENERHubAuthToken                = Var{Name: "EVENER_HUB_AUTH_TOKEN", Summary: "Hub capability token for evener-tui.", Secret: true, Visibility: Public}
 	EVENERHubBin                      = Var{Name: "EVENER_HUB_BIN", Summary: "Path to the evener binary (for the hub subcommand) used by evener tui autostart.", Visibility: Public}
@@ -200,6 +201,7 @@ func Find(name string) (Var, bool) {
 var allVars = []Var{
 	EVENERAllowedDecisions,
 	EVENERFluencyModel,
+	EVENERHostTempBases,
 	EVENERHubAddr,
 	EVENERHubAuthToken,
 	EVENERHubBin,
