@@ -102,7 +102,7 @@ wait
 // the response it is, not as a failed check quoting its own JSON.
 func TestEvenerLaunchCheckSuccessSurvivesAnOrphanedPipeHolder(t *testing.T) {
 	t.Parallel()
-	response := fmt.Sprintf(`{"protocol":%q,"launch_flags":["%s"],"models":[{"provider":"openai","model":"gpt-5"}]}`, appwire.ProtocolVersion, requiredLaunchFlag)
+	response := fmt.Sprintf(`{"protocol":%q,"launch_flags":[%q],"models":[{"provider":"openai","model":"gpt-5"}]}`, appwire.ProtocolVersion, requiredLaunchFlag)
 	answersAndOrphans := "#!/bin/sh\n" +
 		"dir=$(dirname \"$0\")\n" +
 		"{ exec 3<\"$dir/release\"; cat <&3; } &\n" +
