@@ -17179,6 +17179,132 @@ describe("ConversationStore", () => {
       expect(rowById(store, "gone-tool")).toBeUndefined();
     });
 
+    // RoboRev round 2 on this change's own settlement: a full completion
+    // can RE-KEY a survivor — the same transcript key under a new wire id —
+    // and the combined either-spelling check used to keep the OLD wire id's
+    // claim alive with the key's. The key's claim legitimately follows the
+    // content that still backs it; the retired bare id's must retire with
+    // the copy that left, or a later keyless reuse of that id inherits page
+    // history nothing holds anymore.
+    it("a re-keyed completion then a reset retire the old wire id's claim: a keyless reuse of that id cannot be resurrected", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The page fragment of the active turn carries a KEYED item: the
+      // ownership record writes both spellings — the key and the bare wire
+      // id.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "X",
+                turnId: "t1",
+                transcriptKey: "K",
+                type: "agentMessage",
+                text: "page answer",
+                position: { entry: 10, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "X")).toBeDefined();
+
+      // The turn's full completion reissues the same key under a NEW wire
+      // id: the content survives as Y/K, and the old wire id's claim must
+      // retire with the copy that left.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "full",
+            status: "completed",
+            items: [
+              {
+                id: "Y",
+                turnId: "t1",
+                transcriptKey: "K",
+                type: "agentMessage",
+                text: "page answer settled",
+                status: "completed",
+              } as ThreadItem,
+            ],
+          },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "Y")).toBeDefined();
+      expect(rowById(store, "X")).toBeUndefined();
+
+      // The wire retracts the reissued copy too: the key's claim follows
+      // its last model copy out.
+      store.getState().applyNotification({
+        method: "item/agentMessage/reset",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "Y",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "Y")).toBeUndefined();
+
+      // A later turn reuses the OLD wire id KEYLESS — the shape the stale
+      // bare-id claim used to adopt as page history.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: agentMessageItem("X", "reused live", "inProgress"),
+        },
+      } as AnyNotification);
+      expect(rowById(store, "X")).toMatchObject({
+        kind: "assistant",
+        markdown: "reused live",
+      });
+
+      // The authoritative snapshot omits the reused row everywhere: it is
+      // live state the wire no longer carries, and no surviving page content
+      // shares its identity — it must not come back.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [userMessageItem("fresh", "fresh")],
+            }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "X")).toBeUndefined();
+    });
+
     // A replayed input image reaches a page with no bytes and no stamped
     // url, only its content sha. D23d: the store's own merge hydrates the
     // page against the merged MODEL's serving session — the route the hub

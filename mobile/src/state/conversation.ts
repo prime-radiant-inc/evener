@@ -1212,16 +1212,20 @@ export function createConversationStore() {
         heldAfter.add(item.id);
       }
     }
+    // RoboRev round 2: retire each absent spelling independently. A full
+    // completion can reissue a survivor under a new wire id with its key
+    // standing — the key's claim follows the content that still backs it,
+    // while the old bare id's claim retires with the copy that left, or a
+    // later keyless reuse of that id inherits page history nothing holds
+    // anymore.
     for (const turn of before.turns) {
       for (const item of turn.items) {
-        if (
-          heldAfter.has(item.transcriptKey ?? item.id) ||
-          heldAfter.has(item.id)
-        ) {
-          continue;
+        if (!heldAfter.has(item.transcriptKey ?? item.id)) {
+          pageItemIds.delete(item.transcriptKey ?? item.id);
         }
-        pageItemIds.delete(item.transcriptKey ?? item.id);
-        pageItemIds.delete(item.id);
+        if (!heldAfter.has(item.id)) {
+          pageItemIds.delete(item.id);
+        }
       }
     }
   }
