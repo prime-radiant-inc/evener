@@ -150,13 +150,14 @@ type clientMutationSnapshot struct {
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Queue and steering transitions only compare it.
 	//
-	// Four runtime sites SET it, each while holding this store's serializer:
+	// Five runtime sites SET it, each while holding this store's serializer:
 	// AcceptClientMutationStart and claimClientMutationStart for turns a client
-	// asked for, popQueueHead for one claimed off the input queue, and
-	// mintRunningTurnID (session_active_turn.go) for the turns the agent starts
-	// for itself — a goal continuation and a notification wake — which have no
-	// mutation to name them and would otherwise publish an id these
-	// preconditions reject. The accept side names it only when the slot is FREE:
+	// asked for, popQueueHead for one claimed off the input queue,
+	// claimSteeringCarrierInput (session_client_mutation_queue.go) for the turn
+	// a steer is handed to, and mintRunningTurnID (session_active_turn.go) for
+	// the turns the agent starts for itself — a goal continuation and a
+	// notification wake — which have no mutation to name them and would
+	// otherwise publish an id these preconditions reject. The accept side names it only when the slot is FREE:
 	// a running turn keeps its name, so a follow-up accepted behind the turn a
 	// dead process left running cannot steal the slot — which would aim a Stop
 	// at the wrong turn — nor clear the guard it was admitted through. The claim
