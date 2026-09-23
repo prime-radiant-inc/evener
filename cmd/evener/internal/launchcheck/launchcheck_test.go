@@ -555,3 +555,69 @@ func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing
 		t.Fatalf("the model list executed the credential command %d time(s); skipping the live fetch must skip the mint", runs)
 	}
 }
+
+// The hub shells out `evener launch-check --model` before every spawn:
+// that preflight never mints either (spec §10.1) — the child's first
+// request owns the mint, so a command-credentialed launch validates
+// structurally and no live listing is fetched with a credential the hub
+// cannot materialize.
+func TestRunLaunchCheckModelNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			hits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = '''$(gw-mint)'''\n"+
+		"[providers.gw.models.\"gpt-live\"]\n")
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	if runs != 0 {
+		t.Fatalf("the preflight executed the credential command %d time(s); the child's first request owns the mint (spec §10.1)", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the preflight fetched a live listing with a credential it never materialized")
+	}
+}
+
+// A disabled row refuses the launch on the command-credentialed path too:
+// the structural validation the mint-free boundary substitutes must keep
+// the disabled-model refusal, not just the liveness it replaces.
+func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "token", nil
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = '''$(gw-mint)'''\n"+
+		"[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected the disabled model to refuse the launch")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("error=%v, want it to name the disablement", err)
+	}
+}

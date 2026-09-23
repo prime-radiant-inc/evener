@@ -284,6 +284,21 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	if err != nil {
 		return nil
 	}
+	if client.Registry().LaunchMintsCredentialCommand(ref.Provider) {
+		// The preflight never mints (spec §10.1): a command-credentialed
+		// launch's liveness is the child's first request to answer, so
+		// the check validates structurally — the row must resolve at
+		// facts depth and must not be disabled — and no live listing is
+		// fetched with a credential the hub cannot materialize here.
+		res, ferr := client.Registry().ResolveInstanceModelFacts(ref.Provider, ref.Model)
+		if ferr != nil {
+			return ferr
+		}
+		if registry.BoolValue(res.Model.Disabled) {
+			return fmt.Errorf("model %s is disabled", ref.Qualified())
+		}
+		return nil
+	}
 	if !client.CanServe(ref.Provider, ref.Model) {
 		if _, resolveErr := client.Resolve(ref.Qualified()); resolveErr != nil {
 			return resolveErr
