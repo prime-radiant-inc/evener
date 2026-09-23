@@ -360,8 +360,12 @@ configuration rather than inheriting anything from this controller. It asserts
 the returned ref belongs to the host rather than `local:`, that the controller's
 fleet list carries it, and that a read of it is answered by the host's daemon —
 the fleet list is roster-derived and cannot prove anything is running. It sends
-no input items, so **no turn runs and the host's provider is never called**: a
-run costs nothing beyond the session and the ssh round trips.
+no input items, so **no turn runs and no completion is requested**. That is
+narrower than it sounds, and the difference matters to anyone deciding whether to
+run it: resolving the spawn still makes the host enumerate its own models, and
+that enumeration calls each configured provider's model endpoint
+(`launchCheckModels`), so a run depends on the host's credentials, network, and
+quota being healthy.
 
 **This gate writes to the host**, which is why it is a separate opt-in from the
 read-only `EVENER_SSH_E2E` check. It needs `EVENER_SSH_E2E=1`,

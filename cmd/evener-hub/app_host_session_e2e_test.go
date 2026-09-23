@@ -104,9 +104,13 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	sessionCtx, cancelSession := context.WithTimeout(ctx, time.Minute)
 	defer cancelSession()
 	// No Input is sent, and that is the boundary this check keeps: an input item
-	// starts a real turn against the HOST's own provider and credentials, which is
-	// a live model call the test would neither assert nor be entitled to spend. The
-	// spawn still makes the host resolve the launch, which is the claim here.
+	// starts a real TURN against the HOST's own provider and credentials — a live
+	// model call this test would neither assert nor be entitled to spend. The spawn
+	// is not free of provider traffic, though, and the difference matters to anyone
+	// deciding whether to run it: resolving the launch makes the host enumerate its
+	// own models, and that enumeration calls each configured provider's model
+	// endpoint (launchCheckModels). So a run needs the host's credentials, network,
+	// and quota to be healthy. What it never does is ask for a completion.
 	started, err := clientRequest[appwire.ThreadStartResponse](sessionCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness: "evener",
 		Source:  hostE2EName,
@@ -116,6 +120,28 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		t.Fatalf("step thread/start with source %q: %v (a host that cannot resolve a model from its own launch configuration refuses here)", hostE2EName, err)
 	}
 	ref := started.Thread.Evener.Ref
+
+	// Cleanup is best-effort, and deliberately says so: the controller cannot yet
+	// SHUT DOWN a session it did not host. Remote thread capabilities are masked to
+	// the actions this source can carry (appsource.maskRemoteThreadCapabilities,
+	// whose comment names the host capability probe as what turns them on), so the
+	// daemon started here stays on the host until its own idle timeout. The gate in
+	// this test's file comment asks for a disposable host for exactly that reason.
+	// Registered before the ref is judged: a ref this test ends up rejecting still
+	// names a session it started, and an unaddressable one is reported rather than
+	// passed over.
+	t.Cleanup(func() {
+		if ref == "" {
+			t.Logf("thread/start returned no ref, so the session it started cannot be addressed here; any daemon it spawned idles out on its own")
+			return
+		}
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelShutdown()
+		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
+			t.Logf("thread/shutdown of %s is refused (%v); the controller cannot stop a remote session yet, so the host's daemon idles out on its own", ref, err)
+		}
+	})
+
 	if ref == "" {
 		t.Fatalf("thread/start on host %q returned no evener ref: %+v", hostE2EName, started.Thread)
 	}
@@ -130,21 +156,6 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 		t.Fatalf("thread/start ref %q has source %q, want %q: the session must belong to the host it was spawned on", ref, parsed.SourceID, hostE2EName)
 	}
 	t.Logf("spawned %s on host %q", ref, hostE2EName)
-
-	// Cleanup is best-effort, and deliberately says so: the controller cannot yet
-	// SHUT DOWN a session it did not host. Remote thread capabilities are masked to
-	// the actions this source can carry (appsource.maskRemoteThreadCapabilities,
-	// whose comment names the host capability probe as what turns them on), so the
-	// daemon started here stays on the host until its own idle timeout. The gate in
-	// this test's file comment asks for a disposable host for exactly that reason.
-	// Registered before the checks below, so it also runs when one of them fails.
-	t.Cleanup(func() {
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelShutdown()
-		if _, err := clientRequest[appwire.EmptyResponse](shutdownCtx, client, appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: ref}); err != nil {
-			t.Logf("thread/shutdown of %s is refused (%v); the controller cannot stop a remote session yet, so the host's daemon idles out on its own", ref, err)
-		}
-	})
 
 	// The session must also be visible from the controller, which is the half a
 	// user sees: the fleet fan-out lists the host's sessions beside the local
