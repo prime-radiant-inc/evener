@@ -649,19 +649,41 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 	}
 }
 
+// hubFixtureRoot lays the shard fixture out the way the repository holds
+// cmd/evener-hub: a module root with the package in cmd/evener-hub, which is
+// where hub-shards builds from and runs in.
+func hubFixtureRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	pkg := filepath.Join(root, "cmd", "evener-hub")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixtureModule(t)
+	for src, dst := range map[string]string{
+		"go.mod":          filepath.Join(root, "go.mod"),
+		"fixture_test.go": filepath.Join(pkg, "fixture_test.go"),
+		"tagged_on.go":    filepath.Join(pkg, "tagged_on.go"),
+		"tagged_off.go":   filepath.Join(pkg, "tagged_off.go"),
+	} {
+		data, err := os.ReadFile(filepath.Join(fixture, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
 // TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
 // it shards cmd/evener-hub under the repository root, reads HUB_SHARD_* rather
 // than the agent's variables, and names itself "hub" in its verdicts, so a gate
 // running both shard sets side by side can tell their lines apart.
 func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
 	bin := buildEvenerDev(t)
-	workRoot := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(workRoot, "cmd"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "cmd", "evener-hub")); err != nil {
-		t.Fatalf("linking fixture: %v", err)
-	}
+	workRoot := hubFixtureRoot(t)
 	runArgs := func(args []string, env ...string) (string, error) {
 		cmd := exec.Command(bin, append([]string{"dev", "hub-shards"}, args...)...)
 		cmd.Dir = workRoot
@@ -701,5 +723,33 @@ func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot pins where hub-shards
+// builds: cmd/evener-hub is a package of the root module, and the gate's root
+// `go test` resolves path-valued build flags (-overlay, -modfile, -pgo) from
+// the repository root, so hub-shards must too. The fixture is laid out like
+// the repository, and a relative -overlay adds a test that fails with a marker
+// only when the overlay reached the build.
+func TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureRoot(t)
+	pkg := filepath.Join(workRoot, "cmd", "evener-hub")
+	overlaid := filepath.Join(workRoot, "overlaid_test.go.src")
+	if err := os.WriteFile(overlaid, []byte("package shardfixture\n\nimport \"testing\"\n\nfunc TestOverlayReachedTheBuild(t *testing.T) { t.Fatal(\"OVERLAY-REACHED-THE-BUILD\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overlay := fmt.Sprintf(`{"Replace":{%q:%q}}`, filepath.Join(pkg, "overlaid_test.go"), overlaid)
+	if err := os.WriteFile(filepath.Join(workRoot, "overlay.json"), []byte(overlay), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "dev", "hub-shards", "-overlay=overlay.json")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir(), "HUB_SHARD_CACHE_DIR="+t.TempDir(), "HUB_SHARD_COUNT=2")
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "OVERLAY-REACHED-THE-BUILD") {
+		t.Fatalf("a repository-relative -overlay did not reach the hub build:\n%s", out)
 	}
 }

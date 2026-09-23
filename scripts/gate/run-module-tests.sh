@@ -390,7 +390,9 @@ run_module() {
 		# Test/Example surface, which the runner applies itself.
 		local hub_pid="" hub_status=0 root_status=0
 		if [ "$HUB_SHARDS" -ne 0 ]; then
-			HUB_SHARD_SKIP="$(gate_shard_skip "$root_skip" "${HUB_SHARD_SKIP:-}")" go run ./cmd/evener-dev/bin dev hub-shards ${test_flags[@]+"${test_flags[@]}"} &
+			# Timed like the go test below, so the module's reported wall time
+			# (the last "real" line) covers whichever stream finished last.
+			HUB_SHARD_SKIP="$(gate_shard_skip "$root_skip" "${HUB_SHARD_SKIP:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev hub-shards ${test_flags[@]+"${test_flags[@]}"} &
 			hub_pid=$!
 		fi
 		# ROOT_FULL removes short mode through module_test_flags_array while

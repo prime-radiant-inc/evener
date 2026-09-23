@@ -72,6 +72,7 @@ const defaultSurveyParallel = 6
 type shardsConfig struct {
 	label          string
 	envPrefix      string
+	moduleDir      string
 	pkgDir         string
 	count          int
 	parallel       int
@@ -89,16 +90,21 @@ type shardsConfig struct {
 
 // runAgentShards and runHubShards are the subcommand entries: environment in,
 // exit code out. Each package reads its own <PREFIX>_SHARD_* variables.
-func runAgentShards(args []string) int { return runPackageShards("agent", "agent", "AGENT", args) }
-
-func runHubShards(args []string) int {
-	return runPackageShards("hub", filepath.Join("cmd", "evener-hub"), "HUB", args)
+func runAgentShards(args []string) int {
+	return runPackageShards("agent", "agent", "agent", "AGENT", args)
 }
 
-// runPackageShards shards the package in dir (relative to the repository
-// root), naming it label in its output and reading envPrefix_SHARD_* for its
-// settings.
-func runPackageShards(label, dir, envPrefix string, args []string) int {
+// runHubShards builds from the repository root, the module cmd/evener-hub
+// belongs to, so path-valued build flags resolve where the gate's root-module
+// go test resolves them; the shards still run in the package directory.
+func runHubShards(args []string) int {
+	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", args)
+}
+
+// runPackageShards shards the package in pkgDir, building it from moduleDir
+// (its module's root; both relative to the repository root), naming it label
+// in its output and reading envPrefix_SHARD_* for its settings.
+func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string) int {
 	env := func(name string) string { return envPrefix + "_SHARD_" + name }
 	count, err := envPositiveInt(env("COUNT"), 4)
 	if err != nil {
@@ -132,7 +138,8 @@ func runPackageShards(label, dir, envPrefix string, args []string) int {
 	return runShards(shardsConfig{
 		label:          label,
 		envPrefix:      envPrefix,
-		pkgDir:         dir,
+		moduleDir:      moduleDir,
+		pkgDir:         pkgDir,
 		count:          count,
 		parallel:       parallel,
 		concurrency:    concurrency,
@@ -146,6 +153,22 @@ func runPackageShards(label, dir, envPrefix string, args []string) int {
 		stderr:         os.Stderr,
 		signals:        signals,
 	})
+}
+
+// buildLocation is where the test binary is built from and the package path
+// it builds: the module root and the package relative to it, so path-valued
+// build flags (-overlay, -modfile, -pgo) resolve against the module root the
+// way a module-wide go test resolves them. A config with no moduleDir builds
+// in the package directory itself.
+func (cfg shardsConfig) buildLocation() (dir, target string, err error) {
+	if cfg.moduleDir == "" || cfg.moduleDir == cfg.pkgDir {
+		return cfg.pkgDir, ".", nil
+	}
+	rel, err := filepath.Rel(cfg.moduleDir, cfg.pkgDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("package %s is not inside module %s", cfg.pkgDir, cfg.moduleDir)
+	}
+	return cfg.moduleDir, "./" + filepath.ToSlash(rel), nil
 }
 
 // surveyArgs is the survey pass's test-binary arguments. The survey runs one
@@ -345,8 +368,13 @@ func runShards(cfg shardsConfig) int {
 	}
 	extraFlags := parsed.test
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
-	buildArgs = append(buildArgs, "-o", build, ".")
-	if err = cfg.runToLog(in, buildLog, cfg.pkgDir, "go", buildArgs...); err != nil {
+	buildDir, buildTarget, err := cfg.buildLocation()
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+		return 1
+	}
+	buildArgs = append(buildArgs, "-o", build, buildTarget)
+	if err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
