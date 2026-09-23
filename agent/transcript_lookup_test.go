@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 const (
@@ -355,6 +358,11 @@ func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
 	}
 }
 
+// TestEnumerateBuckets_CleanBreakIncludesLegacyProjectBucket verifies that
+// enumerateBuckets returns both the clean-break (valid-named) bucket and the
+// legacy pure-hash bucket — the agent-side counterpart to PR #2163's doctor
+// sweep, which stopped filtering by ValidateProjectID. Sessions in
+// legacy-named buckets must be findable by bare session id.
 func TestEnumerateBuckets_CleanBreakSkipsLegacyProjectBucket(t *testing.T) {
 	t.Parallel()
 	stateHome := t.TempDir()
@@ -367,7 +375,173 @@ func TestEnumerateBuckets_CleanBreakSkipsLegacyProjectBucket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(buckets) != 1 || filepath.Base(buckets[0]) != cleanBreakProjectID {
-		t.Fatalf("buckets = %v, want only %q", buckets, cleanBreakProjectID)
+	if len(buckets) != 2 {
+		t.Fatalf("buckets = %v, want 2 (legacy + clean-break)", buckets)
+	}
+	names := map[string]bool{}
+	for _, b := range buckets {
+		names[filepath.Base(b)] = true
+	}
+	if !names["0123456789abcdef"] {
+		t.Errorf("legacy bucket 0123456789abcdef missing from enumeration")
+	}
+	if !names[cleanBreakProjectID] {
+		t.Errorf("clean-break bucket %q missing from enumeration", cleanBreakProjectID)
+	}
+}
+
+// --- FU3: legacy-named bucket enumeration ---
+
+// TestEnumerateBuckets_IncludesLegacyNamedBucket verifies that enumerateBuckets
+// returns legacy-named bucket dirs (names identifier.ValidateProjectID rejects)
+// alongside normal ones. PR #2163 made the doctor's globBuckets stop filtering
+// by name; this is the agent-side counterpart.
+func TestEnumerateBuckets_IncludesLegacyNamedBucket(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	normal := newBucketUnder(t, sh)
+	// "0123456789abcdef": pure hex, no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it.
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(legacy, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	buckets, err := enumerateBuckets(sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, b := range buckets {
+		found[filepath.Base(b)] = true
+	}
+	if !found[filepath.Base(normal)] {
+		t.Errorf("normal bucket %q missing from enumeration", filepath.Base(normal))
+	}
+	if !found["0123456789abcdef"] {
+		t.Errorf("legacy bucket 0123456789abcdef missing from enumeration")
+	}
+}
+
+// TestResolveTranscript_BareIDInLegacyBucket verifies that resolveTranscript
+// finds a session in a legacy-named sibling bucket by bare session id (the
+func TestResolveTranscript_BareIDInLegacyBucket(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	// "0123456789abcdef": no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it.
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	writeTranscript(t, legacy, "02wMz5Txv5aIxgf9yVdd0N")
+
+	path, ref, err := resolveTranscript("02wMz5Txv5aIxgf9yVdd0N", current, "02wMz5TxvEMoJEDTDGOTil")
+	if err != nil {
+		t.Fatalf("bare id in legacy bucket not found: %v", err)
+	}
+	if !strings.HasSuffix(path, "02wMz5Txv5aIxgf9yVdd0N.transcript.jsonl") {
+		t.Fatalf("path = %q, want suffix %q", path, "02wMz5Txv5aIxgf9yVdd0N.transcript.jsonl")
+	}
+	// The bucket name "0123456789abcdef" fails ValidateProjectID, so no ref
+	// the agent grammar can consume should be emitted. If a ref IS emitted,
+	// it must round-trip: decodeRef succeeds AND ValidateProjectID accepts
+	// the project token.
+	if ref != "" {
+		projectID, sessionID, decErr := decodeRef(ref)
+		if decErr != nil {
+			t.Fatalf("emitted ref %q does not parse: %v", ref, decErr)
+		}
+		if err := identifier.ValidateProjectID(projectID); err != nil {
+			t.Fatalf("emitted ref %q names project %q which ValidateProjectID rejects: %v", ref, projectID, err)
+		}
+		if sessionID != "02wMz5Txv5aIxgf9yVdd0N" {
+			t.Fatalf("ref session = %q, want %q", sessionID, "02wMz5Txv5aIxgf9yVdd0N")
+		}
+	}
+}
+
+// TestFind_LegacyBucketSessionInAllProjects verifies that find_session_transcripts
+// with scope=all_projects includes sessions from legacy-named buckets. The ref
+// for a legacy-bucket session must be absent or grammar-consumable. Normal
+// buckets' sessions must still appear with valid, round-tripping refs.
+func TestFind_LegacyBucketSessionInAllProjects(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	// "0123456789abcdef": no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it.
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Session in the legacy bucket.
+	writeFindSession(t, legacy, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "legacy bucket session",
+		updated: now,
+	}, "legacy content")
+
+	// Session in a normal sibling bucket.
+	normalSibling := newBucketUnder(t, sh)
+	writeFindSession(t, normalSibling, findMetaSpec{
+		id:      "02wMz5Txv9yYdSRJat13MZ",
+		name:    "normal sibling session",
+		updated: now.Add(-time.Minute),
+	}, "normal content")
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	matches := matchesFromEnvelope(t, decodeEnvelope(t, marshalFind(t, deps,
+		map[string]any{"scope": scopeAllProjects})))
+
+	// Find the legacy and normal matches by title.
+	var legacyMatch, normalMatch map[string]any
+	for _, m := range matches {
+		title, _ := m["title"].(string)
+		if title == "legacy bucket session" {
+			legacyMatch = m
+		}
+		if title == "normal sibling session" {
+			normalMatch = m
+		}
+	}
+
+	if legacyMatch == nil {
+		t.Fatalf("legacy bucket session not found in all_projects results; got %d matches", len(matches))
+	}
+	if normalMatch == nil {
+		t.Fatalf("normal sibling session not found in all_projects results; got %d matches", len(matches))
+	}
+
+	// Legacy-bucket ref must be absent or grammar-consumable (round-trip).
+	legacyRef, _ := legacyMatch["transcript_ref"].(string)
+	if legacyRef != "" {
+		projectID, sessionID, decErr := decodeRef(legacyRef)
+		if decErr != nil {
+			t.Fatalf("legacy ref %q does not parse: %v", legacyRef, decErr)
+		}
+		if err := identifier.ValidateProjectID(projectID); err != nil {
+			t.Fatalf("legacy ref %q names project %q which ValidateProjectID rejects: %v", legacyRef, projectID, err)
+		}
+		if sessionID != "02wMz5Txv5aIxgf9yVdd0N" {
+			t.Fatalf("legacy ref session = %q, want %q", sessionID, "02wMz5Txv5aIxgf9yVdd0N")
+		}
+	}
+
+	// Normal-bucket ref must round-trip and be non-empty.
+	normalRef, _ := normalMatch["transcript_ref"].(string)
+	if normalRef == "" {
+		t.Fatal("normal sibling ref is empty; expected a valid ref")
+	}
+	projectID, sessionID, decErr := decodeRef(normalRef)
+	if decErr != nil {
+		t.Fatalf("normal ref %q does not parse: %v", normalRef, decErr)
+	}
+	if err := identifier.ValidateProjectID(projectID); err != nil {
+		t.Fatalf("normal ref %q names project %q which ValidateProjectID rejects: %v", normalRef, projectID, err)
+	}
+	if sessionID != "02wMz5Txv9yYdSRJat13MZ" {
+		t.Fatalf("normal ref session = %q, want %q", sessionID, "02wMz5Txv9yYdSRJat13MZ")
+	}
+	if projectID != filepath.Base(normalSibling) {
+		t.Fatalf("normal ref project = %q, want %q", projectID, filepath.Base(normalSibling))
 	}
 }

@@ -218,10 +218,10 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string, curr
 	}
 	parentRef := ""
 	if c.meta.ParentSessionID != "" {
-		parentRef = encodeRef(c.projectID, c.meta.ParentSessionID)
+		parentRef = refFor(c.projectID, c.meta.ParentSessionID)
 	}
 	return sessionRecord{
-		TranscriptRef: encodeRef(c.projectID, c.meta.ID),
+		TranscriptRef: refFor(c.projectID, c.meta.ID),
 		Kind:          sessionKind(c.meta),
 		Title:         firstLineClamp(schema.SessionDisplayName(c.meta), 120),
 		UpdatedAt:     updatedAt,
@@ -401,9 +401,6 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 		projectID := ""
 		if bucketAbs, _ := filepath.Abs(bucket); bucketAbs != currentAbs {
 			projectID = filepath.Base(bucket)
-		}
-		if projectID != "" && identifier.ValidateProjectID(projectID) != nil {
-			continue
 		}
 		for _, m := range metas {
 			if identifier.ValidateSessionID(m.ID) != nil {

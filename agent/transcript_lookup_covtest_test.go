@@ -44,21 +44,27 @@ func TestValidLocalBucketDir(t *testing.T) {
 		t.Fatal("expected true for valid bucket dir")
 	}
 
-	// Under evener/projects with an invalid project ID (has a space).
+	// Under evener/projects with a legacy/foreign-named dir (has a space).
+	// After FU3, a dir under projects/ is a valid bucket regardless of its
+	// name — legacy- and foreign-named buckets hold real sessions, mirroring
+	// the doctor's globBuckets (#2163).
 	dir = filepath.Join(t.TempDir(), "evener", "projects", "bad project")
-	if validLocalBucketDir(dir) {
-		t.Fatal("expected false for invalid project ID")
+	if !validLocalBucketDir(dir) {
+		t.Fatal("expected true for legacy/foreign-named bucket dir")
 	}
 }
 
-// TestResolveTranscript_InvalidBucket covers the invalid-bucket error (line
-// 24-25).
+// TestResolveTranscript_LegacyNamedBucketNoMatch covers a bare-id lookup in a
+// legacy-named bucket dir whose session does not exist. After FU3 the bucket
+// is no longer rejected by validLocalBucketDir (it always returns true); the
+// lookup proceeds and returns "unknown session" because the transcript is
+// absent, not because the bucket name was invalid.
 func TestResolveTranscript_InvalidBucket(t *testing.T) {
-	// A dir under evener/projects but with an invalid project name.
+	// A legacy-named dir under evener/projects (no matching session).
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "bad project")
 	_, _, err := resolveTranscript("02wMz5Txv2enqVTitaig6F", dir, "02wMz5Txv2enqVTitaig6F")
 	if err == nil {
-		t.Fatal("expected error for invalid bucket dir")
+		t.Fatal("expected error for unknown session in legacy-named bucket")
 	}
 }
 
@@ -223,13 +229,17 @@ func TestParentBucketAndID_CurrentInvalidSessionID(t *testing.T) {
 	}
 }
 
-// TestParentBucketAndID_InvalidBucket covers the invalid bucket dir (line
-// 207-208).
-func TestParentBucketAndID_InvalidBucket(t *testing.T) {
+// TestParentBucketAndID_LegacyNamedBucket covers the current-session path with
+// a legacy-named bucket dir. After FU3, validLocalBucketDir accepts any dir
+// under evener/projects regardless of name, so parentBucketAndID succeeds.
+func TestParentBucketAndID_LegacyNamedBucket(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "bad project")
-	_, _, _, err := parentBucketAndID("", dir, "02wMz5Txv2enqVTitaig6F")
-	if err == nil {
-		t.Fatal("expected error for invalid bucket")
+	bucket, id, scope, err := parentBucketAndID("", dir, "02wMz5Txv2enqVTitaig6F")
+	if err != nil {
+		t.Fatalf("unexpected error for legacy-named bucket: %v", err)
+	}
+	if bucket != dir || id != "02wMz5Txv2enqVTitaig6F" || scope != scopeCurrentProject {
+		t.Fatalf("bucket=%q id=%q scope=%q, want %q %q %q", bucket, id, scope, dir, "02wMz5Txv2enqVTitaig6F", scopeCurrentProject)
 	}
 }
 

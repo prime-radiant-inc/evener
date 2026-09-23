@@ -123,7 +123,9 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 			candidates = append(candidates, encodeRef("", selector))
 		}
 		for _, bucket := range otherMatches {
-			candidates = append(candidates, encodeRef(filepath.Base(bucket), selector))
+			if r := refFor(filepath.Base(bucket), selector); r != "" {
+				candidates = append(candidates, r)
+			}
 		}
 		return "", "", fmt.Errorf("session %q is ambiguous; candidate refs: %s",
 			selector, strings.Join(candidates, ", "))
@@ -134,18 +136,19 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		bucket := otherMatches[0]
 		projectID := filepath.Base(bucket)
 		p := transcriptPath(bucket, selector)
-		return p, encodeRef(projectID, selector), nil
+		return p, refFor(projectID, selector), nil
 	}
 }
 
 // enumerateBuckets returns the state-root dirs under <stateHome>/evener/projects/*.
 // It returns bucket roots, not their sessions subdirectories.
 //
-// Divergence, deliberate: this sweep filters bucket dirs through
-// identifier.ValidateProjectID, while the doctor's sweep (agent/doctor's
-// globBuckets) takes every directory — a forensic tool must see legacy- or
-// foreign-named buckets that hold real sessions. If either policy changes,
-// change both deliberately.
+// Every directory under projects/ is a bucket: bucket identity is the actual
+// directory name, and filtering on identifier.ValidateProjectID would hide a
+// legacy- or foreign-named bucket that holds real sessions — the agent-side
+// read paths must see what is on disk, mirroring the doctor's globBuckets
+// (PR #2163). Refs for grammar-incompatible bucket names are suppressed at
+// emission time by refFor, not here.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	pattern := filepath.Join(stateHome, "evener", "projects", "*")
 	matches, err := transcriptBucketGlob(pattern)
@@ -159,19 +162,38 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 		if statErr != nil || !info.IsDir() {
 			continue
 		}
-		if identifier.ValidateProjectID(filepath.Base(m)) != nil {
-			continue
-		}
 		dirs = append(dirs, m)
 	}
 	return dirs, nil
 }
 
 func validLocalBucketDir(stateDir string) bool {
-	if stateHomeFor(stateDir) == "" {
-		return true // flat override/scratch layout
+	// A flat dir (not under evener/projects/) is a valid scratch/override
+	// bucket. A dir under evener/projects/ is a valid bucket regardless of
+	// its directory name — legacy- and foreign-named buckets hold real
+	// sessions, and the doctor sweep already enumerates them without name
+	// filtering (PR #2163). This predicate gates sweep-vs-single-bucket
+	// behavior (findBucketsWithEnumerate, collectCandidates) and the
+	// current-bucket entry guard (resolveTranscript, parentBucketAndID);
+	// a dir under projects/ is sweepable regardless of name.
+	return true
+}
+
+// refFor builds a transcript ref only when the bucket name is consumable by
+// the shared agent ref grammar (identifier.ValidateProjectID). A bucket whose
+// directory name the grammar rejects gets no ref — mirroring the doctor's
+// refFor from #2163. Such sessions stay locatable by bare id (the enumeration
+// no longer filters them out) and addressable by explicit local: refs, but no
+// proj: ref is emitted for a name read_transcript / find_session_transcripts
+// would reject.
+func refFor(projectID, sessionID string) string {
+	if projectID == "" {
+		return encodeRef("", sessionID)
 	}
-	return identifier.ValidateProjectID(filepath.Base(stateDir)) == nil
+	if identifier.ValidateProjectID(projectID) != nil {
+		return ""
+	}
+	return encodeRef(projectID, sessionID)
 }
 
 // stateHomeFor returns the stateHome for a bucket state dir via the shared
