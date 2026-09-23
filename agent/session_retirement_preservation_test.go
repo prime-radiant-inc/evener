@@ -537,24 +537,35 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 // confineSessionScratchSweep gives the test a session scratch namespace of its
 // own, so the startup sweep it drives can neither see nor delete another
 // process's scratch, and its verdict cannot depend on what else is on the host.
-// The sweep walks three kinds of base: the temp dir (TMPDIR), the user cache
-// dir (os.UserCacheDir, from XDG_CACHE_HOME or HOME), both pointed at
-// directories this test owns, and the world-usable host temps a session temp
+// The sweep walks three kinds of base: the temp dir and the user cache dir,
+// both pointed at directories this test owns (pointScratchBasesAt), and the world-usable host temps a session temp
 // container lives in (/tmp and /var/tmp, which no environment variable moves,
 // so they are dropped). Call it after plantAmbientScratchDecoys when a test
 // proves the confinement.
 func confineSessionScratchSweep(t *testing.T) {
 	t.Helper()
-	t.Setenv("TMPDIR", t.TempDir())
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	pointScratchBasesAt(t, t.TempDir(), t.TempDir())
 	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
 }
 
+// pointScratchBasesAt points every variable os.TempDir and os.UserCacheDir
+// read, on any platform, into temp and home: TMPDIR, or TMP and TEMP on
+// Windows, for the temp dir; XDG_CACHE_HOME and HOME, or LocalAppData on
+// Windows (AppData as a fallback), for the user cache dir.
+func pointScratchBasesAt(t *testing.T, temp, home string) {
+	t.Helper()
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, temp)
+	}
+	t.Setenv("HOME", home)
+	for _, name := range []string{"XDG_CACHE_HOME", "LocalAppData", "AppData"} {
+		t.Setenv(name, filepath.Join(home, "cache"))
+	}
+}
+
 // plantAmbientScratchDecoys stands in for the host's shared scratch bases as
-// another process left them: it points TMPDIR, and HOME and XDG_CACHE_HOME
-// (which os.UserCacheDir derives from), at directories this test owns and
+// another process left them: it points the temp and user cache dirs
+// (pointScratchBasesAt) at directories this test owns and
 // plants a real session scratch in both the temp dir and the user cache dir,
 // each retained and abandoned by some other session a day ago. That is exactly
 // what the startup sweep is built to reclaim, so a sweep that can see either
@@ -563,10 +574,7 @@ func confineSessionScratchSweep(t *testing.T) {
 func plantAmbientScratchDecoys(t *testing.T) []string {
 	t.Helper()
 	ambientTemp := t.TempDir()
-	t.Setenv("TMPDIR", ambientTemp)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	pointScratchBasesAt(t, ambientTemp, t.TempDir())
 	ambientCache, err := os.UserCacheDir()
 	if err != nil {
 		t.Fatalf("user cache dir: %v", err)
