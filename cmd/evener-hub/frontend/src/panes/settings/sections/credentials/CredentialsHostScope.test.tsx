@@ -12,6 +12,7 @@ import {
 } from "../../../../stores/credentials";
 import { hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
+import { resetSettingsHostForTests } from "../../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsHostScope } from "./CredentialsHostScope";
 
@@ -63,12 +64,17 @@ beforeEach(() => {
   resetHostInstancesForTests();
   resetToastStoreForTests();
   hostsStore.getState().resetForTests();
+  // The selection is route-level now (stores/settingsHost.ts): reset it, and
+  // mount on the settings route it is part of.
+  resetSettingsHostForTests();
+  window.history.pushState({}, "", "/settings/credentials");
   setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  window.history.pushState({}, "", "/");
 });
 
 test("defaults to this hub and reads the controller's own listing without any proxied call", async () => {

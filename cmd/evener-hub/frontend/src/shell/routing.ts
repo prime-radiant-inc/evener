@@ -6,6 +6,8 @@
 // navigate() is the one browser-integration helper alongside them: pushing
 // history and notifying same-tab listeners is still "URL glue", just not a
 // pure function.
+
+import { HOST_QUERY_PARAM } from "../stores/settingsHost";
 import type { PaneTypeId } from "./paneRegistry";
 
 function refParam(params: unknown): string | null {
@@ -119,6 +121,40 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
   }
 }
 
+// splitURL separates a path-only URL (optionally carrying a query and a hash)
+// into its three parts, so withSettingsHost can rewrite one without disturbing
+// the others.
+function splitURL(target: string): { path: string; search: string; hash: string } {
+  const hashAt = target.indexOf("#");
+  const hash = hashAt === -1 ? "" : target.slice(hashAt);
+  const body = hashAt === -1 ? target : target.slice(0, hashAt);
+  const searchAt = body.indexOf("?");
+  return searchAt === -1
+    ? { path: body, search: "", hash }
+    : { path: body.slice(0, searchAt), search: body.slice(searchAt), hash };
+}
+
+// withSettingsHost carries the host the address bar already names onto an
+// APP-BUILT navigation to a settings route (component 07b): the selected host
+// is part of that route, and the builders that cannot know it - the palette's
+// `navigate("/settings")` (palette/commands.ts), AppShell's settings.open
+// chord, the mobile shell's own URL sync (mobile/StackHost.tsx), a hand-off
+// from another pane - must not silently drop it. A URL the app did not build (a
+// hand-typed link, the browser's own Back/Forward) never reaches navigate, so
+// it still means exactly what it says; navigate()'s own `carrySettingsHost:
+// false` opt-out exists for the one navigation whose point IS to drop it (the
+// picker's return to the local hub).
+function withSettingsHost(target: string): string {
+  const { path, search, hash } = splitURL(target);
+  if (urlToPane(path)?.type !== "settings") return target;
+  const params = new URLSearchParams(search);
+  if (params.has(HOST_QUERY_PARAM)) return target;
+  const current = new URLSearchParams(window.location.search).get(HOST_QUERY_PARAM);
+  if (current === null) return target;
+  params.set(HOST_QUERY_PARAM, current);
+  return `${path}?${params.toString()}${hash}`;
+}
+
 // navigate pushes or replaces a pathname in browser history and notifies same-tab
 // listeners without a full reload. pushState alone does not fire popstate
 // (only real back/forward navigation does), so this dispatches one itself -
@@ -131,10 +167,15 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
 // an identical path+query must not push a duplicate entry or re-notify
 // listeners. The argument is always a path (optionally with search/hash) - the
 // app never constructs an absolute URL here.
-export function navigate(pathname: string, options: { replace?: boolean } = {}): void {
+//
+// A settings target also carries the host the address bar already names (see
+// withSettingsHost) unless `carrySettingsHost: false` says the caller is
+// deliberately choosing a URL without it.
+export function navigate(pathname: string, options: { replace?: boolean; carrySettingsHost?: boolean } = {}): void {
+  const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (current === pathname) return;
-  if (options.replace) window.history.replaceState({}, "", pathname);
-  else window.history.pushState({}, "", pathname);
+  if (current === target) return;
+  if (options.replace) window.history.replaceState({}, "", target);
+  else window.history.pushState({}, "", target);
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
