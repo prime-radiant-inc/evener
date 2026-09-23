@@ -20,6 +20,20 @@ export function isReady(state: ConnectionState): boolean {
 
 export type LiveReadiness = () => boolean;
 
+/** The pairing snapshot (`current`, `bornScope`) is settled by a passive
+ * effect, so between a moved render's commit and that effect a callback from
+ * the previous render still validated against the previous settle — the exact
+ * window where a deferred request could fire on a hub the render has already
+ * left. A generation counter closed it: the render that observes the identity
+ * (scope or client) move bumps the counter synchronously, so every callback a
+ * previous render captured refuses from that instant — the effect's settle
+ * then makes the NEW callback usable, and the window never authorizes the old
+ * one. The bump is the one render-phase write this hook allows, and it is
+ * fail-closed by construction: a render React abandons midway leaves the
+ * counter ahead of the settled snapshot, so every callback refuses (nothing
+ * stale is ever authorized) until the next committed render's effect catches
+ * up. The r21 ban on settling the STATE snapshot during render is untouched —
+ * a generation bump carries no authorization data at all. */
 /** Keeps a deferred request tied to the render that opened it: the current
  * state must still be ready for the same hub and client before it may run —
  * and in the re-key window, where the hub has moved while the connection
@@ -38,7 +52,16 @@ export function useLiveReadiness(
 	// render React abandons midway must not leave ref writes behind.
 	const current = useRef({ scope, client, state });
 	const bornScope = useRef({ client, scope });
+	const lastIdentity = useRef({ scope, client });
+	const generation = useRef(0);
+	// Synchronous on the identity move, before any effect runs: this is what
+	// closes the commit-to-effect window.
+	if (lastIdentity.current.scope !== scope || lastIdentity.current.client !== client) {
+		generation.current += 1;
+	}
+	const myGeneration = generation.current;
 	useEffect(() => {
+		lastIdentity.current = { scope, client };
 		if (client !== null && bornScope.current.client !== client) {
 			bornScope.current = { client, scope };
 		}
@@ -46,6 +69,7 @@ export function useLiveReadiness(
 	}, [scope, client, state]);
 	return useCallback(
 		() =>
+			generation.current === myGeneration &&
 			bornScope.current.client === client &&
 			bornScope.current.scope === scope &&
 			current.current.scope === scope &&

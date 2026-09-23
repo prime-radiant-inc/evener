@@ -2,6 +2,8 @@
 // (`!client || state !== "ready"`), extracted so it is testable without
 // mounting a screen (mobile-native has no RTL harness yet - #1908).
 import { expect, it, vi } from "vitest";
+import { createElement, useLayoutEffect } from "react";
+import { act } from "react-test-renderer";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import {
 	connectionDisplay,
@@ -11,7 +13,8 @@ import {
 	useRenderClient,
 	whenReady,
 } from "./connectionDisplay";
-import { renderHook } from "./renderNative.testkit";
+import { render, renderHook } from "./renderNative.testkit";
+import type { LiveReadiness } from "./connectionDisplay";
 
 it("shows nothing once ready, regardless of history or a fatal flag", () => {
 	expect(connectionDisplay("ready", false, false)).toBe("none");
@@ -140,6 +143,52 @@ it("useLiveReadiness rejects a deferred callback after the client or hub changes
 	state = "reconnecting";
 	hook.rerender();
 	expect(hook.result.current()).toBe(false);
+});
+
+it("useLiveReadiness refuses a stale callback inside the commit-to-effect window", () => {
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	const state: ConnectionState = "ready";
+	// Sentinel defaults keep the closure-assigned callbacks callable for the
+	// type checker; the first render overwrites both before any assertion.
+	let current: LiveReadiness = () => false;
+	let stale: LiveReadiness = () => false;
+	let staleCaptured = false;
+	let windowVerdict: boolean | null = null;
+	// A child layout effect runs before the hook-owning component's own
+	// effects settle, so a callback invoked from it observes exactly the
+	// commit-to-effect window: the new render has committed, and a callback
+	// captured by the previous render still validates against the previous
+	// settle.
+	function Probe() {
+		useLayoutEffect(() => {
+			windowVerdict = stale();
+		});
+		return null;
+	}
+	function Owner() {
+		current = useLiveReadiness(hubId, client, state);
+		if (!staleCaptured) {
+			stale = current;
+			staleCaptured = true;
+		}
+		return createElement(Probe);
+	}
+	const tree = render(createElement(Owner));
+	expect(windowVerdict).toBe(true);
+	hubId = "hub-2";
+	client = second;
+	act(() => {
+		tree.update(createElement(Owner));
+	});
+	// The stale callback must refuse the moment the moved render commits,
+	// not one effect-settle later.
+	expect(windowVerdict).toBe(false);
+	// Once the effects settle, the world that actually moved is authorized
+	// again — the window closes without poisoning the next callback.
+	expect(current()).toBe(true);
 });
 
 it("useRenderClient: a retry's not-yet-ready replacement never displaces the previous client", () => {

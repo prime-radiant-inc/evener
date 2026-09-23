@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -300,6 +301,52 @@ func TestScratchRetentionLiveEnvironmentPinsOnMint(t *testing.T) {
 	slot := manifest.Bindings[0].Slots[sandbox.ScratchKindUnsandboxed]
 	if !slot.OwnsLease || filepath.Clean(slot.Dir) != filepath.Clean(dir) {
 		t.Fatalf("minted allocation slot = %+v, want owning slot at %q", slot, dir)
+	}
+}
+
+// TestScratchRetentionErrorClearsWhenTheReleasedManifestRepins pins round 27's
+// Medium: a pin that raced a terminal release recorded
+// ErrScratchRetentionReleased as a sticky error, and the sticky record outlived
+// the recovery — a later reset reinitialized the manifest and the very
+// republish this environment performs succeeded, yet preparation kept failing
+// on the stale error. A successful pin under the manifest that now exists
+// proves the released race healed, so the sticky released error must clear
+// with it; other pin failures stay sticky (round 9).
+func TestScratchRetentionErrorClearsWhenTheReleasedManifestRepins(t *testing.T) {
+	base, workspace := t.TempDir(), t.TempDir()
+	owner := sandbox.ScratchOwner{StateDir: t.TempDir(), RootSessionID: "root-released-repin"}
+	env := NewLocalExecutionEnvironment(workspace)
+	env.sandboxTmpBase = base
+	if err := env.SetScratchRetentionBinding(owner, sandbox.ScratchBinding{BindingID: "E0", OwnerSessionID: "root-released-repin", WorkingDir: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	dir := env.unsandboxedScratchDir()
+	if dir == "" {
+		t.Fatal("environment minted no scratch")
+	}
+	t.Cleanup(func() { env.RetainSessionScratch() })
+	// The pin races the terminal release: writers refuse a released manifest,
+	// so the pin fails and the failure is recorded sticky for preparation.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.PinOwnedScratch(); !errors.Is(err, sandbox.ErrScratchRetentionReleased) {
+		t.Fatalf("pin over the released manifest: %v", err)
+	}
+	if env.ScratchRetentionError() == nil {
+		t.Fatal("the released pin failure was not recorded sticky")
+	}
+	// The reset reinitializes the manifest — the pin the pair's death leaves
+	// in place is exactly the identity the republish writes — and the
+	// republish succeeds against it.
+	if _, _, err := sandbox.ResetScratchRetentionIfReleased(owner); err != nil {
+		t.Fatalf("reset the released manifest: %v", err)
+	}
+	if err := env.PinOwnedScratch(); err != nil {
+		t.Fatalf("repin over the reset manifest: %v", err)
+	}
+	if err := env.ScratchRetentionError(); err != nil {
+		t.Fatalf("preparation still fails on the stale released-pin error after a successful repin: %v", err)
 	}
 }
 

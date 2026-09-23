@@ -145,6 +145,14 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 		e.recordRetentionPinError(err)
 		return err
 	}
+	// A pin that succeeded under the manifest that exists now proves any
+	// earlier released-manifest race healed — the reset reinitialized the
+	// tombstone this very pin raced, so keeping that failure sticky would fail
+	// preparation forever on a state that no longer holds. Only the released
+	// error clears this way: other pin failures are durability verdicts that a
+	// later success does not retroactively explain away (round 9's sticky
+	// contract, round 27's recoverable carve-out).
+	e.clearReleasedRetentionPinError()
 	return nil
 }
 
@@ -163,6 +171,17 @@ func (e *LocalExecutionEnvironment) recordRetentionPinError(err error) {
 	e.scratchMu.Lock()
 	if e.retentionPinErr == nil {
 		e.retentionPinErr = err
+	}
+	e.scratchMu.Unlock()
+}
+
+// clearReleasedRetentionPinError drops a sticky pin failure that was the
+// released-manifest race: a pin that has since succeeded proves the race
+// healed, and preparation must not keep failing on it (round 27).
+func (e *LocalExecutionEnvironment) clearReleasedRetentionPinError() {
+	e.scratchMu.Lock()
+	if e.retentionPinErr != nil && errors.Is(e.retentionPinErr, sandbox.ErrScratchRetentionReleased) {
+		e.retentionPinErr = nil
 	}
 	e.scratchMu.Unlock()
 }
