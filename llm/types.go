@@ -203,11 +203,11 @@ type ToolCallData struct {
 // Arguments (Arguments holds the replay-safe {} placeholder there — not valid
 // JSON or not valid UTF-8), else the recorded arguments. For the invalid-UTF-8
 // corner the returned value is the "base64:"-prefixed encoding (see
-// RawArguments), not the original bytes. The marker is display-only and NOT
-// round-trippable: a literal argument text beginning with "base64:" is stored
-// verbatim and is indistinguishable. Display callers show the value verbatim;
-// callers wanting the original bytes must decode and accept the ambiguity.
-// Callers wanting tidy edges trim presentation-side.
+// RawArguments), not the original bytes. The returned value is display-only
+// and not round-trippable: display callers show it verbatim; recovering the
+// original invalid-UTF-8 bytes from an encoded value requires external base64
+// decoding and cannot be distinguished from a literal "base64:" argument by
+// the value alone. Callers wanting tidy edges trim presentation-side.
 func (tc *ToolCallData) SentArguments() string {
 	if tc.RawArguments != "" {
 		return tc.RawArguments

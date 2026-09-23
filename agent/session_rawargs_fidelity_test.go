@@ -152,3 +152,61 @@ func recordAndRoundTrip(t *testing.T, arguments json.RawMessage) *llm.ToolCallDa
 	}
 	return decodedCall
 }
+
+// TestAssistantHistoryMessage_PassthroughValidArgs verifies the recording
+// predicate does not fire for the common case: arguments that are both valid
+// JSON and valid UTF-8 pass through untouched — Arguments keeps the original
+// bytes and RawArguments stays empty. This guards against the widened
+// !(json.Valid && utf8.Valid) predicate ever clobbering a good call with the
+// {} placeholder.
+func TestAssistantHistoryMessage_PassthroughValidArgs(t *testing.T) {
+	args := json.RawMessage(`{"a":1}`)
+	if !json.Valid(args) || !utf8.Valid(args) {
+		t.Fatalf("fixture must be valid JSON and valid UTF-8")
+	}
+
+	msg := llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_passthrough",
+				Name:      "my_tool",
+				Arguments: args,
+			},
+		}},
+	}
+
+	recorded := assistantHistoryMessage(msg)
+	call := recorded.Content[0].ToolCall
+	if call == nil {
+		t.Fatalf("missing tool call after recording")
+	}
+	if got, want := string(call.Arguments), `{"a":1}`; got != want {
+		t.Fatalf("passthrough arguments = %q, want %q (untouched)", got, want)
+	}
+	if call.RawArguments != "" {
+		t.Fatalf("passthrough raw_arguments = %q, want empty (no recording)", call.RawArguments)
+	}
+
+	// Round-trip through JSON the same way the transcript writer does.
+	turn := schema.NewTurn(schema.TurnAssistant, recorded)
+	encoded, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatalf("marshal recorded turn: %v", err)
+	}
+	var decoded schema.Turn
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal recorded turn: %v", err)
+	}
+	decodedCall := decoded.Message.Content[0].ToolCall
+	if decodedCall == nil {
+		t.Fatalf("missing tool call after round-trip")
+	}
+	if got, want := string(decodedCall.Arguments), `{"a":1}`; got != want {
+		t.Fatalf("round-tripped passthrough arguments = %q, want %q", got, want)
+	}
+	if decodedCall.RawArguments != "" {
+		t.Fatalf("round-tripped passthrough raw_arguments = %q, want empty", decodedCall.RawArguments)
+	}
+}
