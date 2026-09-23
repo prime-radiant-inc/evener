@@ -27,7 +27,7 @@ import { InRepoSection } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
 import { LaunchServerHostScope } from "./sections/launchServer";
 import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
-import { McpSection } from "./sections/mcp";
+import { McpSectionHostScope } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
@@ -45,7 +45,7 @@ import { settingsURL, useSettingsHost, useSettingsHostURLSync } from "./settings
 // adapter binds it to the real store at the one place the dispatch map needs
 // a zero-prop component.
 function McpSectionWired() {
-  return <McpSection useOverviewStore={useSettingsOverviewStore} />;
+  return <McpSectionHostScope useOverviewStore={useSettingsOverviewStore} />;
 }
 
 export interface SettingsPaneParams {
