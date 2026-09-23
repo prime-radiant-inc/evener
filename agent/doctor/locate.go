@@ -167,10 +167,22 @@ func pathsFor(b bucket, sid string) Paths {
 }
 
 // refFor builds the transcript ref: proj:<project-id>:<sid> for a project bucket,
-// or local:<sid> for an override / scratch root.
+// or local:<sid> for an override / scratch root. A bucket whose directory
+// name the shared agent ref grammar cannot consume gets NO ref —
+// identifier.ValidateProjectID is exactly the token the agent-side
+// transcript tools' parsers admit (agent/transcript_ref.go's validIDToken
+// rules out the separators and dots ValidateProjectID's alphabet already
+// excludes), so a ref emitted for any other name would hand the model a
+// handle read_transcript and find_session_transcripts reject. Such sessions
+// stay fully locatable (session id, bucket, paths) and remain addressable
+// through the doctor's own selector grammar — a bare id sweeps to them, and
+// an explicit proj:<name>:<sid> parses for every traversal-safe name.
 func refFor(projectID, sid string) string {
 	if projectID == "" {
 		return "local:" + sid
+	}
+	if identifier.ValidateProjectID(projectID) != nil {
+		return ""
 	}
 	return "proj:" + projectID + ":" + sid
 }

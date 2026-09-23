@@ -311,11 +311,14 @@ func TestLocate_ProjRefTraversalTokensRejected(t *testing.T) {
 	}
 }
 
-// TestLocate_LegacyBucketRefRoundTrip proves the refs Locate emits are
-// self-consistent even for non-Project.ID bucket names: a bare-id locate
-// into a legacy bucket returns a proj: ref that re-parses and re-locates to
-// the same paths — a session found once can always be named again.
-func TestLocate_LegacyBucketRefRoundTrip(t *testing.T) {
+// TestLocate_NonConsumableBucketOmitsRefButSelectorAddresses proves the
+// emission contract for buckets whose directory names the shared agent ref
+// grammar rejects: locate emits NO transcript ref (never a handle the
+// agent-side transcript tools would refuse), while the session stays fully
+// addressable through the doctor's own selector grammar — a bare id sweeps
+// to it and the explicit proj: ref re-locates. Follow-up reads for such
+// buckets go through the doctor's transcript command, not read_transcript.
+func TestLocate_NonConsumableBucketOmitsRefButSelectorAddresses(t *testing.T) {
 	base := t.TempDir()
 	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
 	writeSession(t, legacyBucket, sidA)
@@ -324,23 +327,27 @@ func TestLocate_LegacyBucketRefRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bare-id Locate into legacy bucket: %v", err)
 	}
-	if want := "proj:0123456789abcdef:" + sidA; first.TranscriptRef != want {
-		t.Fatalf("TranscriptRef = %q, want %q", first.TranscriptRef, want)
+	if first.TranscriptRef != "" {
+		t.Fatalf("TranscriptRef = %q, want empty — a legacy-named bucket is not consumable by the agent ref grammar", first.TranscriptRef)
 	}
-	second, err := Locate(base, first.TranscriptRef)
+	if first.ProjectID != "0123456789abcdef" {
+		t.Fatalf("ProjectID = %q, want the bucket name", first.ProjectID)
+	}
+	second, err := Locate(base, "proj:0123456789abcdef:"+sidA)
 	if err != nil {
-		t.Fatalf("re-Locate via emitted ref %q: %v", first.TranscriptRef, err)
+		t.Fatalf("explicit legacy proj ref must still address the bucket: %v", err)
 	}
 	if second.TranscriptPath != first.TranscriptPath || second.ProjectID != first.ProjectID {
 		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
 	}
 }
 
-// TestLocate_ColonNamedBucketRefRoundTrip is the reviewer's round-trip for a
-// bucket whose directory name contains a colon: colons are legal in
-// directory names, the sweep enumerates the bucket, so the ref Locate emits
-// for its sessions must itself re-parse and re-locate.
-func TestLocate_ColonNamedBucketRefRoundTrip(t *testing.T) {
+// TestLocate_ColonNamedBucketOmitsRefButSelectorAddresses is the colon name
+// class of the emission contract: no ref is emitted (validIDToken rejects
+// colons), and the doctor's own last-colon selector grammar still addresses
+// the bucket — the round-2 reviewer's addressability, kept honest at the
+// emission site.
+func TestLocate_ColonNamedBucketOmitsRefButSelectorAddresses(t *testing.T) {
 	base := t.TempDir()
 	colonBucket := stateHomeBucket(base, "a:b")
 	writeSession(t, colonBucket, sidA)
@@ -349,12 +356,12 @@ func TestLocate_ColonNamedBucketRefRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bare-id Locate into colon-named bucket: %v", err)
 	}
-	if want := "proj:a:b:" + sidA; first.TranscriptRef != want {
-		t.Fatalf("TranscriptRef = %q, want %q", first.TranscriptRef, want)
+	if first.TranscriptRef != "" {
+		t.Fatalf("TranscriptRef = %q, want empty — colons are not consumable by the agent ref grammar", first.TranscriptRef)
 	}
-	second, err := Locate(base, first.TranscriptRef)
+	second, err := Locate(base, "proj:a:b:"+sidA)
 	if err != nil {
-		t.Fatalf("re-Locate via emitted ref %q: %v", first.TranscriptRef, err)
+		t.Fatalf("explicit colon proj ref must still address the bucket: %v", err)
 	}
 	if second.TranscriptPath != first.TranscriptPath || second.ProjectID != first.ProjectID {
 		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
