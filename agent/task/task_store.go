@@ -749,6 +749,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		found := false
 		for i := range s.tasks {
 			if s.tasks[i].ID == u.ID {
+				prev := s.tasks[i].Status
 				if u.Status != "" {
 					s.tasks[i].Status = u.Status
 				}
@@ -761,13 +762,17 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 				if u.ReasoningEffort != "" {
 					s.tasks[i].ReasoningEffort = u.ReasoningEffort
 				}
-				// Mint timestamps: every update advances UpdatedAt; reaching a
-				// terminal status (done or cancelled) stamps CompletedAt as the
-				// settle moment, and leaving the terminal state clears it.
+				// Mint timestamps: every update advances UpdatedAt; a
+				// transition into a terminal status (done or cancelled)
+				// stamps CompletedAt as the settle moment, re-asserting the
+				// status the task already holds keeps the original stamp, and
+				// leaving the terminal state clears it.
 				ts := s.stamp()
 				s.tasks[i].UpdatedAt = ts
 				if u.Status == TaskDone || u.Status == TaskCancelled {
-					s.tasks[i].CompletedAt = ts
+					if prev != u.Status {
+						s.tasks[i].CompletedAt = ts
+					}
 				} else if u.Status != "" {
 					s.tasks[i].CompletedAt = nil
 				}

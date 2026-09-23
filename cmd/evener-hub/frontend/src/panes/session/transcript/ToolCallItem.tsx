@@ -260,15 +260,21 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const bodyId = useId();
   // foldByDefault opts the body out of every open-by-default posture: the
   // level's expand-details default (activity/full force-expand every body
-  // otherwise) AND the full preset's open baseline, the strongest form of
-  // that default - an ordinary fallback can never beat a baseline, so the
-  // read below skips it for these rows. The fallback stays closed at every
-  // level, so only the reader's own toggle opens it - and that explicit
-  // store entry still wins over everything afterward.
+  // otherwise), the full preset's open baseline - the strongest form of
+  // that default, which an ordinary fallback can never beat, so the read
+  // below skips it for these rows - and the descriptor's own autoExpand
+  // nudge, which is just another fallback. The one carve-out is failure:
+  // a failed call's force-open is attribution, not posture ("only failure
+  // earns the eye"), so an error never hides behind the fold - hence the
+  // `failed` term in the fallback below, read reactively like superseded so
+  // a row that settled before its failure was corroborated still opens the
+  // moment it is. Otherwise the fallback stays closed at every level, so
+  // only the reader's own toggle opens it - and that explicit store entry
+  // still wins over everything afterward.
   const configDefault = descriptor.foldByDefault
     ? false
     : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const disclosureFallback = configDefault || (autoDefault && !superseded);
+  const disclosureFallback = configDefault || ((!descriptor.foldByDefault || failed) && autoDefault && !superseded);
   const expanded = isDisclosureOpen(
     disclosureKey,
     disclosureFallback,

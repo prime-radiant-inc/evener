@@ -749,6 +749,42 @@ test("a foldByDefault descriptor settles folded even at activity level, and open
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
+test("foldByDefault still settles closed when the descriptor also sets autoExpand", () => {
+  // The two flags answer different questions: foldByDefault is the posture
+  // claim ("the collapsed line carries the news"), autoExpand the
+  // settle-moment nudge. The posture claim wins - a descriptor setting
+  // both must land folded, or "the fallback stays closed at every level"
+  // has an exception and the quiet-line contract is half-true.
+  registerToolRenderer({
+    match: "tci_fold_auto",
+    summary: () => "the news",
+    foldByDefault: true,
+    autoExpand: () => true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_auto" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+});
+
+test("an errored tool row still force-expands under a foldByDefault descriptor", () => {
+  // foldByDefault beats posture defaults, not attribution: "only failure
+  // earns the eye" survives the fold, or a failed task_list call would
+  // hide its error behind the quiet-line posture (the task card's own
+  // failed-mutation test catches exactly this at the card level).
+  registerToolRenderer({
+    match: "tci_fold_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(
+    <ToolCallItem item={item({ toolName: "tci_fold_fail", error: "task 9 not found" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByText("task 9 not found")).toBeTruthy();
+});
+
 test("a foldByDefault descriptor stays folded under the full preset's open baseline, and still opens on click", () => {
   // Full is the strongest force-open the app has: entering the level
   // establishes an open disclosure baseline for the whole scope, and only an

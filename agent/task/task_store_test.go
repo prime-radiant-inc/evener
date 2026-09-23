@@ -217,6 +217,23 @@ func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
 		t.Errorf("UpdatedAt %v not after the settle %v", annotated.UpdatedAt, settle)
 	}
 
+	// Re-asserting the same terminal status alongside a note is still just
+	// an annotation of an already-settled task: the settle moment is the
+	// first transition, not every repeat of the word.
+	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled, Notes: "and here is why"}}); err != nil {
+		t.Fatal(err)
+	}
+	reasserted := s.View()[0]
+	if reasserted.CompletedAt == nil || !reasserted.CompletedAt.Equal(settle) {
+		t.Errorf("CompletedAt moved to %v after re-asserting the terminal status, want %v", reasserted.CompletedAt, settle)
+	}
+	if !reasserted.UpdatedAt.After(*annotated.UpdatedAt) {
+		t.Errorf("UpdatedAt %v not after the annotation's %v", reasserted.UpdatedAt, annotated.UpdatedAt)
+	}
+	if len(reasserted.Notes) != 2 || reasserted.Notes[1] != "and here is why" {
+		t.Errorf("Notes = %v, want the annotation appended", reasserted.Notes)
+	}
+
 	// Reopening clears the stamp exactly like a reopened done task.
 	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
 		t.Fatal(err)

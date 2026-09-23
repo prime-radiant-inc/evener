@@ -74,11 +74,19 @@ export function taskAggregateLabel(tasks: TaskCounts): string {
   return `All ${tasks.total} ${noun} done`;
 }
 
+// The closed status enum the Go store mints (agent/task/task_store.go,
+// TaskStatus). A status outside it - a newer daemon's addition, or corrupt
+// data - is dropped rather than cast: groupTasks routes every unmatched
+// status into the settled group, where the web pane would render an
+// unknown-status row as a broken glyph.
+const KNOWN_STATUSES = new Set(["open", "in_progress", "done", "cancelled"]);
+
 // A row is usable once it carries the wire's non-omitempty fields with the
 // right primitive types (id/type/description/prompt/status are never
-// omitted by the Go struct's own json tags, even when zero-valued) -
-// anything else (a null entry, a stray string, a shape missing `id`) is
-// dropped rather than fabricated or allowed to crash the whole parse.
+// omitted by the Go struct's own json tags, even when zero-valued) and a
+// status the enum defines - anything else (a null entry, a stray string, a
+// shape missing `id`, an unknown status) is dropped rather than fabricated
+// or allowed to crash the whole parse.
 function parseRow(raw: unknown): TaskRow | null {
   const fields = asJsonObject(raw);
   if (!fields) return null;
@@ -98,6 +106,7 @@ function parseRow(raw: unknown): TaskRow | null {
   } = fields;
   if (typeof id !== "number" || typeof type !== "string" || typeof description !== "string") return null;
   if (typeof prompt !== "string" || typeof status !== "string") return null;
+  if (!KNOWN_STATUSES.has(status)) return null;
 
   const row: TaskRow = { id, type, description, prompt, status: status as TaskStatus };
   if (Array.isArray(depends_on) && depends_on.every((d) => typeof d === "number")) {

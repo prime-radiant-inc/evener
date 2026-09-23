@@ -186,6 +186,18 @@ test("skips individual malformed entries (missing a required field) rather than 
   ]);
 });
 
+test("drops a row carrying a status outside the daemon's four-status enum rather than casting it to TaskStatus", () => {
+  // TaskStatus is the closed enum the Go store mints (open/in_progress/
+  // done/cancelled), but the wire field is a bare string: a status a
+  // newer daemon adds must not survive the cast into a settled group it
+  // does not belong to (groupTasks routes everything unmatched there).
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
+    { id: 2, type: "implement", description: "unrecognized", prompt: "", status: "blocked" },
+  ]);
+  expect(rows).toEqual([{ id: 1, type: "implement", description: "good", prompt: "", status: "open" }]);
+});
+
 test("the aggregate reads 'N of M tasks left' while work remains", () => {
   expect(taskAggregateLabel({ total: 7, done: 1, cancelled: 5, remaining: 1 })).toBe("1 of 7 tasks left");
   expect(taskAggregateLabel({ total: 7, done: 3 })).toBe("4 of 7 tasks left");
