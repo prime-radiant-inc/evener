@@ -554,6 +554,100 @@ func TestHostPushCredentials_ServedOverHubRPC(t *testing.T) {
 	}
 }
 
+// TestHostPushCredentials_ResolvesTheAuthControllersOwnStore pins the one-store
+// rule: a hub built with no explicit CredsStore — the shape these constructors
+// tolerate, and the one an embedder reaches through newHubAppServer* rather than
+// main.go — must resolve the on-disk store once and hand the same one to the
+// auth controller and to the credential push. Resolving it inside the auth
+// controller alone supported evener/auth/apiKey/set on such a hub while the push
+// answered InternalError "credential push requires a local credentials store":
+// one hub, two answers to "which store is mine".
+//
+// startHubRPCTestServer, not newHubRPCTestServerWithWeb: the latter mints a
+// store whenever CredsStore is nil, which is exactly the resolution under test.
+func TestHostPushCredentials_ResolvesTheAuthControllersOwnStore(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	// The store a nil CredsStore already resolves to: credentials.toml beside
+	// the state root the auth controller keeps its OAuth records under
+	// (newHubAuthControllerWithStore's fallback).
+	credentialsPath := filepath.Join(root, "credentials.toml")
+	store, err := credentials.LoadStore(credentialsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credentialsPath, err)
+	}
+	providersToml := writeProvidersToml(t, root, bearerInstanceToml)
+	reg := newTestRegistry(t, stateDir, providersToml, store, nil)
+
+	client, calls, _ := newScriptedAdminClient(t, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "work-ant"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			return statusReply("none", "rev-work-ant")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{
+				Action: appwire.ApiKeyConditionalSetActionAdded,
+				Status: appwire.AuthStatusResponse{Provider: "work-ant", ActiveSource: "store"},
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+
+	srv, web := startHubRPCTestServer(t, hubcore.WebConfig{
+		HubStateRoot:        stateDir,
+		RemoteHostRegistry:  hosts,
+		Registry:            reg,
+		CredentialsPath:     credentialsPath,
+		ProvidersConfigPath: providersToml,
+		// CredsStore deliberately unset: this is the nil-store hub whose two
+		// credential surfaces have to agree.
+	})
+	defer srv.Close()
+	web.sources.Add(source)
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// The key enters through the auth surface, so the row the push reports
+	// exists only because both surfaces resolved the same store.
+	var status appwire.AuthStatusResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerAuthApiKeySet, appwire.AuthApiKeySetParams{Provider: "work-ant", Value: "sk-work-ant"}, &status); err != nil {
+		t.Fatalf("evener/auth/apiKey/set: %v", err)
+	}
+	seeded, err := credentials.LoadStore(credentialsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credentialsPath, err)
+	}
+	if value, ok := seeded.Get("work-ant"); !ok || value != "sk-work-ant" {
+		t.Fatalf("credentials.toml[work-ant] = %q/%v, want the key the auth surface just wrote: the auth controller did not resolve %s", value, ok, credentialsPath)
+	}
+
+	var resp appwire.HostPushCredentialsResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerHostPushCredentials, appwire.HostPushCredentialsParams{Host: "m4"}, &resp); err != nil {
+		t.Fatalf("evener/host/pushCredentials: %v", err)
+	}
+	result := resultFor(t, resp, "work-ant")
+	if result.Action != appwire.HostCredentialPushAdded {
+		t.Fatalf("result = %+v, want the added result for the key the auth surface wrote", result)
+	}
+	if n := len(countedMethod(t, calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 1 {
+		t.Fatalf("conditionalSet calls = %d, want 1", n)
+	}
+}
+
 // TestHostPushCredentials_ReportNeverCarriesTheKeyValue pins the invariant the
 // push's doc and spec criterion 7 (07-remote-admin.md: "No key value appears in
 // the push response, controller logs, or errors") state: no key value reaches

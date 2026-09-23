@@ -1021,7 +1021,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			KeybindingsSettings:       true,
 		},
 	})
-	authController := newHubAuthControllerWithStore(hubAuthStateRoot(cfg.Registry), cfg.CredsStore)
+	// One credentials store for every credential surface this server builds.
+	// Resolved here, once, because the auth controller and the credential push
+	// must not answer "which store is mine" differently: each resolving the
+	// fallback on its own let a hub built with no explicit CredsStore — the
+	// embedder shape, and the one these constructors tolerate — serve
+	// evener/auth/apiKey/set while refusing the push with "credential push
+	// requires a local credentials store".
+	authStateRoot := hubAuthStateRoot(cfg.Registry)
+	credsStore := hubCredentialStore(authStateRoot, cfg.CredsStore)
+	authController := newHubAuthControllerWithStore(authStateRoot, credsStore)
 	authController.reg = cfg.Registry
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	authController.noUserLayer = cfg.NoUserLayer
@@ -1114,7 +1123,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// (web.go) keeps the handle so main.go can bind hostAttached to the
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
-	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, cfg.CredsStore)
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore)
 	return server, hostAdmin, hostManage
 }
 

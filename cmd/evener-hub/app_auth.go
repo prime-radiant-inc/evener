@@ -154,6 +154,41 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	return c
 }
 
+// hubAuthCredentialsPath is where a hub resolves the credentials store it has
+// no explicit one for: credentials.toml beside the state root its OAuth records
+// live under, which is where newHubAuthController has always found the default
+// store. An empty stateRoot resolves the directory from the process environment
+// (XDG_STATE_HOME / HOME), matching that constructor without launch-env
+// overrides.
+func hubAuthCredentialsPath(stateRoot string) string {
+	stateDir := strings.TrimSpace(stateRoot)
+	if stateDir == "" {
+		stateDir = openAIStateDirFromEnv(effectiveHubAuthEnv(nil))
+	}
+	return filepath.Join(filepath.Dir(stateDir), "credentials.toml")
+}
+
+// hubCredentialStore resolves the one credentials store every credential
+// surface of a hub reads and writes: store when the caller supplied one, and
+// the on-disk default under stateRoot otherwise — the same fallback
+// newHubAuthControllerWithStore makes. Callers resolve it once and pass the
+// result to each surface (app_rpc.go), because two surfaces resolving it
+// separately can disagree: a hub whose auth controller fell back on its own
+// supported evener/auth/apiKey/set while the credential push refused it with
+// "requires a local credentials store".
+//
+// A store that cannot be loaded still comes back nil, for the reason the
+// controller's own fallback ignores that error: there is no path-less store
+// that is better than none, and a surface given nil reports its own typed
+// refusal (the push's guard) instead of writing a credential nothing reads.
+func hubCredentialStore(stateRoot string, store *credentials.Store) *credentials.Store {
+	if store != nil {
+		return store
+	}
+	loaded, _ := credentials.LoadStore(hubAuthCredentialsPath(stateRoot))
+	return loaded
+}
+
 // newHubAuthControllerWithStore creates a controller backed by an explicit credentials store,
 // storing its OpenAI OAuth records under stateRoot — the state root whose auth/<instance>.json
 // the registry resolves credentials from (the hub passes its registry's state root, see
@@ -169,10 +204,10 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 	// A nil store should never happen in production (main.go always supplies
 	// one). Fall back to the on-disk default store — the same path
 	// newHubAuthController uses — rather than a path-less store whose writes
-	// would silently no-op and lose credentials.
-	if store == nil {
-		store, _ = credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
-	}
+	// would silently no-op and lose credentials. hubCredentialStore is that
+	// resolution, and the server constructor resolves it once so every
+	// credential surface gets this same store rather than its own answer.
+	store = hubCredentialStore(stateRoot, store)
 	c := &hubAuthController{
 		stateDir:             stateDir,
 		creds:                store,
