@@ -464,9 +464,13 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-    expect.objectContaining({ params: { ref } }),
-  ]);
+  // forceStop writes its cancellation durably before the RPC, so the call can
+  // land after the click resolves; wait for it rather than racing the write.
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      expect.objectContaining({ params: { ref } }),
+    ]),
+  );
   expect(
     (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
   ).toBe(true);
@@ -517,9 +521,13 @@ test.each(["subagent", "fork"])("a nested %s session still offers Force stop and
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  const toasts = await screen.findAllByText("Couldn't force stop session: no direct daemon ownership claim");
+  // The refused stop has settled once the confirm button is usable again. The
+  // toast alone cannot say so: one from an earlier variant can still be up.
+  await waitFor(() =>
+    expect(
+      (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
+    ).toBe(false),
+  );
+  const toasts = screen.getAllByText("Couldn't force stop session: no direct daemon ownership claim");
   expect(toasts.length).toBeGreaterThanOrEqual(1);
-  expect(
-    (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
-  ).toBe(false);
 });
