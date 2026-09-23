@@ -122,6 +122,8 @@ var jobtools_jobTypes = []jobstore.JobType{jobstore.JobShell, "bogus"}
 var jobtools_statuses = []jobstore.Status{
 	jobstore.StatusRunning,
 	jobstore.StatusCompleted,
+	jobstore.StatusCommandExitedNonzero,
+	jobstore.StatusCommandKilled,
 	jobstore.StatusFailed,
 	jobstore.StatusCancelled,
 	jobstore.StatusStopped,

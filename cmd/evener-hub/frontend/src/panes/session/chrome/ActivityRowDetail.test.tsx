@@ -286,6 +286,16 @@ describe("ActivityRowDetail", () => {
     expect(screen.getByText(`running 12s · 512b · started ${localHHMM("2026-08-05T14:58:00Z")}`)).toBeTruthy();
   });
 
+  test("a legacy terminal failed row states the display word in its meta", () => {
+    render(
+      <ActivityRowDetail
+        row={jobRow({ status: "failed", reason: "exit_nonzero", exitCode: 2, outputBytes: 512 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText("Command failed · exit 2 · 512b")).toBeTruthy();
+  });
+
   test("live delegate row meta uses stable timing and quiet evidence", () => {
     render(
       <ActivityRowDetail

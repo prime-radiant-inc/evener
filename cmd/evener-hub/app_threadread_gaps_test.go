@@ -84,7 +84,7 @@ func TestDelegateJobIDFromRawAllEmpty(t *testing.T) {
 
 // TestIsTerminalHistoricalJobStatusTerminal covers the terminal statuses.
 func TestIsTerminalHistoricalJobStatusTerminal(t *testing.T) {
-	for _, status := range []string{"completed", "failed", "cancelled", "stopped", "exhausted"} {
+	for _, status := range []string{"completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed"} {
 		if !isTerminalHistoricalJobStatus(status) {
 			t.Fatalf("isTerminalHistoricalJobStatus(%q) = false, want true", status)
 		}

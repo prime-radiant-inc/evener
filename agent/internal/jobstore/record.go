@@ -21,16 +21,27 @@ type Status string
 const (
 	StatusRunning   Status = "running"
 	StatusCompleted Status = "completed"
-	StatusFailed    Status = "failed"
-	StatusCancelled Status = "cancelled"
-	StatusStopped   Status = "stopped"
-	StatusExhausted Status = "exhausted"
+	// StatusCommandExitedNonzero is the terminal state of a job whose
+	// supervised command ran to a reaped exit and reported failure: the job
+	// system did its work (launch, supervision, capture), the COMMAND is
+	// what failed. StatusFailed is reserved for the job system's own
+	// failures, so this vocabulary keeps "the job ran a command that
+	// failed" apart from "the job failed".
+	StatusCommandExitedNonzero Status = "command_exited_nonzero"
+	// StatusCommandKilled is the companion: the job system reaped the
+	// process fine, but the command was terminated by a signal before it
+	// could exit on its own. The reason attr carries the signal name.
+	StatusCommandKilled Status = "command_killed"
+	StatusFailed        Status = "failed"
+	StatusCancelled     Status = "cancelled"
+	StatusStopped       Status = "stopped"
+	StatusExhausted     Status = "exhausted"
 )
 
 // IsTerminal reports whether the status means no further runtime work is expected.
 func (s Status) IsTerminal() bool {
 	switch s {
-	case StatusCompleted, StatusFailed, StatusCancelled, StatusStopped, StatusExhausted:
+	case StatusCompleted, StatusCommandExitedNonzero, StatusCommandKilled, StatusFailed, StatusCancelled, StatusStopped, StatusExhausted:
 		return true
 	default:
 		return false

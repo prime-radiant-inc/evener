@@ -1011,6 +1011,52 @@ describe("job rows", () => {
     expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
   });
 
+  // A command that exited nonzero or died on a signal must keep the failure
+  // signal it carried as `failed` before the status split (RoboRev round 2).
+  // The classification is the shared activity danger set (isActivityFailure),
+  // so the rail and the activity tree can never disagree about which job
+  // statuses read as failures.
+  test.each(["command_exited_nonzero", "command_killed", "failed", "exhausted"] as const)(
+    "a %s job row renders the failure signal",
+    (status) => {
+      render(<RailRow node={{ ...jobRailNode({ status }), active: false }} info={info()} actions={actions()} />);
+      expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    },
+  );
+
+  test("a cleanly finished job row stays quiet (no signal dot)", () => {
+    render(
+      <RailRow node={{ ...jobRailNode({ status: "completed" }), active: false }} info={info()} actions={actions()} />,
+    );
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+  });
+
+  test("a command-outcome job row states the card's display words, not raw snake_case", () => {
+    const node = {
+      ...jobRailNode({ status: "command_exited_nonzero", command: "go test ./...", intent: "Find the failure" }),
+      active: false,
+    };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
+    // The hover tooltip carries the same display words.
+    expect(screen.getByTitle("go test ./... · Find the failure · Command failed")).toBeTruthy();
+  });
+
+  test("pre-existing statuses keep their raw words in the status line", () => {
+    const node = { ...jobRailNode({ status: "completed", command: "make check" }), active: false };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("completed");
+  });
+
+  test("a legacy failed job row joins the display words by its reason", () => {
+    const node = {
+      ...jobRailNode({ status: "failed", reason: "exit_nonzero", command: "go test ./..." }),
+      active: false,
+    };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
+  });
+
   test("renders a separate completed-jobs disclosure", () => {
     const toggle = vi.fn();
     render(

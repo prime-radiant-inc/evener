@@ -427,6 +427,41 @@ func TestDefUpdateGoalShape(t *testing.T) {
 	}
 }
 
+func TestDefJobListAdvertisesCommandOutcomeStatuses(t *testing.T) {
+	def := DefJobList()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("job_list properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	status, ok := props["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("job_list missing status property")
+	}
+	items, ok := status["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("job_list status items = %T, want map[string]any", status["items"])
+	}
+	enum, ok := items["enum"].([]any)
+	if !ok {
+		t.Fatalf("job_list status enum = %T, want []any", items["enum"])
+	}
+	got := map[string]bool{}
+	for _, value := range enum {
+		if s, ok := value.(string); ok {
+			got[s] = true
+		}
+	}
+	// The jobs tool's filter (jobStatusArrayArg) accepts both statuses; the
+	// declared schema must advertise them or a caller filtering on the new
+	// outcomes is rejected before the handler ever runs.
+	if !got["command_exited_nonzero"] || !got["command_killed"] {
+		t.Fatalf("job_list status enum = %v, want command_exited_nonzero and command_killed", enum)
+	}
+	if !strings.Contains(def.Description, "command_exited_nonzero") || !strings.Contains(def.Description, "command_killed") {
+		t.Fatalf("job_list description must name the command-outcome statuses: %q", def.Description)
+	}
+}
+
 func TestDefDelegateSendDescribesContextualCallerRoute(t *testing.T) {
 	def := DefDelegateSend()
 	props := def.Parameters["properties"].(map[string]any)
