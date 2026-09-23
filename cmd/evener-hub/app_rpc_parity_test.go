@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -804,6 +805,98 @@ func TestSessionResumeResumeDeletionFailureKeepsDeletionOutcome(t *testing.T) {
 	if data.ClientMutationID != verbatim {
 		t.Fatalf("the deletion names clientMutationId %q, want the caller's verbatim %q: an unnamed deletion must be stamped, not left uncorrelated (wire=%+v)",
 			data.ClientMutationID, verbatim, wire)
+	}
+}
+
+// TestResumeSiblingAliasDeletionIsNotTheCallersToClaim pins the alias scope of
+// that rule, in two halves that share one production resume.
+//
+// A resume fences the requested target and then every alias of its ownership
+// group (resumeThreadLockedLaunch / deletionFenceErrorForGroup), and it reports
+// the first alias it finds deleted, so a resume failure can name a SIBLING alias
+// rather than the target this mutation addressed. First this test drives the real
+// auto-resume with only the sibling deleted and asserts the refusal it produces
+// names the sibling -- the evidence that the shape is reachable, not hypothetical.
+// Then it feeds that real refusal to the mutation boundary
+// (mutationResumeFailureError) and asserts the mutation keeps the blocked-unknown
+// envelope: a sibling's deletion is not the caller's to reconcile, so the record
+// is retained rather than settled as orphaned on a target that may still exist.
+//
+// The requested-target half of the contrast is covered end-to-end by
+// TestSessionResumeResumeDeletionFailureKeepsDeletionOutcome.
+func TestResumeSiblingAliasDeletionIsNotTheCallersToClaim(t *testing.T) {
+	const verbatim = " mutation-padded "
+
+	var sessionID string
+	cfg, sid, _ := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: params.Ref},
+			}}, nil
+		})
+	})
+	sessionID = sid
+	ref := "local:" + sessionID
+	sibling := identifier.MustNewSessionID()
+
+	// One recovery group holds the requested session and a sibling alias of it, so
+	// the resume's group fence covers both.
+	cfg.ResumeLocks = hubcore.NewResumeLocks()
+	cfg.ResumeLocks.PersistForceStop([]string{sibling, sessionID}, sessionID)
+
+	server, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer server.Close()
+
+	// Only the SIBLING alias is deleted; the requested target is not. The
+	// requested target's own fence therefore passes and the group fence is what
+	// fails the resume.
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+		Ref:      "local:" + sibling,
+		ThreadID: sibling,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg.DeletionStore = store
+
+	// The production auto-resume, addressed to the requested target, fails on the
+	// sibling alias's deletion.
+	_, err = hubThreadAutoResume(context.Background(), cfg, web.sources, appwire.ThreadResumeParams{Ref: ref})
+	if err == nil {
+		t.Fatal("the auto-resume reported success although the sibling alias is deleted")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("auto-resume error %T=%v, want a WireError", err, err)
+	}
+	// The resume really failed on the SIBLING's deletion, not the requested
+	// target's: the refusal names the sibling alias.
+	if want := "target has been deleted: local:" + sibling; wire.Message != want {
+		t.Fatalf("auto-resume refusal message = %q, want %q -- the resume's group fence must be the one that failed (wire=%+v)", wire.Message, want, wire)
+	}
+
+	// The mutation boundary must not claim that sibling deletion for the caller.
+	got := mutationResumeFailureError(cfg, ref, "", verbatim, err)
+	var gotWire appwire.WireError
+	if !errors.As(got, &gotWire) {
+		t.Fatalf("mutation failure %T=%v, want a WireError", got, got)
+	}
+	data, ok := gotWire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("wire data %#v is not appwire.ErrorData", gotWire.Data)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown || data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("a sibling-alias deletion must not settle the caller's record as its own deleted target: outcome=%q retryDisposition=%q, want unknown/blocked (wire=%+v)",
+			data.MutationOutcome, data.RetryDisposition, gotWire)
+	}
+	if data.ClientMutationID != verbatim {
+		t.Fatalf("the blocked outcome names clientMutationId %q, want the caller's verbatim %q (wire=%+v)", data.ClientMutationID, verbatim, gotWire)
 	}
 }
 

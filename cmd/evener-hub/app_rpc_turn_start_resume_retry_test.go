@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 )
 
 // TestHubRPCTurnStartAfterSuccessfulResumeStaysCorrelated pins what a
@@ -1580,6 +1581,9 @@ func TestMutationResumeFailureError(t *testing.T) {
 	const verbatim = " mutation-padded "
 	const normalized = "mutation-padded"
 
+	target := identifier.MustNewSessionID()
+	ref := localAppRef(target)
+
 	deletion := func(id string) error {
 		return appwire.WireError{
 			Code:    appwire.CodeUnavailable,
@@ -1593,34 +1597,74 @@ func TestMutationResumeFailureError(t *testing.T) {
 		}
 	}
 
+	// A store with nothing recorded stands for the sibling-alias case: the resume
+	// reported a deletion, but not of the target this mutation addressed.
+	storeFor := func(recordTarget bool) hubcore.WebConfig {
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recordTarget {
+			if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+				Ref:      ref,
+				ThreadID: target,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return hubcore.WebConfig{DeletionStore: store}
+	}
+
 	cases := []struct {
 		name            string
 		callerID        string
 		resumeErr       error
+		recordTarget    bool
+		nilStore        bool
 		wantID          string
 		wantOutcome     appwire.MutationOutcome
 		wantDisposition appwire.RetryDisposition
 	}{
 		{
-			name:            "an id-less resume deletion is stamped with the caller's verbatim id",
+			name:            "a deletion of the requested target keeps the deletion outcome, named for the caller",
+			callerID:        verbatim,
+			resumeErr:       deletion(""),
+			recordTarget:    true,
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "a deletion of the requested target is named with the caller's verbatim id even when the resume named the normalized form",
+			callerID:        verbatim,
+			resumeErr:       deletion(normalized),
+			recordTarget:    true,
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "a deletion of the requested target is settled for this caller whatever the resume's error named",
+			callerID:        verbatim,
+			resumeErr:       deletion("some-other-mutation"),
+			recordTarget:    true,
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "a sibling-alias deletion stays blocked-unknown",
 			callerID:        verbatim,
 			resumeErr:       deletion(""),
 			wantID:          verbatim,
-			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
-			wantDisposition: appwire.RetryDispositionNone,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
 		},
 		{
-			name:            "a resume deletion naming the caller's normalized id adopts the verbatim id",
+			name:            "a deletion with no store to confirm the requested target stays blocked-unknown",
 			callerID:        verbatim,
-			resumeErr:       deletion(normalized),
-			wantID:          verbatim,
-			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
-			wantDisposition: appwire.RetryDispositionNone,
-		},
-		{
-			name:            "a resume deletion naming a different mutation stays blocked-unknown",
-			callerID:        verbatim,
-			resumeErr:       deletion("some-other-mutation"),
+			resumeErr:       deletion(""),
+			nilStore:        true,
 			wantID:          verbatim,
 			wantOutcome:     appwire.MutationOutcomeUnknown,
 			wantDisposition: appwire.RetryDispositionBlocked,
@@ -1629,6 +1673,7 @@ func TestMutationResumeFailureError(t *testing.T) {
 			name:            "an ordinary resume failure stays blocked-unknown",
 			callerID:        verbatim,
 			resumeErr:       appwire.InternalError("resume failed for an unrelated reason"),
+			nilStore:        true,
 			wantID:          verbatim,
 			wantOutcome:     appwire.MutationOutcomeUnknown,
 			wantDisposition: appwire.RetryDispositionBlocked,
@@ -1637,13 +1682,18 @@ func TestMutationResumeFailureError(t *testing.T) {
 			name:      "an empty caller id hands the resume failure back unchanged",
 			callerID:  "",
 			resumeErr: appwire.InternalError("resume failed for an unrelated reason"),
+			nilStore:  true,
 			wantID:    "",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := mutationResumeFailureError(tc.callerID, tc.resumeErr)
+			cfg := hubcore.WebConfig{}
+			if !tc.nilStore {
+				cfg = storeFor(tc.recordTarget)
+			}
+			got := mutationResumeFailureError(cfg, ref, "", tc.callerID, tc.resumeErr)
 			if tc.callerID == "" {
 				if !errors.Is(got, tc.resumeErr) {
 					t.Fatalf("an empty caller id must return the failure unchanged, got %v", got)
@@ -1698,8 +1748,12 @@ func TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome(t *testing.T) {
 		// resolveErr, when set, fails source resolution so the handler resumes
 		// from the pre-dispatch site; otherwise the source's startTurn fails
 		// session-unavailable and the handler resumes after the attempt.
-		resolveErr      error
-		resumeErr       error
+		resolveErr error
+		resumeErr  error
+		// recordTarget records the caller's requested target as deleted. Without
+		// it the resume's deletion (if any) names a sibling alias of the ownership
+		// group, which is not this caller's to reconcile.
+		recordTarget    bool
 		wantID          string
 		wantOutcome     appwire.MutationOutcome
 		wantDisposition appwire.RetryDisposition
@@ -1708,6 +1762,7 @@ func TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome(t *testing.T) {
 		{
 			name:            "post-attempt resume failing on an id-less deletion keeps the deletion",
 			resumeErr:       deletion(""),
+			recordTarget:    true,
 			wantID:          verbatim,
 			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
 			wantDisposition: appwire.RetryDispositionNone,
@@ -1717,22 +1772,25 @@ func TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome(t *testing.T) {
 			name:            "pre-dispatch resume failing on an id-less deletion keeps the deletion",
 			resolveErr:      appwire.SessionUnavailable("session has exited"),
 			resumeErr:       deletion(""),
+			recordTarget:    true,
 			wantID:          verbatim,
 			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
 			wantDisposition: appwire.RetryDispositionNone,
 			wantStartCalls:  0,
 		},
 		{
-			name:            "a resume deletion naming the caller's normalized id adopts the verbatim id",
+			name:            "a resume deletion of the caller's target is named with the verbatim id even when the resume named the normalized form",
 			resumeErr:       deletion(normalized),
+			recordTarget:    true,
 			wantID:          verbatim,
 			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
 			wantDisposition: appwire.RetryDispositionNone,
 			wantStartCalls:  1,
 		},
 		{
-			name:            "a resume deletion naming a different mutation stays blocked-unknown",
-			resumeErr:       deletion("some-other-mutation"),
+			name:            "a resume deletion of a sibling alias stays blocked-unknown",
+			resumeErr:       deletion(""),
+			recordTarget:    false,
 			wantID:          verbatim,
 			wantOutcome:     appwire.MutationOutcomeUnknown,
 			wantDisposition: appwire.RetryDispositionBlocked,
@@ -1790,14 +1848,36 @@ func TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome(t *testing.T) {
 				}
 				return source, nil
 			}
+			// The store decides whether the deletion the resume reported is the
+			// caller's own target's: it starts empty (the attempt's own fence must
+			// pass) and the resume records the deletion when this case wants it to
+			// be the caller's (see mutationResumeFailureError).
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
 			resumeCalls := 0
 			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
 				resumeCalls++
+				// The target is deleted at the resume: after the attempt's own
+				// deletion fence passed and before the resume (or, in production,
+				// its fences) reads the store. With recordTarget the deletion is
+				// the caller's own target's, so the caller reconciles it; without
+				// it the resume's deletion stands for a sibling alias of the
+				// ownership group, which is not this caller's to claim.
+				if tc.recordTarget {
+					if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+						Ref:      ref,
+						ThreadID: sessionID,
+					}}); err != nil {
+						t.Fatalf("record the deletion: %v", err)
+					}
+				}
 				return appwire.ThreadResumeResponse{}, tc.resumeErr
 			}
 
-			server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
-			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+			server := newHubAppServer(hubcore.WebConfig{Past: past, DeletionStore: store}, appsource.NewRegistry())
+			_, err = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
 				Ref:              ref,
 				ClientMutationID: verbatim,
 				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},

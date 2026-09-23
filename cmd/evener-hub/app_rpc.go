@@ -374,34 +374,38 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 // mutationResumeFailureError reports a resume failure the way the mutation that
 // needed the resume must see it.
 //
-// A resume that failed because the target was deleted is not an unknown outcome:
-// the target the caller's mutation was addressed to is gone, and that deletion is
-// this caller's to reconcile. The deletion therefore keeps its own meaning
-// (MutationOutcomeTargetDeleted / RetryDispositionNone) and is named for this
-// caller -- an ID-LESS one stamped with the caller's id (nameTargetDeletedFailure;
-// the resume fences carry no caller id, see resumeThreadLockedLaunch, so this is
-// the common shape) and one already named in the daemon's normalized form
-// rewritten to the caller's own (adoptCallerMutationID). Without that, a mutation
+// A resume that failed because the CALLER'S TARGET was deleted is not an unknown
+// outcome: that target is gone, and the deletion is this caller's to reconcile,
+// so the refusal keeps its own meaning (MutationOutcomeTargetDeleted /
+// RetryDispositionNone) and is named for this caller. Without that, a mutation
 // whose target was deleted between the failed attempt and the auto-resume would
 // come back unknown/blocked and its record would be retained rather than
 // reconciled as orphaned.
 //
-// Every other resume failure keeps exactly the blocked-unknown envelope it gets
-// today: the resume says nothing about whether the caller's own mutation was
-// applied, and a deletion that names a DIFFERENT mutation is not this caller's to
-// settle -- naming it would let this caller's dispatcher settle that other
-// caller's record as orphaned. Only a target deletion gets this treatment; no
-// other error acquires an id here.
-func mutationResumeFailureError(clientMutationID string, resumeErr error) error {
+// A resume fences TWO sets, however, and only the first is this caller's target.
+// resumeThreadLockedLaunch fences the requested target alone and then every alias
+// of its ownership group (deletionFenceErrorForGroup), and it reports the first
+// alias it finds deleted. Since the requested target's own fence runs first, a
+// group-fence failure the mutation sees is by construction about a SIBLING alias
+// -- another name of the session, not the target the caller addressed (see
+// deletionFenceErrorForGroup's doc and the force-stop path's identical
+// sibling-alias fence). Settling the caller's record as orphaned on a sibling's
+// deletion would discard a mutation addressed to a target that may still exist.
+//
+// The decision therefore asks the fence every admission path already asks --
+// deletionFenceError, the single-target fence, which answers for the requested
+// target and names the caller's own id -- instead of trusting whichever alias the
+// resume reported. When it answers, that refusal is returned (the deletion, named
+// for this caller, with its own outcome); when it does not, the failure keeps
+// exactly the blocked-unknown envelope it gets today, as does every non-deletion
+// resume failure. Nothing here touches the id the daemon stored.
+func mutationResumeFailureError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string, resumeErr error) error {
 	if clientMutationID == "" {
 		return resumeErr
 	}
 	if isTargetDeletedError(resumeErr) {
-		if errorNamesClientMutation(resumeErr, clientMutationID) {
-			return adoptCallerMutationID(resumeErr, clientMutationID)
-		}
-		if named := nameTargetDeletedFailure(clientMutationID, resumeErr); named != nil {
-			return named
+		if own := deletionFenceError(cfg, ref, threadID, clientMutationID); own != nil {
+			return own
 		}
 	}
 	return blockedUnknownMutationError(clientMutationID, resumeErr)
@@ -1504,7 +1508,7 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-				return appwire.TurnStartResponse{}, mutationResumeFailureError(params.ClientMutationID, resumeErr)
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 			}
 			return retryAfterResume()
 		}
@@ -1525,7 +1529,7 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-			return appwire.TurnStartResponse{}, mutationResumeFailureError(params.ClientMutationID, resumeErr)
+			return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 		}
 		return retryAfterResume()
 	})
