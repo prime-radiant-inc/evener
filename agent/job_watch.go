@@ -6246,6 +6246,7 @@ func writeJobNotificationWatchEvent(b *strings.Builder, data events.JobFinishedD
 	writeWatchFrameOptionalField(b, "job_type", data.JobType)
 	writeWatchFrameOptionalField(b, "status", data.Status)
 	writeWatchFrameOptionalField(b, "reason", data.Reason)
+	writeWatchFrameOptionalField(b, "intent", data.Intent)
 	if data.ExitCode != nil {
 		writeWatchFrameOptionalField(b, "exit_code", strconv.Itoa(*data.ExitCode))
 	}

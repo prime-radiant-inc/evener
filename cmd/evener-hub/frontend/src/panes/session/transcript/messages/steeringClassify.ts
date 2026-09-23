@@ -453,9 +453,11 @@ function terminalJobTitle(status: string, reason: string, exitCode?: number): st
     if (trimmedReason.startsWith("killed_by_signal")) return "Command killed";
   }
   // The glyph that tones this frame error sits in an aria-hidden seat, so
-  // the title is the only failure text a screen reader reaches — a nonzero
-  // exit under a "completed" status must still name the command's failure.
-  if (status === "completed" && exitCode !== undefined && exitCode !== 0) return "Command failed";
+  // the title is the only failure text a screen reader reaches — a real
+  // nonzero exit must still name the command's failure, whatever the
+  // status word. -1 is the signalled-not-exited sentinel (not a shell
+  // code), so stopped/cancelled frames keep their status titles.
+  if (exitCode !== undefined && exitCode !== 0 && exitCode !== -1) return "Command failed";
   return `Job ${status}`;
 }
 

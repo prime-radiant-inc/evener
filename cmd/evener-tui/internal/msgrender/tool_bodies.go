@@ -268,7 +268,7 @@ func delegateBody(args ToolArgs, output string, width int) string {
 }
 
 func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
-	status := transcript.SubagentDisplayStatus(run)
+	status := transcript.JobStatusDisplay(transcript.SubagentDisplayStatus(run))
 	if status == "" {
 		status = "running"
 	}

@@ -317,6 +317,26 @@ Job job_matrix ${status}.
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({ tone, secondary });
 });
 
+test("a real nonzero exit under an unrecognized status titles the command's failure", () => {
+  const block = `<job-notification job_id="job_mystery_exit" job_type="shell" status="mystery" exit_code="7">
+Job job_mystery_exit mystery.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Command failed",
+    tone: "error",
+  });
+});
+
+test("the signalled -1 sentinel keeps the status-only title", () => {
+  const block = `<job-notification job_id="job_stopped" job_type="shell" status="stopped" reason="stopped_by_parent" exit_code="-1">
+Job job_stopped stopped.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job stopped",
+    tone: "warning",
+  });
+});
+
 test("explicit failure keeps a neutral secondary without compacting malformed exit text", () => {
   const block = `<job-notification job_id="job_bad_exit" job_type="shell" status="failed" reason="wait_failed" exit_code="7x">
 Job job_bad_exit failed.
