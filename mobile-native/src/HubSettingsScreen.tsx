@@ -24,52 +24,48 @@ import {
 	friendlyErrorMessage,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import {
-	isReady,
-	useConnectionDisplay,
-	useLiveReadiness,
-	useRenderClient,
-	whenReady,
-} from "./connectionDisplay";
+import { isReady, whenReady } from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
+import {
+	ConnectionWall,
+	HUB_NO_LONGER_SELECTED,
+	useRetainedScreenConnection,
+} from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
 // A mounted screen re-keyed to another hub is a fresh screen: the
 // reconnect-retention state below - the banner's everReady, the last
-// client a retry's gap renders through, the recovered-overview read - belongs
-// to the hub it was built for, and none of it may survive a hub the route now
-// names. React Navigation can update a mounted instance's params (setParams on
-// a focused screen is this app's own idiom - see
-// KeybindingPreferencesScreen), so the body is keyed to the hub id and a
-// re-key remounts it whole.
+// client a retry's gap renders through, the recovered-overview read -
+// belongs to the hub it was built for, and a re-key remounts the body
+// whole (the keyed wrapper's own rationale: useRetainedScreenConnection's
+// doc).
 export function HubSettingsScreen(props: Props) {
 	return <HubSettingsScreenBody key={props.route.params.hubId} {...props} />;
 }
 
 function HubSettingsScreenBody({ route, navigation }: Props) {
-	const { activeProfile, client, state, fatal, retry } = useConnection();
-	const display = useConnectionDisplay(activeProfile?.id, state, fatal);
-	const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
-	// See PluginsScreen.tsx's identical comment: a manual retry's not-yet-
-	// ready replacement client never displaces the previous one. Scoped to
-	// the active hub: see useRenderClient's own doc.
-	const renderClient = useRenderClient(client, state, activeProfile?.id);
+	const {
+		activeProfile,
+		state,
+		retry,
+		display,
+		canUseConnection,
+		renderClient,
+	} = useRetainedScreenConnection(route.params.hubId);
 	if (activeProfile?.id !== route.params.hubId)
-		return (
-			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
-		);
+		return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	if (display === "wall" || !renderClient)
 		return (
-			<View style={{ padding: 20 }}>
-				<Copy>Connect to {activeProfile.name} to view hub settings.</Copy>
-				<Action onPress={retry}>Reconnect</Action>
-			</View>
+			<ConnectionWall
+				hubName={activeProfile.name}
+				purpose="view hub settings"
+				onReconnect={retry}
+			/>
 		);
 	return (
 		<>

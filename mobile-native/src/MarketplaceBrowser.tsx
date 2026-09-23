@@ -24,7 +24,6 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ConnectionStatus } from "./ConnectionStatus";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import {
   PLUGIN_MUTATION_BUSY,
@@ -38,6 +37,7 @@ import {
   catalogToBrowse,
   refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
+import { ModalConnectionStatus } from "./retainedScreen";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -681,10 +681,7 @@ export function AddMarketplace({
           </View>
           <Action onPress={onClose}>Cancel</Action>
         </View>
-        {/* The native modal covers the banner the browser shows behind it,
-         * so the status and the manual reconnect live here while this form
-         * is open. */}
-        {connectionState !== "ready" ? <ConnectionStatus /> : null}
+        <ModalConnectionStatus connectionState={connectionState} />
         <KeyboardAvoidingView
           style={styles.fill}
           enabled={Platform.OS === "android"}
