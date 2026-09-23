@@ -4,11 +4,14 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // TestEvenerLaunchCheckDeadlineDoesNotWaitForAnOrphanedPipeHolder pins that the
@@ -87,6 +90,53 @@ wait
 				releaseGrandchild()
 				<-done
 				t.Fatal("launch-check did not return after its context ended while an orphaned grandchild held its output pipe")
+			}
+		})
+	}
+}
+
+// TestEvenerLaunchCheckSuccessSurvivesAnOrphanedPipeHolder is the other side
+// of the WaitDelay bound: a check that answered and exited 0 while leaving a
+// child on its output pipe still answered. Once the delay closes the pipe,
+// exec reports ErrWaitDelay over the complete output, and that must read as
+// the response it is, not as a failed check quoting its own JSON.
+func TestEvenerLaunchCheckSuccessSurvivesAnOrphanedPipeHolder(t *testing.T) {
+	t.Parallel()
+	response := fmt.Sprintf(`{"protocol":%q,"launch_flags":["%s"],"models":[{"provider":"openai","model":"gpt-5"}]}`, appwire.ProtocolVersion, requiredLaunchFlag)
+	answersAndOrphans := "#!/bin/sh\n" +
+		"dir=$(dirname \"$0\")\n" +
+		"{ exec 3<\"$dir/release\"; cat <&3; } &\n" +
+		"printf '%s\\n' '" + response + "'\n"
+	for name, call := range map[string]func(evenerBinary string) error{
+		"validate": func(evenerBinary string) error {
+			return validateEvenerLaunchContract(context.Background(), evenerBinary, "openai/gpt-5", nil)
+		},
+		"models": func(evenerBinary string) error {
+			resp, err := listEvenerLaunchModelContract(context.Background(), evenerBinary, nil)
+			if err == nil && (len(resp.Data) != 1 || resp.Data[0].Model != "gpt-5") {
+				return fmt.Errorf("models = %+v, want the one the check answered", resp.Data)
+			}
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			evenerBinary := filepath.Join(dir, "fake-evener")
+			writeFakeEvener(t, evenerBinary, answersAndOrphans)
+			release := filepath.Join(dir, "release")
+			if err := syscall.Mkfifo(release, 0o600); err != nil {
+				t.Fatalf("mkfifo: %v", err)
+			}
+			// Held read-write so neither side's open blocks; closing it at the
+			// end ends the orphan.
+			releaseEnd, err := os.OpenFile(release, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatalf("open %s: %v", release, err)
+			}
+			t.Cleanup(func() { _ = releaseEnd.Close() })
+			if err := call(evenerBinary); err != nil {
+				t.Fatalf("a check that answered and exited 0 was reported as: %v", err)
 			}
 		})
 	}
