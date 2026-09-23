@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/evener/envvars"
 )
 
 const (
@@ -29,24 +31,63 @@ const (
 	sessionTmpLeafMode = 0o777 | os.ModeSticky
 )
 
-// worldTempBases are the OS-aware, world-usable host temp bases a session temp
-// container may be created in, in preference order. os.TempDir() is deliberately
-// NOT among them: on macOS it is the per-user 0700 directory under
+// defaultWorldTempBases are the OS-aware, world-usable host temp bases a session
+// temp container may be created in, in preference order. os.TempDir() is
+// deliberately NOT among them: on macOS it is the per-user 0700 directory under
 // /var/folders/..., which is precisely the unwritable temp this container
 // replaces, and on Linux an ambient TMPDIR (systemd PrivateTmp, a container
 // image, a user's ~/tmp) can be private for the same reason. A base must already
 // exist and be a world-writable sticky directory to be selected.
-var worldTempBases = []string{"/tmp", "/var/tmp"}
+var defaultWorldTempBases = []string{"/tmp", "/var/tmp"}
+
+// testingWorldTempBases, when set, replaces the bases outright, ahead of the
+// environment. See SetWorldTempBasesForTesting.
+var testingWorldTempBases *[]string
 
 // SetWorldTempBasesForTesting replaces the world-usable host temp bases container
 // provisioning walks, returning a restore func. It exists so a test can point the
 // container at a base it owns — or at one that deliberately cannot serve — instead
 // of depending on the machine's /tmp, which AGENTS.md's determinism rule forbids
-// for a default test. Production never calls it.
+// for a default test. It outranks EVENER_HOST_TEMP_BASES, which a test binary
+// exports for the evener processes it starts. Production never calls it.
 func SetWorldTempBasesForTesting(bases []string) (restore func()) {
-	old := worldTempBases
-	worldTempBases = append([]string(nil), bases...)
-	return func() { worldTempBases = old }
+	old := testingWorldTempBases
+	replacement := append([]string(nil), bases...)
+	testingWorldTempBases = &replacement
+	return func() { testingWorldTempBases = old }
+}
+
+// worldTempBaseCandidates lists the host temp bases in force: a test's
+// replacement, else the list EVENER_HOST_TEMP_BASES names, else the defaults.
+// Each candidate still has to pass validWorldTempBase before it is used, exactly
+// as a default does.
+//
+// A variable that is set but malformed is an error, never a quiet return to the
+// defaults: the variable exists to keep a process's containers and its startup
+// sweep out of /tmp and /var/tmp, so a typo that sent them back there would
+// defeat it silently. Set-but-empty is malformed too, rather than meaning "no
+// bases": a process that should mint no container anywhere has no use for it.
+func worldTempBaseCandidates() ([]string, error) {
+	if testingWorldTempBases != nil {
+		return *testingWorldTempBases, nil
+	}
+	value, set := envvars.EVENERHostTempBases.LookupEnv()
+	if !set {
+		return defaultWorldTempBases, nil
+	}
+	if strings.TrimSpace(value) == "" {
+		return nil, fmt.Errorf("sandbox: %s is set but names no base; unset it to use %s", envvars.EVENERHostTempBases.Name, strings.Join(defaultWorldTempBases, ", "))
+	}
+	bases := filepath.SplitList(value)
+	for _, base := range bases {
+		if base == "" {
+			return nil, fmt.Errorf("sandbox: %s=%q has an empty entry", envvars.EVENERHostTempBases.Name, value)
+		}
+		if !filepath.IsAbs(base) {
+			return nil, fmt.Errorf("sandbox: %s entry %q is not an absolute path", envvars.EVENERHostTempBases.Name, base)
+		}
+	}
+	return bases, nil
 }
 
 // SessionTmp is one session's temp container: an owner-controlled, world-
@@ -82,8 +123,12 @@ type SessionTmp struct {
 // leaf, the lease), and the requirement is a world-usable container *somewhere*,
 // not in one particular base. Only when no base serves does the call fail.
 func NewSessionTmp() (*SessionTmp, error) {
+	candidates, err := worldTempBaseCandidates()
+	if err != nil {
+		return nil, err
+	}
 	var failures []error
-	for _, candidate := range worldTempBases {
+	for _, candidate := range candidates {
 		base, ok := validWorldTempBase(candidate)
 		if !ok {
 			failures = append(failures, fmt.Errorf("sandbox: %q is not a world-usable host temp base", candidate))

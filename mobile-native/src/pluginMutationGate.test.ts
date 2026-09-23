@@ -82,7 +82,7 @@ describe("one plugin mutation at a time", () => {
   });
 });
 
-describe("one call reduces a gated mutation to the copy's three outcomes", () => {
+describe("one call reduces a gated mutation to the copy's four outcomes", () => {
   test("a run resolves to ran", async () => {
     const gate = createPluginMutationGate();
     await expect(

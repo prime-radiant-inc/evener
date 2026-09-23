@@ -202,3 +202,17 @@ func TestDelegateIsolation_AbsentNameDefaultsToDelegateID(t *testing.T) {
 		t.Fatalf("default lane branch = %q, want refs/heads/%s", e.Branch, reservation.delegateID)
 	}
 }
+
+func TestDescribeDelegate_InvalidNameRejectedAtStoreSeam(t *testing.T) {
+	t.Parallel()
+	for _, bad := range []string{"bad name!", "has space"} {
+		args := delegateArgs{Task: "bad label unit", Name: bad, DelegationAllowance: new(0)}
+		_, _, err := (delegateRuntime{owner: newWorktreeRepo(t).s}).describe(context.Background(), args, args.Task, args.Isolation, nil, subagentModelSelection{}, nil)
+		if err == nil {
+			t.Fatalf("describe with invalid name %q succeeded, want rejection", bad)
+		}
+		if !strings.Contains(err.Error(), "invalid_request") {
+			t.Fatalf("invalid name %q error = %v, want invalid_request", bad, err)
+		}
+	}
+}

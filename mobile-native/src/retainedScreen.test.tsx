@@ -41,3 +41,27 @@ it("the wall's Reconnect action fires the connection's own retry", () => {
 	});
 	expect(retry).toHaveBeenCalledOnce();
 });
+
+it("a fatal wall names the reason its retry cannot clear yet", () => {
+	// A fatal close (a protocol mismatch) is what the connection's own
+	// compatibility message describes, and its last word is the reconnect
+	// the wall offers - the way back once the app and hub are updated
+	// together (the fatal-retry flow ProvidersScreen's suite pins). Without
+	// the message, that retry reads as ineffective: the wall never said why
+	// nothing reconnected. The reason renders beside the action.
+	const retry = vi.fn();
+	const tree = render(
+		<ConnectionWall
+			hubName="Work hub"
+			purpose="manage plugins"
+			error="This app and hub need compatible versions. Update them together, then reconnect."
+			onReconnect={retry}
+		/>,
+	);
+	expect(renderedText(tree)).toContain(
+		"This app and hub need compatible versions. Update them together, then reconnect.",
+	);
+	expect(
+		tree.root.findAllByProps({ accessibilityLabel: "Reconnect" }),
+	).toHaveLength(1);
+});
