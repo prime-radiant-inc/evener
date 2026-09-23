@@ -1967,32 +1967,6 @@ export function createConversationStore() {
           let wireOlderCursor = conversation.olderCursor;
           const rehydrateCapped = capItems(merged.items);
           if (preserveTurnHistory && currentConvForMerge !== null) {
-            // The retained side's LIVE warning items are transients: the
-            // transcript never persists warnings, so no authoritative read
-            // can ever justify keeping one, while the merge would otherwise
-            // fold an unmatched retained warning back into the committed
-            // model — and the next row-changing frame would project it onto
-            // the screen again. A warning whose failure row the PAGE owns
-            // is retained history like any other page row (the round-31
-            // coverage rule reads exactly that), so only the non-page
-            // warnings drop.
-            const retainedTurnsForMerge = currentConvForMerge.turns.map(
-              (turn) =>
-                turn.items.some(
-                  (item) =>
-                    item.type === "warning" &&
-                    !pageOwnedIds.has(item.transcriptKey ?? item.id),
-                )
-                  ? {
-                      ...turn,
-                      items: turn.items.filter(
-                        (item) =>
-                          item.type !== "warning" ||
-                          pageOwnedIds.has(item.transcriptKey ?? item.id),
-                      ),
-                    }
-                  : turn,
-            );
             // The public merge folds accumulated page turns into the fresh
             // read with fresh-defined fields winning and older fragments
             // supplying omitted fields/items. Coverage is separate from the
@@ -2011,6 +1985,54 @@ export function createConversationStore() {
                 addIncomingToolCallId(item, freshToolCallIds);
               }
             }
+            // Two rules drop retained items before the merge, both about
+            // transients no authoritative read can justify keeping.
+            //
+            // Rule 1 — the fresh read covers a turn: on the retained side
+            // of such a turn, an item the fresh read neither re-issues
+            // nor matches is a live twin the snapshot supersedes (the
+            // response-cut contract: a frame folded during the read is in
+            // the snapshot that arrives), and the merge would otherwise
+            // keep it beside the canonical copy — under a live id with no
+            // transcript key to match, a re-served steering item used to
+            // come back as a twin, and the next row-changing frame
+            // projected both. Matched items stay (they are the merge's own
+            // fold inputs) and page items stay. Turns the fresh read does
+            // NOT carry keep everything: they are the page history this
+            // block exists to preserve, their folds run through the
+            // remembered aliases below, and their out-of-window payloads
+            // compact in the bound afterwards.
+            //
+            // Rule 2 — a retained warning outside page ownership is a
+            // transient: the transcript never persists warnings, so no
+            // authoritative read can ever justify keeping one, while the
+            // merge would otherwise fold an unmatched retained warning
+            // back into the committed model — and the next row-changing
+            // frame would project it onto the screen again. A warning
+            // whose failure row the PAGE owns is retained history like any
+            // other page row (the round-31 coverage rule reads exactly
+            // that), so only the non-page warnings drop.
+            const freshTurnIds = new Set(conversation.turns.map((turn) => turn.id));
+            const retainedTurnsForMerge = currentConvForMerge.turns.map(
+              (turn) => {
+                const afterTwins = freshTurnIds.has(turn.id)
+                  ? turn.items.filter(
+                      (item) =>
+                        pageOwnedIds.has(item.transcriptKey ?? item.id) ||
+                        freshIdentities.has(item.transcriptKey ?? item.id) ||
+                        freshIdentities.has(item.id),
+                    )
+                  : turn.items;
+                const kept = afterTwins.filter(
+                  (item) =>
+                    item.type !== "warning" ||
+                    pageOwnedIds.has(item.transcriptKey ?? item.id),
+                );
+                return kept.length === turn.items.length
+                  ? turn
+                  : { ...turn, items: kept };
+              },
+            );
             const injectedFresh = injectCompactedSkeletons(
               retainedTurnsForMerge,
               compactedTurnsCollidingWith(freshIdentities, freshToolCallIds),
