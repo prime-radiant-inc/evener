@@ -772,3 +772,24 @@ func TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot(t *testing.T) {
 		t.Fatalf("a repository-relative -overlay did not reach the hub build:\n%s", out)
 	}
 }
+
+// TestCLIShardsReadsItsOwnVariables pins the cli-shards entry point: it shards
+// cmd/evener and reads CLI_SHARD_* (the shared machinery is covered by the hub
+// and agent tests), refusing a bad value by its own name.
+func TestCLIShardsReadsItsOwnVariables(t *testing.T) {
+	bin := buildEvenerDev(t)
+	cmd := exec.Command(bin, "dev", "cli-shards")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "CLI_SHARD_COUNT=banana")...)
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), "cli-shards: CLI_SHARD_COUNT") {
+		t.Fatalf("cli-shards CLI_SHARD_COUNT=banana = %v, want exit 1 naming CLI_SHARD_COUNT:\n%s", err, out)
+	}
+	missing := exec.Command(bin, "dev", "cli-shards")
+	missing.Dir = t.TempDir()
+	missing.Env = append(os.Environ(), hubFixtureToolchainEnv(t)...)
+	if out, err := missing.CombinedOutput(); err == nil || !strings.Contains(string(out), "cli-shards: no "+filepath.Join("cmd", "evener")+" dir") {
+		t.Fatalf("cli-shards outside a checkout = %v, want a refusal naming cmd/evener:\n%s", err, out)
+	}
+}
