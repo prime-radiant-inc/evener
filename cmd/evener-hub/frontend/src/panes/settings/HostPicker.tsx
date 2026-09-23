@@ -9,7 +9,7 @@
 // renders (CredentialsHostScope says so honestly).
 import type { HostRow } from "@evener/appwire-client";
 import { isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
-import { type HostsLoadState, hostsStore, useHostsStore } from "../../stores/hosts";
+import { type HostsLoadState, hostIdentity, hostsStore, useHostsStore } from "../../stores/hosts";
 import { FormRow, Select, type SelectOption } from "../../widgets";
 import { useConnectedEffect } from "./sections/useConnectedEffect";
 import { useSettingsHost } from "./settingsHost";
@@ -28,6 +28,15 @@ export function selectableHostRows(load: HostsLoadState): HostRow[] {
  * with the load phase (see CredentialsHostScope). */
 export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
   return selectableHostRows(load).some((row) => row.name === host);
+}
+
+/** hostIdentityFor is the registry's identity for `host` (hosts.ts's
+ * hostIdentity), or null while the registry does not list it - still being read,
+ * removed, or not configured at all. Cached rows are only the current host's
+ * while this matches the identity they were read under. */
+export function hostIdentityFor(load: HostsLoadState, host: string): string | null {
+  const row = selectableHostRows(load).find((candidate) => candidate.name === host);
+  return row === undefined ? null : hostIdentity(row);
 }
 
 export function HostPicker() {

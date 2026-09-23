@@ -51,11 +51,31 @@ const HOST_ROW = instance({ name: "on-beta", providerId: "anthropic", authModes:
 
 const CONTROLLER_LIST = { instances: [CONTROLLER_ROW], availableProviders: [] };
 const HOST_LIST = { instances: [HOST_ROW], availableProviders: [] };
+// The same host answering with a newer listing after a reconnect, and a
+// different host registered under the same name.
+const RELOADED_HOST_LIST = {
+  instances: [instance({ name: "on-beta-reloaded", providerId: "anthropic", authModes: ["apiKey"] })],
+  availableProviders: [],
+};
+const REPLACED_HOST_LIST = {
+  instances: [instance({ name: "on-beta-replaced", providerId: "anthropic", authModes: ["apiKey"] })],
+  availableProviders: [],
+};
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+// A read whose answer this test releases itself, so the state under test is the
+// one while that answer is still out.
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -279,4 +299,91 @@ test("a remote selection issues no controller-scoped credential write", async ()
   await screen.findByText("on-beta");
 
   expect(fake.calls.some((call) => call.method.startsWith("evener/auth/"))).toBe(false);
+});
+
+// Medium (roborev): the read must follow the connection. useConnectedEffect's
+// `started` flag is per-effect and the effect's only dependency was `host`, so a
+// reconnect or a client swap left the partition exactly where the transition put
+// it and nothing ever re-read the host.
+test("a connection transition re-reads the selected host's own listing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByText("on-beta");
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+
+  // The connection is replaced; beta's own hub answers with a newer listing.
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => CONTROLLER_LIST);
+  replacement.on("evener/host/request", () => RELOADED_HOST_LIST);
+  await act(async () => connectionStore.getState().connect(replacement));
+
+  expect(await screen.findByText("on-beta-reloaded")).toBeTruthy();
+  expect(replacement.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+});
+
+// The concrete harm of the same gap: the transition releases the in-flight
+// read's status, so an unanswered read used to settle as the frozen-empty shape
+// - which reads as "never read" being false and "empty" being true, and the
+// panel claimed "No provider instances" although nothing had ever answered.
+test("a transition that orphans the first read never reads as 'no instances'", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  // The first read never answers; the connection is replaced underneath it.
+  deferRequest<unknown>(fake, "evener/host/request");
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => CONTROLLER_LIST);
+  replacement.on("evener/host/request", () => HOST_LIST);
+  await act(async () => connectionStore.getState().connect(replacement));
+
+  expect(screen.queryByText(/No provider instances on beta/)).toBeNull();
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+});
+
+// Medium (roborev): the partition map is keyed by NAME alone, so a host removed
+// and re-registered under the same name could render the previous
+// registration's rows - here, while the new host's own read is still out.
+test("a host re-registered under the same name never shows the previous host's rows", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", address: "a.example", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByText("on-beta");
+
+  // A DIFFERENT host now answers to "beta" (its entry, the registry's identity
+  // for the name, changed), and its read is held open.
+  const gate = deferred<unknown>();
+  fake.on("evener/host/request", () => gate.promise as never);
+  act(() => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "b.example", attached: true })] },
+    });
+  });
+
+  expect(screen.queryByText("on-beta")).toBeNull();
+
+  await act(async () => gate.resolve(REPLACED_HOST_LIST));
+  expect(await screen.findByText("on-beta-replaced")).toBeTruthy();
+  expect(screen.queryByText("on-beta")).toBeNull();
 });

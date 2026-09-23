@@ -108,6 +108,30 @@ function hostRowEqual(a: HostRow, b: HostRow | undefined): boolean {
   );
 }
 
+/** hostIdentity is the registry's identity for a host NAME: the configured
+ * entry - how the host is reached - rather than its live state. Two rows with
+ * the same identity are the same configured host; a name re-registered with a
+ * different entry, or removed, is a different registration, and anything cached
+ * under that name belongs to the old one.
+ *
+ * The live facts (attached, serverName, versions, os/arch) are deliberately NOT
+ * part of it: they are absent while a host is offline, so folding them in would
+ * report a fresh identity every time a host detaches and invalidate a listing
+ * that is still the right one. roots is canonicalised because the wire omits an
+ * empty array, so an absent and an empty roots describe the same host. */
+export function hostIdentity(row: HostRow): string {
+  return JSON.stringify([
+    row.name,
+    row.address ?? "",
+    row.user ?? "",
+    row.keyPath ?? "",
+    row.evenerPath ?? "",
+    row.configPath ?? "",
+    row.addr ?? "",
+    row.roots ?? [],
+  ]);
+}
+
 // publishReady is the one generation-guarded ready-publish fetch and refresh
 // share. A response is discarded only when a NEWER response already
 // published; the accepted decision still advances the published marker so an

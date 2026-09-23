@@ -15,6 +15,7 @@ import {
 import { createStore, useStore } from "zustand";
 import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
+import { type HostsLoadState, hostIdentity, hostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 
 export {
@@ -71,6 +72,14 @@ export interface HostInstanceState {
   writesRefused: boolean;
   loading: boolean;
   error: string | null;
+  /** The registry identity (hosts.ts's hostIdentity) these rows were read UNDER,
+   * recorded only when the read succeeded. The map is keyed by host NAME, so a
+   * name re-registered as a different host would otherwise inherit the previous
+   * registration's rows: a reader compares this against the identity the
+   * registry gives the name now and refuses to show rows they do not match.
+   * Null means no successful read under a known identity yet, which is why an
+   * unanswered read can never pass for an empty listing. */
+  readIdentity: string | null;
 }
 
 /** The empty partition, a module constant rather than a fresh literal: a host
@@ -82,6 +91,7 @@ export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
   writesRefused: false,
   loading: false,
   error: null,
+  readIdentity: null,
 });
 
 export interface HostInstancesState {
@@ -122,6 +132,38 @@ connectionStore.subscribe((state) => {
   }));
 });
 
+// A partition is cached under a host NAME, so a host removed - or re-registered
+// under the same name pointing somewhere else - must not inherit the previous
+// registration's rows. The registry is the authority for which host a name means
+// now, but only once it has answered: a registry still being read says nothing
+// about that, so invalidation waits for its ready snapshot.
+hostsStore.subscribe((state) => {
+  forgetPartitionsForRegistry(state.load);
+});
+
+/** forgetPartitionsForRegistry drops every partition whose rows were read under
+ * a registration the registry no longer lists: the name is gone (removed, or no
+ * longer configured) or its entry has changed, so the rows belong to a host this
+ * browser can no longer name. Partitions read without a known identity are left
+ * alone - an unknown identity proves no mismatch. */
+export function forgetPartitionsForRegistry(load: HostsLoadState): void {
+  if (load.phase !== "ready") return;
+  hostInstancesStore.setState((previous) => {
+    let changed = false;
+    const hosts: Record<string, HostInstanceState> = {};
+    for (const [name, partition] of Object.entries(previous.hosts)) {
+      const row = load.hosts.find((candidate) => candidate.name === name && !candidate.removed);
+      const identity = row === undefined ? null : hostIdentity(row);
+      if (row === undefined || (partition.readIdentity !== null && partition.readIdentity !== identity)) {
+        changed = true;
+        continue;
+      }
+      hosts[name] = partition;
+    }
+    return changed ? { ...previous, hosts } : previous;
+  });
+}
+
 /** hostPartition reads one host's own partition, or the empty one before that
  * host has ever been loaded. */
 export function hostPartition(state: HostInstancesState, host: string): HostInstanceState {
@@ -148,29 +190,52 @@ const hostRequestVersions = new Map<string, number>();
  * (component 07b), so the spawn form's provider setup describes the machine the
  * launch will use. The controller's host is not a partition - its rows are the
  * package store's - so this is a no-op for LOCAL_HOST and for an absent host;
- * callers read the controller's own store for those. */
-export async function fetchHost(host: string): Promise<void> {
+ * callers read the controller's own store for those.
+ *
+ * `identity` is the registry identity (hosts.ts's hostIdentity) the caller knows
+ * the name by - the settings scope passes the one the registry gives the
+ * selected host. It is recorded on a successful read and compared at the start
+ * of the next one, so rows read under a different registration are dropped
+ * rather than kept for a name that now means another host. Callers with no
+ * registry row to hand (the spawn form, the wrapped-notification refetch) omit
+ * it: an unknown identity proves no mismatch and never erases a known one. */
+export async function fetchHost(host: string, identity: string | null = null): Promise<void> {
   if (isLocalHost(host)) return;
   const client = connectionStore.getState().client;
   if (!client) return;
   const version = (hostRequestVersions.get(host) ?? 0) + 1;
   hostRequestVersions.set(host, version);
   const generation = hostInstancesStore.getState().generation;
-  setHostPartition(host, (previous) => ({ ...previous, loading: true, error: null }));
+  setHostPartition(host, (previous) => ({ ...startHostRead(previous, identity), loading: true, error: null }));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
-    setHostPartition(host, () => ({
+    setHostPartition(host, (previous) => ({
       instances: resp.instances,
       availableProviders: resp.availableProviders,
       writesRefused: resp.writesRefused ?? false,
       loading: false,
       error: null,
+      // The identity this read SUCCEEDED under, never lowered to unknown: a
+      // caller with no registry row to hand cannot erase what a caller that had
+      // one established.
+      readIdentity: identity ?? previous.readIdentity,
     }));
   } catch (err) {
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
     setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err) }));
   }
+}
+
+// startHostRead begins a read of `host`'s listing under `identity`. Rows read
+// under a DIFFERENT registry identity are not this host's, so they are dropped
+// rather than kept on screen for a name that now means something else; an
+// unknown identity on either side proves no mismatch and keeps them.
+function startHostRead(previous: HostInstanceState, identity: string | null): HostInstanceState {
+  if (previous.readIdentity !== null && identity !== null && previous.readIdentity !== identity) {
+    return { ...EMPTY_HOST_INSTANCE_STATE };
+  }
+  return previous;
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in

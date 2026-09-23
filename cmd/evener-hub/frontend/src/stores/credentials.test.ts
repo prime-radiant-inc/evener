@@ -24,6 +24,7 @@ import {
   staleListingHeld,
   useCredentialsStore,
 } from "./credentials";
+import { hostsStore } from "./hosts";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 function connectFakeClient(): FakeClient {
@@ -2615,5 +2616,52 @@ describe("notification-triggered refetch", () => {
     // keeps the old flag until something else refreshes it.
     await vi.advanceTimersByTimeAsync(250);
     expect(listSpy.mock.calls.length).toBe(readsBefore + 1);
+  });
+
+  // The partition map is keyed by NAME, so the identity a read was issued under
+  // is the only thing that says whose rows these are. A name that now means a
+  // different host must not keep the previous registration's rows on screen.
+  test("rows read under one registry identity are not kept for another", async () => {
+    const fake = connectFakeClient();
+    serveRemoteList(fake, REMOTE_LIST);
+    await fetchHost("buildbox", "entry-a");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe("entry-a");
+
+    let finish!: (value: HostForwardedResult) => void;
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const read = fetchHost("buildbox", "entry-b");
+    await Promise.resolve();
+    // The previous host's rows are gone rather than shown while this read is out.
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([]);
+
+    const replaced: InstanceListResponse = {
+      instances: [{ ...REMOTE_INSTANCE, name: "replaced-anthropic" }],
+      availableProviders: [],
+    };
+    finish(replaced as unknown as HostForwardedResult);
+    await read;
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe("entry-b");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(replaced.instances);
+  });
+
+  // Removal is the sharpest form of "this name is not that host any more", and
+  // the registry's ready snapshot is what says so. Re-registering the name later
+  // therefore starts from nothing rather than from the old registration's rows.
+  test("a removed host's partition is forgotten, so a re-registered name starts empty", async () => {
+    const fake = connectFakeClient();
+    serveRemoteList(fake, REMOTE_LIST);
+    await fetchHost("buildbox", "entry-a");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+
+    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+    expect(hostInstancesStore.getState().hosts).toEqual({});
+    hostsStore.getState().resetForTests();
   });
 });

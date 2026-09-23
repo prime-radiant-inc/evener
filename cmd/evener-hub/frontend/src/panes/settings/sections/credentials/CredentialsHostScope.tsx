@@ -14,12 +14,13 @@
 // selecting it renders that host's own refusal/state, never a fallback to the
 // controller's listing.
 import type { ReactNode } from "react";
-import { EMPTY_HOST_INSTANCE_STATE, fetchHost, useHostInstances } from "../../../../stores/credentials";
+import { useConnectionStore } from "../../../../stores/connection";
+import { fetchHost, useHostInstances } from "../../../../stores/credentials";
 import { isLocalHost } from "../../../../stores/hostRouting";
 import { useHostsStore } from "../../../../stores/hosts";
 import { EmptyState, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { HostPicker, isConfiguredHost } from "../../HostPicker";
+import { HostPicker, hostIdentityFor, isConfiguredHost } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsHostScope.module.css";
@@ -59,7 +60,7 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
       </p>
     );
   } else {
-    body = <RemoteHostInstances host={host} />;
+    body = <RemoteHostInstances host={host} identity={hostIdentityFor(load, host)} />;
   }
 
   return (
@@ -72,21 +73,30 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
 
 /** RemoteHostInstances is the read-only view of one remote host's own provider
  * listing. It reads that host's partition through useHostInstances (component
- * 07b) and re-reads it through evener/host/request when the selection changes or
- * the connection returns - the same load path the spawn form's useProviderSetup
- * uses. Nothing here writes: the shared listing renders its read-only rows. */
-function RemoteHostInstances({ host }: { host: string }) {
+ * 07b) and re-reads it through evener/host/request - the same load path the
+ * spawn form's useProviderSetup uses - whenever the selection, the registry's
+ * identity for the name, or the CONNECTION changes. Nothing here writes: the
+ * shared listing renders its read-only rows. */
+function RemoteHostInstances({ host, identity }: { host: string; identity: string | null }) {
   const state = useHostInstances(host);
-  useConnectedEffect(() => fetchHost(host), [host]);
+  const { client, state: connection } = useConnectionStore();
+  // The connection belongs in the deps because useConnectedEffect's started flag
+  // is per-effect: with `host` alone, a transition released the in-flight read's
+  // status and nothing ever re-issued it, so an unanswered read settled as an
+  // empty listing and a reconnect kept pre-disconnect rows. The identity belongs
+  // there too: a name re-registered as a different host is a different listing to
+  // read, not the cached one.
+  useConnectedEffect(() => fetchHost(host, identity), [host, identity, client, connection]);
 
   const title = `Providers on ${host}`;
-  // hostPartition returns the frozen empty partition until that host has ever
-  // been read (stores/credentials.ts), so identity against it is the honest
-  // "nothing has been read yet" test - the skeleton is shown instead of a
-  // premature "no instances" while the host's first answer is still out.
-  const neverRead = state === EMPTY_HOST_INSTANCE_STATE;
+  // Rows are this host's only when they were read under the identity the
+  // registry gives the name now. readIdentity is recorded on a SUCCESSFUL read,
+  // so an unanswered (or transition-orphaned) read never passes for an empty
+  // listing; a null identity - the registry still being read - proves no
+  // mismatch and keeps the rows already verified for this name.
+  const verified = state.readIdentity !== null && (identity === null || state.readIdentity === identity);
   const empty = state.instances.length === 0;
-  const pending = (neverRead || state.loading) && empty;
+  const pending = !verified || (state.loading && empty);
   return (
     <section className={CLASS.remote} aria-label={title}>
       <h3 className={CLASS.heading}>{title}</h3>
@@ -97,8 +107,10 @@ function RemoteHostInstances({ host }: { host: string }) {
           Couldn't read providers from {host}: {state.error}
         </p>
       )}
-      {!pending && state.error === null && empty && <EmptyState title={`No provider instances on ${host}.`} />}
-      {!empty && (
+      {verified && !pending && state.error === null && empty && (
+        <EmptyState title={`No provider instances on ${host}.`} />
+      )}
+      {verified && !empty && (
         <ProviderInstanceGroups instances={state.instances} availableProviders={state.availableProviders} readOnly />
       )}
     </section>
