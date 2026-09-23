@@ -1534,11 +1534,19 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			}
 			continue
 		}
-		handle, prior, already, contended := pool.claimRetainedScratchSlot(key, adopterID)
+		handle, prior, already, contended, dying := pool.claimRetainedScratchSlot(s, key, adopterID)
 		if hook := s.cfg.testOnly.scratchClaimResolved; hook != nil {
 			hook()
 		}
 		switch {
+		case dying:
+			// The release sealed this pool or unpublished it between the
+			// snapshot and the claim. The whole adoption reports
+			// not-installed so the caller reprovisions fresh scratch
+			// instead of proceeding on the pre-seal snapshot (rounds 18
+			// and 33), and the handle stays in the releasable map so the
+			// release path Retains what the adopter never took.
+			return false, nil, nil
 		case already && prior == adopterID:
 			if contended {
 				// The refresh's stale-claim probe proved this claim's lease
@@ -1684,15 +1692,25 @@ func (p *retainedScratchPool) scratchSlotContended(key string) bool {
 // adopterID, so no concurrent adopter can take the same lease; already reports
 // that the slot was claimed before this call, prior names by whom, and
 // contended means its lease is held in this process with no reacquired handle.
-func (p *retainedScratchPool) claimRetainedScratchSlot(key, adopterID string) (handle *sandbox.SessionScratch, prior string, already, contended bool) {
+// dying reports that the owning session's release already sealed this pool or
+// unpublished it: the claim refuses the transfer and leaves the handle in the
+// releasable map, where the release path Retains it — a claimed handle is
+// invisible to the detach's release loop, and the environment would otherwise
+// be left holding a lease on scratch the release is settling (round 34). The
+// seal and the detach both run under this same lock, so the verification is
+// atomic against the release.
+func (p *retainedScratchPool) claimRetainedScratchSlot(s *Session, key, adopterID string) (handle *sandbox.SessionScratch, prior string, already, contended, dying bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if s.retainedScratchSealed.Load() || s.retainedScratch.Load() != p {
+		return nil, "", false, false, true
+	}
 	if prior, already = p.adopted[key]; already {
 		// The contention snapshot rides this hold: a lookup after the claim
 		// would race a concurrent refresh fold flipping the mark between the
 		// two holds and misclassify the own-claim (round 16).
 		_, contended = p.contended[key]
-		return nil, prior, true, contended
+		return nil, prior, true, contended, false
 	}
 	if handle = p.handles[key]; handle != nil {
 		// Claim the transfer before the environment restore so a concurrent
@@ -1703,10 +1721,10 @@ func (p *retainedScratchPool) claimRetainedScratchSlot(key, adopterID string) (h
 		// 15).
 		delete(p.handles, key)
 		p.adopted[key] = adopterID
-		return handle, adopterID, false, false
+		return handle, adopterID, false, false, false
 	}
 	_, contended = p.contended[key]
-	return nil, "", false, contended
+	return nil, "", false, contended, false
 }
 
 // finishRetainedScratchSlot commits a claimed transfer: the handle leaves the

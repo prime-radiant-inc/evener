@@ -919,6 +919,74 @@ func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing
 	}
 }
 
+// TestScratchClaimDeclinesWhileThePoolIsSealedBeforeDetach pins round 34's
+// first Medium: the owning-slot claim was the one adoption path that never
+// revalidated the release. A claim landing in the window between the
+// release's seal and its detach took the pooled handle out of the releasable
+// map, so the detach's release loop could not Retain a handle the adopter
+// claimed — the environment was left holding a lease on scratch the release
+// was settling (the round-30 harm class). The claim must verify under its own
+// pool-lock hold that the pool is still published and unsealed, and decline
+// there, leaving the handle in the releasable map for the release path.
+func TestScratchClaimDeclinesWhileThePoolIsSealedBeforeDetach(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CLAIMSEAL1"
+	const bindingID = "b-claim-sealed"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The release has sealed but not detached: the pool is still attached
+	// and its handle still releasable, so only the claim's own verification
+	// can decline the transfer.
+	s.sealRetainedScratch()
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the owning binding over the sealed pool: %v", err)
+	}
+	if installed {
+		t.Fatalf("the adoption claimed a pooled handle over the release window: the detach could not release what the adopter took")
+	}
+	if s.retainedScratch.Load() == nil {
+		t.Fatal("fixture: the pool detached before the claim ran")
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) == filepath.Clean(retainedDir) {
+		t.Fatalf("the adoption installed the sealed pool's %q", retainedDir)
+	}
+	pool := s.retainedScratch.Load()
+	pool.mu.Lock()
+	_, releasable := pool.handles[key]
+	pool.mu.Unlock()
+	if !releasable {
+		t.Fatal("the claimed handle left the releasable map over the seal: the release path cannot Retain what the adopter took")
+	}
+	// Completing the release must reach the handle: the detach Retains every
+	// handle the declined claim left in the releasable map.
+	released := 0
+	s.cfg.testOnly.scratchDetachRetainHook = func() { released++ }
+	s.detachRetainedScratch()
+	if released != 1 {
+		t.Fatalf("the detach Retained %d handles; the declined claim's handle must reach the release path", released)
+	}
+}
+
 // TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows pins round 24's
 // first Medium: the refresh declined on a released manifest without clearing
 // the pool, so the adoption seam reading the pool right below it served the
