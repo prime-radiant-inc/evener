@@ -310,6 +310,11 @@ class Driver {
   // textarea's value, so a negative assertion made on innerText alone cannot
   // see a controller value that a pane rendered inside a field - which is
   // exactly the mistake those assertions exist to catch.
+  //
+  // The join separator is written `\\n` because this string is a template
+  // literal: a bare `\n` here becomes a REAL newline in the expression the page
+  // receives, which splits the string literal across two lines and the page
+  // answers with a SyntaxError instead of a value.
   settingsTextWithValues() {
     return evaluate(
       this.send,
@@ -317,7 +322,7 @@ class Driver {
         const el = document.querySelector("[data-testid='settings-content']");
         if (el === null) return document.body.innerText;
         const values = [...el.querySelectorAll("input, textarea, select")].map((c) => c.value ?? "");
-        return [el.innerText, ...values].join("\n");
+        return [el.innerText, ...values].join("\\n");
       })()`,
     );
   }
