@@ -13,9 +13,11 @@
    * (kata p6g8: the overflowing row visually collided with the next field).
    * No layout the app renders today makes a FormRow a flex item of a row
    * (every parent is a column or a block, and a column's items get their
-   * width from the cross axis, where this minimum does not apply), so no
-   * browser guard covers it: a case copying real markup stays green with it
-   * deleted. It keeps the widget safe to drop into a flex row. */
+   * width from the cross axis, where this minimum does not apply), so a case
+   * copying a real screen stays green with it deleted. It keeps the widget
+   * safe to drop into a flex row, and that widget contract is what the
+   * layoutguard case formrow-flex-row-item guards: real FormRow and PathField
+   * markup inside an invented flex row. */
   min-width: 0;
 }
 
