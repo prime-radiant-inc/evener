@@ -42,3 +42,15 @@ func TestGateShardSkipKeepsTheCallersSkip(t *testing.T) {
 		}
 	}
 }
+
+// TestGateShardSkipNeverMatchesEveryTest pins the empty-gate case: "|(user)"
+// has an empty alternative that matches every name, which would skip the
+// whole suite while the gate reported PASS.
+func TestGateShardSkipNeverMatchesEveryTest(t *testing.T) {
+	if got := gateShardSkip(t, "", "^TestSlow$"); got != "^TestSlow$" {
+		t.Fatalf("gate_shard_skip with no gate skip = %q, want the caller's alone", got)
+	}
+	if got := gateShardSkip(t, "", ""); got != "" {
+		t.Fatalf("gate_shard_skip with neither = %q, want empty", got)
+	}
+}

@@ -677,6 +677,15 @@ func hubFixtureRoot(t *testing.T) string {
 	return root
 }
 
+// hubFixtureToolchainEnv is the child environment a hub-shards run over
+// hubFixtureRoot needs, appended after the ambient one so it wins: a private
+// TMPDIR and survey cache, and a toolchain that resolves the fixture's own
+// go.mod rather than an ambient GOWORK, GOENV or GOFLAGS.
+func hubFixtureToolchainEnv(t *testing.T) []string {
+	t.Helper()
+	return []string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir(), "GOWORK=off", "GOENV=off", "GOFLAGS="}
+}
+
 // TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
 // it shards cmd/evener-hub under the repository root, reads HUB_SHARD_* rather
 // than the agent's variables, and names itself "hub" in its verdicts, so a gate
@@ -687,7 +696,7 @@ func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
 	runArgs := func(args []string, env ...string) (string, error) {
 		cmd := exec.Command(bin, append([]string{"dev", "hub-shards"}, args...)...)
 		cmd.Dir = workRoot
-		cmd.Env = append(os.Environ(), append([]string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir()}, env...)...)
+		cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), env...)...)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -747,7 +756,7 @@ func TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot(t *testing.T) {
 
 	cmd := exec.Command(bin, "dev", "hub-shards", "-overlay=overlay.json")
 	cmd.Dir = workRoot
-	cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir(), "HUB_SHARD_CACHE_DIR="+t.TempDir(), "HUB_SHARD_COUNT=2")
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "HUB_SHARD_COUNT=2")...)
 	out, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(out), "OVERLAY-REACHED-THE-BUILD") {
 		t.Fatalf("a repository-relative -overlay did not reach the hub build:\n%s", out)

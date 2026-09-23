@@ -26,10 +26,12 @@ GATE_TEST_RUN='^(Test|Example)'
 # gate_shard_skip GATE USER — the -skip regex a shard runner gets: the gate's
 # own skip, plus a caller's *_SHARD_SKIP as an alternative when one is set, so
 # a test the caller asked to skip stays skipped under the gate too.
+# Either side may be empty; an empty side is left out rather than joined, since
+# "|(x)" has an empty alternative that matches, and so skips, every test.
 gate_shard_skip() {
-	if [ -n "$2" ]; then
+	if [ -n "$1" ] && [ -n "$2" ]; then
 		printf '%s|(%s)' "$1" "$2"
 	else
-		printf '%s' "$1"
+		printf '%s' "$1$2"
 	fi
 }
