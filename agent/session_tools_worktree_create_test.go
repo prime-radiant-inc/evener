@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +18,8 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // These are integration tests for the manage_worktree create arm (spec §3),
@@ -167,13 +168,11 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	// When evener dev agent-shards launches this binary as a shard, the
-	// -test.run regex is handed via EVENER_SHARD_RUN_FILE (a file path) to
-	// stay under the OS argument-list limit. flag.Parse must run before
-	// flag.Set so the command-line value (absent here) does not clobber
-	// the file contents after m.Run calls flag.Parse internally.
+	// When evener dev agent-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). flag.Parse must
+	// run first so the command line's (absent) -test.run cannot clobber it.
 	flag.Parse()
-	if err := configureShardRunFile(); err != nil {
+	if err := shardrun.ConfigureRunFile(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
 		os.Exit(2)
 	}
@@ -183,10 +182,22 @@ func TestMain(m *testing.M) {
 	// macOS and whenever the fast path cannot be resolved safely.
 	fastGitDirForTest = prependFastGitToPath()
 
+	// Every root below is created inside this one, which also collects the
+	// scratch and temp containers the sessions under test retain at close.
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-agent-test-")
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		os.Exit(2)
+	}
+
 	testHome, err := os.MkdirTemp("", "evener-agent-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", testHome)
 		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
+		// The user cache dir is a session scratch base (sandbox.SweepCrashedSessionScratch
+		// walks it), and XDG_CACHE_HOME outranks HOME there, so a developer's own
+		// value would hand the tests the real cache.
+		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
 	sharedWorkspace, err := os.MkdirTemp("", "evener-agent-workspace-*")
 	if err == nil {
@@ -216,29 +227,13 @@ func TestMain(m *testing.M) {
 	if intgMCPServerDir != "" {
 		_ = os.RemoveAll(intgMCPServerDir)
 	}
+	if err := hostTemp.Discard(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
-}
-
-func configureShardRunFile() error {
-	runFile, supplied := os.LookupEnv("EVENER_SHARD_RUN_FILE")
-	if !supplied {
-		return nil
-	}
-	data, err := os.ReadFile(runFile)
-	if err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: read failed: %w", runFile, err)
-	}
-	pattern := strings.TrimSpace(string(data))
-	if pattern == "" {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: run regex is empty", runFile)
-	}
-	if _, err := regexp.Compile(pattern); err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: invalid run regex: %w", runFile, err)
-	}
-	if err := flag.Set("test.run", pattern); err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: setting test.run failed: %w", runFile, err)
-	}
-	return nil
 }
 
 func packageFixtureTempDir(t *testing.T, pattern string) string {
@@ -306,17 +301,12 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 	return wtBaseRepoPath, wtBaseRepoHead
 }
 
-// ambientTestTempRoot captures the process's temp root before any test can
-// isolate its TMPDIR. Package-global fixtures built on first use must live
-// here, not under whatever TMPDIR the triggering test happens to have set: a
-// test that points TMPDIR at its own t.TempDir would otherwise place the
-// fixture inside a directory Go removes when that test ends, poisoning every
-// later consumer. Found on CI when the round-10 TMPDIR isolation made the
-// retirement test the worktree base repo's first user.
-var ambientTestTempRoot = os.TempDir()
-
+// buildWorktreeBaseRepo builds the repo worktreeBaseRepo caches for the whole
+// package run, so it lives in the package's fixture root, not the current
+// TMPDIR: a test that points TMPDIR at its own t.TempDir would otherwise leave
+// the cache naming a directory its cleanup removed.
 func buildWorktreeBaseRepo(run worktreeGitRunner) (path, head string, err error) {
-	dir, err := os.MkdirTemp(ambientTestTempRoot, "evener-worktree-base-*")
+	dir, err := os.MkdirTemp(sharedAgentTempRoot, "evener-worktree-base-*")
 	if err != nil {
 		return "", "", err
 	}

@@ -32,6 +32,7 @@ type StateFailure struct {
 
 type DelegateView struct {
 	DelegateID         string                        `json:"delegate_id"`
+	Name               string                        `json:"name,omitempty"`
 	OwnerSessionID     string                        `json:"owner_session_id"`
 	VisibleSessionID   string                        `json:"visible_session_id,omitempty"`
 	ParentDelegateID   string                        `json:"parent_delegate_id,omitempty"`
@@ -259,7 +260,7 @@ func projectDoctorDelegates(ownerSessionID string, state delegatestore.State) []
 		aggregate := state[id]
 		descriptor := aggregate.Descriptor
 		rows = append(rows, DelegateView{
-			DelegateID: id, OwnerSessionID: descriptor.OwnerSessionID, VisibleSessionID: descriptor.VisibleSessionID,
+			DelegateID: id, Name: descriptor.Name, OwnerSessionID: descriptor.OwnerSessionID, VisibleSessionID: descriptor.VisibleSessionID,
 			ParentDelegateID: descriptor.ParentDelegateID, ChildSessionID: descriptor.ChildSessionID, TranscriptRef: descriptor.TranscriptRef,
 			Task: descriptor.Task, Description: descriptor.Description, AgentType: descriptor.AgentType,
 			RequestedModel: descriptor.RequestedModel, ResolvedProfileID: descriptor.ResolvedProfileID,

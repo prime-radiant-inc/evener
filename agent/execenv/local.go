@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/orphanpipe"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -1390,7 +1391,10 @@ var (
 		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
 	}
 	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return execCommandContext(ctx, name, args...).Output()
+		cmd := execCommandContext(ctx, name, args...)
+		cmd.WaitDelay = loginShellPATHWaitDelay
+		out, err := cmd.Output()
+		return out, orphanpipe.ChildErr(cmd, err)
 	}
 )
 
@@ -1403,6 +1407,12 @@ var (
 // file can never block session/daemon launch — a short timeout, never a hard
 // failure surfaced to the user.
 const loginShellPATHTimeout = 2 * time.Second
+
+// loginShellPATHWaitDelay bounds how long the probe's stdout may stay open
+// after the shell exits or loginShellPATHTimeout ends. A job the rc chain
+// backgrounds inherits that pipe and is not killed with the shell, so without
+// this bound the timeout would not bound the probe (see orphanpipe).
+const loginShellPATHWaitDelay = time.Second
 
 // LoginShellPATH resolves the PATH the user's login shell would produce
 // ($SHELL -lc 'echo $PATH'), so a session or daemon launched from a context

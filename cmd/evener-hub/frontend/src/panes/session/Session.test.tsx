@@ -55,29 +55,9 @@ import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from ".
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
 import "./testing/editorGeometry";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
-
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-// No other test in this file touches localStorage, so stubbing it here is
-// harmless to the rest of the suite - only the seen-divider tests below
-// (kata g2ez) pre-seed a watermark through it.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // The session footer's composer boundary is swapped for a visible stub here
 // ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
@@ -297,8 +277,7 @@ function latestStubIntersectionObserver(): StubIntersectionObserver {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {
@@ -3275,9 +3254,13 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-    { method: "evener/thread/forceStop", params: { ref } },
-  ]);
+  // forceStop writes its cancellation durably before the RPC, so the call can
+  // land after the click resolves; wait for it rather than racing the write.
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]),
+  );
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
     expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();

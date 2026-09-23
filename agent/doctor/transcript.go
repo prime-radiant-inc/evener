@@ -129,7 +129,9 @@ type ToolCallSummary struct {
 	Name string `json:"name"`
 	// Arguments is the full raw JSON arguments object, untruncated. It is
 	// the machine-readable form callers needing exact argument values must
-	// use; ArgPreview remains the human-facing bounded rendering.
+	// use; ArgPreview remains the human-facing bounded rendering. For a call
+	// whose arguments were not valid JSON, this is the model's raw text,
+	// carried in the record's raw_arguments field.
 	Arguments  string `json:"arguments,omitempty"`
 	ArgPreview string `json:"arg_preview,omitempty"`
 	Intent     string `json:"intent,omitempty"`    // the model's stated reason for this call, if any
@@ -230,12 +232,20 @@ func summarizeTurn(index int, e transcript.Entry, resultTool string, textMax int
 			if part.ToolCall == nil {
 				continue
 			}
-			arguments := strings.TrimSpace(string(part.ToolCall.Arguments))
+			arguments := part.ToolCall.SentArguments()
+			var intent string
+			// A rejected call (raw arguments set) shows the model's raw bytes
+			// and skips the intent lookup: its recorded arguments are the {}
+			// placeholder, which can only parse to an empty intent anyway.
+			if part.ToolCall.RawArguments == "" {
+				arguments = strings.TrimSpace(arguments)
+				intent = toolIntentFromArguments(part.ToolCall.Arguments)
+			}
 			ts.ToolCalls = append(ts.ToolCalls, ToolCallSummary{
 				Name:       part.ToolCall.Name,
 				Arguments:  arguments,
 				ArgPreview: truncate(arguments, argPreviewMax),
-				Intent:     toolIntentFromArguments(part.ToolCall.Arguments),
+				Intent:     intent,
 				IsResult:   part.ToolCall.Name == resultTool,
 			})
 		case llm.ContentToolResult:

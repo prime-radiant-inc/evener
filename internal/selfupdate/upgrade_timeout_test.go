@@ -21,8 +21,11 @@ func TestUpgradeStalledDownloadDoesNotHangForever(t *testing.T) {
 	}))
 	t.Cleanup(stalled.Close)
 
+	// The server never answers, so any finite deadline can only end in the
+	// timeout this proves exists; a short one keeps the test from waiting it
+	// out. The 60s select below is the tripwire for a missing deadline.
 	previous := defaultUpgradeTimeout
-	defaultUpgradeTimeout = 5 * time.Second
+	defaultUpgradeTimeout = 250 * time.Millisecond
 	t.Cleanup(func() { defaultUpgradeTimeout = previous })
 
 	prefix := t.TempDir()

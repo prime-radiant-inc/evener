@@ -986,16 +986,22 @@ func sortedActivityChildIDs(children map[string]*activitySessionSnapshot) []stri
 // mutating either input. Durable records retain their append positions. Jobs
 // visible only in the live map are inserted by (StartedAt, JobID).
 func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobstore.JobRecord) []*jobstore.JobRecord {
-	durableOrder := make([]string, 0, len(durable))
-	durableByID := make(map[string]*jobstore.JobRecord, len(durable))
+	// One index per durable job: its position in first-appearance order, with
+	// a later duplicate replacing the record in place. A history of hundreds
+	// of thousands of jobs is merged on every page a jobs list serves, so this
+	// keeps it to a single map operation per durable record.
+	durableIndex := make(map[string]int, len(durable))
+	ordered := make([]*jobstore.JobRecord, 0, len(durable))
 	for _, rec := range durable {
 		if rec == nil || rec.JobID == "" {
 			continue
 		}
-		if _, seen := durableByID[rec.JobID]; !seen {
-			durableOrder = append(durableOrder, rec.JobID)
+		if at, seen := durableIndex[rec.JobID]; seen {
+			ordered[at] = rec
+			continue
 		}
-		durableByID[rec.JobID] = rec
+		durableIndex[rec.JobID] = len(ordered)
+		ordered = append(ordered, rec)
 	}
 
 	liveByID := make(map[string]*jobstore.JobRecord, len(live))
@@ -1014,20 +1020,19 @@ func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobsto
 		}
 	}
 
-	merged := make([]*jobstore.JobRecord, 0, len(durableByID)+len(liveByID))
-	seen := make(map[string]bool, len(durableByID)+len(liveByID))
-	for _, jobID := range durableOrder {
-		rec := durableByID[jobID]
-		if liveRec := liveByID[jobID]; liveRec != nil {
-			rec = liveRec
+	merged := make([]*jobstore.JobRecord, 0, len(ordered)+len(liveByID))
+	for _, rec := range ordered {
+		if len(liveByID) > 0 {
+			if liveRec := liveByID[rec.JobID]; liveRec != nil {
+				rec = liveRec
+			}
 		}
 		merged = append(merged, cloneActivityRecord(rec))
-		seen[jobID] = true
 	}
 
 	liveOnly := make([]*jobstore.JobRecord, 0, len(liveByID))
 	for jobID, rec := range liveByID {
-		if !seen[jobID] {
+		if _, durable := durableIndex[jobID]; !durable {
 			liveOnly = append(liveOnly, cloneActivityRecord(rec))
 		}
 	}
@@ -1496,7 +1501,10 @@ func activityOutcome(status jobstore.Status) (bool, string) {
 	switch status {
 	case jobstore.StatusRunning:
 		return false, ""
-	case jobstore.StatusFailed, jobstore.StatusExhausted:
+	// A command that exited nonzero or was signalled is still a FAILURE
+	// for the activity rollup, exactly like a machinery failure or an
+	// exhausted delegate: attention follows the run, whatever broke it.
+	case jobstore.StatusFailed, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled, jobstore.StatusExhausted:
 		return true, "failure"
 	case jobstore.StatusCompleted:
 		return true, "success"

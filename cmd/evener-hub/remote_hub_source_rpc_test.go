@@ -250,6 +250,58 @@ func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 	}
 }
 
+// thread/shutdown for a ref the controller does not host must reach the owning
+// host. The controller's shutdown path (shutdownThreadTolerateExited) resolves
+// the remote source, gates on the thread's advertised capabilities, and forwards
+// on the owning host's client — the same non-dialing client every remote read
+// uses. Because the mask now carries Shutdown, the remote daemon's own claim
+// decides the gate; with it masked off the controller refuses the action locally
+// ("shutdown is not available for this session") without ever asking the host,
+// which is what left a controller unable to stop a session it did not host.
+func TestHubRPCThreadShutdownForwardsToRemoteHost(t *testing.T) {
+	// The remote daemon's own claim carries Shutdown, which the mask must
+	// preserve for the shutdown gate to pass.
+	remote, calls := newScriptedRemoteHub(t, scriptedRemoteThreadT1With(appwire.ThreadCapabilities{Shutdown: true}))
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if err := rpc.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "h1:t1"}); err != nil {
+		t.Fatalf("ThreadShutdown on remote ref: %v", err)
+	}
+
+	var forwarded appwire.ThreadShutdownParams
+	shutdowns := 0
+	for _, call := range calls() {
+		if call.method != appwire.MethodThreadShutdown {
+			continue
+		}
+		if err := json.Unmarshal(call.params, &forwarded); err != nil {
+			t.Fatalf("decode forwarded shutdown params: %v", err)
+		}
+		shutdowns++
+	}
+	if shutdowns != 1 {
+		t.Fatalf("forwarded thread/shutdown calls = %d, want exactly 1: the controller stopped the session locally instead of on its host", shutdowns)
+	}
+	if forwarded.Ref != "local:t1" {
+		t.Fatalf("forwarded shutdown ref = %q, want the remote hub's own local:t1", forwarded.Ref)
+	}
+}
+
 // The web client hydrates a thread with subscribe:true. The read must still serve
 // its translated snapshot, and the plain read behind it must still carry no
 // controller subscription intent of its own: a forwarded Subscribe would
@@ -443,6 +495,7 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 		Queue:        true,
 		ForkFromTurn: true,
 		SkillInput:   true,
+		Shutdown:     true,
 	}
 	if err := push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     "t1",
@@ -475,8 +528,12 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 			if status.Capabilities == nil {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
-			if *status.Capabilities != (appwire.ThreadCapabilities{}) {
-				t.Fatalf("relayed status capabilities = %+v, want every unforwarded action masked like the read path", *status.Capabilities)
+			// The daemon claims Shutdown as well, so this pins both halves of the
+			// mask: the one forwarded action survives, every unforwarded one is
+			// dropped. An expectation of the empty set would only show that a claim
+			// containing no forwarded action stays empty.
+			if want := (appwire.ThreadCapabilities{Shutdown: true}); *status.Capabilities != want {
+				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return
 		case <-deadline:
@@ -487,18 +544,26 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 
 // scriptedRemoteThreadT1 answers a remote hub's attach-bridge requests for one
 // thread named "t1" in the remote hub's own local namespace.
-func scriptedRemoteThreadT1(method string, _ json.RawMessage) any {
-	switch method {
-	case appwire.MethodInitialize:
-		return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
-	case appwire.MethodThreadRead:
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:     "t1",
-			Source: "local",
-			Evener: appwire.EvenerThread{Ref: "local:t1"},
-		}}
-	default:
-		return appwire.EmptyResponse{}
+func scriptedRemoteThreadT1(method string, params json.RawMessage) any {
+	return scriptedRemoteThreadT1With(appwire.ThreadCapabilities{})(method, params)
+}
+
+// scriptedRemoteThreadT1With is scriptedRemoteThreadT1 with the daemon's own
+// capability claim attached to the thread it reports.
+func scriptedRemoteThreadT1With(caps appwire.ThreadCapabilities) func(string, json.RawMessage) any {
+	return func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:     "t1",
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:t1", Capabilities: caps},
+			}}
+		default:
+			return appwire.EmptyResponse{}
+		}
 	}
 }
 

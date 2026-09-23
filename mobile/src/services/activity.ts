@@ -124,6 +124,8 @@ const FAILED_STATUSES: ReadonlySet<string> = new Set([
   "failed",
   "error",
   "errored",
+  "command_exited_nonzero",
+  "command_killed",
   "cancelled",
   "canceled",
   "exhausted",

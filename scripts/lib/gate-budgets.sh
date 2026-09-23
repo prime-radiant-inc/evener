@@ -76,6 +76,26 @@ gate_init_budgets() {
 	# starting every shard at once (unchanged) while a smaller or busier one
 	# starts fewer.
 	export AGENT_SHARD_CONCURRENCY=${AGENT_SHARD_CONCURRENCY-$(gate_budget 8 8)}
+	# The root-module packages sharded beside the root go test (evener dev
+	# hub-shards / cli-shards): cmd/evener-hub's ~2100 and cmd/evener's ~340
+	# mostly-serial tests. Their per-shard width, survey width and concurrency
+	# are budgeted exactly like the agent's, so a loaded or one-CPU host shrinks
+	# every runner. Each runner's concurrency is its own budget, not a share of
+	# one: the two overlap only while the CLI's shards run (about 12s at the
+	# head of the root wave), and the gate already lets its streams contend
+	# rather than coordinating one CPU budget across them.
+	gate_init_shard_budgets HUB 8
+	gate_init_shard_budgets CLI 6
+}
+
+# gate_init_shard_budgets PREFIX COUNT — export PREFIX_SHARD_COUNT (default
+# COUNT) and PREFIX_SHARD_PARALLEL / _SURVEY_PARALLEL / _CONCURRENCY from the
+# same budgets as the agent's shards; an explicit value in the environment wins.
+gate_init_shard_budgets() {
+	eval "export ${1}_SHARD_COUNT=\${${1}_SHARD_COUNT-$2}"
+	eval "export ${1}_SHARD_PARALLEL=\${${1}_SHARD_PARALLEL-$(gate_budget 3 3)}"
+	eval "export ${1}_SHARD_SURVEY_PARALLEL=\${${1}_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}"
+	eval "export ${1}_SHARD_CONCURRENCY=\${${1}_SHARD_CONCURRENCY-$(gate_budget 8 8)}"
 }
 
 # gate_module_flags MODULE — the -p/-parallel flags run-module-tests.sh hands
@@ -98,8 +118,13 @@ gate_module_flags() {
 
 # vitest_run_args — the flags the frontend gate hands `vitest run`: the worker
 # count sized to spare capacity, four on an idle machine, fewer as the load
-# average rises, and four again when the helper is unavailable. The caller
-# expands this unquoted, so it must stay free of glob characters.
+# average rises, and four again when the helper is unavailable. Never fewer
+# than two: the suite runs on vitest's vmThreads pool, and with one worker
+# vitest batches every file into a single shared VM context, so module
+# singletons, jsdom windows and prototype stubs leak from file to file. The
+# caller expands this unquoted, so it must stay free of glob characters.
 vitest_run_args() {
-	printf '%s' "--maxWorkers=$(gate_budget 4 4)"
+	_vra_workers=$(gate_budget 4 4)
+	[ "$_vra_workers" -ge 2 ] || _vra_workers=2
+	printf '%s' "--maxWorkers=$_vra_workers"
 }

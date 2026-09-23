@@ -10,6 +10,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
@@ -70,26 +71,8 @@ const flushMicrotasks = async (): Promise<void> => {
   for (let i = 0; i < 12; i++) await Promise.resolve();
 };
 
-// localStorage shim (Node shadows jsdom's; see prefs.test.ts's identical note)
-// so the prefs setters this file drives actually round-trip.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function node(ref: string, state: string, askPending = false): NavigationSessionSummary {

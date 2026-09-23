@@ -47,9 +47,9 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // `closing` and the install are written under s.mu, so one of the two always
 // sees the other.
 //
-// A swap that passes that first check is ADMITTED: it registers on envWorkWG
+// A swap that passes that first check is ADMITTED: it registers in envWork
 // under the same s.mu hold that read `closing` (the beginDispose idiom), so the
-// Add happens-before Close()'s join, and Close waits for it before cleaning the
+// admission happens-before Close()'s join, and Close waits for it before cleaning the
 // environment. Without that wait a close walks past the refusal it just caused
 // and reaps the process table while step 1's git is still forking on it, on
 // contexts the close never reaches. The refusal alone is not enough: it lands at

@@ -24,6 +24,7 @@ export {
   isFailedDelegateOutcome,
   isFailedJobOutcome,
   isTurnContainer,
+  jobStatusDisplay,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
@@ -333,6 +334,7 @@ export type {
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  copyItemTextPresence,
   foldWarningParams,
   hasWarningText,
   hydrateThread,
@@ -340,6 +342,7 @@ export {
   isToolCallItemId,
   isToolResultItemId,
   itemIdentityMatches,
+  itemTextPresence,
   joinedReasoningParagraphs,
   joinWarningParts,
   markItemIdentityOnly,

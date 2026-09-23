@@ -1236,6 +1236,7 @@ var jobResultKnownKeys = map[string]bool{
 	// walks both structs' real marshaled output and fails, naming the key, the
 	// next time either struct grows a field this allowlist doesn't know — issue #194.
 	"child_session_id":    true, // stableDelegateCreateResult
+	"name":                true, // stableDelegateCreateResult (display label)
 	"model":               true, // stableDelegateCreateResult
 	"sandbox":             true, // stableDelegateCreateResult
 	"worktree":            true, // stableDelegateCreateResult, delegateSendResult
@@ -1282,6 +1283,7 @@ var jobResultMetadataKeys = []string{
 	// otherwise become a known-but-invisible key — silently dropped evidence
 	// the moment it stops triggering the raw-JSON-dump fallback.
 	"child_session_id",
+	"name",
 	"model",
 	"error",
 	"task",

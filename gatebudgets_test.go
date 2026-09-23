@@ -122,8 +122,12 @@ printf 'root=%s\nagent=%s\nother=%s\nshards=%s %s\n' \
 	"$(gate_module_flags .)" \
 	"$(gate_module_flags agent)" \
 	"$(gate_module_flags llm)" \
-	"$AGENT_SHARD_PARALLEL" "$AGENT_SHARD_SURVEY_PARALLEL"`)
-			want := "root=" + tc.wantRoot + "\nagent=" + tc.wantAgent + "\nother=\nshards=" + tc.wantShards
+	"$AGENT_SHARD_PARALLEL" "$AGENT_SHARD_SURVEY_PARALLEL"
+printf 'hub=%s %s\n' "$HUB_SHARD_PARALLEL" "$HUB_SHARD_SURVEY_PARALLEL"
+printf 'cli=%s %s\n' "$CLI_SHARD_PARALLEL" "$CLI_SHARD_SURVEY_PARALLEL"`)
+			// The hub's shards take the same per-shard and survey widths as the
+			// agent's, so both shrink together on a loaded host.
+			want := "root=" + tc.wantRoot + "\nagent=" + tc.wantAgent + "\nother=\nshards=" + tc.wantShards + "\nhub=" + tc.wantShards + "\ncli=" + tc.wantShards
 			if got != want {
 				t.Errorf("effective gate flags =\n%s\nwant\n%s", got, want)
 			}
@@ -209,8 +213,8 @@ printf 'resolved=%s\nbudget=%s\n' "$(command -v load_aware_workers)" "$(gate_bud
 
 // TestVitestRunArgsFollowTheLoadAwareBudget is the frontend half of the wiring:
 // the flags package.json hands `vitest run` carry the worker count sized to the
-// machine's spare capacity, and the pre-helper ceiling of four when the helper
-// is unavailable.
+// machine's spare capacity, floored at two, and the pre-helper ceiling of four
+// when the helper is unavailable.
 func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -220,6 +224,9 @@ func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	}{
 		{"idle machine keeps the ceiling", "0", "--maxWorkers=4"},
 		{"loaded machine backs off", "13.5", "--maxWorkers=2"},
+		// vitest runs a vm pool's files in ONE shared context when it has a
+		// single worker, so the budget never goes below two.
+		{"saturated machine keeps two workers", "40", "--maxWorkers=2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -326,27 +333,50 @@ func TestGateShardConcurrencyFollowsTheLoadAwareBudget(t *testing.T) {
 		{"idle one-CPU cgroup starts one shard", "1", "0", "1"},
 		{"a loaded host backs the cap off", "16", "13.5", "2"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := runSourcedGate(t, stubProbes(tc.cores, tc.load)+
-				`gate_init_budgets
-printf '%s' "$AGENT_SHARD_CONCURRENCY"`)
-			if got != tc.want {
-				t.Errorf("AGENT_SHARD_CONCURRENCY = %q, want %q (cores=%s load=%s)", got, tc.want, tc.cores, tc.load)
-			}
-		})
+	for _, variable := range []string{"AGENT_SHARD_CONCURRENCY", "HUB_SHARD_CONCURRENCY", "CLI_SHARD_CONCURRENCY"} {
+		for _, tc := range cases {
+			t.Run(variable+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				got := runSourcedGate(t, stubProbes(tc.cores, tc.load)+
+					"gate_init_budgets\nprintf '%s' \"$"+variable+"\"")
+				if got != tc.want {
+					t.Errorf("%s = %q, want %q (cores=%s load=%s)", variable, got, tc.want, tc.cores, tc.load)
+				}
+			})
+		}
+	}
+}
+
+// TestGateHubShardCountDefaultsToEight pins the hub's shard count: eight shards
+// balance evener-hub's ~2100 tests to ~9s each, and the count only partitions
+// the tests; how many run at once is HUB_SHARD_CONCURRENCY's job.
+func TestGateHubShardCountDefaultsToEight(t *testing.T) {
+	t.Parallel()
+	got := runSourcedGate(t, stubProbes("16", "0")+"gate_init_budgets\nprintf '%s' \"$HUB_SHARD_COUNT\"")
+	if got != "8" {
+		t.Errorf("HUB_SHARD_COUNT = %q, want 8", got)
+	}
+}
+
+// TestGateCLIShardCountDefaultsToSix pins cmd/evener's shard count: six
+// cost-balanced shards over its ~340 serve and run lifecycle tests.
+func TestGateCLIShardCountDefaultsToSix(t *testing.T) {
+	t.Parallel()
+	got := runSourcedGate(t, stubProbes("16", "0")+"gate_init_budgets\nprintf '%s' \"$CLI_SHARD_COUNT\"")
+	if got != "6" {
+		t.Errorf("CLI_SHARD_COUNT = %q, want 6", got)
 	}
 }
 
 // TestGateShardConcurrencyHonorsEnvironmentOverride pins that an explicit value
-// wins over the budget, the way the other AGENT_SHARD_* budgets behave.
+// wins over the budget, the way the other *_SHARD_* budgets behave.
 func TestGateShardConcurrencyHonorsEnvironmentOverride(t *testing.T) {
 	t.Parallel()
-	got := runSourcedGateEnv(t, stubProbes("16", "0")+
-		`gate_init_budgets
-printf '%s' "$AGENT_SHARD_CONCURRENCY"`, "AGENT_SHARD_CONCURRENCY=3")
-	if want := "3"; got != want {
-		t.Errorf("AGENT_SHARD_CONCURRENCY = %q, want %q from the environment", got, want)
+	for _, variable := range []string{"AGENT_SHARD_CONCURRENCY", "HUB_SHARD_CONCURRENCY", "CLI_SHARD_CONCURRENCY"} {
+		got := runSourcedGateEnv(t, stubProbes("16", "0")+
+			"gate_init_budgets\nprintf '%s' \"$"+variable+"\"", variable+"=3")
+		if want := "3"; got != want {
+			t.Errorf("%s = %q, want %q from the environment", variable, got, want)
+		}
 	}
 }

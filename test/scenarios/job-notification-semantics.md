@@ -44,7 +44,7 @@ completion is a separate resource path: it arrives as
   retained shell output if a later evidence read is needed.
 - J2 and J3 each produce exactly one terminal frame. The frames may arrive as
   one batched notification turn or two turns, but neither completion is lost
-  while the model is busy. J3 reports `status="failed"`, `exit_code="3"`, and
+  while the model is busy. J3 reports `status="command_exited_nonzero"`, `exit_code="3"`, and
   its retained output includes `BATCH_FAIL_TOKEN`.
 - Duplicate terminal frames for the same `job_id` do not appear without a
   daemon restart. A foreground shell command that completes inline is

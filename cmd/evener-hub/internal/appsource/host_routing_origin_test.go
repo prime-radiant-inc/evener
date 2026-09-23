@@ -59,6 +59,9 @@ func TestRemoteOriginatedDispatchIsRefusedAtTheClientSeam(t *testing.T) {
 	err = source.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: "alpha:t1", Name: "renamed"})
 	assertDispatchRefusal(t, "SetThreadName", err)
 
+	err = source.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: "alpha:t1"})
+	assertDispatchRefusal(t, "ShutdownThread", err)
+
 	_, err = source.HostCapabilities(ctx)
 	assertDispatchRefusal(t, "HostCapabilities", err)
 

@@ -234,7 +234,7 @@ func TestCovReadImageBytesDarwinEmptyData(t *testing.T) {
 	clipboardGOOS = "darwin"
 	clipboardLookPath = func(string) (string, error) { return "/usr/bin/osascript", nil }
 	clipboardOutput = func(string, ...string) ([]byte, error) { return []byte("ok"), nil }
-	clipboardCreateTemp = os.CreateTemp
+	clipboardCreateTemp = createTempIn(t.TempDir())
 	clipboardReadFile = func(string) ([]byte, error) { return []byte{}, nil }
 	clipboardRemove = func(string) error { return nil }
 	s := NewSystemClipboardSource()
@@ -263,7 +263,7 @@ func TestCovReadImageBytesDarwinSuccess(t *testing.T) {
 	clipboardGOOS = "darwin"
 	clipboardLookPath = func(string) (string, error) { return "/usr/bin/osascript", nil }
 	clipboardOutput = func(string, ...string) ([]byte, error) { return []byte("ok"), nil }
-	clipboardCreateTemp = os.CreateTemp
+	clipboardCreateTemp = createTempIn(t.TempDir())
 	clipboardReadFile = func(string) ([]byte, error) { return []byte("png-bytes"), nil }
 	clipboardRemove = func(string) error { return nil }
 	s := NewSystemClipboardSource()
@@ -822,7 +822,7 @@ func TestCovWriteTempPNGWriteError(t *testing.T) {
 		clipboardClose = origClose
 		clipboardRemove = origRemove
 	}()
-	clipboardCreateTemp = os.CreateTemp
+	clipboardCreateTemp = createTempIn(t.TempDir())
 	clipboardWrite = func(*os.File, []byte) (int, error) { return 0, errors.New("write fail") }
 	clipboardClose = func(*os.File) error { return nil }
 	clipboardRemove = func(string) error { return nil }
@@ -844,7 +844,7 @@ func TestCovWriteTempPNGCloseError(t *testing.T) {
 		clipboardClose = origClose
 		clipboardRemove = origRemove
 	}()
-	clipboardCreateTemp = os.CreateTemp
+	clipboardCreateTemp = createTempIn(t.TempDir())
 	clipboardWrite = func(f *os.File, b []byte) (int, error) { return f.Write(b) }
 	clipboardClose = func(*os.File) error { return errors.New("close fail") }
 	clipboardRemove = func(string) error { return nil }
@@ -962,4 +962,11 @@ func TestCovPasteClipboardImageWSLFallbackSuccess(t *testing.T) {
 	if got.Path != wantPath || got.MediaType != "image/png" || got.Size != len("png-data") || got.Origin != "wsl" {
 		t.Fatalf("pasted image = %+v, want path=%q media=image/png size=%d origin=wsl", got, wantPath, len("png-data"))
 	}
+}
+
+// createTempIn creates temp files in dir, which the calling test owns. The tests
+// that stub clipboardRemove out to reach a later branch would otherwise leave
+// their real temp file behind in the developer's temp dir.
+func createTempIn(dir string) func(string, string) (*os.File, error) {
+	return func(_, pattern string) (*os.File, error) { return os.CreateTemp(dir, pattern) }
 }

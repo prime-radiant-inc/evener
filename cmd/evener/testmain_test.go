@@ -1,12 +1,16 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // retiredEvenerEnvVars are names the product no longer declares but that a
@@ -43,7 +47,26 @@ func productEvenerEnvVars() []envvars.Var {
 // EVENER_PROVIDERS_CONFIG is cleared so a stray value in the dev shell cannot
 // leak in; tests that need specific provider config set it (and
 // OPENAI_BASE_URL / provider key envs) explicitly.
+//
+// Both throwaway roots live inside a private host temp that also collects the
+// session scratch and temp containers the sessions under test retain at close.
+// The self-exec helper children inherit it (sandboxtest.RootVar), so the roots
+// their own TestMain creates land inside it too: several are killed by a signal
+// or leave through os.Exit on purpose and never reach their own cleanup.
 func TestMain(m *testing.M) {
+	// When evener dev cli-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). Apply it first:
+	// flag.Parse must run before it, and the EVENER_* sweep below would
+	// otherwise be free to clear the variable naming the file.
+	flag.Parse()
+	if err := shardrun.ConfigureRunFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener TestMain: %v\n", err)
+		os.Exit(2)
+	}
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-cli-test-")
+	if err != nil {
+		panic(err)
+	}
 	stateDir, err := os.MkdirTemp("", "evener-cli-test-state-*")
 	if err != nil {
 		panic(err)
@@ -67,7 +90,12 @@ func TestMain(m *testing.M) {
 	// Clear every EVENER_* product variable (including EVENER_STATE_DIR) BEFORE
 	// pinning EVENER_STATE_DIR to the throwaway below. Deriving from
 	// envvars.All() keeps this list current with the product. Mirrors the hub.
+	// The host temp bases RedirectHostTemp exported above stay: they keep the
+	// evener binaries these tests start from sweeping the developer's /tmp.
 	for _, v := range productEvenerEnvVars() {
+		if sandboxtest.Redirected(v) {
+			continue
+		}
 		_ = os.Unsetenv(v.Name)
 	}
 	os.Setenv("EVENER_STATE_DIR", stateDir)
@@ -78,5 +106,28 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(stateDir)
 	os.RemoveAll(envRoot)
+	if err := hostTemp.Discard(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
+}
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// cli-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
+}
+
+// TestTestMainLeavesTheHostTempRedirectForChildren guards the order TestMain
+// runs in: RedirectHostTemp exports EVENER_HOST_TEMP_BASES before the scrub of
+// product variables, and the scrub must keep that value. Cleared, the evener
+// binaries these tests start would sweep the developer's /tmp and /var/tmp at
+// startup and reclaim other sessions' abandoned scratch.
+func TestTestMainLeavesTheHostTempRedirectForChildren(t *testing.T) {
+	if !sandboxtest.Redirected(envvars.EVENERHostTempBases) {
+		t.Fatalf("%s = %q after TestMain, want the host temp redirect's own base", envvars.EVENERHostTempBases.Name, envvars.EVENERHostTempBases.Getenv())
+	}
 }

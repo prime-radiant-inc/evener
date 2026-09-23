@@ -12,6 +12,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/w
 import { navigationStore } from "../../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { ToolIcon } from "../../../../widgets/toolicon";
 import { NotificationCard } from "./NotificationCard";
 import type { ParsedNotification } from "./steeringClassify";
@@ -178,36 +179,38 @@ test("renders the title and tags the tone", () => {
 
 // The head leads with a status glyph seated in the transcript's icon rail
 // (the same seat ToolRow's kind icon and ThinkBlock's bulb occupy). Shape
-// carries the status; the chip keeps spending colour on warning/error, and
-// success/neutral stay quiet by the card's color-is-attention law - so the
-// assertion set pins the tone->glyph mapping, not any hue.
-const TONE_KINDS = {
-  success: "check",
-  error: "cross",
-  warning: "alert",
-  neutral: "info",
-} as const;
+// carries the status for the quiet tones; ERROR renders FailureGlyph - the
+// red cross that IS the failure signal now that the error chip is gone.
+// One table maps every tone to the glyph it must draw.
+const TONE_GLYPH_PROBES = [
+  { tone: "success", probe: <ToolIcon kind="check" /> },
+  { tone: "warning", probe: <ToolIcon kind="alert" /> },
+  { tone: "neutral", probe: <ToolIcon kind="info" /> },
+  { tone: "error", probe: <FailureGlyph /> },
+] as const;
 
 function renderedIconPath(root: ParentNode | null): string | null {
   return root?.querySelector("path")?.getAttribute("d") ?? null;
 }
 
-test("the head leads with a status icon mapped from the tone, before any chip or title text", () => {
-  for (const [tone, kind] of Object.entries(TONE_KINDS)) {
-    render(<NotificationCard notification={notif({ tone: tone as ParsedNotification["tone"] })} />);
+test.each(TONE_GLYPH_PROBES)(
+  "a $tone head leads with the tone's glyph, before any chip or title text",
+  ({ tone, probe }) => {
+    render(<NotificationCard notification={notif({ tone })} />);
     const head = screen.getByTestId("notification-card");
     const statusIcon = head.querySelector('[data-testid="notification-status-icon"]');
     expect(statusIcon, `tone ${tone} rendered no status icon`).toBeTruthy();
     // First child of the head: the rail slot precedes the chip and title.
     expect(head.firstElementChild).toBe(statusIcon);
-    // The glyph is the tone's kind, drawn by the shared line-art widget.
-    const kindProbe = render(<ToolIcon kind={kind} />);
+    // The glyph is the tone's own shape - the shared line-art widget for the
+    // quiet tones, the FailureGlyph cross for error.
+    const kindProbe = render(probe);
     expect(renderedIconPath(statusIcon)).toBe(renderedIconPath(kindProbe.container));
     // One cleanup unmounts every root rendered this iteration (card + probe);
     // without it the next iteration's queries would match two cards.
     cleanup();
-  }
-});
+  },
+);
 
 test("the status icon is decorative: aria-hidden, no accessible name of its own", () => {
   render(<NotificationCard notification={notif()} />);
@@ -281,15 +284,16 @@ test("warning tone chip is visible even when collapsed", () => {
   expect(screen.getByTestId("notification-card").textContent).toContain("warning");
 });
 
-test("a success/neutral notification recedes: no tone chip (color spent only on warning/error)", () => {
+test("a success/neutral notification recedes: no tone chip (color spent on the warning chip and the failure glyph)", () => {
   render(<NotificationCard notification={notif({ tone: "success" })} />);
   expect(screen.queryByText("error")).toBe(null);
   expect(screen.queryByText("warning")).toBe(null);
 });
 
-test("an error notification earns a danger chip", () => {
+test("an error notification carries no chip: the failure glyph is the whole signal", () => {
   render(<NotificationCard notification={notif({ tone: "error" })} />);
-  expect(screen.getByText("error")).toBeTruthy();
+  expect(screen.queryByText("error")).toBeNull();
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
 });
 
 test("the secondary line surfaces the demoted metadata", () => {

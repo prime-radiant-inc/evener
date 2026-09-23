@@ -211,7 +211,7 @@ func TestRunShellPipelineExitStatus(t *testing.T) {
 		wantStatus string
 		wantExit   int
 	}{
-		{name: "failure in first stage is reported", command: "false | tail -1", wantStatus: string(jobstore.StatusFailed), wantExit: 1},
+		{name: "failure in first stage is reported", command: "false | tail -1", wantStatus: string(jobstore.StatusCommandExitedNonzero), wantExit: 1},
 		{name: "successful pipeline remains successful", command: "printf 'ok\\n' | tail -1", wantStatus: string(jobstore.StatusCompleted), wantExit: 0},
 	}
 
@@ -248,8 +248,8 @@ func TestRunShellSignalKilledReportsSignalOutcome(t *testing.T) {
 			t.Fatalf("discarded foreground shell returned job_id %q", jobID)
 		}
 	}
-	if res.Status != string(jobstore.StatusFailed) || res.Reason != "killed_by_signal: SIGKILL" {
-		t.Fatalf("res = %+v, want failed/killed_by_signal: SIGKILL", res)
+	if res.Status != string(jobstore.StatusCommandKilled) || res.Reason != "killed_by_signal: SIGKILL" {
+		t.Fatalf("res = %+v, want command_killed/killed_by_signal: SIGKILL", res)
 	}
 	if res.ExitCode == nil || *res.ExitCode != -1 {
 		t.Fatalf("exit code = %v, want -1 for a signal-killed process", res.ExitCode)
@@ -267,11 +267,86 @@ func TestRunShellBackgroundSignalKilledPersistsSignalOutcome(t *testing.T) {
 	}
 	waitForShellDone(t, jm, res.JobID)
 	rec := loadShellRecord(t, jm, res.JobID)
-	if rec.Status != jobstore.StatusFailed || rec.Reason != "killed_by_signal: SIGKILL" {
-		t.Fatalf("record = %+v, want failed/killed_by_signal: SIGKILL", rec)
+	if rec.Status != jobstore.StatusCommandKilled || rec.Reason != "killed_by_signal: SIGKILL" {
+		t.Fatalf("record = %+v, want command_killed/killed_by_signal: SIGKILL", rec)
 	}
 	if rec.ExitCode == nil || *rec.ExitCode != -1 {
 		t.Fatalf("record exit code = %v, want -1 for a signal-killed process", rec.ExitCode)
+	}
+}
+
+// The terminal decision splits the command's outcome from the job system's:
+// a reaped process that exited nonzero is a COMMAND failure (the job ran it
+// fine — the three-way split of tool-call-failed / job-failed / job-ran-a-
+// command-that-failed), a signalled process is a COMMAND kill, and only
+// supervision failures remain job failures.
+func TestShellTerminalDecisionSplitsCommandOutcomeFromJobFailure(t *testing.T) {
+	t.Parallel()
+	waitErr := errors.New("wait failed")
+	tests := []struct {
+		name       string
+		exitCode   int
+		signalName string
+		timedOut   bool
+		waitErr    error
+		wantStatus jobstore.Status
+		wantReason string
+	}{
+		{
+			name:       "clean exit",
+			exitCode:   0,
+			wantStatus: jobstore.StatusCompleted,
+			wantReason: "exit_zero",
+		},
+		{
+			name:       "command exited nonzero",
+			exitCode:   7,
+			wantStatus: jobstore.StatusCommandExitedNonzero,
+			wantReason: "exit_nonzero",
+		},
+		{
+			name:       "command killed by named signal",
+			exitCode:   -9,
+			signalName: "SIGKILL",
+			wantStatus: jobstore.StatusCommandKilled,
+			wantReason: "killed_by_signal: SIGKILL",
+		},
+		{
+			name:       "command killed by unnamed signal",
+			exitCode:   -9,
+			wantStatus: jobstore.StatusCommandKilled,
+			wantReason: "killed_by_signal",
+		},
+		{
+			name:       "runtime timeout",
+			timedOut:   true,
+			wantStatus: jobstore.StatusStopped,
+			wantReason: "run_timeout",
+		},
+		{
+			name:       "supervision wait failed",
+			waitErr:    waitErr,
+			wantStatus: jobstore.StatusFailed,
+			wantReason: "wait_failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			status, reason := shellTerminalDecisionWithSignal("", "", tt.exitCode, tt.signalName, tt.timedOut, tt.waitErr)
+			if status != tt.wantStatus || reason != tt.wantReason {
+				t.Fatalf("decision = (%q, %q), want (%q, %q)", status, reason, tt.wantStatus, tt.wantReason)
+			}
+			if !status.IsTerminal() {
+				t.Fatalf("status %q must be terminal", status)
+			}
+		})
+	}
+	// An explicit stop still dominates every signal below it and passes
+	// through verbatim.
+	status, reason := shellTerminalDecisionWithSignal(jobstore.StatusStopped, "stopped_by_parent", 7, "SIGKILL", true, waitErr)
+	if status != jobstore.StatusStopped || reason != "stopped_by_parent" {
+		t.Fatalf("stop must win: got (%q, %q)", status, reason)
 	}
 }
 

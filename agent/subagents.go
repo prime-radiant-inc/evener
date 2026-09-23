@@ -2215,6 +2215,7 @@ type delegateTerminalRunInputs struct {
 type delegateTerminalPacketMetadata struct {
 	Outcome           delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
 	Reason            string                          `json:"reason,omitempty"`
+	Name              string                          `json:"name,omitempty"`
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
 	AgentType         string                          `json:"agent_type,omitempty"`
@@ -2338,6 +2339,7 @@ func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, input
 
 func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateTerminalPacketMetadata {
 	metadata := delegateTerminalPacketMetadata{
+		Name:              inputs.descriptor.Name,
 		Task:              inputs.descriptor.Task,
 		Description:       inputs.descriptor.Description,
 		AgentType:         inputs.descriptor.AgentType,

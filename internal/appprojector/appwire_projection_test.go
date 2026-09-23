@@ -370,7 +370,7 @@ func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventJobFinished,
-		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed"},
+		Data: events.JobFinishedData{JobID: "job_1", JobType: "shell", Status: "completed", Intent: "reproduce the failure"},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerJobFinished {
 		t.Fatalf("want exactly one evener/job/finished notification, got %+v", out)
@@ -382,6 +382,9 @@ func TestProject_JobFinishedIsTheOnlyFinishNotification(t *testing.T) {
 	if params.ThreadID != "th1" || params.Ref != "local:th1" || params.Job.JobID != "job_1" || params.Job.Status != "completed" {
 		t.Fatalf("params = %+v", params)
 	}
+	if params.Job.Intent != "reproduce the failure" {
+		t.Fatalf("params.Job.Intent = %q, want the finished push to forward the intent", params.Job.Intent)
+	}
 }
 
 func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
@@ -392,6 +395,7 @@ func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
 			JobID:         "job_1",
 			JobType:       "shell",
 			Status:        "running",
+			Intent:        "reproduce the failure",
 			RootSessionID: "root",
 			TreeRevision:  9,
 		},
@@ -401,6 +405,10 @@ func TestProject_JobStartedAlsoEmitsJobsTreeUpdated(t *testing.T) {
 	}
 	if !hasAppNotification(out, appwire.NotifyEvenerJobStarted) {
 		t.Fatalf("missing %q in %+v", appwire.NotifyEvenerJobStarted, out)
+	}
+	started := notificationParams[appwire.EvenerJobParams](t, out, appwire.NotifyEvenerJobStarted)
+	if started.Job.Intent != "reproduce the failure" {
+		t.Fatalf("started push intent = %q, want the payload's intent forwarded", started.Job.Intent)
 	}
 	params := notificationParams[appwire.JobsTreeUpdatedParams](t, out, appwire.NotifyEvenerJobsTreeUpdated)
 	if params.ThreadID != "root" || params.Ref != "local:root" || params.Revision != 9 {

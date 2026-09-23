@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/cmd/evener-tui/internal/modeldisplay"
 	"primeradiant.com/evener/internal/e2ecap"
 
 	"primeradiant.com/evener/agent/task"
@@ -27,14 +28,35 @@ import (
 	"primeradiant.com/evener/internal/shellquote"
 )
 
-var tuiE2EProjectDir = canonicalTUIE2EProjectDir()
+// tuiE2EFixtureRoot holds the fixture hub's project directories. TestMain
+// creates it for the run and removes it afterwards. It sits directly under /tmp
+// with a short prefix to keep the "Dir:" lines the tmux tests wait for short.
+var (
+	tuiE2EFixtureRoot string
+	tuiE2EProjectDir  string
+	tuiE2EOpsDir      string
+)
 
-func canonicalTUIE2EProjectDir() string {
-	tmp := "/tmp"
-	if canonical, err := filepath.EvalSymlinks(tmp); err == nil {
-		tmp = canonical
+func TestMain(m *testing.M) {
+	root, err := os.MkdirTemp("/tmp", "tui-e2e-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evener-tui TestMain: %v\n", err)
+		os.Exit(2)
 	}
-	return filepath.Join(tmp, "evener-e2e", "evener")
+	if canonical, err := filepath.EvalSymlinks(root); err == nil {
+		root = canonical
+	}
+	tuiE2EFixtureRoot = root
+	tuiE2EProjectDir = filepath.Join(root, "evener")
+	tuiE2EOpsDir = filepath.Join(root, "ops")
+	code := m.Run()
+	if err := os.RemoveAll(root); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-tui TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
 }
 
 // Generous backstop, not a target: WaitFor returns the instant the expected text
@@ -136,14 +158,15 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	// test do.
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
-	app.TypeText("/tmp/evener-e2e/custom")
-	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
+	customDir := filepath.Join(tuiE2EFixtureRoot, "custom")
+	app.TypeText(customDir)
+	app.WaitFor("Dir:      " + customDir)
 	app.SendKeys("Enter", "Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
-	if spawns[0].CWD != "/tmp/evener-e2e/custom" {
-		t.Fatalf("dashboard spawn cwd=%q, want /tmp/evener-e2e/custom", spawns[0].CWD)
+	if spawns[0].CWD != customDir {
+		t.Fatalf("dashboard spawn cwd=%q, want %s", spawns[0].CWD, customDir)
 	}
 	if testInputText(spawns[0].Input) != "spawn from dashboard" {
 		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", testInputText(spawns[0].Input))
@@ -853,7 +876,8 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 		"● WORKING",
 		"src evener",
 		"model gpt-5",
-		"dir "+tuiE2EProjectDir,
+		// The header elides a long dir; the fixture root's length varies by host.
+		"dir "+modeldisplay.AbbreviatePath(tuiE2EProjectDir, 32),
 		"2 turns",
 		"ctx 66%",
 		"status: hub connected",
@@ -1177,7 +1201,9 @@ func buildTUIBinary(t *testing.T) string {
 			errTUIBinary = err
 			return
 		}
-		dir, err := os.MkdirTemp("", "evener-e2e-bin-")
+		// Inside the run's fixture root, which TestMain removes: a sync.Once
+		// build outlives every test, so no t.TempDir can own it.
+		dir, err := os.MkdirTemp(tuiE2EFixtureRoot, "bin-")
 		if err != nil {
 			errTUIBinary = err
 			return
@@ -1912,7 +1938,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		Title:        "ops task",
 		State:        appwire.ThreadStatusIdle,
 		Project:      "ops",
-		WorkingDir:   "/tmp/evener-e2e/ops",
+		WorkingDir:   tuiE2EOpsDir,
 		Model:        "gpt-5",
 		Live:         true,
 		CreatedAt:    80,

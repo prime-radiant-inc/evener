@@ -1,7 +1,11 @@
 package dev
 
-// agent-shards runs the agent package's tests as cost-balanced shards. It is
-// the port of scripts/agent-test-shards.sh, whose header carried the
+// agent-shards runs the agent package's tests as cost-balanced shards, and
+// hub-shards and cli-shards do the same for cmd/evener-hub and cmd/evener, whose
+// mostly-serial tests otherwise run one after another in a single binary. Each
+// reads its own variables: AGENT_SHARD_* below, and HUB_SHARD_* / CLI_SHARD_*
+// with the same suffixes. The
+// runner is the port of scripts/agent-test-shards.sh, whose header carried the
 // measurements this design rests on: one ~2750-test binary spends ~26-32s as
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
 // ~21s. BALANCE is what matters, not shard count — the weights come from a
@@ -22,7 +26,7 @@ package dev
 //	                       TestAgentShardsSkipReachesTheShardsToo.
 //	AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
 //	AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
-//	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-agent-shards)
+//	AGENT_SHARD_CACHE_DIR  survey cache (default $(go env GOCACHE)/evener-<label>-shards)
 //
 // plus pass-through `go test` flags. Every test lands in exactly one shard,
 // proven before running anything; one PASS/FAIL line per shard with wall
@@ -36,7 +40,7 @@ package dev
 // the execve argument list: a large shard's regex can exceed Linux's
 // MAX_ARG_STRLEN (128KB per single argument string).
 //
-// Scratch is "agent-test-shards.<pid>" under TMPDIR, reclaimed from dead
+// Scratch is "<label>-test-shards.<pid>" under TMPDIR, reclaimed from dead
 // runs at startup (internal/devtool/scratch): the janitor this replaced is
 // gone, and a SIGKILLed run's debris lives exactly until the next run.
 
@@ -59,17 +63,18 @@ import (
 	"primeradiant.com/evener/internal/devtool/scratch"
 )
 
-const shardScratchPrefix = "agent-test-shards"
-
 // defaultSurveyParallel is the survey pass's default -parallel. The shards get
 // their width from AGENT_SHARD_PARALLEL; the survey measures cost on a single
 // binary, which has always run slightly wider.
 const defaultSurveyParallel = 6
 
-// shardsConfig is one agent-shards run: which module to shard, how wide, and
+// shardsConfig is one shards run: which package to shard, how wide, and
 // where its words go.
 type shardsConfig struct {
-	agentDir       string
+	label          string
+	envPrefix      string
+	moduleDir      string
+	pkgDir         string
 	count          int
 	parallel       int
 	concurrency    int
@@ -82,32 +87,58 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// slotWait, when set, is called each time a shard has to wait for a free
+	// concurrency slot: the observable moment the runner holds a shard back.
+	// A test seam; nil in production.
+	slotWait func()
 }
 
-// runAgentShards is the subcommand entry: environment in, exit code out.
+// runAgentShards and runHubShards are the subcommand entries: environment in,
+// exit code out. Each package reads its own <PREFIX>_SHARD_* variables.
 func runAgentShards(args []string) int {
-	count, err := envPositiveInt("AGENT_SHARD_COUNT", 4)
+	return runPackageShards("agent", "agent", "agent", "AGENT", args)
+}
+
+// runHubShards builds from the repository root, the module cmd/evener-hub
+// belongs to, so path-valued build flags resolve where the gate's root-module
+// go test resolves them; the shards still run in the package directory.
+func runHubShards(args []string) int {
+	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", args)
+}
+
+// runCLIShards shards cmd/evener, the CLI's ~340 mostly-serial serve and run
+// lifecycle tests, the same way.
+func runCLIShards(args []string) int {
+	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", args)
+}
+
+// runPackageShards shards the package in pkgDir, building it from moduleDir
+// (its module's root; both relative to the repository root), naming it label
+// in its output and reading envPrefix_SHARD_* for its settings.
+func runPackageShards(label, moduleDir, pkgDir, envPrefix string, args []string) int {
+	env := func(name string) string { return envPrefix + "_SHARD_" + name }
+	count, err := envPositiveInt(env("COUNT"), 4)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
-	parallel, err := envPositiveInt("AGENT_SHARD_PARALLEL", 3)
+	parallel, err := envPositiveInt(env("PARALLEL"), 3)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
-	// Shards are independent processes; AGENT_SHARD_PARALLEL bounds each one's
+	// Shards are independent processes; _SHARD_PARALLEL bounds each one's
 	// tests but not how many run at once. Zero (and unset) means all of them,
 	// the historical behavior; a positive value is the total concurrency the
 	// load-aware gate lowers on a busy host.
-	concurrency, err := envNonNegativeInt("AGENT_SHARD_CONCURRENCY", 0)
+	concurrency, err := envNonNegativeInt(env("CONCURRENCY"), 0)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
-	surveyParallel, err := envPositiveInt("AGENT_SHARD_SURVEY_PARALLEL", defaultSurveyParallel)
+	surveyParallel, err := envPositiveInt(env("SURVEY_PARALLEL"), defaultSurveyParallel)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%s-shards: %v\n", label, err)
 		return 1
 	}
 	// Two deep, because a second signal must be waiting when the first is
@@ -116,20 +147,39 @@ func runAgentShards(args []string) int {
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	return runShards(shardsConfig{
-		agentDir:       "agent",
+		label:          label,
+		envPrefix:      envPrefix,
+		moduleDir:      moduleDir,
+		pkgDir:         pkgDir,
 		count:          count,
 		parallel:       parallel,
 		concurrency:    concurrency,
 		surveyParallel: surveyParallel,
-		skip:           os.Getenv("AGENT_SHARD_SKIP"),
-		noSurvey:       envFlag("AGENT_SHARD_NO_SURVEY"),
-		resurvey:       envFlag("AGENT_SHARD_RESURVEY"),
-		cacheDir:       os.Getenv("AGENT_SHARD_CACHE_DIR"),
+		skip:           os.Getenv(env("SKIP")),
+		noSurvey:       envFlag(env("NO_SURVEY")),
+		resurvey:       envFlag(env("RESURVEY")),
+		cacheDir:       os.Getenv(env("CACHE_DIR")),
 		flags:          args,
 		stdout:         os.Stdout,
 		stderr:         os.Stderr,
 		signals:        signals,
 	})
+}
+
+// buildLocation is where the test binary is built from and the package path
+// it builds: the module root and the package relative to it, so path-valued
+// build flags (-overlay, -modfile, -pgo) resolve against the module root the
+// way a module-wide go test resolves them. A config with no moduleDir builds
+// in the package directory itself.
+func (cfg shardsConfig) buildLocation() (dir, target string, err error) {
+	if cfg.moduleDir == "" || cfg.moduleDir == cfg.pkgDir {
+		return cfg.pkgDir, ".", nil
+	}
+	rel, err := filepath.Rel(cfg.moduleDir, cfg.pkgDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("package %s is not inside module %s", cfg.pkgDir, cfg.moduleDir)
+	}
+	return cfg.moduleDir, "./" + filepath.ToSlash(rel), nil
 }
 
 // surveyArgs is the survey pass's test-binary arguments. The survey runs one
@@ -252,14 +302,14 @@ var signalNames = map[syscall.Signal]string{
 
 // runShards runs the module's tests as cost-balanced shards.
 func runShards(cfg shardsConfig) int {
-	if info, err := os.Stat(cfg.agentDir); err != nil || !info.IsDir() {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: no agent dir\n")
+	if info, err := os.Stat(cfg.pkgDir); err != nil || !info.IsDir() {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: no %s dir\n", cfg.label, cfg.pkgDir)
 		return 2
 	}
 
-	dir, err := scratch.Acquire(shardScratchPrefix, cfg.stderr)
+	dir, err := scratch.Acquire(cfg.label+"-test-shards", cfg.stderr)
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: could not create a scratch directory: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: could not create a scratch directory: %v\n", cfg.label, err)
 		return 2
 	}
 	logdir := dir.Path()
@@ -282,7 +332,7 @@ func runShards(cfg shardsConfig) int {
 				}
 				if first {
 					first = false
-					_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: interrupted by %s\n", signalNames[s])
+					_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: interrupted by %s\n", cfg.label, signalNames[s])
 					in.interrupt(s)
 					continue
 				}
@@ -301,40 +351,45 @@ func runShards(cfg shardsConfig) int {
 				// was tried; the re-raised signal does not reliably take the
 				// default action before the process continues, so this exits
 				// under its own power instead.
-				_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %s again — abandoning the running shards; logs: %s\n", signalNames[s], logdir)
+				_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %s again — abandoning the running shards; logs: %s\n", cfg.label, signalNames[s], logdir)
 				os.Exit(128 + int(s))
 			}
 		}()
 	}
 
 	// Build the test binary once; every shard runs it.
-	build := filepath.Join(logdir, "agent.test")
+	build := filepath.Join(logdir, cfg.label+".test")
 	buildLog := filepath.Join(logdir, "build.log")
 	// The build gets the caller's build flags: a -race run has to compile a
 	// race-detector binary, and a -tags run has to compile the files that tag
 	// selects, or the shards test something the caller did not ask for.
-	parsed, err := parseFlags(cfg.flags)
+	parsed, err := parseFlags(cfg.flags, cfg.envPrefix)
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
 	goflags, err := effectiveGoflags()
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
-	if err := checkGoflags(goflags); err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+	if err := checkGoflags(goflags, cfg.envPrefix); err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
 	extraFlags := parsed.test
 	buildArgs := append([]string{"test", "-c"}, parsed.build...)
-	buildArgs = append(buildArgs, "-o", build, ".")
-	if err = cfg.runToLog(in, buildLog, cfg.agentDir, "go", buildArgs...); err != nil {
+	buildDir, buildTarget, err := cfg.buildLocation()
+	if err != nil {
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
+		return 1
+	}
+	buildArgs = append(buildArgs, "-o", build, buildTarget)
+	if err = cfg.runToLog(in, buildLog, buildDir, "go", buildArgs...); err != nil {
 		if code := in.exitCode(); code != 0 {
 			return code
 		}
-		_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: build failed")
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: build failed\n", cfg.label)
 		copyFileTo(cfg.stdout, buildLog)
 		return 1
 	}
@@ -344,7 +399,7 @@ func runShards(cfg shardsConfig) int {
 
 	// The test set's identity keys the survey cache; the same listing also
 	// backs the equal-weights fallback.
-	listOut, _ := cfg.captureChild(in, cfg.agentDir, build, "-test.list", ".*")
+	listOut, _ := cfg.captureChild(in, cfg.pkgDir, build, "-test.list", ".*")
 	if code := in.exitCode(); code != 0 {
 		return code
 	}
@@ -365,13 +420,13 @@ func runShards(cfg shardsConfig) int {
 			// partial write caught mid-flight.
 		}
 		if !cacheHit {
-			_, _ = fmt.Fprintln(cfg.stdout, "agent-shards: surveying test costs (one-time for this test set)")
+			_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: surveying test costs (one-time for this test set)\n", cfg.label)
 			args := surveyArgs(cfg.surveyParallel, cfg.skip, parsed.short, parsed.test)
-			if err := cfg.runToLog(in, surveyLog, cfg.agentDir, build, args...); err != nil {
+			if err := cfg.runToLog(in, surveyLog, cfg.pkgDir, build, args...); err != nil {
 				if code := in.exitCode(); code != 0 {
 					return code
 				}
-				_, _ = fmt.Fprintln(cfg.stderr, "agent-shards: the survey pass failed — the suite is red")
+				_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: the survey pass failed — the suite is red\n", cfg.label)
 				replaySurveyFailures(cfg.stderr, surveyLog, maxSurveyFailures)
 				_, _ = fmt.Fprintf(cfg.stderr, "full log: %s\n", surveyLog)
 				return 1
@@ -395,23 +450,23 @@ func runShards(cfg shardsConfig) int {
 		costs = equalWeights(listOut)
 	}
 	if len(costs) == 0 {
-		_, _ = fmt.Fprintln(cfg.stderr, "agent-shards: found no tests to shard")
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: found no tests to shard\n", cfg.label)
 		return 1
 	}
 
-	bins, _, err := packShards(costs, cfg.count)
+	bins, _, err := packShards(costs, cfg.count, cfg.envPrefix)
 	if err != nil {
-		_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
 	for i, bin := range bins {
 		names := filepath.Join(logdir, fmt.Sprintf("shard%d.names", i))
 		if err := os.WriteFile(names, []byte(strings.Join(bin, "\n")+"\n"), 0o644); err != nil {
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
 		}
 	}
-	_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: %d shards, -parallel %d each\n", len(bins), cfg.parallel)
+	_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: %d shards, -parallel %d each\n", cfg.label, len(bins), cfg.parallel)
 
 	// A shard is one OS process, so cfg.parallel bounds only the tests inside
 	// it. limit bounds the processes themselves: on a busy host or a
@@ -424,7 +479,7 @@ func runShards(cfg shardsConfig) int {
 		limit = len(bins)
 	}
 	if limit < len(bins) {
-		_, _ = fmt.Fprintf(cfg.stdout, "agent-shards: at most %d of %d shards run at once\n", limit, len(bins))
+		_, _ = fmt.Fprintf(cfg.stdout, "%s-shards: at most %d of %d shards run at once\n", cfg.label, limit, len(bins))
 	}
 	slots := make(chan struct{}, limit)
 
@@ -441,7 +496,15 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
-		slots <- struct{}{}
+		select {
+		case slots <- struct{}{}:
+		default:
+			// Every slot is taken: this shard waits for a running one to exit.
+			if cfg.slotWait != nil {
+				cfg.slotWait()
+			}
+			slots <- struct{}{}
+		}
 		// A signal that arrived while we waited for a slot must not start more
 		// work: the interrupter has already TERMed the live shards, and a shard
 		// started now would outlive the run we are trying to stop.
@@ -455,7 +518,7 @@ func runShards(cfg shardsConfig) int {
 		// reads it in-process, never touching the execve argument list.
 		runFile := filepath.Join(logdir, fmt.Sprintf("shard%d.run", i))
 		if err := os.WriteFile(runFile, []byte(nameRegex(bin)), 0o644); err != nil {
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
 		}
 		args := []string{"-test.count=1", "-test.parallel", strconv.Itoa(cfg.parallel)}
@@ -468,11 +531,11 @@ func runShards(cfg shardsConfig) int {
 		args = append(args, extraFlags...)
 		log, err := os.Create(filepath.Join(logdir, fmt.Sprintf("shard%d.log", i)))
 		if err != nil {
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: %v\n", err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 			return 1
 		}
 		cmd := exec.CommandContext(context.Background(), build, args...)
-		cmd.Dir = cfg.agentDir
+		cmd.Dir = cfg.pkgDir
 		cmd.Stdout, cmd.Stderr = log, log
 		cmd.Env = append(os.Environ(), "EVENER_SHARD_RUN_FILE="+runFile)
 		started := time.Now()
@@ -480,7 +543,7 @@ func runShards(cfg shardsConfig) int {
 		_ = log.Close()
 		if err != nil {
 			<-slots
-			_, _ = fmt.Fprintf(cfg.stderr, "agent-shards: starting shard %d: %v\n", i, err)
+			_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: starting shard %d: %v\n", cfg.label, i, err)
 			launchFailed = true
 			break
 		}
@@ -501,9 +564,9 @@ func runShards(cfg shardsConfig) int {
 		}
 		r := <-result
 		if r.err == nil {
-			_, _ = fmt.Fprintf(cfg.stdout, "PASS  agent:%-2d %8s (%d tests)\n", i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
+			_, _ = fmt.Fprintf(cfg.stdout, "PASS  %s:%-2d %8s (%d tests)\n", cfg.label, i, fmt.Sprintf("%.2fs", r.seconds), len(bins[i]))
 		} else {
-			_, _ = fmt.Fprintf(cfg.stdout, "FAIL  agent:%-2d\n", i)
+			_, _ = fmt.Fprintf(cfg.stdout, "FAIL  %s:%-2d\n", cfg.label, i)
 			failed = append(failed, i)
 		}
 	}
@@ -525,7 +588,7 @@ func runShards(cfg shardsConfig) int {
 			_, _ = fmt.Fprintln(cfg.stdout, "=== failing shard output ===")
 			for _, i := range failed {
 				log := filepath.Join(logdir, fmt.Sprintf("shard%d.log", i))
-				_, _ = fmt.Fprintf(cfg.stdout, "----- agent:%d -----\n", i)
+				_, _ = fmt.Fprintf(cfg.stdout, "----- %s:%d -----\n", cfg.label, i)
 				if !copyFileTo(cfg.stdout, log) {
 					_, _ = fmt.Fprintf(cfg.stdout, "(no output captured: %s is empty or missing)\n", log)
 				}
@@ -584,7 +647,7 @@ func (cfg shardsConfig) cachedSurveyPath(listOut string, parsed parsedFlags, gof
 		if err != nil || len(strings.TrimSpace(string(out))) == 0 {
 			return ""
 		}
-		cacheDir = filepath.Join(strings.TrimSpace(string(out)), "evener-agent-shards")
+		cacheDir = filepath.Join(strings.TrimSpace(string(out)), "evener-"+cfg.label+"-shards")
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return ""

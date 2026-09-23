@@ -95,6 +95,19 @@ export function matchesStoredBytes(stored: string | null, value: unknown): boole
 	return draftIdentityKey(parseDraftBytes(stored)) === draftIdentityKey(value);
 }
 
+/** Whether two in-memory draft values name the same record - the shared
+ * marker-aware identity a compare-and-swap must run: a marker
+ * (StoredNullRecord, UnparseableDraftBytes) compares by its own tag rather
+ * than the ordinary shape its unique-symbol brand leaves in canonicalJson
+ * (an empty object, a raw-only object), and everything else compares
+ * canonically, key order normalized. The Storage-backed backend runs this
+ * same comparison through stored bytes (matchesStoredBytes re-derives the
+ * identity key for both sides); an in-memory test double compares its stored
+ * values through this predicate directly. */
+export function sameDraftIdentity(stored: unknown, expected: unknown): boolean {
+	return draftIdentityKey(stored) === draftIdentityKey(expected);
+}
+
 export interface NativePreferenceDraftBackend {
 	createId(): string;
 	get(key: string): unknown;
