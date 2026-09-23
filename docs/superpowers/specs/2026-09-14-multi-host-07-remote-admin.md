@@ -436,10 +436,11 @@ Concretely:
   instance on the host" — the table row below. The local key is not pushed under
   a guessed provider.
 
-**Implementation status:** this join rule is the 07c requirement, not a present
-fact; the shipped wire types (`AuthStatusParams.Provider`,
+**Implementation status:** landed - `cmd/evener-hub/app_host_credentials.go`
+implements this join. The shipped wire types (`AuthStatusParams.Provider`,
 `AuthApiKeySetParams.Provider`, `InstanceEntry.Name/Base/ProviderID`,
-`appwire/types.go`) do not themselves disambiguate instance from provider.
+`appwire/types.go`) still do not disambiguate instance from provider, and they
+do not need to: the join is resolved once, locally, against `instance/list`.
 
 Write side (remote): for each local entry (whose key is the instance name), call
 the remote hub's **`evener/auth/apiKey/conditionalSet`** with
@@ -567,12 +568,13 @@ that omits the field) sends the zero value, which the host interprets as "no
 revision fence" — the source fence (`ExpectedSource`) still applies. A
 revision the controller did not observe is never fabricated.
 
-**Implementation status:** neither `evener/auth/apiKey/conditionalSet` nor the
-response field exists, and neither `AuthStatusResponse` nor `InstanceEntry`
-exposes a `ConfigRevision` today (so there is presently nothing to source
-`ExpectedRevision` from); the 07c surface above is still the racy two-call
-form. The host-side conditional set and the `ConfigRevision` exposure are
-tracked code follow-ups (see the PR comment), not present facts.
+**Implementation status:** landed - `evener/auth/apiKey/conditionalSet` is in
+the AppWire catalog with `ApiKeyConditionalSetParams`/
+`ApiKeyConditionalSetResponse`, and `ConfigRevision` is exposed on both
+`AuthStatusResponse` and `InstanceEntry` (`appwire/types.go`), populated from
+the host's effective credential-configuration revision. `ExpectedRevision` is
+sourced from that field, and the controller's push calls the conditional set
+rather than the racy status-then-`apiKey/set` pair.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
