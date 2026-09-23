@@ -72,8 +72,13 @@ func TestFormatJobNotificationEmitsIntent(t *testing.T) {
 	bare := formatJobNotificationBlock(jobNotification{
 		JobID: "job_Y", JobType: "shell", Status: "completed", Reason: "exit_zero",
 	}, notificationExcerpt{}, true)
-	if strings.Contains(bare, "intent=") {
-		t.Errorf("empty intent must not emit an attribute:\n%s", bare)
+	// The intent attribute is always present: an explicit empty value marks
+	// a post-split block whose caller gave no rationale, so the parser can
+	// trust the description attr as a producer gloss and never as the old
+	// display-label fallback (which shipped the raw command and has no
+	// intent attr at all).
+	if !strings.Contains(bare, `intent=""`) {
+		t.Errorf("empty intent must still emit an explicit empty attribute:\n%s", bare)
 	}
 }
 
