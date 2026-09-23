@@ -2,11 +2,8 @@ import { canonicalJson } from "@evener/appwire-client";
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
-} from "@evener/appwire-client";
-import type {
-	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
-} from "./preferenceDraftRepository";
+} from "@evener/appwire-client";
 
 /** A stored record's bytes that decode (JSON.parse succeeds) to the JSON
  * value `null` - a PRESENT record, distinct from no record at all (the
@@ -120,14 +117,21 @@ export interface NativePreferenceDraftBackend {
 	 * checkpoint shape, so a conforming backend never assumes it can decode
 	 * what it is given. */
 	deleteIf(key: string, identity: unknown): boolean;
+	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
+	 * whether it did - the atomic twin of replaceIf for a record that does
+	 * not exist yet (see DraftPort.insertIfAbsent). */
+	insertIfAbsent(key: string, checkpoint: unknown): boolean;
+	/** Replaces the record at `key` with `next` only if `expected` still names
+	 * it; reports whether it did (see DraftPort.replaceIf). */
+	replaceIf(key: string, expected: unknown, next: unknown): boolean;
 }
 
-/** The keybindings draft port settles atomically (a save that adopts a
- * checkpoint replaced under it): replaceIf is that port's own requirement,
- * not every NativePreferenceDraftBackend's - nativeTranscriptDrafts' backend
- * never calls it (the pre-migration transcript design never settles
- * atomically), so it stays on this narrower interface instead of widening
- * the shared one for a method only one consumer needs. */
+/** The keybindings port's own narrower view of the shared backend: its
+ * checkpoint shape is known, so its compare-and-swap signatures name it.
+ * Both native ports drive the shared DraftPort contract now - the transcript
+ * projection settles atomically through the same store machinery - so this
+ * interface only narrows the base, it does not add a method the transcript
+ * port lacks. */
 export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBackend {
 	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
 	 * whether it did. The atomic twin of replaceIf for a record that does not
@@ -265,22 +269,17 @@ export function nativeTranscriptDrafts(
 	const key = `evener.native.transcript-draft.${hubId}`;
 	return {
 		createId: () => backend.createId(),
-		load: () => {
-			const value = backend.get(key);
-			// A stored JSON `null` comes back from the shared backend.get() as
-			// STORED_NULL_RECORD (parseDraftBytes tags it so the KEYBINDINGS
-			// port can classify it as a present-but-unreadable record - see
-			// nativeKeybindingDrafts). The transcript port has no
-			// unreadable-record recovery path, so it keeps treating a stored
-			// null as no draft, the same as a plain JSON.parse always did - but
-			// ONLY that exact case: a stored JSON STRING "null" (a present,
-			// invalid checkpoint) is a different value and falls through to be
-			// rejected below, not silently read as no draft.
-			if (value === undefined || value === null || isStoredNullRecord(value)) return null;
-			return value as TranscriptDraftCheckpoint;
-		},
+		// The shared store classifies whatever these bytes decode to: a valid
+		// checkpoint is read as one, and a present-but-unreadable record (a
+		// stored JSON null, unparseable bytes, or a checkpoint a build before
+		// layouts did not write) is tagged by parseDraftBytes and surfaces as
+		// draftUnreadable rather than silently reading as no draft - the same
+		// contract nativeKeybindingDrafts runs, and the one discardDraft's
+		// recovery needs.
+		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
-		remove: () => backend.delete(key),
+		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
+		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
 	};
 }
