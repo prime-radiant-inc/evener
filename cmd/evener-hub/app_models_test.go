@@ -122,8 +122,9 @@ func TestFetchLiveModels_CarriesListingCapabilitiesUnchanged(t *testing.T) {
 
 // The model picker's live pass mints nothing for a command-credentialed
 // instance: the hub executes credential commands never (spec §10.1), so
-// the picker serves that instance's registry rows and leaves its live
-// listing to the child.
+// the picker serves that instance's registry rows — every advertised
+// fact, no credential materialized — and leaves its live listing to the
+// child.
 func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
@@ -141,7 +142,8 @@ func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = '''$(gw-mint)'''\n"
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
 	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +169,16 @@ func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
 
 	server := NewWebServer(hubcore.WebConfig{})
-	_ = server.fetchLiveModels(context.Background())
+	models := server.fetchLiveModels(context.Background())
+	found := false
+	for _, m := range models {
+		if m.Model == "house-model" && m.Provider == "gw" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the picker dropped the command-credentialed instance's registry rows; skipping the live fetch must skip the mint, not the models")
+	}
 	if runs != 0 {
 		t.Fatalf("the model picker executed the credential command %d time(s); the hub never runs credential commands", runs)
 	}

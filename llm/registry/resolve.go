@@ -423,6 +423,18 @@ func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
 	return r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport)
 }
 
+// ResolveInstanceModelFacts resolves one model reference at facts depth:
+// every advertised fact and the transport, with no credential stage —
+// a hub-side surface that must not mint reads its descriptors here (spec
+// §10.1: the child alone runs credential commands).
+func (r *Registry) ResolveInstanceModelFacts(instance, model string) (Resolved, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return Resolved{}, r.unknownInstance(instance)
+	}
+	return r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveFacts)
+}
+
 // webSearchExplicit reports whether prov attributes Caps.WebSearch to a
 // deliberate, individually considered choice in the record's own
 // providers.toml entry: an instance-wide setting (tag "config/provider")
