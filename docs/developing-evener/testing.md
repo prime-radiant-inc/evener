@@ -349,6 +349,55 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
 ~~~
 
+### `EVENER_SSH_E2E_PUSH=1` — the live credential push to a disposable host
+
+The credential push's criterion (component 07c,
+`docs/superpowers/specs/2026-09-14-multi-host-07-remote-admin.md`): this hub's
+local credentials store is copied to a named host through the atomic host-side
+`evener/auth/apiKey/conditionalSet`, and the host's own store ends up holding
+the keys. It is the check that lets a push be run against a host whose real
+state matters, because it makes the host side disposable FIRST: the push writes
+a store the check owns, and the host's real install and real `credentials.toml`
+come out byte-identical.
+
+**This gate writes to the host**, which is why it is a separate opt-in from the
+read-only `EVENER_SSH_E2E` check — a developer running that one is not signed up
+for a credential write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as
+well, and skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user,
+as in the sibling checks.
+
+What it writes, and where: under the host's `HOME` it creates its own
+`evener-push-e2e-<run>` directory holding a private `providers.toml`, a private
+`credentials.toml` (mode `0600` — the store refuses group/world bits), and a
+private `hub.toml` (`addr` + `hub_state_root`). It then launches that hub over
+ssh with `XDG_CONFIG_HOME` pointed into the directory, so the host hub resolves
+`<dir>/evener/providers.toml` and `<dir>/evener/credentials.toml` and never its
+own config root: the hub config schema has `hub_state_root` but no
+credential-path or config-root field, so a private `hub.toml` alone would
+redirect the host's state but not its credential file. The hub it launches is a
+cross-compiled build of this checkout, staged into that directory, rather than
+the host's own install: the push's host half is new, so a host hub built from
+older main answers the conditional set with "method not found". It removes the
+directory when it finishes and fails the check if it cannot. It never writes the
+host's real `~/.config/evener/credentials.toml` or its real install
+(`~/.local/bin/evener`); both are hashed before and after, and the check fails if
+either appeared or changed.
+
+Prerequisites: the same disposable host the other live checks need (reachable
+over non-interactive ssh, with a supported target), plus the Go toolchain and
+this checkout on the controller.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_PUSH=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostPushCredentialsDisposableHostE2E' -count=1 -v
+~~~
+
+The disposable-store guard can be seen to fail on purpose, which is how it is
+known to be a check rather than a phrase in a test name: with
+`EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE=1` the guard compares the disposable store
+instead of the host's real one, so the push's own (expected) write trips it —
+without the host's real file being touched at all.
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
