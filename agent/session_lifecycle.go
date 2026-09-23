@@ -1172,6 +1172,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 	}()
 
+	// A test-only seam: fail the turn before its user entry is recorded, the
+	// pre-incorporation, non-transcript failure the start path's give-back keys
+	// on. Nil in production, where it is inert.
+	if fail := s.cfg.testOnly.failTurnBeforeRecording; fail != nil {
+		return "", fail()
+	}
+
 	outputs := []string{}
 	next := input
 	nextImages := images

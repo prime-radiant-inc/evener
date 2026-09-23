@@ -11,34 +11,12 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
-import { installLocalStorage } from "../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "./keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "./prefs";
 
-// Node 26 shadows jsdom's real window.localStorage with its own
-// (non-functional under vitest) global, so every test file that touches
-// localStorage (the prefs store does, and keybindings.ts now reads the
-// character-key pref through it) needs this same small in-memory stand-in -
-// see stores/prefs.test.ts's own comment.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
   installLocalStorage(new MemoryStorage());
 });
 

@@ -1293,6 +1293,11 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 // runtime queues before a restored Session becomes visible. It emits nothing:
 // reconnect projections read the already-restored fields.
 func (s *Session) restoreDurableClientMutationQueues() {
+	// The turn this process inherited from the durable snapshot, and only when a
+	// client turn/start owns it. See the recoveredTurnID field doc: a
+	// queue-origin owner leaves it empty on purpose, so no follow-up start is
+	// admitted behind a turn the claim path would never take.
+	s.recoveredTurnID = s.recoveredStartTurnID()
 	incorporated := make(map[string]string, len(s.restoredClientMutationTurns))
 	maps.Copy(incorporated, s.restoredClientMutationTurns)
 	// steeringOutcome is the terminal state the transcript's entry for a steer
@@ -1782,6 +1787,10 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 	}
 	if fenceFinalized {
 		s.steeringMarked(recordedIDs)
+		// The Stop that fenced this turn has finalized, so a start the fence was
+		// holding back can now be claimed. Nothing else wakes it: a Stop parks
+		// the input queue, and wakeForPendingSteering only serves steering.
+		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	if returned {
 		// The durable queue grew a message back. QueueDepth, QueuePreview,

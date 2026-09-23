@@ -19,7 +19,7 @@ import type {
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { installLocalStorage } from "../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -30,24 +30,7 @@ import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 import { renderPalette as render, scriptSearch } from "./paletteTestUtils";
 
-// See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
   installLocalStorage(new MemoryStorage());
 });
 

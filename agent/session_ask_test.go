@@ -5111,6 +5111,15 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	// Stand sess in as dlg_source's runtime the way a real delegate child is:
+	// it uses the root's controller but does not own it. Releasing the
+	// controller NewSession built for it, and clearing ownership, is what keeps
+	// sess.Close from shutting the root's delegate tree down around itself and
+	// waiting out the close budget for its own stop.
+	if err := sess.closeOwnedDelegateStore(); err != nil {
+		t.Fatalf("close the session's own delegate store: %v", err)
+	}
+	sess.ownsDelegateController = false
 	sess.delegateController = fixture.controller
 	sess.delegateRootSessionID = fixture.root.ID()
 	sess.owningDelegateID = "dlg_source"
