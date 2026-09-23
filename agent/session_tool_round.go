@@ -399,7 +399,14 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	haveResults := len(results) == len(calls)
 	lastFailure := ""
 	for i, call := range calls {
-		*toolSigs = append(*toolSigs, call.Name+":"+shortHash(call.Arguments))
+		// SentArguments keeps the formula aligned with doctor/health.go's
+		// toolCallSignature for the rejected-call class: here calls come from
+		// resp.ToolCalls() (the original raw arguments, before
+		// assistantHistoryMessage replaces malformed ones with {}), so
+		// RawArguments is empty and SentArguments returns the raw bytes verbatim
+		// — identical to hashing call.Arguments directly, but expressed the same
+		// way the doctor does so the two sides cannot drift for this call class.
+		*toolSigs = append(*toolSigs, call.Name+":"+shortHash([]byte(call.SentArguments())))
 		failed := haveResults && results[i].IsError
 		*toolSigFailed = append(*toolSigFailed, failed)
 		if failed {

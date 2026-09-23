@@ -176,7 +176,7 @@ func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
 				name := part.ToolCall.Name
 				res.ToolCalls[name]++
 				occurrences = append(occurrences, toolCallOccurrence{
-					signature: toolCallSignature(name, part.ToolCall.Arguments),
+					signature: toolCallSignature(name, part.ToolCall),
 					tool:      name,
 					callID:    part.ToolCall.ID,
 				})
@@ -250,8 +250,15 @@ func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
 // -hex formula rather than importing the agent package: the doctor package
 // deliberately imports only durable-format packages, never the agent
 // session/runtime (see doctor.go's package doc).
-func toolCallSignature(name string, args json.RawMessage) string {
-	sum := sha256.Sum256(args)
+// session/runtime (see doctor.go's package doc). It hashes the bytes the
+// model actually sent (SentArguments: the preserved raw bytes for a rejected
+// call whose Arguments were replaced with the replay-safe {} placeholder), so
+// two distinct malformed calls produce distinct signatures instead of
+// collapsing to one identical run — matching what the runtime loop detector
+// sees (resp.ToolCalls()' original raw arguments, before
+// assistantHistoryMessage replaces them with {}).
+func toolCallSignature(name string, tc *llm.ToolCallData) string {
+	sum := sha256.Sum256([]byte(tc.SentArguments()))
 	return name + ":" + hex.EncodeToString(sum[:8])
 }
 

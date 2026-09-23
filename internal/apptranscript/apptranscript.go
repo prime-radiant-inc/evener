@@ -574,14 +574,24 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					}
 					continue
 				}
+				// A rejected call (RawArguments set) shows the model's raw bytes
+				// instead of the replay-safe {} placeholder the durable transcript
+				// records, and skips the intent lookup: {} parses to an empty intent
+				// regardless of what the model sent. Mirrors doctor/transcript.go's
+				// SentArguments treatment (#2162).
+				argumentsJSON := part.ToolCall.SentArguments()
+				description := ""
+				if part.ToolCall.RawArguments == "" {
+					description = ToolIntentFromArguments(part.ToolCall.Arguments)
+				}
 				item := appwire.ThreadItem{
 					Type:          "commandExecution",
 					ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, i),
 					TurnID:        turnID,
 					ToolName:      part.ToolCall.Name,
 					CallID:        part.ToolCall.ID,
-					ArgumentsJSON: string(part.ToolCall.Arguments),
-					Description:   ToolIntentFromArguments(part.ToolCall.Arguments),
+					ArgumentsJSON: argumentsJSON,
+					Description:   description,
 					Status:        appwire.TurnStatusInProgress,
 				}
 				// The entry's recorded timestamp is the server truth for when the
