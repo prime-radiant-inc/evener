@@ -2377,6 +2377,96 @@ func TestScratchClaimCanonicalizesRelativeSlotDirs(t *testing.T) {
 	}
 }
 
+// TestSwapDropsTheSourceSlotAcrossSpellings pins round 44's Low: the swap
+// cleanup compared the source record's slot directory with filepath.Clean,
+// so a source row spelled absolutely in the manifest against a source
+// binding spelled relatively (equivalent spellings of one directory) was
+// never dropped — the committed manifest kept the source binding owning
+// the moved allocation beside the target's, which the manifest rejects as
+// duplicate lease ownership. The comparison must canonicalize both sides.
+func TestSwapDropsTheSourceSlotAcrossSpellings(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01SWAPSPELL1"
+	const bindingID = "b-swap-spelling"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	absDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, absDir)
+	if err != nil {
+		t.Fatalf("fixture: relative spelling of %q: %v", absDir, err)
+	}
+	relRow := bindingRow
+	relRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: rel, OwnsLease: true},
+	}
+	// Store the relative spelling in the manifest itself — validation
+	// canonicalizes for its reference check but stores the row as
+	// supplied — so the swap's cleanup compares the manifest's relative
+	// source record against the source binding the environment reflects
+	// from its owned handle (absolute).
+	if err := sandbox.UpsertScratchBinding(owner, relRow, sandbox.ScratchConsumerBinding{
+		SessionID: consumerID, CurrentBindingID: bindingID,
+	}); err != nil {
+		t.Fatalf("fixture: publish the relative-spelled row: %v", err)
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: relRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(absDir): slots[sandbox.ScratchKindSandbox]},
+	})
+
+	// The source adopts through the relative-spelled pool row while the
+	// manifest carries the absolute spelling, so the swap's cleanup sees
+	// one directory named two ways.
+	source := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { source.Cleanup(); source.DisposeSandboxScratch() })
+	if _, _, err := s.adoptRetainedScratchFor(source, bindingID, consumerID); err != nil {
+		t.Fatalf("fixture: source adoption: %v", err)
+	}
+
+	target := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { target.Cleanup(); target.DisposeSandboxScratch() })
+	if err := s.stageScratchSwapBinding(target, source, consumerID); err != nil {
+		t.Fatalf("the swap failed over equivalent path spellings: %v", err)
+	}
+
+	manifest, merr := sandbox.LoadScratchRetention(owner)
+	if merr != nil {
+		t.Fatalf("load manifest: %v", merr)
+	}
+	sourceRow, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("fixture: the source binding vanished from the manifest")
+	}
+	if _, still := sourceRow.Slots[sandbox.ScratchKindSandbox]; still {
+		t.Fatalf("the swap left the source binding owning the moved allocation: duplicate lease ownership over %q", absDir)
+	}
+	targetBinding, terr := target.ScratchRetentionBinding()
+	if terr != nil {
+		t.Fatalf("target binding: %v", terr)
+	}
+	targetRow, ok := findScratchBinding(manifest, targetBinding.BindingID)
+	if !ok {
+		t.Fatalf("fixture: the target binding is absent from the manifest")
+	}
+	got, has := targetRow.Slots[sandbox.ScratchKindSandbox]
+	if !has || canonicalScratchDir(got.Dir) != canonicalScratchDir(absDir) {
+		t.Fatalf("the target did not receive the moved slot: %+v", targetRow.Slots)
+	}
+}
+
 // TestScratchRefreshBacksOffLockContention pins the round-11 backoff gap: the
 // refresh's re-derive loop retried a fail-fast manifest-lock refusal
 // immediately, so five passes — microseconds each — could all lose to one

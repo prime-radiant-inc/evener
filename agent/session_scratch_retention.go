@@ -354,7 +354,13 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 			sourceRecord.Slots = map[string]sandbox.ScratchSlot{}
 		}
 		for kind, slot := range moved {
-			if current, ok := sourceRecord.Slots[kind]; ok && filepath.Clean(current.Dir) == filepath.Clean(slot.Dir) {
+			// The manifest's record and the environment's binding may spell
+			// one directory differently (a relative spelling against the
+			// handle's absolute): compare canonically, or the cleanup leaves
+			// the source binding owning the moved allocation and the
+			// manifest rejects the swap as duplicate lease ownership
+			// (round 44).
+			if current, ok := sourceRecord.Slots[kind]; ok && canonicalScratchDir(current.Dir) == canonicalScratchDir(slot.Dir) {
 				delete(sourceRecord.Slots, kind)
 			}
 			if _, kept := keptKinds[kind]; kept {
@@ -415,7 +421,7 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 						continue
 					}
 					got, has := rec.Slots[kind]
-					if !has || filepath.Clean(got.Dir) != filepath.Clean(slot.Dir) {
+					if !has || canonicalScratchDir(got.Dir) != canonicalScratchDir(slot.Dir) {
 						committed = false
 						break
 					}
