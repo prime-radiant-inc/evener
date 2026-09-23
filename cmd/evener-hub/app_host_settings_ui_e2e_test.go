@@ -248,20 +248,55 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	// The controller hub runs from a binary built AFTER the frontend (the embed
 	// constraint) on an isolated HOME, so the controller's own AGENTS.md,
 	// launch config, and credential store are test-owned.
+	//
+	// Its provider and credential files are pinned to THIS check's own copies
+	// before the stack starts: an evener-managed environment exports
+	// EVENER_PROVIDERS_CONFIG, which redirects registry reads regardless of HOME,
+	// so without this the controller would read a real config root. The pin is
+	// process-wide (t.Setenv) and inherited by the hub child.
+	controllerConfigDir := filepath.Join(testEnv.Root, "settings-ui-e2e-controller-"+hostDeployRunID())
+	if err := os.MkdirAll(controllerConfigDir, 0o700); err != nil {
+		t.Fatalf("create %s: %v", controllerConfigDir, err)
+	}
+	controllerProvidersPath := filepath.Join(controllerConfigDir, "providers.toml")
+	if err := os.WriteFile(controllerProvidersPath, []byte(settingsUIControllerProvidersTOML(provider)), 0o600); err != nil {
+		t.Fatalf("write the controller's isolated providers.toml: %v", err)
+	}
+	controllerCredsPath := filepath.Join(controllerConfigDir, "credentials.toml")
+	if err := os.WriteFile(controllerCredsPath, []byte("schema = 1\n"), 0o600); err != nil {
+		t.Fatalf("write the controller's isolated credentials.toml: %v", err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", controllerProvidersPath)
+	t.Setenv("EVENER_CREDENTIALS_CONFIG", controllerCredsPath)
+
 	controllerBin := settingsUIControllerBinary(t, repoRoot)
 	stack := startHubStackOnProviderWithEvener(t, settingsUIControllerProvidersTOML(provider), "fake/"+fakellm.ModelID, controllerBin)
-	controllerCfgRoot := filepath.Join(stack.home, "config", "evener")
-	controllerAgentsDocPath := filepath.Join(controllerCfgRoot, "AGENTS.md")
-	if err := os.WriteFile(controllerAgentsDocPath, []byte(hostSettingsUIControllerAgentsDoc), 0o600); err != nil {
-		t.Fatalf("seed the controller's AGENTS.md: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(controllerCfgRoot, "launch.toml"), []byte(hostSettingsUIControllerLaunchTOML), 0o600); err != nil {
-		t.Fatalf("seed the controller's launch.toml: %v", err)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), hostSettingsUIAttachTimeout+2*time.Minute)
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
+
+	// The controller MUST be isolated, and this check does not take the isolated
+	// HOME on faith: it reads the path the controller hub itself resolves for its
+	// personal AGENTS.md and requires it under that HOME before it seeds
+	// anything. The evener-managed environment this check may run under exports
+	// EVENER_PROVIDERS_CONFIG (and friends), which redirects the registry paths
+	// regardless of HOME — so a real config root is a live possibility and must
+	// fail here rather than be written.
+	controllerDoc, err := clientRequest[appwire.AgentsDocResponse](ctx, client, appwire.MethodEvenerSettingsAgentsDocGet, appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("read the controller hub's AGENTS.md path: %v", err)
+	}
+	controllerAgentsDocPath := controllerDoc.Path
+	if !strings.HasPrefix(controllerAgentsDocPath, stack.home+string(os.PathSeparator)) {
+		t.Fatalf("the controller hub resolves its AGENTS.md at %q, outside its isolated HOME %q: the controller must not read or write a real config root (an inherited EVENER_* path override defeats the isolated HOME)", controllerAgentsDocPath, stack.home)
+	}
+	if err := os.WriteFile(controllerAgentsDocPath, []byte(hostSettingsUIControllerAgentsDoc), 0o600); err != nil {
+		t.Fatalf("seed the controller's AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(controllerAgentsDocPath), "launch.toml"), []byte(hostSettingsUIControllerLaunchTOML), 0o600); err != nil {
+		t.Fatalf("seed the controller's launch.toml: %v", err)
+	}
 
 	// Start the disposable host hub so the attach below bridges to it instead of
 	// bootstrapping a hub with the host's real environment.
@@ -286,6 +321,21 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	}
 	attached := awaitHostAttachedWithin(ctx, t, client, hostSettingsUIName, hostSettingsUIAttachTimeout)
 	t.Logf("attached disposable host %s: os=%s arch=%s hubVersion=%s", hostSettingsUIName, attached.OS, attached.Arch, attached.HubVersion)
+
+	// The host side must be the DISPOSABLE root, likewise read from the product:
+	// the host hub's own AGENTS.md path must be the file this check seeded under
+	// its per-run directory, not the host's real config root.
+	hostDocRaw, err := forwardHostMethod(ctx, client, hostSettingsUIName, appwire.MethodEvenerSettingsAgentsDocGet, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("read the disposable host's AGENTS.md path through the proxy: %v", err)
+	}
+	var hostDoc appwire.AgentsDocResponse
+	if err := json.Unmarshal(hostDocRaw, &hostDoc); err != nil {
+		t.Fatalf("decode the disposable host's AGENTS.md response %s: %v", hostDocRaw, err)
+	}
+	if hostDoc.Path != hostAgentsDocPath {
+		t.Fatalf("the disposable host hub resolves its AGENTS.md at %q, want the seeded %q; the host must read the disposable config root, never its real one", hostDoc.Path, hostAgentsDocPath)
+	}
 
 	// The hub must serve the tree's REAL SPA: a placeholder or half-built dist
 	// answers webnext.go's documented 503 instead, and driving it would time out

@@ -414,11 +414,13 @@ class Driver {
   // renders names `expectHostValue`. The picker's value is the per-pane proof
   // that the route carried the selection into this pane.
   async openSettingsURL(url, { expectHostValue = this.host } = {}) {
-    await navigateTo(this.page, url, {
-      bootExpression: `(() => document.querySelector("[data-testid='settings-content']") !== null ? true : null)()`,
-      bootLabel: `settings pane at ${url}`,
-    });
+    // Plain navigation, then waitPage: the settings pane is a lazy route whose
+    // content mounts only after the SPA boots and its client connects, so a
+    // boot expression evaluated once at the load event would always miss it.
+    await navigateTo(this.page, url);
     await this.waitPage(SETTINGS_CONTENT_EXPR, { label: `settings content at ${url}` });
+    // The rail is replaced by the settings pane on this route; rail-brand is a
+    // marker of the session shell, not of settings, so it is not asserted here.
     const select = await this.waitPage(HOST_SELECT_EXPR, { label: `Host picker at ${url}` }).then(() =>
       this.hostSelectState(),
     );
