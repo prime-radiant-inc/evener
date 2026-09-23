@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/internal/orphanpipe"
 )
 
 var (
@@ -29,7 +31,9 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	// On cancellation, terminate git gracefully where the platform allows
 	// (SIGTERM — see terminateGit) instead of exec's default SIGKILL, which
 	// strands git's lock files. WaitDelay hard-kills a git that has not
-	// exited a few seconds later.
+	// exited a few seconds later. It also bounds the output wait after git
+	// exits, when something git ran (a hook from the user's core.hooksPath,
+	// an ssh ProxyCommand) left a process holding the pipe (see orphanpipe).
 	cmd.Cancel = func() error { return terminateGit(cmd.Process) }
 	cmd.WaitDelay = 5 * time.Second
 	if dir != "" {
@@ -37,7 +41,7 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if err = orphanpipe.ChildErr(cmd, err); err != nil {
 		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out), nil

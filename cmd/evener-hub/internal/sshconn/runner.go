@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/orphanpipe"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -109,7 +110,8 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	stderr := cappedBuffer{limit: runOutputLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	cmd.WaitDelay = runWaitDelay
+	err := orphanpipe.ChildErr(cmd, cmd.Run())
 	switch {
 	case err != nil:
 		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
@@ -128,6 +130,13 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	}
 	return stdout.buf.Bytes(), nil
 }
+
+// runWaitDelay bounds how long a one-shot command's output pipes may stay open
+// after ssh exits or ctx ends. Whatever the user's ssh config starts alongside
+// ssh (a ProxyCommand, a LocalCommand) inherits those pipes, and killing ssh on
+// ctx expiry does not kill it, so without this bound ctx would not bound Run
+// (see orphanpipe).
+const runWaitDelay = time.Second
 
 // runOutputLimit caps one stream from a one-shot command. Preflight output is a
 // few hundred bytes; the cap exists so a hostile or broken remote command cannot
