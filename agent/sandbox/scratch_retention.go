@@ -1131,9 +1131,13 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		// validation fails forever — references with no binding — with no
 		// later reset to repair it, Released being false again (round 16). A
 		// reference nothing in the tombstoned manifest owns is nothing a
-		// restore could re-probe: its pair dies here instead — this owner's
-		// pin is removed and the reference drops; a foreign pin belongs to its
-		// own manifest and is left alone.
+		// restore could re-probe: its pair dies here instead — the reference
+		// drops and every pin is left in place: this owner's own pin is
+		// re-pinned by the reinstall's republish (same owner, directory, and
+		// kind — the pin write is idempotent), and when nothing republishes,
+		// its protection ends with the next terminal release's tombstone —
+		// which is what authorizes the collector to remove the pin and its
+		// directory; a foreign pin belongs to its own manifest (round 25).
 		carriedBindings := make(map[string]ScratchBinding)
 		carryReference := func(dir, kind string) error {
 			ownerID, owned := leaseOwningBinding(manifest, dir)
@@ -1143,15 +1147,22 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 				// Ownerless, or an owning binding no consumer names — the
 				// crash-window artifact the graph reader fails closed on:
 				// carrying either would wedge every later restore on the
-				// fresh manifest. Let the pair die together, removing only
-				// this owner's pin (a foreign pin belongs to its own
-				// manifest). The removal must not be swept aside: a pin the
-				// committed manifest has no reference for is retained with a
-				// diagnostic on every sweep, forever, and Released false
-				// again means no later reset comes back for it (round 18) —
-				// abort instead, leaving the tombstone for a retry once the
-				// filesystem failure clears.
-				return removeDyingReferencePin(owner, dir)
+				// fresh manifest. Let the pair die together, and leave every
+				// pin untouched: the death's only caller is the contended
+				// branch, so this owner's readable pin protects a directory
+				// whose lease a live holder still holds — stripping it
+				// lease-less left the collector free to sweep the directory
+				// out from under the holder (round 25). The reinstall this
+				// reset serves re-pins the same identity immediately, and
+				// when nothing does, the pin's protection ends with the next
+				// terminal release's tombstone, which is what authorizes the
+				// collector to remove it; until then the collector
+				// conservatively retains it with a diagnostic.
+				// Only a pin that cannot be READ aborts the death: committing
+				// past an unreadable pin strands an orphan with no diagnostic
+				// at all, and the free-lease branch would refuse the same
+				// read anyway (round 23).
+				return verifyDyingReferencePin(dir)
 			}
 			fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: kind})
 			// The reference travels with every binding whose slot names its
@@ -1347,28 +1358,31 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 	return out, reset, nil
 }
 
-// removeDyingReferencePin finishes the death of a reference whose owning
-// pair died with the tombstoned manifest: this owner's pin is removed so the
-// directory becomes ordinary, a foreign pin is left for its own manifest, and
-// a pin that is already absent has nothing to remove. A pin that cannot be
-// READ aborts the death — committing the reference away past an unreadable
-// pin strands an orphan the collector conservatively retains forever under
-// an unreleased manifest, with no later reset left to retry (round 23) — the
-// same contract the contended and free-lease branches enforce on their own
-// reads (round 19).
-func removeDyingReferencePin(owner ScratchOwner, dir string) error {
-	pin, pinErr := readScratchDirectoryPin(dir)
-	switch {
-	case os.IsNotExist(pinErr):
+// verifyDyingReferencePin checks the pin state of a reference whose owning
+// pair died with the tombstoned manifest. The death's only caller is the
+// reset's contended branch, so the pin protects a directory whose lease a
+// live holder still holds: a readable pin — this owner's own or a foreign
+// one — is LEFT UNTOUCHED. Stripping this owner's pin lease-less would leave
+// the holder's directory collectible while the holder still uses it; the
+// reinstall the reset serves re-pins the same identity immediately (the pin
+// write is idempotent for a matching owner, directory, and kind), and when
+// nothing republishes, the pin's protection ends with the next terminal
+// release's tombstone — which is what authorizes the collector to remove the
+// pin and its directory (round 25). A pin that is already absent has nothing
+// to protect. A pin that cannot be READ aborts the death — committing the
+// reference away past an unreadable pin strands an orphan with no diagnostic
+// at all, with no later reset left to retry (round 23) — the same contract
+// the contended and free-lease branches enforce on their own reads
+// (round 19).
+func verifyDyingReferencePin(dir string) error {
+	_, pinErr := readScratchDirectoryPin(dir)
+	if os.IsNotExist(pinErr) {
 		return nil
-	case pinErr != nil:
+	}
+	if pinErr != nil {
 		return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
-	case pin.Owner != owner:
-		return nil
 	}
-	if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
-		return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
-	}
+	// A readable pin — ours or foreign — is left exactly where it is.
 	return nil
 }
 

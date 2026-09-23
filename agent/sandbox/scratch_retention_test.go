@@ -1605,19 +1605,19 @@ func TestResetReleasedAbortsOnContendedMismatchedOwnPin(t *testing.T) {
 	}
 }
 
-// TestResetReleasedAbortsWhenOrphanedPinRemovalFails pins round 18's Medium:
-// the contended pair-death path ignored a failed removal of this owner's
-// orphaned pin and committed the reset anyway — and a readable pin under an
-// unreleased manifest that has no reference to it is conservatively retained
-// with a diagnostic on every sweep, forever. The reset must abort instead and
-// leave the manifest Released, so a later reset retries the removal.
-func TestResetReleasedAbortsWhenOrphanedPinRemovalFails(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the read-only directory fixture cannot make os.Remove fail on windows")
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("the read-only directory fixture cannot make os.Remove fail for root")
-	}
+// TestResetReleasedLeavesTheContendedDyingPinInPlace pins round 25's Medium:
+// the pair-death path ran lease-less — its only caller is the reset's
+// contended branch — so the reset removed a dying pair's own pin while a live
+// holder still held the directory's lease, stripping the protection that
+// keeps the collector from sweeping the directory out from under the holder.
+// The death now leaves a readable contended pin untouched and drops only the
+// pair: the holder keeps its protection, and the pin's protection ends with
+// the next terminal release's tombstone, which is what authorizes the
+// collector to remove the pin and its directory. (Round 18's abort contract
+// for this branch — refuse to commit past a removal that fails — retired with
+// the removal itself: the death never attempts one under contention, and the
+// reinstall that owns this path re-pins the same identity immediately.)
+func TestResetReleasedLeavesTheContendedDyingPinInPlace(t *testing.T) {
 	base, workspace := scratchRetentionBase(t)
 	owner := retentionOwner(t)
 	scratch, err := NewSessionScratch(base, workspace)
@@ -1625,63 +1625,98 @@ func TestResetReleasedAbortsWhenOrphanedPinRemovalFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = scratch.Cleanup() })
-	t.Cleanup(func() { _ = os.Chmod(scratch.Dir, 0o700) })
 	binding := retentionBinding("E0", owner.RootSessionID, workspace,
 		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
 	// No consumer row is published, so the reset's carry path lets the pair
-	// die — and the lease the scratch keeps makes that death contended, the
-	// branch whose pin removal went unchecked.
+	// die — and the lease the scratch handle keeps makes that death
+	// contended, the only branch the death can run in.
 	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
 		t.Fatalf("pin the pre-release binding: %v", err)
 	}
 	if err := ReleaseScratchRetention(owner); err != nil {
 		t.Fatalf("terminal release: %v", err)
 	}
-	// A read-only directory makes the orphaned pin's removal fail while the
-	// pin itself still reads back valid and the lease still flocks.
-	if err := os.Chmod(scratch.Dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := ResetScratchRetentionIfReleased(owner); err == nil {
-		t.Fatal("expected the orphaned pin-remove failure to surface from the reset")
+	// The dying pair's pin is this owner's and its lease is held: the death
+	// must leave the pin in place rather than strip it from under the live
+	// holder — the reset still completes, so the reinstall that owns this
+	// path can republish immediately.
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err != nil {
+		t.Fatalf("the reset must complete past a contended dying pair: %v", err)
 	}
 	manifest, err := LoadScratchRetention(owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !manifest.Released {
-		t.Fatal("the aborted reset committed an unreleased manifest over an unremovable orphan pin")
+	if manifest.Released {
+		t.Fatal("the reset left the manifest tombstoned")
+	}
+	for _, candidate := range manifest.References {
+		if filepath.Clean(candidate.Dir) == filepath.Clean(scratch.Dir) {
+			t.Fatal("the dead pair's reference survived the reset")
+		}
+	}
+	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatalf("the reset stripped the live holder's protection pin lease-less: %v", err)
+	}
+	// The left pin is protection, not an orphan the collector may take: the
+	// holder still uses the directory, so the sweep conservatively retains it
+	// with its diagnostic.
+	retained, retErr := scratchDirectoryRetained(scratch.Dir)
+	if !retained || retErr == nil {
+		t.Fatalf("the stripped-pin directory read collectible: retained=%v err=%v", retained, retErr)
+	}
+	// The holder releases its lease without removing the directory, the way a
+	// live session's teardown does; the next terminal release tombstones the
+	// manifest, which is what authorizes the collector to finally remove the
+	// released pin and its directory — the protection the leave extends is
+	// bounded by the next terminal cycle.
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("next terminal release: %v", err)
+	}
+	if retained, retErr := scratchDirectoryRetained(scratch.Dir); retained || retErr != nil {
+		t.Fatalf("the freed-pin directory still reads retained after the terminal release: retained=%v err=%v", retained, retErr)
 	}
 }
 
-// TestRemoveDyingReferencePin pins the death branch's pin contract: a
-// reference whose owning pair died with the tombstoned manifest takes only
-// this owner's pin with it, a foreign pin stays for its own manifest, and a
-// pin that cannot be read aborts the death — the same contract the contended
-// and free-lease branches enforce on their own reads (round 19). The death
-// branch's read is the second one the reset takes on the directory, so a
-// cross-process writer is what can flip it between the two; the contract is
-// pinned here directly.
-func TestRemoveDyingReferencePin(t *testing.T) {
+// TestVerifyDyingReferencePin pins the death branch's pin contract: a
+// reference whose owning pair died with the tombstoned manifest is dropped
+// freely when the pin is absent, a pin that cannot be read aborts the death —
+// the same contract the contended and free-lease branches enforce on their
+// own reads (round 19) — and a readable pin is LEFT UNTOUCHED: the death's
+// only caller is the reset's contended branch, so the pin protects a
+// directory whose lease a live holder still holds, and stripping it
+// lease-less would leave the holder's directory collectible while the holder
+// uses it. This owner's own pin is re-pinned by the reinstall's republish
+// (same owner, directory, and kind — the pin write is idempotent) or removed
+// by the next terminal release once the lease frees; a foreign pin belongs to
+// its own manifest (round 25). The death branch's read is the second one the
+// reset takes on the directory, so a cross-process writer is what can flip it
+// between the two; the contract is pinned here directly.
+func TestVerifyDyingReferencePin(t *testing.T) {
 	owner := retentionOwner(t)
 	other := retentionOwner(t)
 
-	// A pin that is already absent has nothing to remove.
+	// A pin that is already absent has nothing to protect: the reference
+	// dies with the manifest.
 	bare := t.TempDir()
-	if err := removeDyingReferencePin(owner, bare); err != nil {
+	if err := verifyDyingReferencePin(bare); err != nil {
 		t.Fatalf("absent pin: %v", err)
 	}
 
-	// This owner's pin is removed so the directory becomes ordinary.
+	// This owner's pin is left in place: the death never removes it
+	// lease-less.
 	ours := t.TempDir()
 	if err := writeScratchDirectoryPin(ours, owner, ScratchReference{Dir: ours, Kind: ScratchKindSandbox}); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeDyingReferencePin(owner, ours); err != nil {
+	if err := verifyDyingReferencePin(ours); err != nil {
 		t.Fatalf("our own pin: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(ours, scratchPinName)); !os.IsNotExist(err) {
-		t.Fatalf("our own pin was not removed: %v", err)
+	if _, err := os.Stat(filepath.Join(ours, scratchPinName)); err != nil {
+		t.Fatalf("the death disturbed this owner's pin: %v", err)
 	}
 
 	// A foreign pin belongs to its own manifest and is left alone.
@@ -1689,7 +1724,7 @@ func TestRemoveDyingReferencePin(t *testing.T) {
 	if err := writeScratchDirectoryPin(foreign, other, ScratchReference{Dir: foreign, Kind: ScratchKindSandbox}); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeDyingReferencePin(owner, foreign); err != nil {
+	if err := verifyDyingReferencePin(foreign); err != nil {
 		t.Fatalf("foreign pin: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(foreign, scratchPinName)); err != nil {
@@ -1711,7 +1746,7 @@ func TestRemoveDyingReferencePin(t *testing.T) {
 	if err := os.Chmod(filepath.Join(unreadable, scratchPinName), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeDyingReferencePin(owner, unreadable); err == nil {
+	if err := verifyDyingReferencePin(unreadable); err == nil {
 		t.Fatal("an unreadable pin must abort the death, not let the reference drop silently")
 	}
 }

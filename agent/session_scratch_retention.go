@@ -1907,14 +1907,17 @@ func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir strin
 // this restore transferred is handed back and requeued in the pool with its
 // claim cleared, so a later adoption reacquires it rather than finding a
 // transfer with no handle behind it; any other referenced allocation is
-// released (its lease given up, its directory kept, as any handoff does).
-// adopterID is the consumer the failed adoption ran for. Only what the manifest
-// does not reference — the environment's own fresh mint — is disposed, and the
-// disposal respects ownership: an environment this restore created dies with
-// the failure, dirs and world-usable temp container both, while a shared one
-// belongs to the live parent, so only its unreferenced scratch directories are
-// dropped and the parent's container — which the children it already spawned
-// still use as TMPDIR — stays. createdEnv is the caller's ownsFresh.
+// released (its lease given up, its directory kept, as any handoff does). Both
+// handoffs work without a pool — the requeue is skipped and the release stands
+// — so a pool detached between the adoption and this settle still keeps the
+// transferred allocation alive (round 25). adopterID is the consumer the failed
+// adoption ran for. Only what the manifest does not reference — the
+// environment's own fresh mint — is disposed, and the disposal respects
+// ownership: an environment this restore created dies with the failure, dirs
+// and world-usable temp container both, while a shared one belongs to the live
+// parent, so only its unreferenced scratch directories are dropped and the
+// parent's container — which the children it already spawned still use as
+// TMPDIR — stays. createdEnv is the caller's ownsFresh.
 func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, adopterID string, createdEnv bool) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -1929,31 +1932,18 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 		local.RetainSessionScratch()
 		return
 	}
-	if s.retainedScratch.Load() == nil {
-		if createdEnv {
-			// No pool exists to classify anything. This is the state every
-			// failed CHILD construction reaches on an environment this
-			// restore created — prepareRetainedScratch never runs for a
-			// child — and every reference such an environment holds was
-			// published by this very restore: the fresh mint the failed
-			// construction pinned under its own new binding. Keeping it
-			// would leak a directory nothing will ever reacquire; disposing
-			// is exactly the fresh-mint contract.
-			local.DisposeUnadoptedScratch()
-			return
-		}
-		// A shared environment is the live parent's own object, and the
-		// manifest can still name what it holds: the failed construction's
-		// mint pins under the parent's inherited binding row — the round-11
-		// shape — and that row survives this settlement. The classification
-		// below is poolless by construction (retainedScratchReferenceDirs
-		// reads the manifest directly and the requeue guard is skipped with
-		// no pool), so it retains what the manifest references — the mint
-		// keeps its directory, its lease released for a later restore of the
-		// same child to reacquire — and the final dispose drops only the
-		// unreferenced scratch while keeping the parent's world-usable temp
-		// container.
-	}
+	// A pool changes nothing about the classification. A partial adoption can
+	// commit an earlier slot and fail on a later one, leaving the environment
+	// holding a manifest-referenced allocation the pool already handed over —
+	// and the pool can detach before this settle runs, so treating a poolless
+	// created environment as pure fresh mint deleted that transferred directory
+	// out from under the manifest (round 25). The classification below is
+	// poolless by construction (retainedScratchReferenceDirs reads the
+	// manifest directly and the requeue guard is skipped with no pool), so every
+	// environment flavor keeps exactly what the manifest references: a created
+	// environment's transferred allocations survive with their leases released
+	// for a later restore to reacquire, its unreferenced mint dies with the
+	// failure, and a shared parent keeps its world-usable temp container.
 	referenced, ok := s.retainedScratchReferenceDirs()
 	if !ok {
 		local.RetainSessionScratch()
