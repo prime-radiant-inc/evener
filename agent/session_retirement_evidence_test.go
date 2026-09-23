@@ -2816,9 +2816,13 @@ func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	}
 }
 
-// retirementHeldAttentionAdapter holds every provider call at the LLM boundary
+// retirementHeldAttentionAdapter holds every agent turn at the LLM boundary
 // until release closes, signalling started on the first one, so a test can
 // keep a delegate's attention generation in flight for as long as it asserts.
+// Structured-output calls (the session namer's JSON-schema requests, which
+// share this provider when no cheap model is configured and may still be in
+// flight from earlier turns) pass straight through: started must mean the
+// attention generation reached the provider, not a namer.
 type retirementHeldAttentionAdapter struct {
 	retirementDelegateAdapter
 	started   chan struct{}
@@ -2827,6 +2831,9 @@ type retirementHeldAttentionAdapter struct {
 }
 
 func (a *retirementHeldAttentionAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if req.ResponseFormat != nil {
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	}
 	a.startOnce.Do(func() { close(a.started) })
 	select {
 	case <-a.release:
