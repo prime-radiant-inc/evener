@@ -40,7 +40,13 @@ import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
 import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
-import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
+import {
+  formatQuietAge,
+  formatUsagePair,
+  jobStatusDisplay,
+  jobStatusDotState,
+  quietAnchorMillis,
+} from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import { TreeNowContext, useTreeNow } from "./treeNow";
 
@@ -110,10 +116,12 @@ function delegateName(delegate: ActivityDelegate): string {
 }
 
 // rowStatusText is the one place a dense row's displayed status text is chosen:
-// a job states its raw status, a delegate its resolved state. The row view and
-// both meta grammars read it through here, so the two row kinds cannot drift.
+// a job states its status under jobStatusDisplay (raw machine words, except
+// the command-outcome statuses whose long snake_case form ellipsizes in the
+// narrow column), a delegate its resolved state. The row view and both meta
+// grammars read it through here, so the two row kinds cannot drift.
 function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
-  return row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
+  return row.kind === "job" ? jobStatusDisplay(row.job.status, row.job.reason) : delegateStatusText(row.delegate);
 }
 
 // The kind glyph ($/⌘) carries the status hue the StatusDot used to: working

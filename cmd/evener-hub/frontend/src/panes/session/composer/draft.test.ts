@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../../../storageTestUtils";
 import {
   clearDraft,
   composerDraftStorageKey,
@@ -33,7 +34,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

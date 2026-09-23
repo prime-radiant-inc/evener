@@ -225,13 +225,14 @@ func TestBuildWatchFrameIncludesEventContentAndHidesTranscriptRef(t *testing.T) 
 		JobType:       "delegate",
 		Status:        "failed",
 		Reason:        "exit_nonzero",
+		Intent:        "keep the build green",
 		ExitCode:      &exitCode,
 		OutputBytes:   42,
 		TranscriptRef: "local:secret_session",
 	})
 	ev.SessionID = "session_1"
 	frame := jm.buildWatchFrame(cfg, "job_worker", "event: JOB_FINISHED", "wd_1", ev, nil)
-	for _, want := range []string{"kind: job.notification", "job_id: job_worker", "status: failed", "exit_code: 2", "output_bytes: 42"} {
+	for _, want := range []string{"kind: job.notification", "job_id: job_worker", "status: failed", "intent: keep the build green", "exit_code: 2", "output_bytes: 42"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("frame missing %q:\n%s", want, frame)
 		}

@@ -1668,6 +1668,7 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type jobWatchToolEventFilter struct {
@@ -1841,6 +1842,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+		Reason:             res.Reason,
 	}
 	if res.OneShot {
 		out.AfterSeconds = res.TimerSeconds
@@ -2138,7 +2140,8 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
-			jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
+			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)

@@ -1496,7 +1496,10 @@ func activityOutcome(status jobstore.Status) (bool, string) {
 	switch status {
 	case jobstore.StatusRunning:
 		return false, ""
-	case jobstore.StatusFailed, jobstore.StatusExhausted:
+	// A command that exited nonzero or was signalled is still a FAILURE
+	// for the activity rollup, exactly like a machinery failure or an
+	// exhausted delegate: attention follows the run, whatever broke it.
+	case jobstore.StatusFailed, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled, jobstore.StatusExhausted:
 		return true, "failure"
 	case jobstore.StatusCompleted:
 		return true, "success"

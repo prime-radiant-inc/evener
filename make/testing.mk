@@ -178,7 +178,7 @@ RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ##   intentionally not duplicated.
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0,
-##   AGENT_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's
+##   AGENT_SHARDS=0, HUB_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's
 ##   ~10x slowdown. RACE_SCOPE defaults to all; CI uses the
 ##   explicit root scope plus agent and nonagent on separate runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
@@ -187,7 +187,7 @@ test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
 		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
-		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short -count=1
+		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 HUB_SHARDS=0 AGENT_PARALLEL=6 scripts/gate/run-module-tests.sh -race -short -count=1
 
 ## go vet across every non-fuzz workspace module.
 ## proves: go vet diagnostics for every module, independent of the tagged

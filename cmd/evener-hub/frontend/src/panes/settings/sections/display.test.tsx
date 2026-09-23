@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { installLocalStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
@@ -24,7 +25,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

@@ -523,6 +523,10 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
+	// Intent is the caller's stated rationale for the run (the shell tool
+	// call's `intent` argument), projected from the job record. The web card
+	// renders it on the head line beside the title.
+	Intent string
 	// TerminalGen is the exact durable terminal generation this terminal
 	// notification represents.
 	TerminalGen      string
@@ -1169,6 +1173,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	background := false
 	command := ""
 	parentDelegateID := e.ParentDelegateID
+	intent := ""
 	if run != nil {
 		if run.rec != nil {
 			if run.rec.Type != "" {
@@ -1178,6 +1183,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			command = run.rec.Command
 			parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
 			task = envvars.FirstNonEmpty(run.rec.Task, task)
+			intent = run.rec.Intent
 			originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
 			originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
 			originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
@@ -1194,6 +1200,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
 		Task:             task,
+		Intent:           intent,
 		TranscriptRef:    shellTranscriptRef(e.JobID),
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
@@ -1212,6 +1219,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	originItemID := e.OriginItemID
 	background := false
 	command := ""
+	description := ""
+	intent := ""
 	parentDelegateID := e.ParentDelegateID
 	if run != nil && run.rec != nil {
 		if run.rec.Type != "" {
@@ -1219,6 +1228,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		}
 		background = run.rec.Background
 		command = run.rec.Command
+		description = run.rec.Description
+		intent = run.rec.Intent
 		parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
 		task = envvars.FirstNonEmpty(run.rec.Task, task)
 		originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
@@ -1242,6 +1253,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
 		Task:             task,
+		Description:      envvars.FirstNonEmpty(description, task),
+		Intent:           intent,
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
 		OriginItemID:     originItemID,
@@ -1490,19 +1503,18 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 			return err
 		}
 		if jm.enqueue != nil {
-			jm.enqueue(jobNotification{
-				JobID:            finished.JobID,
-				TerminalGen:      finished.TerminalGen,
-				JobType:          string(rec.Type),
-				Status:           string(finished.Status),
-				Reason:           finished.Reason,
-				ExhaustionBudget: finished.ExhaustionBudget,
-				ExhaustionLimit:  finished.ExhaustionLimit,
-				TranscriptRef:    jobTranscriptRef(rec),
-				OutputBytes:      finished.OutputBytes,
-				ExitCode:         finished.ExitCode,
-				Provenance:       provenance.Clone(rec.Provenance),
-			})
+			// The reconcile event's terminal facts are fresher than the
+			// loaded record's; every other field projects from the record
+			// through the shared constructor.
+			notification := jobNotificationFromRecord(rec)
+			notification.TerminalGen = finished.TerminalGen
+			notification.Status = string(finished.Status)
+			notification.Reason = finished.Reason
+			notification.ExhaustionBudget = finished.ExhaustionBudget
+			notification.ExhaustionLimit = finished.ExhaustionLimit
+			notification.OutputBytes = finished.OutputBytes
+			notification.ExitCode = finished.ExitCode
+			jm.enqueue(notification)
 		}
 	}
 	return nil
@@ -2118,19 +2130,18 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		// an empty queue and the delivery slips a boundary. The watch settlements
 		// collected above ride the same enqueue, in the documented order — watch
 		// notices first, then the terminal.
-		ownNotices = append(ownNotices, jobNotification{
-			JobID:            run.rec.JobID,
-			TerminalGen:      terminal.generation,
-			JobType:          string(run.rec.Type),
-			Status:           string(terminal.status),
-			Reason:           terminal.reason,
-			ExhaustionBudget: terminal.exhaustionBudget,
-			ExhaustionLimit:  terminal.exhaustionLimit,
-			TranscriptRef:    jobTranscriptRef(run.rec),
-			OutputBytes:      terminal.outputBytes,
-			ExitCode:         terminal.exitCode,
-			Provenance:       provenance.Clone(run.rec.Provenance),
-		})
+		// The terminal struct's facts are fresher than the start-time
+		// record; every other field projects from the record through the
+		// shared constructor.
+		ownNotice := jobNotificationFromRecord(run.rec)
+		ownNotice.TerminalGen = terminal.generation
+		ownNotice.Status = string(terminal.status)
+		ownNotice.Reason = terminal.reason
+		ownNotice.ExhaustionBudget = terminal.exhaustionBudget
+		ownNotice.ExhaustionLimit = terminal.exhaustionLimit
+		ownNotice.OutputBytes = terminal.outputBytes
+		ownNotice.ExitCode = terminal.exitCode
+		ownNotices = append(ownNotices, ownNotice)
 	}
 	flushNotices()
 	run.delegateShell.finish()
@@ -2272,19 +2283,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 			continue
 		}
 		if jm.enqueue != nil {
-			jm.enqueue(jobNotification{
-				JobID:            rec.JobID,
-				TerminalGen:      rec.TerminalGen,
-				JobType:          string(rec.Type),
-				Status:           string(rec.Status),
-				Reason:           rec.Reason,
-				ExhaustionBudget: rec.ExhaustionBudget,
-				ExhaustionLimit:  rec.ExhaustionLimit,
-				TranscriptRef:    jobTranscriptRef(rec),
-				OutputBytes:      rec.OutputBytes,
-				ExitCode:         rec.ExitCode,
-				Provenance:       provenance.Clone(rec.Provenance),
-			})
+			jm.enqueue(jobNotificationFromRecord(rec))
 		}
 	}
 	return nil

@@ -50,8 +50,8 @@ func TestRemoteHubStatusNotificationMasksUnforwardedCapabilities(t *testing.T) {
 	if status.Capabilities == nil {
 		t.Fatal("status capabilities = nil, want a masked set where the daemon sent one")
 	}
-	if *status.Capabilities != (appwire.ThreadCapabilities{}) {
-		t.Fatalf("status capabilities = %+v, want every unforwarded action masked like the read path", *status.Capabilities)
+	if *status.Capabilities != maskedRemoteThreadCapabilities {
+		t.Fatalf("status capabilities = %+v, want %+v like the read path", *status.Capabilities, maskedRemoteThreadCapabilities)
 	}
 	if status.Ref != "host:S" || status.ThreadID != "S" {
 		t.Fatalf("status = %+v, want ref host:S and threadId S", status)
@@ -101,9 +101,9 @@ func TestRemoteHubNestedThreadNotificationMasksUnforwardedCapabilities(t *testin
 		t.Fatal("channel closed before the started notification")
 	}
 	started := decodeNotificationParams[appwire.ThreadStartedParams](t, n)
-	if started.Thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
-		t.Fatalf("nested capabilities = %+v, want every unforwarded action masked like the read path",
-			started.Thread.Evener.Capabilities)
+	if started.Thread.Evener.Capabilities != maskedRemoteThreadCapabilities {
+		t.Fatalf("nested capabilities = %+v, want %+v like the read path",
+			started.Thread.Evener.Capabilities, maskedRemoteThreadCapabilities)
 	}
 	if started.Thread.Source != "host" || started.Thread.Evener.Ref != "host:S" ||
 		started.Thread.Evener.ParentRef != "host:P" || started.Thread.Evener.InstanceID != "xyz" {
@@ -141,8 +141,8 @@ func TestRemoteHubNotificationMaskPreservesUnrelatedFields(t *testing.T) {
 	if err := json.Unmarshal(fields["capabilities"], &statusCaps); err != nil {
 		t.Fatalf("decode translated capabilities %s: %v", fields["capabilities"], err)
 	}
-	if statusCaps != (appwire.ThreadCapabilities{}) {
-		t.Fatalf("status capabilities = %+v, want every unforwarded action masked", statusCaps)
+	if statusCaps != maskedRemoteThreadCapabilities {
+		t.Fatalf("status capabilities = %+v, want %+v", statusCaps, maskedRemoteThreadCapabilities)
 	}
 	if string(fields["status"]) != `{"type":"active"}` {
 		t.Fatalf("status field = %s, want it untouched", fields["status"])
@@ -169,8 +169,8 @@ func TestRemoteHubNotificationMaskPreservesUnrelatedFields(t *testing.T) {
 	if err := json.Unmarshal(fields["thread"], &thread); err != nil {
 		t.Fatalf("decode translated thread %s: %v", fields["thread"], err)
 	}
-	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
-		t.Fatalf("nested capabilities = %+v, want every unforwarded action masked", thread.Evener.Capabilities)
+	if thread.Evener.Capabilities != maskedRemoteThreadCapabilities {
+		t.Fatalf("nested capabilities = %+v, want %+v", thread.Evener.Capabilities, maskedRemoteThreadCapabilities)
 	}
 	if thread.Source != "host" || thread.Evener.Ref != "host:S" || thread.Evener.ParentRef != "host:P" ||
 		thread.Evener.InstanceID != "inst-1" {
