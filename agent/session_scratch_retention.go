@@ -1442,9 +1442,14 @@ func (s *Session) prepareRetainedScratch() error {
 				continue
 			}
 		}
-		handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
-		if err != nil {
-			if errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
+		var handle *sandbox.SessionScratch
+		openErr := sandbox.RetryScratchLockContention(func() error {
+			var err error
+			handle, err = sandbox.OpenRetainedSessionScratch(owner, ref)
+			return err
+		})
+		if openErr != nil {
+			if errors.Is(openErr, sandbox.ErrScratchRetentionLeaseHeld) {
 				// Already owned in this process (a live or crash-abandoned
 				// runtime holds the lease). Leave it with its owner instead of
 				// contending; a real crash releases the lease before restore.
@@ -1453,8 +1458,20 @@ func (s *Session) prepareRetainedScratch() error {
 				}
 				continue
 			}
+			if errors.Is(openErr, sandbox.ErrScratchRetentionReleased) {
+				// A terminal release tombstoned the manifest between this
+				// preparation's load and the open's in-lock revalidation. The
+				// retained restore is declined, not failed: release every
+				// handle acquired so far and publish nothing, exactly the
+				// already-released short-circuit at the head of this function
+				// — the install path's reset resurrects and carries what the
+				// release left re-probeable, and the restore proceeds on
+				// fresh scratch for the rest (round 50).
+				releaseRetainedScratchPool(pool)
+				return nil
+			}
 			releaseRetainedScratchPool(pool)
-			return fmt.Errorf("retained scratch %q: %w", ref.Dir, err)
+			return fmt.Errorf("retained scratch %q: %w", ref.Dir, openErr)
 		}
 		pool.handles[canonicalScratchDir(ref.Dir)] = handle
 	}

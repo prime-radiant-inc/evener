@@ -481,11 +481,12 @@ func TestRestoreIdleFailureSettlesTheReprovisionedFreshScratch(t *testing.T) {
 	}
 	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 
-	// The settlement dropped the re-provisioned fresh fallback: no scratch
-	// directory this restore minted remains under the base it minted in.
 	// The settlement's record: exactly the re-provisioned fallback remains
 	// under the base this restore minted in — the original mint the
-	// replacement disposed, and nothing else the restore created.
+	// replacement disposed, and nothing else the restore created. The
+	// settlement retains the bare-pinned reprovision rather than dropping it
+	// (the pending-kind contract below), so the retry the caller is about to
+	// run adopts what this failed attempt's reprovision pinned.
 	postMinted, err := filepath.Glob(filepath.Join(isolated, "evener-sandbox-*"))
 	if err != nil {
 		t.Fatal(err)

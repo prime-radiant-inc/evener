@@ -963,6 +963,11 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 	if err != nil {
 		return nil, err
 	}
+	if probe := scratchOpenProbe; probe != nil {
+		if err := probe(); err != nil {
+			return nil, err
+		}
+	}
 	// ReleaseScratchRetention writes the tombstone and removes pins while
 	// holding this lock, so holding it across the lease acquisition serializes
 	// open against release.
@@ -1026,6 +1031,21 @@ func OpenRetainedSessionScratch(owner ScratchOwner, ref ScratchReference) (*Sess
 		return nil, err
 	}
 	return &SessionScratch{Dir: dir, base: base, lease: lease}, nil
+}
+
+// scratchOpenProbe, when set, is consulted at the top of
+// OpenRetainedSessionScratch before the manifest lock is taken: a non-nil
+// error opens nothing and is returned to the caller. Tests use it to model a
+// concurrent fail-fast manifest-lock hold (ErrScratchRetentionLockHeld) and a
+// terminal release committing inside the preparation-to-open window without
+// lock choreography. It is nil in production; tests set it through
+// SetScratchOpenProbeForTesting and clear it with their cleanup.
+var scratchOpenProbe func() error
+
+// SetScratchOpenProbeForTesting installs the probe consulted at the top of
+// OpenRetainedSessionScratch. Passing nil clears it.
+func SetScratchOpenProbeForTesting(fn func() error) {
+	scratchOpenProbe = fn
 }
 
 // verifyRetainedScratchPin reads dir's identity pin and confirms it is exactly

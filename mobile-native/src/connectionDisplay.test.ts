@@ -557,6 +557,40 @@ it("useRenderClient withholds an undefined hub's ready pairing until the settle 
 	expect(settledClient).toBe(first);
 });
 
+// Round 50's undefined-hub Low: useConnectionDisplay seeds trustedScope as
+// undefined, so a mount whose hubId is also undefined passed the ready
+// render's trustedScope !== hubId gate (undefined !== undefined reads false)
+// and showed the screen instead of the documented fail-closed wall — the
+// same empty-seed collision round 49 closed for useRenderClient, at the
+// display hook. Trust must be born before it unlocks anything: the explicit
+// boolean never compares equal to a real scope.
+it("useConnectionDisplay walls an undefined hub's ready mount until the settle earns trust", () => {
+	let landedDisplay: ReturnType<typeof useConnectionDisplay> | null = null;
+	let settledDisplay: ReturnType<typeof useConnectionDisplay> | null = null;
+	let probed = false;
+	function Probe() {
+		useLayoutEffect(() => {
+			if (probed) {
+				return;
+			}
+			probed = true;
+			landedDisplay = settledDisplay;
+		});
+		return null;
+	}
+	function Owner() {
+		settledDisplay = useConnectionDisplay(undefined, "ready", false);
+		return createElement(Probe);
+	}
+	render(createElement(Owner));
+	// The landing render walls: the empty trust seed must not collide with an
+	// undefined hubId the way the bare scope comparison let it.
+	expect(landedDisplay).toBe("wall");
+	// After the settle the mount-already-ready transition earns trust and
+	// the screen shows.
+	expect(settledDisplay).toBe("none");
+});
+
 // Round 32's retention Medium: the effect that resets `everReady` on a hub
 // move re-armed it in the same run when the moved render still carried the
 // previous hub's ready state, so the new hub retained content it never

@@ -159,18 +159,24 @@ export function useConnectionDisplay(
 	const everReady = useRef(false);
 	const fatalRecovery = useRef(false);
 	const scope = useRef<string | undefined>(hubId);
-	// The hub whose connection the current ready state vouches for: seeded
-	// empty at mount, recorded on the first transition INTO ready the
-	// settling effect observes and on every later one, read on every ready
-	// render. A hub change alone — the re-key window's only event — never
-	// re-records it, so however long the connection keeps reporting the
-	// previous hub's client as ready under the new hub, the trust stays with
-	// the hub that earned it. The mount's own ready state earns the trust
-	// only through the settling effect, never on the render it arrives in:
-	// a re-keyed remount can land on the previous hub's still-ready pairing,
-	// and the props a mount was born with are not evidence it vouches for
-	// this hub (round 32).
-	const [trustedScope, setTrustedScope] = useState<string | undefined>(undefined);
+	// The hub whose connection the current ready state vouches for: trust is
+	// not born until the settling effect records it, and it is carried as an
+	// explicit boolean beside the scope so the empty state can never compare
+	// equal to a real scope — a mount whose hubId is also undefined must not
+	// pass the gate by collision (round 50). Trust is recorded on the first
+	// transition INTO ready the settling effect observes and on every later
+	// one, and read on every ready render. A hub change alone — the re-key
+	// window's only event — never re-records it, so however long the
+	// connection keeps reporting the previous hub's client as ready under the
+	// new hub, the trust stays with the hub that earned it. The mount's own
+	// ready state earns the trust only through the settling effect, never on
+	// the render it arrives in: a re-keyed remount can land on the previous
+	// hub's still-ready pairing, and the props a mount was born with are not
+	// evidence it vouches for this hub (round 32).
+	const [trust, setTrust] = useState<{ trusted: boolean; scope: string | undefined }>({
+		trusted: false,
+		scope: undefined,
+	});
 	const lastState = useRef<ConnectionState | "unmounted">("unmounted");
 	// The hub the refs still record retention for. The reset itself runs in
 	// the effect below, so this render computes with voided values instead of
@@ -188,13 +194,13 @@ export function useConnectionDisplay(
 				// A transition INTO ready is the one event that vouches for
 				// the hub it happened under; the mount counts as one through
 				// the "unmounted" sentinel.
-				setTrustedScope(hubId);
+				setTrust({ trusted: true, scope: hubId });
 			}
 			lastState.current = state;
 		}
 		if (
 			state === "ready" &&
-			(!scopeMoved || transitionedIntoReady || trustedScope === hubId)
+			(!scopeMoved || transitionedIntoReady || (trust.trusted && trust.scope === hubId))
 		) {
 			// The retention arm is gated on the same render's scopeMoved: in
 			// the re-key window the moved render still carries the previous
@@ -231,7 +237,9 @@ export function useConnectionDisplay(
 	// A ready state only earns its screen for the hub it vouches for: through
 	// the whole window that is the previous hub, so the ready renders under
 	// the new one wall until the connection transitions into ready for it.
-	if (state === "ready" && trustedScope !== hubId) {
+	// The unborn trust walls an undefined hub's mount the same way — the
+	// boolean cannot collide with any hubId (round 50).
+	if (state === "ready" && !(trust.trusted && trust.scope === hubId)) {
 		return "wall";
 	}
 	return connectionDisplay(state, everReady.current, fatal || fatalRecovery.current);
