@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
@@ -585,7 +586,7 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 //
 // The once closure is withSessionResume's own seam: it stands in for the
 // relayWithResume / setGoalWithResume / clearThreadWithResume shapes that wrap
-// their sourceForThread failure in preDispatchRefusal.
+// their sourceForThread failure in preDispatchRefusalError.
 func TestSessionResumeRetryCorrelation(t *testing.T) {
 	const mutationID = "mutation-session-resume-retry"
 
@@ -603,7 +604,7 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 		},
 		{
 			name:            "pre-dispatch resolution failure is not-accepted",
-			retryErr:        preDispatchRefusal{errors.New("source registry unavailable")},
+			retryErr:        preDispatchRefusalError{errors.New("source registry unavailable")},
 			wantOutcome:     appwire.MutationOutcomeNotAccepted,
 			wantDisposition: appwire.RetryDispositionNone,
 		},
@@ -662,6 +663,121 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 			if data.MutationOutcome != tc.wantOutcome || data.RetryDisposition != tc.wantDisposition {
 				t.Fatalf("mutationOutcome=%q retryDisposition=%q, want %q/%q (wire=%+v)",
 					data.MutationOutcome, data.RetryDisposition, tc.wantOutcome, tc.wantDisposition, wire)
+			}
+		})
+	}
+}
+
+// TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins that the
+// pre-dispatch "nothing was dispatched" rule is decided by the CONCRETE caller
+// wrappers -- clearThreadWithResume, relayWithResume -- not only by the shared
+// withSessionResume. Those wrappers are what wrap their own sourceForThread
+// failure in preDispatchRefusalError; a test that injects the signal straight
+// into withSessionResume keeps passing if a caller drops its wrap, so this
+// drives the real RPC surface instead.
+//
+// The first attempt finds the exited session, the hub resumes it, and the
+// retry's sourceForThread then fails because the owning source is gone from the
+// registry. The caller must be told the mutation was NOT accepted -- carrying
+// its own clientMutationId -- rather than being left submitting because the
+// retry failure names nothing the dispatcher can correlate.
+func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
+	cases := []struct {
+		name     string
+		dispatch func(t *testing.T, client *appwire.Client, ref, sessionID, mutationID string) error
+	}{
+		{
+			name: "thread/clear via clearThreadWithResume",
+			dispatch: func(t *testing.T, client *appwire.Client, ref, sessionID, mutationID string) error {
+				t.Helper()
+				_, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{
+					Ref: ref, ClientMutationID: mutationID, ExpectedInstanceID: sessionID,
+				})
+				return err
+			},
+		},
+		{
+			name: "notes/human/set via relayWithResume",
+			dispatch: func(t *testing.T, client *appwire.Client, ref, sessionID, mutationID string) error {
+				t.Helper()
+				_, err := client.NotesHumanSet(context.Background(), appwire.NotesHumanSetParams{
+					Ref: ref, ClientMutationID: mutationID, ExpectedInstanceID: sessionID, Note: "whiteboard",
+				})
+				return err
+			},
+		},
+		{
+			name: "urls/remove via relayWithResume",
+			dispatch: func(t *testing.T, client *appwire.Client, ref, sessionID, mutationID string) error {
+				t.Helper()
+				_, err := client.UrlsRemove(context.Background(), appwire.UrlsRemoveParams{
+					Ref: ref, ClientMutationID: mutationID, ExpectedInstanceID: sessionID, ID: "u1",
+				})
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// hubSources is wired after the server exists; the daemon's thread
+			// read runs later, during the resume, by which time it is set.
+			var hubSources *appsource.Registry
+			var sessionID string
+			cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+				appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+					// The resume's thread read is the last thing resume does.
+					// Removing the owning source here makes the post-resume retry's
+					// sourceForThread fail: the pre-dispatch failure under test.
+					if hubSources != nil {
+						hubSources.Remove("local")
+					}
+					return appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID:        sessionID,
+						SessionID: sessionID,
+						Source:    "local",
+						Evener: appwire.EvenerThread{
+							Ref:          params.Ref,
+							Capabilities: appwire.ThreadCapabilities{Clear: true, Goal: true, SharedNotes: true},
+						},
+					}}, nil
+				})
+			})
+			sessionID = sid
+
+			server, web := newHubRPCTestServerWithWeb(t, cfg)
+			defer server.Close()
+			hubSources = web.sources
+
+			client := dialHubRPC(t, server)
+			defer client.Close()
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+
+			mutationID := "mutation-source-resolution-retry"
+			ref := "local:" + sessionID
+			err := tc.dispatch(t, client, ref, sessionID, mutationID)
+			if err == nil {
+				t.Fatal("the mutation reported success although the retry's source resolution failed")
+			}
+			if *resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("error %T=%v, want a WireError", err, err)
+			}
+			data, ok := wire.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("wire data %#v is not map[string]any", wire.Data)
+			}
+			if data["clientMutationId"] != mutationID ||
+				data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
+				data["retryDisposition"] != string(appwire.RetryDispositionNone) {
+				t.Fatalf("a retry that failed source resolution proves nothing was dispatched and must be not-accepted for %q: wire=%+v data=%#v",
+					mutationID, wire, data)
 			}
 		})
 	}

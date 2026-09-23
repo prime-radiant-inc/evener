@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -444,6 +445,142 @@ func TestHubRPCTurnStartRetryKeepsPreDispatchRefusalOutcome(t *testing.T) {
 			}
 			if data.MutationOutcome == appwire.MutationOutcomeNotAccepted {
 				t.Fatalf("an already-correlated pre-dispatch refusal must not be rewritten as not-accepted: data=%#v", data)
+			}
+		})
+	}
+}
+
+// relayedWireDataMap decodes a WireError's Data the way a remote-hub relay
+// leaves it: a JSON round-trip into map[string]any. The test reads finished
+// failures through this shape so the assertions match what the web client
+// actually receives for a relayed error.
+func relayedWireDataMap(t *testing.T, data any) map[string]any {
+	t.Helper()
+	if data == nil {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal wire data %#v: %v", data, err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal wire data %s: %v", raw, err)
+	}
+	return out
+}
+
+// TestCorrelateRetryFailureReadsMapShapedWireData pins that every
+// retry-correlation decision reads a WireError whose Data a remote-hub relay
+// decoded as map[string]any, not only the typed appwire.ErrorData a local
+// source raises. A relayed failure crosses the wire and comes back as a map, so
+// a decision that only understood the typed shape would misclassify every
+// failure relayed from another hub -- wrapping an already-correlated refusal, or
+// restamping a deletion that names a different mutation and thereby settling
+// that other caller's record as orphaned.
+//
+// Each case asserts the three fields the client's mutation dispatcher actually
+// reads: clientMutationId, mutationOutcome and retryDisposition.
+func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
+	const mutationID = "mutation-map-shaped-data"
+
+	cases := []struct {
+		name                 string
+		retryErr             error
+		wantClientMutationID string
+		wantOutcome          appwire.MutationOutcome
+		wantDisposition      appwire.RetryDisposition
+	}{
+		{
+			name: "uncorrelated relayed failure is wrapped blocked-unknown",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeInternalError,
+				Message: "relayed retry failure names no mutation",
+				Data:    map[string]any{"evenerErrorInfo": string(appwire.ErrorInternal)},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeUnknown,
+			wantDisposition:      appwire.RetryDispositionBlocked,
+		},
+		{
+			name: "already-correlated relayed refusal passes through",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeConflict,
+				Message: "relayed refusal names this caller's mutation",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorConflict),
+					"clientMutationId": mutationID,
+					"mutationOutcome":  string(appwire.MutationOutcomeNotAccepted),
+					"retryDisposition": string(appwire.RetryDispositionNone),
+				},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeNotAccepted,
+			wantDisposition:      appwire.RetryDispositionNone,
+		},
+		{
+			name: "relayed target deletion naming no mutation is enriched",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeUnavailable,
+				Message: "target has been deleted: local:th",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorActionUnavailable),
+					"mutationOutcome":  string(appwire.MutationOutcomeTargetDeleted),
+					"retryDisposition": string(appwire.RetryDispositionNone),
+				},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeTargetDeleted,
+			wantDisposition:      appwire.RetryDispositionNone,
+		},
+		{
+			name: "relayed target deletion naming a different mutation is blocked-unknown",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeUnavailable,
+				Message: "target has been deleted: local:th",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorActionUnavailable),
+					"clientMutationId": "some-other-mutation",
+					"mutationOutcome":  string(appwire.MutationOutcomeTargetDeleted),
+					"retryDisposition": string(appwire.RetryDispositionNone),
+				},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeUnknown,
+			wantDisposition:      appwire.RetryDispositionBlocked,
+		},
+		{
+			name: "relayed shape refusal passes through",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: "relayed shape refusal",
+				Data:    map[string]any{"evenerErrorInfo": string(appwire.ErrorInvalidParams)},
+			},
+			wantClientMutationID: "",
+			wantOutcome:          "",
+			wantDisposition:      "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A nil correlateRetryFailure return means the error keeps its own
+			// meaning; the finished failure is then the retry error itself.
+			final := tc.retryErr
+			if wrapped := correlateRetryFailure(mutationID, tc.retryErr); wrapped != nil {
+				final = wrapped
+			}
+			var wire appwire.WireError
+			if !errors.As(final, &wire) {
+				t.Fatalf("finished error %T=%v, want a WireError", final, final)
+			}
+			data := relayedWireDataMap(t, wire.Data)
+			gotID, _ := data["clientMutationId"].(string)
+			gotOutcome, _ := data["mutationOutcome"].(string)
+			gotDisposition, _ := data["retryDisposition"].(string)
+			if gotID != tc.wantClientMutationID || gotOutcome != string(tc.wantOutcome) || gotDisposition != string(tc.wantDisposition) {
+				t.Fatalf("clientMutationId=%q mutationOutcome=%q retryDisposition=%q, want %q/%q/%q (wire=%+v data=%#v)",
+					gotID, gotOutcome, gotDisposition, tc.wantClientMutationID, tc.wantOutcome, tc.wantDisposition, wire, wire.Data)
 			}
 		})
 	}

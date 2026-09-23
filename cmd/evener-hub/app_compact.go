@@ -65,7 +65,7 @@ func clearThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *
 		if err != nil {
 			// Resolution failed before anything reached a source, so a resume
 			// retry that fails the same way proves nothing was dispatched.
-			return appwire.ThreadClearResponse{}, preDispatchRefusal{err}
+			return appwire.ThreadClearResponse{}, preDispatchRefusalError{err}
 		}
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
 			return appwire.ThreadClearResponse{}, err

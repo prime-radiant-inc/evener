@@ -384,23 +384,26 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 // that names none, and one that names none has to be wrapped before it leaves
 // the hub.
 //
-// Both sides are trimmed before comparison so incidental whitespace cannot make
-// an id look like a different mutation; an error that names no mutation never
-// names the caller's.
+// The comparison is exact, like the client's: the web dispatcher compares the
+// id byte-for-byte, so treating an error that names "mutation " as if it named
+// "mutation" would mark the record correlated here while the client still
+// cannot match it and leaves the record submitting. The caller's own id arrives
+// already trimmed (the hub server trims clientMutationId on the way in), so
+// only the error's id is compared, exactly. An error that names no mutation
+// never names the caller's.
 //
 // The wire client decodes ErrorData as a map on some paths and as the typed
 // struct on others, so both shapes are read -- the same convention
 // app_retirement_resume.go's isLifecycleRetiringError follows.
 func errorNamesClientMutation(err error, clientMutationID string) bool {
-	want := strings.TrimSpace(clientMutationID)
-	if want == "" {
+	if clientMutationID == "" {
 		return false
 	}
 	wire, ok := wireErrorFromError(err)
 	if !ok {
 		return false
 	}
-	return strings.TrimSpace(clientMutationIDFromData(wire.Data)) == want
+	return clientMutationIDFromData(wire.Data) == clientMutationID
 }
 
 // isShapeRefusal reports whether err refuses the request's shape: appwire's
@@ -432,19 +435,20 @@ func isShapeRefusal(err error) bool {
 // Several failures keep their own meaning and are returned unchanged: the
 // caller's own cancellation (context.Canceled / context.DeadlineExceeded, which
 // is not a mutation outcome at all), a refusal that already names this caller's
-// mutation, a deletion of the target, and a true shape refusal (see
-// isShapeRefusal). The one exemption whose meaning is kept but whose id is
-// added is a target deletion that names no mutation (below). Everything else is
-// a failure no client's mutation dispatcher can classify -- one that names no
-// clientMutationId (the web outbox correlates by that id alone) -- and is
-// wrapped in the blocked-unknown envelope so the mutation is retained for a
-// retry rather than left submitting forever (see blockedUnknownMutationError).
+// mutation, and a true shape refusal (see isShapeRefusal). The one exemption
+// whose meaning is kept but whose id is added is a target deletion that names no
+// mutation (below). Everything else is a failure no client's mutation dispatcher
+// can classify -- one that names no clientMutationId, or names a different
+// mutation (the web outbox correlates by that id alone) -- and is wrapped in the
+// blocked-unknown envelope so the mutation is retained for a retry rather than
+// left submitting forever (see blockedUnknownMutationError).
 //
 // The one exemption that is enriched rather than returned unchanged is a target
 // deletion that names no mutation: it is handed back with this caller's
 // clientMutationId stamped on it (keeping MutationOutcomeTargetDeleted) so the
 // dispatcher can settle it as orphaned rather than be left unable to classify
-// it. See nameTargetDeletedFailure.
+// it. A deletion that names a DIFFERENT mutation is not this caller's to settle,
+// so it is blocked-unknown instead. See nameTargetDeletedFailure.
 //
 // A nil return means err keeps its own meaning; callers return err unchanged.
 // Shared by turn/start's retryAfterResume and withSessionResume's post-resume
@@ -457,34 +461,55 @@ func correlateRetryFailure(clientMutationID string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil
 	}
-	if isTargetDeletedError(err) {
-		// A target deletion is the caller's to settle only when it names the
-		// caller's mutation. A deletion that names none -- e.g. a preflight
-		// thread/read deletion relayed from a remote hub -- leaves the
-		// dispatcher unable to correlate the record at all, so it is stamped
-		// with this caller's id rather than hidden behind a generic outage.
-		return nameTargetDeletedFailure(clientMutationID, err)
-	}
 	if errorNamesClientMutation(err, clientMutationID) || isShapeRefusal(err) {
 		return nil
+	}
+	if isTargetDeletedError(err) {
+		// A target deletion is the caller's to settle only when it names this
+		// caller's mutation (returned unchanged above) or names none at all. A
+		// deletion that names none -- e.g. a preflight thread/read deletion
+		// relayed from a remote hub -- leaves the dispatcher unable to
+		// correlate the record, so it is stamped with this caller's id rather
+		// than hidden behind a generic outage. A deletion naming a DIFFERENT
+		// mutation is not this caller's to settle: restamping it would make
+		// that other caller's record settle as orphaned, so it falls through to
+		// the blocked-unknown default below, retaining this caller's record.
+		if clientMutationID == "" {
+			return nil
+		}
+		if enriched := nameTargetDeletedFailure(clientMutationID, err); enriched != nil {
+			return enriched
+		}
 	}
 	return blockedUnknownMutationError(clientMutationID, err)
 }
 
 // nameTargetDeletedFailure enriches a target-deletion refusal with the caller's
-// mutation id when it does not already name it, keeping the deletion's own
-// outcome (MutationOutcomeTargetDeleted / RetryDispositionNone).
+// mutation id when it names NO mutation at all, keeping the deletion's own
+// outcome (MutationOutcomeTargetDeleted / RetryDispositionNone). A deletion
+// that already names the caller's own mutation needs no help; a deletion that
+// names a DIFFERENT mutation is not this caller's to restamp -- doing so would
+// let this caller's dispatcher settle the other mutation as orphaned -- so it
+// is left to correlateRetryFailure's blocked-unknown default.
 //
 // A nil return means the refusal already names this caller's mutation (or
-// carries no WireError to enrich), so the caller returns it unchanged. A
-// non-nil return is the refusal with clientMutationId set, which the caller
-// returns in its place.
+// names a different one, or carries no WireError to enrich), so the caller
+// returns it unchanged (or falls through to blocked-unknown). A non-nil return
+// is the refusal with clientMutationId set, which the caller returns in its
+// place.
 func nameTargetDeletedFailure(clientMutationID string, err error) error {
-	if strings.TrimSpace(clientMutationID) == "" || errorNamesClientMutation(err, clientMutationID) {
+	if clientMutationID == "" || errorNamesClientMutation(err, clientMutationID) {
 		return nil
 	}
 	wire, ok := wireErrorFromError(err)
 	if !ok {
+		return nil
+	}
+	// Only a deletion that names NO mutation is enriched. One that names a
+	// different mutation belongs to that other caller and must not be restamped
+	// as this caller's, or this caller's dispatcher would settle the other
+	// mutation as orphaned.
+	if clientMutationIDFromData(wire.Data) != "" {
 		return nil
 	}
 	// The wire client decodes Data as the typed appwire.ErrorData on some paths
