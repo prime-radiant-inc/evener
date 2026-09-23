@@ -37,13 +37,9 @@ import type {
 import {
   hydrateThread,
   isStaleCursorError,
-  mergeOlderItemPage,
 } from "@evener/appwire-client";
-import type {
-  MobileConversation,
-  MobileTimelineItem,
-} from "../conversation/project";
-import { projectConversation, projectTimeline } from "../conversation/project";
+import type { MobileConversation } from "../conversation/project";
+import { projectConversation } from "../conversation/project";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";
 
@@ -98,15 +94,14 @@ export interface ConversationReadProjection {
 export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
-    items: MobileTimelineItem[];
-    // The page's own wire turns, wrapped for mergeOlderItemPage - the store
+    // The page's own wire turns - the store
     // folds these into conversation.turns via the package's own
     // identity-aware merge (a turn can be split into fragments across the
     // page boundary; an id-only filter drops or double-counts the split),
     // so sessionTokens's turn-summed fallback covers what's actually loaded,
-    // not just the first page. Optional so existing test doubles need not
-    // supply it.
-    turnsPage?: ThreadTurnsListResponse;
+    // not just the first page, and projects the display rows from that
+    // merged model (D23d: the model owns the older page and its cursor).
+    turnsPage: ThreadTurnsListResponse;
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -797,12 +792,7 @@ export function createConversationService(
         // cursor and visible projection are published together.
         throw error;
       }
-      // Project the older turns into mobile items by hydrating a minimal
-      // Thread containing just these turns; the display rows AND the turns
-      // themselves are kept (the store merges both into the conversation).
-      const items = projectOlderTurns(response, threadId);
       return {
-        items,
         turnsPage: response,
         nextCursor: response.nextCursor,
         hasEarlierItems: response.data.some(
@@ -1212,60 +1202,3 @@ export function createConversationService(
   };
 }
 
-// Project an older page into mobile timeline items: hydrate an empty Thread
-// under the real thread id (so a replayed image's sha route names this
-// session), merge the page into it with the package's mergeOlderItemPage —
-// the same across-turn merge and tool call/result folding the web applies to
-// a page — and keep only the display rows. The model's ref and clock are
-// placeholders the rows never read. The store still owns the prepend of
-// these rows onto the retained timeline (D23d moves that onto the model).
-// A page never repeats a transcript key: the hub's pager refuses to emit one
-// (internal/appitempaging/page.go validateCandidates), so there is no
-// within-page dedupe to do here.
-function projectOlderTurns(
-  page: ThreadTurnsListResponse,
-  threadId: string | null,
-): MobileTimelineItem[] {
-  if (page.data.length === 0) return [];
-  const id = threadId ?? "older";
-  const thread: Thread = {
-    id,
-    sessionId: id,
-    preview: "",
-    ephemeral: false,
-    modelProvider: "",
-    createdAt: 0,
-    updatedAt: 0,
-    status: { type: "idle" },
-    cwd: "",
-    cliVersion: "",
-    source: "",
-    turns: [],
-    evener: {
-      ref: "older",
-      capabilities: {
-        send: false,
-        steer: false,
-        interrupt: false,
-        compact: false,
-        clear: false,
-        forkFromTurn: false,
-        shutdown: false,
-        changeModel: false,
-        changeVisionModel: false,
-        sharedNotes: false,
-        queue: false,
-        goal: false,
-        rename: false,
-      },
-      queue: { revision: 0 },
-    },
-  };
-  const model = mergeOlderItemPage(hydrateThread({ thread }, "older", 0), page);
-  // I3: Filter out actionable question rows from historical pages. A pending
-  // ask cannot legitimately be older than newer continuation turns, and
-  // page-local projection otherwise resurrects settled calls. All other
-  // projected page items/order/cursor are preserved — only question rows are
-  // omitted.
-  return projectTimeline(model).filter((item) => item.kind !== "question");
-}
