@@ -26,6 +26,7 @@ import {
   isStaleCursorError,
   isToolCallItemId,
   isToolResultItemId,
+  itemTextPresence,
   itemIdentityMatches,
   markItemIdentityOnly,
   markItemTextOmitted,
@@ -41,6 +42,7 @@ import type {
   InputItem,
   ItemModel,
   MutationReceipt,
+  ThreadItem,
   TurnModel,
   ThreadModel,
 } from "@evener/appwire-client";
@@ -2044,21 +2046,25 @@ export function createConversationStore() {
             // a chunk the text does not end with is still ahead of the
             // response (the read was cut before the wire folded it), and
             // stays live for the stream to continue on.
-            const freshTextByKey = new Map<string, string>();
-            const freshTextById = new Map<string, string>();
+            const freshItemByKey = new Map<string, ItemModel>();
+            const freshItemById = new Map<string, ItemModel>();
             for (const turn of conversation.turns) {
               for (const item of turn.items) {
-                freshTextByKey.set(item.transcriptKey ?? item.id, item.text);
-                freshTextById.set(item.id, item.text);
+                freshItemByKey.set(item.transcriptKey ?? item.id, item);
+                freshItemById.set(item.id, item);
               }
             }
             const stripSettledChunks = (item: ItemModel): ItemModel => {
               const pending = item.pendingText;
               if (pending === undefined || pending.length === 0) return item;
-              const freshText =
-                freshTextByKey.get(item.transcriptKey ?? item.id) ??
-                freshTextById.get(item.id);
-              if (freshText === undefined) return item;
+              const fresh =
+                freshItemByKey.get(item.transcriptKey ?? item.id) ??
+                freshItemById.get(item.id);
+              if (fresh === undefined) return item;
+              // A fresh item whose text the read omitted says nothing
+              // about the stream: the chunks stay live whatever the
+              // retained base reads.
+              if (itemTextPresence(fresh) !== "provided") return item;
               // Position-relative against the retained base, not a
               // suffix check on the full text: the wire folds chunks in
               // order, so the snapshot's text is the retained base plus
@@ -2070,19 +2076,22 @@ export function createConversationStore() {
               // exactly what the wire settled — walked once at an
               // advancing offset (RoboRev round 8: slice-and-join per
               // prefix was quadratic in the chunk count); a text that
-              // does not start with the base rewrote it, and the chunks
-              // keep their conservative fallback — the wire never
-              // rewrites agent text mid-stream.
-              const advance = freshText.startsWith(item.text)
-                ? freshText.slice(item.text.length)
-                : null;
-              if (advance === null) return item;
               let settled = 0;
-              let offset = 0;
-              for (const chunk of pending) {
-                if (!advance.startsWith(chunk, offset)) break;
-                offset += chunk.length;
-                settled += 1;
+              if (fresh.text.startsWith(item.text)) {
+                const advance = fresh.text.slice(item.text.length);
+                let offset = 0;
+                for (const chunk of pending) {
+                  if (!advance.startsWith(chunk, offset)) break;
+                  offset += chunk.length;
+                  settled += 1;
+                }
+              } else {
+                // The snapshot's provided text does not advance the
+                // retained base: an authoritative replacement (or an
+                // explicitly empty settle) has no home for chunks
+                // appended to the old base — clear them all (RoboRev
+                // round 10).
+                settled = pending.length;
               }
               if (settled === 0) return item;
               const live = pending.slice(settled);
@@ -2124,14 +2133,6 @@ export function createConversationStore() {
               "steeringKind",
               "source",
             ] as const;
-            const freshItemByKey = new Map<string, ItemModel>();
-            const freshItemById = new Map<string, ItemModel>();
-            for (const turn of conversation.turns) {
-              for (const item of turn.items) {
-                freshItemByKey.set(item.transcriptKey ?? item.id, item);
-                freshItemById.set(item.id, item);
-              }
-            }
             const applySnapshotAuthority = (item: ItemModel): ItemModel => {
               if (pageOwnedIds.has(item.transcriptKey ?? item.id)) return item;
               const fresh =
@@ -2535,8 +2536,58 @@ export function createConversationStore() {
               injectedPage.injected.length > 0
                 ? { ...currentConv, turns: injectedPage.turns }
                 : currentConv;
+            // The row-level dedupe above already treats an older page's
+            // attachment for a source the live conversation carries as
+            // stale — "the live model has moved past this position." The
+            // model merge must honor the same precedence, or its
+            // nullish fallback (newer.images ?? older.images) would fold
+            // the page's image back into the model behind the row
+            // filter's back, and the next row-changing frame would
+            // resurrect the attachment the filter rejected (RoboRev
+            // round 10). A page item matched to a live NON-PAGE item
+            // therefore loses the attachment payloads the live item
+            // omits; page-owned identities keep everything (the round-31
+            // rule — and a page fragment supplementing a page row is
+            // exactly the #1919 restoration this block exists for).
+            const liveItemByKey = new Map<string, ItemModel>();
+            const liveItemById = new Map<string, ItemModel>();
+            for (const turn of currentConv.turns) {
+              for (const item of turn.items) {
+                liveItemByKey.set(item.transcriptKey ?? item.id, item);
+                liveItemById.set(item.id, item);
+              }
+            }
+            const pageTurnsForMerge = (result.turnsPage?.data ?? []).map(
+              (turn) => {
+                if (turn.items === undefined) return turn;
+                const items = turn.items.map((wireItem) => {
+                  const identity = wireItem.transcriptKey ?? wireItem.id;
+                  if (pageOwnedIds.has(identity)) return wireItem;
+                  const live =
+                    liveItemByKey.get(identity) ??
+                    liveItemById.get(wireItem.id);
+                  if (live === undefined) return wireItem;
+                  let stripped: ThreadItem | undefined;
+                  for (const field of ["images", "outputImages"] as const) {
+                    const pageValue = (wireItem as unknown as Record<string, unknown>)[field];
+                    const liveValue = (live as unknown as Record<string, unknown>)[field];
+                    if (pageValue === undefined || liveValue !== undefined) continue;
+                    stripped ??= { ...wireItem };
+                    (stripped as unknown as Record<string, unknown>)[field] = undefined;
+                  }
+                  return stripped ?? wireItem;
+                });
+                return { ...turn, items };
+              },
+            );
+            const turnsPageForMerge = result.turnsPage
+              ? { ...result.turnsPage, data: pageTurnsForMerge }
+              : result.turnsPage;
             const pageMerge = result.turnsPage
-              ? mergeOlderItemPageWithFolds(mergeConv, result.turnsPage)
+              ? mergeOlderItemPageWithFolds(
+                  mergeConv,
+                  turnsPageForMerge ?? result.turnsPage,
+                )
               : null;
             const mergedTurns = pageMerge ? pageMerge.model.turns : currentConv.turns;
             // The real sources for the strip pass: every item the retained

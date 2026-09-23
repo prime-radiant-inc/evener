@@ -340,6 +340,7 @@ export {
   imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,
+  itemTextPresence,
   itemIdentityMatches,
   joinedReasoningParagraphs,
   joinWarningParts,

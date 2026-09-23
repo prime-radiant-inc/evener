@@ -16120,6 +16120,192 @@ describe("ConversationStore", () => {
       });
     });
 
+    it("an authoritative replacement text clears the pending chunks", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello", "inProgress")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: " world",
+        },
+      } as AnyNotification);
+
+      // The snapshot's completed item REPLACES the streamed text outright
+      // (RoboRev round 10): chunks appended to the old base have no home
+      // in it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [agentMessageItem("item-a", "Replacement", "completed")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "item-a")?.pendingText,
+      ).toBeUndefined();
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "item-a")?.text,
+      ).toBe("Replacement");
+
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: ".",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Replacement.",
+      });
+    });
+
+    it("an overlapping page does not resurrect an attachment the live model dropped", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "msg-1",
+                  turnId: "t1",
+                  type: "userMessage",
+                  text: "hello",
+                  images: [{ url: "https://hub.test/image" }],
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // The reread withdraws the image: the strip drops it from the model.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "msg-1",
+                  turnId: "t1",
+                  type: "userMessage",
+                  text: "hello",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "msg-1:attachments")).toBeUndefined();
+
+      // An overlapping older page still carries the image — the row-level
+      // dedupe drops its attachment row, and the model merge must not
+      // fold the image back in behind it (RoboRev round 10).
+      store.setState({ olderCursor: "cursor-2" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "msg-1",
+                turnId: "t1",
+                type: "userMessage",
+                text: "hello",
+                images: [{ url: "https://hub.test/image" }],
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "msg-1:attachments")).toBeUndefined();
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "msg-1")?.images,
+      ).toBeUndefined();
+
+      // The next row-changing frame must not project it back.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "msg-1:attachments")).toBeUndefined();
+    });
+
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

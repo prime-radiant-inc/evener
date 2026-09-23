@@ -215,7 +215,10 @@ export function copyItemTextPresence(source: ItemModel, target: ItemModel): Item
   return presence === undefined ? target : setItemTextPresence(target, presence);
 }
 
-function itemTextPresence(item: ItemModel): ItemTextPresence {
+// Exported (through index.ts) alongside copyItemTextPresence for the
+// mobile store's rehydrate prep, which must tell an authoritative snapshot
+// text from one the read omitted.
+export function itemTextPresence(item: ItemModel): ItemTextPresence {
   return (item as InternalItemModel)[ITEM_TEXT_PRESENCE] ?? "provided";
 }
 
