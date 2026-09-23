@@ -7,10 +7,10 @@
 // so the list stays one-target-per-row on desktop and touch alike. Pure
 // presentational: the section owns selection.
 //
-// The read-only variant renders the same identity and meta with no button and
-// no chevron: the host-scoped view of a remote host's own listing uses it,
-// where nothing is actionable from this browser. One implementation keeps the
-// two surfaces from drifting.
+// The read-only variant renders the same row - the same identity and meta, and
+// the same chrome (CLASS.row) - with no button and no chevron: the host-scoped
+// view of a remote host's own listing uses it, where nothing is actionable from
+// this browser. One implementation keeps the two surfaces from drifting.
 import type { InstanceEntry } from "@evener/appwire-client";
 import {
   credentialLayers,
@@ -24,6 +24,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {
+  row: requireClass(styles.row, "InstanceRow.module.css", "row"),
   rowButton: requireClass(styles.rowButton, "InstanceRow.module.css", "rowButton"),
   rowMain: requireClass(styles.rowMain, "InstanceRow.module.css", "rowMain"),
   heading: requireClass(styles.heading, "InstanceRow.module.css", "heading"),
@@ -65,11 +66,11 @@ export function InstanceRow({ instance, readOnly = false, onSelect }: InstanceRo
     </div>
   );
   if (readOnly) {
-    return <li>{body}</li>;
+    return <li className={CLASS.row}>{body}</li>;
   }
   return (
     <li>
-      <button type="button" className={CLASS.rowButton} onClick={onSelect}>
+      <button type="button" className={`${CLASS.row} ${CLASS.rowButton}`} onClick={onSelect}>
         {body}
         <span className={CLASS.chevron} aria-hidden="true">
           <Chevron direction="right" />

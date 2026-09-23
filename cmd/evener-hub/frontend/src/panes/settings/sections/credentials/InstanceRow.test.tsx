@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { InstanceRow } from "./InstanceRow";
+import styles from "./InstanceRow.module.css";
 
 afterEach(cleanup);
 
@@ -300,5 +301,23 @@ describe("the read-only variant", () => {
     expect(screen.getByText(/default/i)).toBeTruthy();
     expect(screen.getByText("openai-chat")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  // Low (roborev): the read-only branch returned a bare <li>, so a remote row
+  // lost the row chrome entirely (padding, edge, radius, surface background, the
+  // 44px phone floor) while the same instance was a surface row locally. The
+  // chrome is one class now, and both variants carry it.
+  test("carries the shared row chrome class the tappable row also carries", () => {
+    const { container } = render(
+      <InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} readOnly />,
+    );
+    expect(container.querySelector("li")?.classList.contains(styles.row!)).toBe(true);
+  });
+
+  test("the tappable row keeps the chrome class plus its interactive one", () => {
+    render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} onSelect={() => {}} />);
+    const button = screen.getByRole("button", { name: /on-host/ });
+    expect(button.classList.contains(styles.row!)).toBe(true);
+    expect(button.classList.contains(styles.rowButton!)).toBe(true);
   });
 });
