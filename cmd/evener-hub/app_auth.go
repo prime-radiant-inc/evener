@@ -784,19 +784,25 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 	}
 	resp := appwire.ApiKeyConditionalSetResponse{}
 	applied, err := c.credentialWriteConditional(func() (bool, error) {
-		_, inst, ok := c.endpointInstanceFor(name)
+		// The registry that resolved inst travels with it: the revision fence
+		// and the classification both have to describe the same generation of
+		// providers.toml as the instance they judge, and asking the controller
+		// for its current registry again would let a reload land in between -
+		// the revision then computed over one generation and the classification
+		// over another. entryFor resolves its row this way for the same reason.
+		r, inst, ok := c.endpointInstanceFor(name)
 		if !ok {
 			return skipConditionalSet(&resp, fmt.Sprintf("%q is not a configured provider or instance on this host", name))
 		}
 		source := inst.CredentialSource
 		// One resolution of the instance answers both questions this section
-		// asks about the same generation of providers.toml: the revision the
-		// fence compares, and whether the instance's own auth header is already
-		// supplied by its authored credential_headers (the classification
-		// below). resolvedRowInstance is the same single-resolution helper the
-		// listing rows use, and CredentialConfigRevisionResolved contributes
-		// exactly what CredentialConfigRevision would for this resolution.
-		resolved, resolvedOK := resolvedRowInstance(c.registry(), inst)
+		// asks about that generation: the revision the fence compares, and
+		// whether the instance's own auth header is already supplied by its
+		// authored credential_headers (the classification below).
+		// resolvedRowInstance is the same single-resolution helper the listing
+		// rows use, and CredentialConfigRevisionResolved contributes exactly
+		// what CredentialConfigRevision would for this resolution.
+		resolved, resolvedOK := resolvedRowInstance(r, inst)
 		current := hubcore.CredentialConfigRevisionResolved(resolved)
 		if params.ExpectedRevision != "" && params.ExpectedRevision != current {
 			return false, appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
