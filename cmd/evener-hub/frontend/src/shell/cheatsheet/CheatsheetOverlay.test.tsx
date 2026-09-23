@@ -24,6 +24,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { initNotifications, resetNotificationsForTests } from "../../notifications";
+import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
@@ -35,13 +36,6 @@ import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { CheatsheetOverlay } from "./CheatsheetOverlay";
 import { cheatsheetStore, closeCheatsheet, openCheatsheet } from "./cheatsheetController";
-
-// jsdom has no ResizeObserver - see AppShell.test.tsx.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts documents the
 // probe), so the mobile test installs one: the mobile query matches, every
@@ -88,7 +82,7 @@ async function openDialog(): Promise<HTMLElement> {
 }
 
 beforeAll(async () => {
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
   // Await the lazy pane/dock modules once up front, then pay react-dom's
   // per-boundary fallback throttle in one warm render - see

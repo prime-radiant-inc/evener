@@ -22,6 +22,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
+import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -31,13 +32,6 @@ import { FocusScope } from "../widgets/focusscope";
 import { AppShell } from "./AppShell";
 import { closePalette, paletteStore } from "./palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-
-// jsdom has no ResizeObserver - see AppShell.test.tsx.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 const TREE_SESSION = {
   row_id: "project:proj1:local:s1",
@@ -170,7 +164,7 @@ function openFakeModal(): { modal: HTMLElement; inside: HTMLButtonElement; close
 }
 
 beforeAll(async () => {
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
   // Await the lazy pane/dock modules once up front, then pay react-dom's
   // per-boundary fallback throttle in one warm render per route shape - see

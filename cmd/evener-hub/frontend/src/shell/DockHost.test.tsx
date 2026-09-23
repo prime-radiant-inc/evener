@@ -5,6 +5,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
@@ -13,17 +14,6 @@ import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-
-// jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
-// auto-resizing - see this task's report for the live probe that found
-// this); a real ResizeObserver isn't needed to prove any of this file's
-// behavior (nothing here asserts on actual pixel geometry), so a no-op stub
-// is the one mock this file needs beyond the real dockview library itself.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same

@@ -23,6 +23,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { resetNotificationsForTests } from "../../notifications";
+import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetKeybindingsStoreForTests } from "../../stores/keybindings";
@@ -34,13 +35,6 @@ import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { HoldHints } from "./HoldHints";
 import { HARD_TIMEOUT_MS, HOLD_THRESHOLD_MS, holdHintsStore, resetHoldHintsForTests } from "./holdHintsController";
-
-// jsdom has no ResizeObserver - see AppShell.test.tsx.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 // CheatsheetOverlay.test.tsx's installMobileViewport, verbatim: the mobile
 // query matches, every other query (the reduced-motion read included) does
@@ -94,7 +88,7 @@ function showHints(): void {
 }
 
 beforeAll(async () => {
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
   // Await the lazy pane/dock modules once up front, then pay react-dom's
   // per-boundary fallback throttle in one warm render - see

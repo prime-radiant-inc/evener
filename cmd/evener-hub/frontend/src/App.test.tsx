@@ -5,6 +5,7 @@ import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
+import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
@@ -73,15 +74,6 @@ const escapedFetches = vi.hoisted(() => {
   });
   return calls;
 });
-
-// The default route mounts AppShell -> DockHost -> real dockview-react, which
-// needs a ResizeObserver (jsdom has none, verified via a live probe) and
-// localStorage (storageTestUtils' MemoryStorage).
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
 
 const EMPTY_NAV_RESPONSE = {
   generation_id: "test-generation",
@@ -163,6 +155,9 @@ async function warmRoute(path: string, text: string | RegExp): Promise<void> {
 beforeAll(async () => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
+  // The default route mounts AppShell -> DockHost -> real dockview-react, which
+  // needs a ResizeObserver (jsdom has none, verified via a live probe) and
+  // localStorage (storageTestUtils' MemoryStorage).
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
   // connectionStore has no resetXForTests helper (see this file's other

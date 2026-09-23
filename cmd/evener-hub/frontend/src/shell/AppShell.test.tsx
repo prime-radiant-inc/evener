@@ -19,6 +19,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
@@ -290,14 +291,6 @@ function installNeedsYouRows(): void {
     generationID: "generation_test",
   });
   navigationStore.setState({ mode: "v2", resources });
-}
-
-// jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
-// auto-resizing), verified via a live probe.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
 }
 
 const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
