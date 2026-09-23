@@ -31,11 +31,18 @@ type Finding struct {
 }
 
 // FindingEvidence is the contract's evidence object. At least one sub-field
-// is populated per Finding; doctorCommand is always set.
+// is populated per Finding; doctorCommand is always set. When every affected
+// session is non-reproducible (bare sid ambiguous across unsafe buckets),
+// doctorCommand is a comment-only disclosure ("# not reproducible: ...") —
+// not a runnable command, but never empty, so a consumer can distinguish
+// "nothing to reproduce" from "field absent".
 type FindingEvidence struct {
 	SessionRefs []string `json:"sessionRefs,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	// TotalSessionRefs is the true ref count when SessionRefs was
-	// structurally capped at evidenceSessionRefCap; 0 means not capped.
+	// TotalSessionRefs is the true distinct-session count when SessionRefs
+	// was structurally capped at evidenceSessionRefCap, or when the ref
+	// list was shorter than the true count (deduped bare sids across
+	// non-canonical buckets — round 7 finding 2); 0 means not capped and
+	// no dedup discrepancy.
 	TotalSessionRefs int      `json:"totalSessionRefs,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	WatchIDs         []string `json:"watchIds,omitempty"`         //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	DeliveryIDs      []string `json:"deliveryIds,omitempty"`      //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
@@ -592,12 +599,22 @@ func formatNonReproSessions(sessions map[string]nonReproSession) string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
+	capped := keys
+	omitted := 0
+	if len(capped) > evidenceSessionRefCap {
+		omitted = len(capped) - evidenceSessionRefCap
+		capped = capped[:evidenceSessionRefCap]
+	}
+	parts := make([]string, 0, len(capped))
+	for _, k := range capped {
 		s := sessions[k]
 		parts = append(parts, fmt.Sprintf("%s in bucket %q", s.sid, s.bucket))
 	}
-	return strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
+	desc := strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
+	if omitted > 0 {
+		desc += fmt.Sprintf("; %d more non-reproducible sessions omitted (cap %d)", omitted, evidenceSessionRefCap)
+	}
+	return desc
 }
 
 // followSelector returns the selector that re-addresses one session:
@@ -846,44 +863,73 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	for _, sig := range signatureOrder {
 		f := findingsBySignature[sig]
 		check := checkBySignature[sig]
+		// True distinct session count (round 7 finding 2): sessionsBySig
+		// tracks each session by (projectID, sessionID), so two sessions
+		// sharing a SID across different buckets each count. len(SessionRefs)
+		// may be smaller because agent-consumable selectors (bare sid) dedup
+		// them — TotalSessionRefs and Summary.Sessions use trueCount so a
+		// consumer's reconciliation stays clean.
+		trueCount := len(sessionsBySig[sig])
 		// The structured ref list gets the same disclosed structural cap as
 		// the prose: an envelope carrying a fleet-wide Finding would otherwise
 		// overflow any output limit mid-JSON. The true count is disclosed in
-		// TotalSessionRefs and in Description's count.
+		// TotalSessionRefs and in Description's count. TotalSessionRefs uses
+		// trueCount (not len(SessionRefs)) so it agrees with Summary.Sessions
+		// and Description when deduped bare sids shrink the ref list.
 		refCount := len(f.Evidence.SessionRefs)
 		if refCount > evidenceSessionRefCap {
-			f.Evidence.TotalSessionRefs = refCount
+			f.Evidence.TotalSessionRefs = trueCount
 			f.Evidence.SessionRefs = f.Evidence.SessionRefs[:evidenceSessionRefCap]
+		} else if trueCount > refCount {
+			// SessionRefs was not structurally capped, but the true session
+			// count exceeds the ref count (deduped bare sids). Disclose the true
+			// count so consumers reconciling SessionRefs with Summary/Description
+			// are not confused by the mismatch.
+			f.Evidence.TotalSessionRefs = trueCount
 		}
-		// True distinct session count (finding 2): sessionsBySig tracks each
-		// session by (projectID, sessionID), so two sessions sharing a SID
-		// across different buckets each count. len(SessionRefs) may be smaller
-		// because agent-consumable selectors (bare sid) dedup them.
-		trueCount := len(sessionsBySig[sig])
 		f.Description = fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
 			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, joinSessionRefs(f.Evidence.SessionRefs))
 		// DoctorCommand stays a runnable reproduction command (the Finding
 		// contract defines it as such): it spells out the doctor-CLI-safe
 		// reproducible refs plainly, comma-joined without spaces to match
-		// the CLI's --sessions list syntax. When a session's bare id is
-		// ambiguous across buckets (the bucket name is shell-unsafe), that
-		// ref cannot reproduce the session — it is omitted from --sessions
-		// and disclosed in a shell comment with bucket context (finding 2),
-		// so the command never claims reproducibility it does not have.
-		// When ALL affected sessions are non-reproducible (finding 1),
-		// reproRefs is empty and a command with "--sessions " (no value)
-		// would be rejected by the parser — the command is comment-only
-		// instead, never mistaken for runnable with an empty flag value.
+		// the CLI's --sessions list syntax. The reproducible refs are
+		// capped at evidenceSessionRefCap (round 7 finding 1): before round
+		// 6 DoctorCommand was built from SessionRefs after the cap, but the
+		// round-6 decoupling moved it to doctorRefsBySig which was never
+		// capped — a fleet-wide finding emitted thousands of selectors in a
+		// single string, the mid-JSON overflow the cap exists to prevent.
+		// The cap is disclosed with a trailing comment so the command stays
+		// runnable and bounded, never mistaken for a complete reproduction.
+		// When a session's bare id is ambiguous across buckets (the bucket
+		// name is shell-unsafe), that ref cannot reproduce the session — it
+		// is omitted from --sessions and disclosed in a shell comment with
+		// bucket context (round 6 finding 2). When ALL affected sessions are
+		// non-reproducible, reproRefs is empty and the command is
+		// comment-only (round 6 finding 1), never mistaken for runnable.
 		reproRefs := doctorRefsBySig[sig]
 		nonRepro := nonReproBySig[sig]
 		var cmd string
 		if len(reproRefs) > 0 {
-			cmd = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(reproRefs, ","))
+			cappedRepro := reproRefs
+			omittedRepro := 0
+			if len(cappedRepro) > evidenceSessionRefCap {
+				omittedRepro = len(cappedRepro) - evidenceSessionRefCap
+				cappedRepro = cappedRepro[:evidenceSessionRefCap]
+			}
+			cmd = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(cappedRepro, ","))
+			comments := []string{}
+			if omittedRepro > 0 {
+				comments = append(comments, fmt.Sprintf("%d more reproducible refs omitted (cap %d)", omittedRepro, evidenceSessionRefCap))
+			}
 			if len(nonRepro) > 0 {
-				cmd += " # not reproducible: " + formatNonReproSessions(nonRepro)
+				comments = append(comments, "not reproducible: "+formatNonReproSessions(nonRepro))
+			}
+			if len(comments) > 0 {
+				cmd += " # " + strings.Join(comments, "; ")
 			}
 		} else {
-			// All sessions non-reproducible (finding 1): comment-only command.
+			// All sessions non-reproducible (round 6 finding 1): comment-only
+			// command. The FindingEvidence doc comment documents this state.
 			cmd = "# not reproducible: " + formatNonReproSessions(nonRepro)
 		}
 		f.Evidence.DoctorCommand = cmd
@@ -895,11 +941,13 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 }
 
 // evidenceSessionRefCap bounds how many session refs a Finding carries —
-// both the structured SessionRefs list and the prose fields (Description,
-// DoctorCommand) built from it. A fleet-wide trip can carry thousands of
-// refs, which would overflow any envelope carrying the Finding. The cut is
-// disclosed twice: TotalSessionRefs carries the true count, and the prose
-// appends an "…and N more" marker — never silent.
+// the structured SessionRefs list, the Description prose, and the
+// DoctorCommand reproduction line (round 7 finding 1 restored the cap on
+// DoctorCommand after round 6's decoupling lost it). A fleet-wide trip can
+// carry thousands of refs, which would overflow any envelope carrying the
+// Finding. The cut is disclosed: TotalSessionRefs carries the true count,
+// the prose appends an "…and N more" marker, and DoctorCommand appends a
+// trailing "# N more reproducible refs omitted" comment — never silent.
 const evidenceSessionRefCap = 200
 
 // joinSessionRefs joins refs comma-separated for Description prose,
