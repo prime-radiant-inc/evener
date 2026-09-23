@@ -1257,3 +1257,9 @@ func branchExistsInRepo(t *testing.T, root, name string) bool {
 	}
 	return cmd.Run() == nil
 }
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// agent-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
+}
