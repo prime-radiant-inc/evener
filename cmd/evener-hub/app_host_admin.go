@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
 )
 
 // remoteHostAdminMethods is the exact set of hub-scoped admin RPCs the
@@ -78,18 +79,32 @@ var remoteHostAdminMethods = map[string]struct{}{
 
 	// Auth and credentials (hubAuthController, app_auth.go). The host's own
 	// refusals (a stored key under a Codex or gcp-adc instance) pass through
-	// unchanged; 07c's credential push uses apiKey/set through this same list.
-	appwire.MethodEvenerAuthStatus:            {},
-	appwire.MethodEvenerAuthTest:              {},
-	appwire.MethodEvenerAuthList:              {},
-	appwire.MethodEvenerAuthLoginStart:        {},
-	appwire.MethodEvenerAuthLoginComplete:     {},
-	appwire.MethodEvenerAuthLogout:            {},
-	appwire.MethodEvenerAuthApiKeySet:         {},
-	appwire.MethodEvenerAuthApiKeyClear:       {},
-	appwire.MethodEvenerAuthCredentialJsonSet: {},
-	appwire.MethodEvenerAuthDeviceStart:       {},
-	appwire.MethodEvenerAuthDevicePoll:        {},
+	// unchanged. apiKey/conditionalSet is on this list so a CLIENT may proxy it
+	// like any other forwarded auth method - the controller's own credential
+	// push does NOT go through the list (see the row for it below) - and
+	// apiKey/set remains the unconditional path.
+	appwire.MethodEvenerAuthStatus:        {},
+	appwire.MethodEvenerAuthTest:          {},
+	appwire.MethodEvenerAuthList:          {},
+	appwire.MethodEvenerAuthLoginStart:    {},
+	appwire.MethodEvenerAuthLoginComplete: {},
+	appwire.MethodEvenerAuthLogout:        {},
+	appwire.MethodEvenerAuthApiKeySet:     {},
+	appwire.MethodEvenerAuthApiKeyClear:   {},
+	// evener/auth/apiKey/conditionalSet is allow-listed deliberately, per the
+	// spec's [07a] entry: it is the atomic replacement for the racy
+	// status-then-set pair, and a CLIENT may proxy it here like any other
+	// forwarded auth method. The controller's own credential push does NOT go
+	// through this list: hubHostCredentialsPusher calls the method directly on
+	// the shared per-host client seam (RemoteHubSource.AdminMutationCall) and
+	// never consults remoteHostAdminMethods. The row is named rather than left
+	// implied because, unlike apiKey/set, this method carries no
+	// ExpectedEndpointFingerprint check - its safety comes from the fence
+	// (ExpectedSource/ExpectedRevision) and the host's locked classification.
+	appwire.MethodEvenerAuthApiKeyConditionalSet: {},
+	appwire.MethodEvenerAuthCredentialJsonSet:    {},
+	appwire.MethodEvenerAuthDeviceStart:          {},
+	appwire.MethodEvenerAuthDevicePoll:           {},
 
 	// Personal AGENTS.md (registerAgentsDocHandlers, app_rpc_agents_doc.go).
 	appwire.MethodEvenerSettingsAgentsDocGet: {},
@@ -186,14 +201,15 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	// Auth and credentials: a login flow, a logout, or a credential write
 	// changes what the host can authenticate as. device/poll can complete the
 	// device flow and store credentials, so it is a mutation too.
-	appwire.MethodEvenerAuthLoginStart:        {},
-	appwire.MethodEvenerAuthLoginComplete:     {},
-	appwire.MethodEvenerAuthLogout:            {},
-	appwire.MethodEvenerAuthApiKeySet:         {},
-	appwire.MethodEvenerAuthApiKeyClear:       {},
-	appwire.MethodEvenerAuthCredentialJsonSet: {},
-	appwire.MethodEvenerAuthDeviceStart:       {},
-	appwire.MethodEvenerAuthDevicePoll:        {},
+	appwire.MethodEvenerAuthLoginStart:           {},
+	appwire.MethodEvenerAuthLoginComplete:        {},
+	appwire.MethodEvenerAuthLogout:               {},
+	appwire.MethodEvenerAuthApiKeySet:            {},
+	appwire.MethodEvenerAuthApiKeyClear:          {},
+	appwire.MethodEvenerAuthApiKeyConditionalSet: {},
+	appwire.MethodEvenerAuthCredentialJsonSet:    {},
+	appwire.MethodEvenerAuthDeviceStart:          {},
+	appwire.MethodEvenerAuthDevicePoll:           {},
 
 	// The personal AGENTS.md, and the spawn form's directory creation.
 	appwire.MethodEvenerSettingsAgentsDocSet: {},
@@ -293,7 +309,7 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 // an EventAttached wakes the navigation snapshot but not a fan-out sleeping in
 // backoff, which may then wait up to hostNotificationRetryMax before
 // subscribing while the new client's notification buffer fills.
-func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
+func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry, creds *credentials.Store, credsErr error) *hubHostAdminController {
 	// hosts is the one live registry the server constructor resolved — the
 	// same instance the attach and host-management handlers share — so the
 	// proxy's unknown-host authority covers a host added at runtime instead
@@ -301,6 +317,10 @@ func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, ho
 	// entries.
 	controller := newHubHostAdminController(server, hosts, sources)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRequest, controller.Request)
+	// The credential push shares this controller's host/source resolution, so its
+	// remote dispatch rides the same per-host client seam (and the same origin
+	// guard) as the proxy.
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPushCredentials, (&hubHostCredentialsPusher{admin: controller, creds: creds, credsErr: credsErr}).Push)
 	controller.start(ctx)
 	return controller
 }

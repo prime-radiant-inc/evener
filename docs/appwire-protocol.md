@@ -150,6 +150,7 @@ no router (reserved).
 | `evener/auth/list` | hub | `EmptyParams` | `AuthListResponse` | Lists auth status for all providers. |
 | `evener/auth/apiKey/set` | hub | `AuthApiKeySetParams` | `AuthStatusResponse` | Stores a provider API key; broadcasts evener/auth/updated. |
 | `evener/auth/apiKey/clear` | hub | `AuthApiKeyClearParams` | `AuthStatusResponse` | Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated. |
+| `evener/auth/apiKey/conditionalSet` | hub | `ApiKeyConditionalSetParams` | `ApiKeyConditionalSetResponse` | Conditionally stores a provider API key: re-resolves the instance's credential source and configuration revision under the credential write lock and refuses a stale revision or a non-writable scheme; broadcasts evener/auth/updated when it writes. |
 | `evener/auth/credentialJson/set` | hub | `AuthCredentialJsonSetParams` | `AuthStatusResponse` | Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated. |
 | `evener/auth/device/start` | hub | `AuthDeviceStartParams` | `AuthDeviceStartResponse` | Begins a device-code auth flow (or signals fallback). |
 | `evener/auth/device/poll` | hub | `AuthDevicePollParams` | `AuthDevicePollResponse` | Polls a device-code flow; broadcasts evener/auth/updated when authorized. |
@@ -198,6 +199,7 @@ no router (reserved).
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
 | `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here. |
 | `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused. |
+| `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 
 ## Notifications (server → client)
 
@@ -288,6 +290,26 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `content` | `string` |  |  |
+
+
+### `ApiKeyConditionalSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` |  |  |
+| `value` | `string` |  |  |
+| `expectedSource` | `string` | yes |  |
+| `expectedRevision` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
+
+
+### `ApiKeyConditionalSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
+| `status` | `appwire.AuthStatusResponse` |  |  |
 
 
 ### `ArchiveParams`
@@ -466,6 +488,7 @@ An embedded type contributes its own fields inline.
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
 | `error` | `string` | yes |  |
+| `configRevision` | `string` | yes |  |
 
 
 ### `AuthTestParams`
@@ -791,6 +814,15 @@ _(no fields)_
 | `features` | `*appwire.FeatureSet` | yes |  |
 
 
+### `HostCredentialPushResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `instance` | `string` |  |  |
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
+
+
 ### `HostEntry`
 
 | Field | Go type | Omitempty | Embedded |
@@ -824,6 +856,21 @@ _(no fields)_
 | `host` | `string` |  |  |
 | `method` | `string` |  |  |
 | `params` | `jsontext.Value` | yes |  |
+
+
+### `HostPushCredentialsParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+
+
+### `HostPushCredentialsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `results` | `[]appwire.HostCredentialPushResult` |  |  |
 
 
 ### `HostRemoveParams`
@@ -984,6 +1031,7 @@ _(no fields)_
 | `shadowedEnvVar` | `string` | yes |  |
 | `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
+| `configRevision` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
 | `models` | `[]appwire.InstanceModelEntry` | yes |  |

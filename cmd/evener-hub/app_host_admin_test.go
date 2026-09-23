@@ -395,19 +395,20 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
 	policy := map[string]bool{
-		"evener/archive/set":             false,
-		"evener/auth/apiKey/clear":       true,
-		"evener/auth/apiKey/set":         true,
-		"evener/auth/credentialJson/set": true,
-		"evener/auth/device/poll":        true,
-		"evener/auth/device/start":       true,
-		"evener/auth/list":               true,
-		"evener/auth/login/complete":     true,
-		"evener/auth/login/start":        true,
-		"evener/auth/logout":             true,
-		"evener/auth/status":             true,
-		"evener/auth/test":               true,
-		"evener/command/list":            false,
+		"evener/archive/set":                false,
+		"evener/auth/apiKey/clear":          true,
+		"evener/auth/apiKey/conditionalSet": true,
+		"evener/auth/apiKey/set":            true,
+		"evener/auth/credentialJson/set":    true,
+		"evener/auth/device/poll":           true,
+		"evener/auth/device/start":          true,
+		"evener/auth/list":                  true,
+		"evener/auth/login/complete":        true,
+		"evener/auth/login/start":           true,
+		"evener/auth/logout":                true,
+		"evener/auth/status":                true,
+		"evener/auth/test":                  true,
+		"evener/command/list":               false,
 		// The resident-process controls are a LOCAL operator surface: the
 		// inventory reads this host's live processes and rendezvous records, and
 		// retirement stops a daemon after verifying its kernel-serialized
@@ -433,14 +434,19 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// (add/list/status/remove/update), so they are never proxied calls. Denied
 		// deliberately — see TestHostManageNotForwarded, which pins the same
 		// requirement from the management side.
-		"evener/host/add":        false,
-		"evener/host/list":       false,
-		"evener/host/status":     false,
-		"evener/host/remove":     false,
-		"evener/host/update":     false,
-		"evener/instance/create": true,
-		"evener/instance/edit":   true,
-		"evener/instance/list":   true,
+		"evener/host/add":    false,
+		"evener/host/list":   false,
+		"evener/host/status": false,
+		"evener/host/remove": false,
+		"evener/host/update": false,
+		// The credential push is controller-LOCAL: it reads this controller's
+		// own store and dispatches to a host itself, like evener/host/request.
+		// It is never a proxied call, so a peer hub cannot make this hub push
+		// its local credentials by forwarding the method.
+		"evener/host/pushCredentials": false,
+		"evener/instance/create":      true,
+		"evener/instance/edit":        true,
+		"evener/instance/list":        true,
 		// Two instance methods landed on the catalog after this list was
 		// written (per-model enablement and its refresh). The proxy forwards the
 		// five instance handlers the settings panes drive remotely and nothing
@@ -631,6 +637,7 @@ func TestHostAdminAllowListNamesEverySettingsPaneMethod(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthApiKeySet,
 		appwire.MethodEvenerAuthApiKeyClear,
+		appwire.MethodEvenerAuthApiKeyConditionalSet,
 		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
