@@ -54,3 +54,15 @@ gate_scratch_root_executes() {
 	rm -f -- "$_gsr_probe"
 	return "$_gsr_status"
 }
+
+# gate_require_exec DIR NAME — fail with a message naming NAME and DIR when a
+# script written to DIR cannot run. The gate applies it to an effective
+# GOTMPDIR: Go builds and runs test binaries there instead of TMPDIR when it is
+# set, so a noexec one would fail every test however TMPDIR was chosen.
+gate_require_exec() {
+	if gate_scratch_root_executes "$1"; then
+		return 0
+	fi
+	printf 'gate scratch: %s %s cannot execute the test binaries Go builds there (a noexec mount?); point %s at an exec-capable directory or unset it\n' "$2" "$1" "$2" >&2
+	return 1
+}

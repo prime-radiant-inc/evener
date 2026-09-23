@@ -288,6 +288,12 @@ trap 'interrupted 143 SIGTERM' TERM
 # it; see gate-scratch-root.sh for the fsync cost this avoids.
 TMPDIR="$(gate_scratch_root /dev/shm "$GATE_SCRATCH_MIN_KB")" || exit 2
 export TMPDIR
+# Go builds and runs test binaries in GOTMPDIR instead of TMPDIR when one is
+# set (in the environment or with go env -w), so check that it can execute too.
+gate_gotmpdir="$(go env GOTMPDIR 2>/dev/null)"
+if [ -n "$gate_gotmpdir" ]; then
+	gate_require_exec "$gate_gotmpdir" GOTMPDIR || exit 2
+fi
 scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()

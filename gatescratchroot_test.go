@@ -151,3 +151,29 @@ func TestGateScratchRootRefusesWhenNothingCanExecute(t *testing.T) {
 		t.Fatalf("refusal does not name the TMPDIR and the exec problem: %s", out)
 	}
 }
+
+// TestGateRequireExecRefusesANoexecDir pins the check the gate applies to an
+// effective GOTMPDIR: Go builds and runs test binaries there when it is set,
+// so a noexec one fails every test however TMPDIR was chosen.
+func TestGateRequireExecRefusesANoexecDir(t *testing.T) {
+	cmd := exec.Command("sh", "-c", `. "$1" && gate_require_exec "$2" GOTMPDIR`, "sh", gateScratchRootLib, t.TempDir())
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("gate_require_exec refused an exec-capable dir: %v\n%s", err, out)
+	}
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("unshare not available")
+	}
+	probe := exec.Command("unshare", "-rm", "sh", "-c", `mount -t tmpfs tmpfs "$1" && umount "$1"`, "sh", t.TempDir())
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("cannot mount a tmpfs in an unprivileged user+mount namespace: %v: %s", err, out)
+	}
+	dir := t.TempDir()
+	script := `mount -t tmpfs -o noexec tmpfs "$1" && . "$2" && gate_require_exec "$1" GOTMPDIR`
+	cmd = exec.Command("unshare", "-rm", "sh", "-c", script, "sh", dir, gateScratchRootLib)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "GOTMPDIR") || !strings.Contains(string(out), dir) {
+		t.Fatalf("gate_require_exec on a noexec dir = %v, want a refusal naming GOTMPDIR and %s:\n%s", err, dir, out)
+	}
+}

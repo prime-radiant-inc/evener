@@ -83,13 +83,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// write-granted ends up writable. The session tmp (already bound writable) and
 	// the /tmp tmpfs root itself are left untouched.
 	//
-	// The fresh --dev shadows /dev/shm the same way: a workspace kept there would
-	// otherwise be an empty private directory in which "writes" succeed and
-	// vanish. Only /dev/shm is re-bound — a tmpfs of ordinary files — never any
-	// other /dev path, whose device nodes the minimal --dev hides on purpose.
+	// The fresh --dev shadows /dev/shm the same way: a workspace kept there (or a
+	// grant of /dev/shm itself) would otherwise be an empty private directory in
+	// which "writes" succeed and vanish. Only /dev/shm is re-bound — a tmpfs of
+	// ordinary files — never any other /dev path, whose device nodes the minimal
+	// --dev hides on purpose.
 	reboundRO := make(map[string]bool)
 	for _, r := range append([]string{cwd}, sp.ReadRoots...) {
-		if r == "" || r == "/tmp" || r == "/dev/shm" || (!pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
+		if r == "" || r == "/tmp" || (r != "/dev/shm" && !pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
 			continue
 		}
 		if r == sessionTmp || (sessionTmp != "" && pathUnder(r, sessionTmp)) {

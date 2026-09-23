@@ -359,3 +359,22 @@ func TestMaskHandledByNamespaceExemptsOnlyTrulyHiddenPaths(t *testing.T) {
 		}
 	}
 }
+
+// /dev/shm itself, granted as the cwd, is shadowed by --dev exactly like a
+// directory beneath it, so it is re-bound read-only after --dev too.
+func TestBuildBwrapArgvReadOnlyRebindsDevShmItself(t *testing.T) {
+	if info, err := os.Stat("/dev/shm"); err != nil || !info.IsDir() || resolveCleanPath("/dev/shm") != "/dev/shm" {
+		t.Skip("this host has no /dev/shm directory of its own")
+	}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(t.TempDir()), "/dev/shm")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "/tmp/evener-session", "/dev/shm")
+	devIdx := seqIndex(args, "--dev", "/dev")
+	rebindIdx := seqIndex(args, "--ro-bind", "/dev/shm", "/dev/shm")
+	if rebindIdx < 0 || devIdx < 0 || rebindIdx < devIdx {
+		t.Fatalf("a read-only /dev/shm cwd must be re-bound after --dev (dev idx %d, rebind idx %d): %v", devIdx, rebindIdx, args)
+	}
+}
