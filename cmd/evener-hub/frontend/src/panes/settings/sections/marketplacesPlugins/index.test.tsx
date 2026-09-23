@@ -394,20 +394,38 @@ test("Browse tree expansion survives a segment round trip (Installed → Browse 
   // The tree should still be expanded — formatter should be visible without re-expanding
   await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
 });
-
+// --- Whole-page lifetime tests ---------------------------------------------
 // The page-level counterpart to the sheet tests above: the applied-removal
 // guard lives on the whole settings section, so its lifecycle boundary is the
-// section UNMOUNTING and remounting, not the sheet opening and closing. The
-// old instance's guard dies with it, and a late typed outcome published from a
-// disposed sheet must not reach the remounted page's guard.
+// section UNMOUNTING and remounting, not the sheet opening and closing. A late
+// typed outcome published from a disposed sheet must not reach the remounted
+// page's guard.
+
 function cloneCleanupWarnings() {
   return getToasts().filter((toast) => toast.kind === "warning" && toast.text.includes("clone cleanup failed"));
 }
 
-// Opens the marketplace sheet from the Marketplaces segment and confirms a
-// removal that never settles, returning the reject handle its outcome lands
-// through. Shared by the whole-page lifetime tests so each stays about the
-// boundary it names.
+// How many marketplace-list reads a client has served; each lifetime test
+// snapshots it to show whether a late outcome started a re-fetch.
+function marketplaceListCalls(fake: FakeClient): number {
+  return fake.calls.filter((call) => call.method === "evener/marketplace/list").length;
+}
+
+// Opens acme's sheet from the Marketplaces segment and confirms its removal.
+// The sheet is read from the store, so this works on a first mount and a remount.
+async function openMarketplaceSheetAndConfirmRemoval(): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
+  );
+}
+
+// Confirms a removal that never settles, returning the reject handle its typed
+// outcome lands through. The extra microtask lets the store-bound request reach
+// the fake before the caller unmounts the page.
 async function beginPendingRemoval(fake: FakeClient): Promise<(reason: unknown) => void> {
   let rejectRemoval: ((reason: unknown) => void) | undefined;
   fake.on(
@@ -417,23 +435,42 @@ async function beginPendingRemoval(fake: FakeClient): Promise<(reason: unknown) 
         rejectRemoval = reject;
       }),
   );
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
-  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  await user.click(
-    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
-  );
+  await openMarketplaceSheetAndConfirmRemoval();
   await Promise.resolve();
   return (reason) => rejectRemoval?.(reason);
 }
 
+// Lands a typed outcome and flushes the store update its continuation makes.
+async function settleLateOutcome(rejectRemoval: (reason: unknown) => void, reason: unknown): Promise<void> {
+  await act(async () => {
+    rejectRemoval(reason);
+    await Promise.resolve();
+  });
+}
+
+// A list read that answers only when `release` is called. Holding reads pending
+// pins behavior at a fixed publication version: every accepted list publish
+// advances marketplacesPublicationVersion and retires a guard on its own, so a
+// test that lets one land would hide a guard that leaked across a remount.
+function heldListReads() {
+  const pending: Array<(value: { marketplaces: MarketplaceEntry[] }) => void> = [];
+  return {
+    handler: () => new Promise<{ marketplaces: MarketplaceEntry[] }>((resolve) => pending.push(resolve)),
+    // Settle every held read: the store's list revision keeps only the newest
+    // read's answer, so leaving the latest one pending would fence this out.
+    release: (marketplaces: MarketplaceEntry[]) => {
+      for (const resolve of pending.splice(0)) resolve({ marketplaces });
+    },
+  };
+}
+
 test("a late applied outcome after the whole page unmounts leaves no guard on the remounted page and warns once", async () => {
   const fake = connectFakeClient();
+  const held = heldListReads();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
-    return { marketplaces: listCalls === 1 ? [ACME] : [] };
+    return listCalls === 1 ? { marketplaces: [ACME] } : held.handler();
   });
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
 
@@ -442,28 +479,29 @@ test("a late applied outcome after the whole page unmounts leaves no guard on th
   view.unmount();
 
   // The typed applied outcome lands with the page disposed. Its continuation
-  // reconciles the shared store and reports the litter, but the guard it tries
-  // to write belongs to a page that no longer exists.
-  await act(async () => {
-    rejectRemoval(cloneLitterError(null));
-    await Promise.resolve();
-  });
-  await waitFor(() => expect(extensionsStore.getState().marketplaces).toEqual([]));
+  // starts a reconcile read (held, so no publication retires a guard on its
+  // own) and reports the litter; the guard it tries to write belongs to a page
+  // that no longer exists.
+  await settleLateOutcome(rejectRemoval, cloneLitterError(null));
+  await waitFor(() => expect(marketplaceListCalls(fake)).toBe(2));
   expect(cloneCleanupWarnings()).toHaveLength(1);
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (0)" }));
-  // The list reconciles: the name the applied outcome dropped is gone.
-  expect(screen.queryByRole("button", { name: /acme-plugins/ })).toBeNull();
-  // A fresh authoritative list that names it again leaves Remove usable: the
-  // disposed page's late outcome left no guard on this page, and the warning
-  // did not duplicate across the remount. The store is seeded directly, not
-  // through a fetch: a publication would advance the version and retire any
-  // guard regardless of which page wrote it, hiding the very leak under test.
-  act(() => extensionsStore.setState({ marketplaces: [ACME] }));
+  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  // The remount's own read is held too, so the store still lists acme at the
+  // same publication version the late outcome marked at: a guard that leaked
+  // across the remount would disable Remove here.
   await remounted.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(cloneCleanupWarnings()).toHaveLength(1);
+
+  // The held reconcile read lands the authoritative list without acme.
+  await act(async () => {
+    held.release([]);
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(screen.queryByRole("button", { name: /acme-plugins/ })).toBeNull());
   expect(cloneCleanupWarnings()).toHaveLength(1);
 });
 
@@ -485,25 +523,25 @@ test("an outcome from the replaced client cannot mark or block the remounted pag
   const remounted = userEvent.setup();
   await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
   await screen.findByRole("button", { name: /acme-plugins/ });
-  const secondListCallsBefore = second.calls.filter((call) => call.method === "evener/marketplace/list").length;
+  const secondListCallsBefore = marketplaceListCalls(second);
 
-  await act(async () => {
-    rejectRemoval(cloneLitterError(null));
-    await Promise.resolve();
-  });
+  await settleLateOutcome(rejectRemoval, cloneLitterError(null));
 
   await remounted.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
-  expect(second.calls.filter((call) => call.method === "evener/marketplace/list")).toHaveLength(secondListCallsBefore);
+  expect(marketplaceListCalls(second)).toBe(secondListCallsBefore);
   expect(getToasts().some((toast) => toast.kind === "warning")).toBe(false);
 });
 
-test("a late applied outcome against an already-reconciled list stays unreported as a guard and warns truthfully exactly once", async () => {
+test("a late applied outcome against an already-reconciled list is not marked, does not re-fetch, and warns truthfully once", async () => {
   const fake = connectFakeClient();
+  const held = heldListReads();
   let listCalls = 0;
   fake.on("evener/marketplace/list", () => {
     listCalls += 1;
-    return { marketplaces: listCalls === 1 ? [ACME] : [] };
+    if (listCalls === 1) return { marketplaces: [ACME] };
+    if (listCalls === 2) return { marketplaces: [] };
+    return held.handler();
   });
   fake.on("evener/plugin/list", () => ({ plugins: [] }));
 
@@ -516,21 +554,22 @@ test("a late applied outcome against an already-reconciled list stays unreported
     await extensionsStore.getState().fetchMarketplaces();
   });
   expect(extensionsStore.getState().marketplaces).toEqual([]);
-  const listCallsBeforeOutcome = fake.calls.filter((call) => call.method === "evener/marketplace/list").length;
+  const listCallsBeforeOutcome = marketplaceListCalls(fake);
 
-  await act(async () => {
-    rejectRemoval(cloneLitterError(null));
-    await Promise.resolve();
-  });
-  // Already reconciled: the outcome neither re-fetches nor marks a guard, and
-  // the clone litter it names is the one truthful warning - nothing lingers.
-  expect(fake.calls.filter((call) => call.method === "evener/marketplace/list")).toHaveLength(listCallsBeforeOutcome);
+  await settleLateOutcome(rejectRemoval, cloneLitterError(null));
+  await Promise.resolve();
+  // Already reconciled: the outcome neither re-fetches nor writes a guard, and
+  // the clone litter it names is the one truthful warning.
+  expect(marketplaceListCalls(fake)).toBe(listCallsBeforeOutcome);
   expect(cloneCleanupWarnings()).toHaveLength(1);
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
   await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (0)" }));
   expect(cloneCleanupWarnings()).toHaveLength(1);
+  // The store is seeded directly at the outcome's own version - below the
+  // remount's held read - so a guard the outcome should not have written would
+  // disable this row's Remove.
   act(() => extensionsStore.setState({ marketplaces: [ACME] }));
   await remounted.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
@@ -547,13 +586,7 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
   });
 
   const view = render(<MarketplacesPluginsSection />);
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
-  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
-  await user.click(screen.getByRole("button", { name: "Remove" }));
-  await user.click(
-    within(screen.getByRole("dialog", { name: "Remove marketplace" })).getByRole("button", { name: "Remove" }),
-  );
+  await openMarketplaceSheetAndConfirmRemoval();
   await waitFor(() => expect(removeAttempts).toBe(1));
   // Ordinary failures carry no typed outcome, so the sheet keeps the retryable
   // error behavior and writes no applied-removal guard.
@@ -566,6 +599,8 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
 
   view.unmount();
   render(<MarketplacesPluginsSection />);
+  // Re-opened by hand rather than through the helper: the point is to inspect
+  // Remove before the retry.
   const remounted = userEvent.setup();
   await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
   await remounted.click(await screen.findByRole("button", { name: /acme-plugins/ }));
