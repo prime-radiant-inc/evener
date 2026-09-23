@@ -766,9 +766,11 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Before the fix: both rows landed Unreadable (bare id → ambiguous across
-	// the two buckets), SessionsChecked=0. After: each is addressed precisely,
-	// both audit.
+	// Base-immune: hash1/hash2 are ValidateProjectID-valid, so refFor
+	// already emitted proj: refs before FU2 — both rows always audited
+	// here. The test guards that followSelector keeps routing them via
+	// proj: refs (not bare ids, which would be ambiguous across two
+	// buckets and drop SessionsChecked to 0).
 	if res.SessionsChecked != 2 {
 		t.Fatalf("SessionsChecked = %d, want 2 — the duplicate sid across two selector-safe buckets must both audit (FU2)", res.SessionsChecked)
 	}
@@ -1022,6 +1024,75 @@ func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
 	}
 	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sel {
 		t.Errorf("run-timeout SessionRefs = %v, want [%q] — the original explicit selector must be preserved", runTimeout.Evidence.SessionRefs, sel)
+	}
+}
+
+// TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence is the roborev fix
+// round 4 RED case: when an explicit --sessions proj:<unsafe-name>:<sid>
+// selector is supplied (a name that passes projectTokenOK so parseSelector
+// and Locate accept it, but fails safeTokenForRepro so it is unsafe in the
+// comma-joined --sessions reproduction line), RunAudit reads the session
+// via the user-supplied ref (honoring the selection) but must NOT emit the
+// raw selector into SessionRefs or DoctorCommand — it would word-split (a
+// space), comma-split (the CLI), or shell-expand ($, backtick, ;) in the
+// "runnable" reproduction line. The fix derives the evidence selector from
+// paths via followSelector (same safe proj:/bare form the sweep emits).
+func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
+	// Bucket names that pass projectTokenOK but fail safeTokenForRepro:
+	// a space (shell word-break), a '$' (shell expansion).
+	for _, bucketName := range []string{"has space", "dollar$bucket"} {
+		t.Run(bucketName, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, bucketName)
+			writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+			rb := mustParseFixtureRunbook(t)
+			sel := "proj:" + bucketName + ":" + sidA
+			res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The explicitly selected session must still be read — the
+			// user's selection is honored via Locate.
+			if res.SessionsChecked != 1 {
+				t.Fatalf("SessionsChecked = %d, want 1 — the explicitly selected session must still be audited", res.SessionsChecked)
+			}
+			if len(res.Unreadable) != 0 {
+				t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
+			}
+			// The DoctorCommand reproduction line must be shell-safe.
+			if len(res.Findings) == 0 {
+				t.Fatalf("no findings — the run-timeout check should trip")
+			}
+			var runTimeout *Finding
+			for i := range res.Findings {
+				if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+					runTimeout = &res.Findings[i]
+				}
+			}
+			if runTimeout == nil {
+				t.Fatalf("no run-timeout finding: %+v", res.Findings)
+			}
+			dc := runTimeout.Evidence.DoctorCommand
+			prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+			if !strings.HasPrefix(dc, prefix) {
+				t.Fatalf("DoctorCommand = %q, want prefix %q", dc, prefix)
+			}
+			sessionsValue := strings.TrimPrefix(dc, prefix)
+			// The --sessions value must survive the CLI's comma-split and
+			// contain no shell-word-break or shell-expansion characters.
+			for ref := range strings.SplitSeq(sessionsValue, ",") {
+				if strings.ContainsAny(ref, ", \t\r\n$`;|&()<>=!#~\"'{}*?[]") {
+					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for a shell reproduction line", dc, ref)
+				}
+			}
+			// The evidence SessionRefs must likewise be safe.
+			for _, ref := range runTimeout.Evidence.SessionRefs {
+				if strings.ContainsAny(ref, ", \t\r\n$`;|&()<>=!#~\"'{}*?[]") {
+					t.Errorf("SessionRefs %q contains a character unsafe for a shell reproduction line", ref)
+				}
+			}
+		})
 	}
 }
 

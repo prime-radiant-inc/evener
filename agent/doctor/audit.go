@@ -662,14 +662,23 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// sel is the selector every read and evidence entry for this session
 		// uses. For explicit --sessions inputs, ref is the user-supplied
 		// selector that already round-tripped the CLI grammar and resolved
-		// via Locate — safe by construction, so preserve it rather than
-		// reconstructing (the reconstruction can turn a non-canonical
-		// proj:<legacy>:<sid> into a bare sid that re-ambiguates). For the
-		// --since sweep, ref is already followSelector output, so using it
-		// is equivalent. Computed once after Locate; reused at every
-		// read/evidence site below so the grammar scan and string build run
-		// once, not five times.
+		// via Locate — safe for re-resolution, so preserve it for the reads
+		// (TranscriptHealth, APILog, APIHealth) to honor the user's selection.
+		// But a raw explicit selector like proj:has space:sid or
+		// proj:dollar$bucket:sid is NOT safe to emit into the evidence
+		// SessionRefs or the DoctorCommand reproduction line (it word-splits
+		// or shell-expands in a shell), so the evidence path derives its
+		// selector from paths via followSelector — yielding the same safe
+		// proj:/bare form the --since sweep emits. For the --since sweep,
+		// ref is already followSelector output, so the two are equivalent.
+		// Computed once after Locate; reused at every read site below so the
+		// grammar scan and string build run once, not five times.
 		sel := ref
+		// evidenceSel is the safe selector for SessionRefs and DoctorCommand.
+		// For safe/canonical explicit selectors and for the --since sweep,
+		// this is the same as sel; for unsafe explicit selectors it is the
+		// safe reconstruction (bare sid or safe proj: ref).
+		evidenceSel := followSelector(paths.ProjectID, paths.SessionID)
 		health, err := TranscriptHealth(stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
@@ -719,13 +728,16 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				signatureOrder = append(signatureOrder, sig)
 			}
 			// Evidence carries the same selector the reads used: the original
-			// ref for explicit --sessions inputs (already resolved by Locate),
-			// refFor's transcript ref for canonical names, a proj:<id>:<sid>
-			// for shell-safe non-canonical names (safeTokenForRepro), or the
-			// bare session id as a last resort — so the affected-session count,
-			// the --sessions reproduction line, and a re-run of that line all
-			// keep working.
-			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, sel)
+			// ref for safe explicit --sessions inputs (already resolved by
+			// Locate), refFor's transcript ref for canonical names, a
+			// proj:<id>:<sid> for shell-safe non-canonical names
+			// (safeTokenForRepro), or the bare session id as a last resort
+			// — so the affected-session count, the --sessions reproduction
+			// line, and a re-run of that line all keep working. Unsafe
+			// explicit selectors (e.g. proj:has space:sid) are reconstructed
+			// via followSelector so the evidence and reproduction line stay
+			// shell-safe; the reads still use the user-supplied selector.
+			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, evidenceSel)
 		}
 	}
 
