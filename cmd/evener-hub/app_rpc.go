@@ -472,6 +472,83 @@ func adoptCallerMutationID(err error, clientMutationID string) error {
 	return wire
 }
 
+// adoptCallerMutationReceipt returns receipt with its ClientMutationID rewritten
+// to the caller's own id when the receipt names the same mutation in canonical
+// form but not byte-for-byte -- the daemon trims the id before it mints the
+// receipt, while the caller submitted it padded.
+//
+// A successful mutation's receipt is what settles the caller's outbox record,
+// and every client correlates that record byte-for-byte against the id it
+// submitted (appwire-client/typescript/state/mutation/dispatcher.ts compares
+// receipt.clientMutationId !== record.clientMutationId). A receipt naming the
+// daemon's normalized id would therefore leave a padded record submitting even
+// though the mutation applied: the success-path twin of the failure-path
+// rewrite adoptCallerMutationID performs. Only the id changes -- disposition,
+// thread/instance/turn ids, queue entry ids and projection state are untouched
+// -- and the id is never rewritten to a trimmed form.
+func adoptCallerMutationReceipt(receipt appwire.MutationReceipt, clientMutationID string) appwire.MutationReceipt {
+	if clientMutationID == "" || receipt.ClientMutationID == clientMutationID {
+		return receipt
+	}
+	if !mutationIDsMatch(clientMutationID, receipt.ClientMutationID) {
+		return receipt
+	}
+	receipt.ClientMutationID = clientMutationID
+	return receipt
+}
+
+// adoptResponseClientMutationID applies adoptCallerMutationReceipt to every
+// response shape the hub returns that carries a mutation receipt, and leaves
+// every other response -- and every failure -- untouched.
+//
+// It is the single place that knows which responses carry the field, wired
+// where each such response is returned: turn/start's first attempt and its
+// post-resume retry (both through attemptStart), the direct turn mutations
+// (steer, interrupt, queue, drainAsSteer, promoteQueuedAsSteer, cancelQueued),
+// and the resume relays (thread/clear, notes/human/set). urls/remove and
+// goal/set carry no receipt to adopt -- UrlsRemoveResponse is an empty struct
+// and GoalSetResponse holds only Started -- so they are not wired. Nothing here
+// touches the id the daemon stored, only the id this caller's response carries
+// back.
+func adoptResponseClientMutationID[R any](resp R, err error, clientMutationID string) (R, error) {
+	if err != nil || clientMutationID == "" {
+		return resp, err
+	}
+	adopt := func(receipt appwire.MutationReceipt) appwire.MutationReceipt {
+		return adoptCallerMutationReceipt(receipt, clientMutationID)
+	}
+	switch typed := any(resp).(type) {
+	case appwire.TurnStartResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnSteerResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnInterruptResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnQueueResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnDrainAsSteerResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnPromoteQueuedAsSteerResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnCancelQueuedResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.ThreadClearResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.NotesHumanSetResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	}
+	return resp, nil
+}
+
 // isShapeRefusal reports whether err refuses the request's shape: appwire's
 // invalid-params and invalid-request codes carrying the invalidParams
 // discriminant, decided before anything executes.
@@ -1277,7 +1354,8 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			resolved = true
-			return relays.startTurn(ctx, source, params)
+			resp, err := relays.startTurn(ctx, source, params)
+			return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 		}
 		// retryAfterResume runs the attempt a resume this request performed made
 		// possible. A failure there that gives the caller no way to judge its own
@@ -1372,7 +1450,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnSteerResponse{}, err
@@ -1382,18 +1460,20 @@ func registerThreadHandlers(
 			}
 			return source.SteerTurn(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnInterruptResponse{}, err
 			}
 			return source.InterruptTurn(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.EmptyResponse, error) {
@@ -1423,7 +1503,7 @@ func registerThreadHandlers(
 		// session (appwire-client/typescript/sendQueueAvailability.ts) — so the
 		// message was dropped instead of being queued behind the resume that send
 		// had started.
-		return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+		resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				// Resolution failed before anything reached a source, so a resume
@@ -1435,6 +1515,7 @@ func registerThreadHandlers(
 			}
 			return source.QueueTurn(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -1443,7 +1524,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
@@ -1453,6 +1534,7 @@ func registerThreadHandlers(
 			}
 			return source.DrainAsSteer(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 		if params.Index < 0 {
@@ -1464,13 +1546,14 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 			}
 			return source.PromoteQueuedAsSteer(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -1482,13 +1565,14 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnCancelQueuedResponse{}, err
 			}
 			return source.CancelQueued(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
@@ -1497,7 +1581,8 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
 			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
 		}
-		return clearThreadWithResume(ctx, cfg, sources, params)
+		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
@@ -1533,7 +1618,8 @@ func registerThreadHandlers(
 		return setGoalWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodNotesHumanSet, func(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-		return setNotesHumanWithResume(ctx, cfg, sources, params)
+		resp, err := setNotesHumanWithResume(ctx, cfg, sources, params)
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
 		return removeURLWithResume(ctx, cfg, sources, params)

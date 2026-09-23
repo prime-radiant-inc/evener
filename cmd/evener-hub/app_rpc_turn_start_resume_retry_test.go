@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -1003,5 +1005,303 @@ func TestHubRPCTurnStartRetryKeepsPaddedCallerIDForDaemonNamedFailure(t *testing
 					data.MutationOutcome, data.RetryDisposition, tc.wantOutcome, tc.wantDisposition, wire)
 			}
 		})
+	}
+}
+
+// TestAdoptCallerMutationReceiptRestoresVerbatimCallerID pins that a SUCCESSFUL
+// receipt naming the daemon's normalized id is handed back carrying the caller's
+// own, verbatim id, and that nothing else about the receipt changes.
+//
+// The daemon trims the caller's clientMutationId at its boundary before minting
+// the receipt, so a proud caller that submitted " mutation-padded " would
+// otherwise get a receipt naming "mutation-padded" -- and the client correlates
+// its outbox record byte-for-byte against the id it submitted, so the record
+// would stay submitting even though the mutation applied.
+func TestAdoptCallerMutationReceiptRestoresVerbatimCallerID(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	base := appwire.MutationReceipt{
+		Disposition:     appwire.MutationDispositionApplied,
+		ThreadID:        "th_1",
+		InstanceID:      "inst_1",
+		TurnID:          "turn_1",
+		QueueEntryIDs:   []string{"q1"},
+		ProjectionState: appwire.MutationProjectionReflected,
+	}
+
+	cases := []struct {
+		name      string
+		callerID  string
+		receiptID string
+		wantID    string
+	}{
+		{
+			name:      "padded caller id adopts the receipt's normalized id",
+			callerID:  verbatim,
+			receiptID: normalized,
+			wantID:    verbatim,
+		},
+		{
+			name:      "a matching non-padded id is unchanged",
+			callerID:  normalized,
+			receiptID: normalized,
+			wantID:    normalized,
+		},
+		{
+			name:      "a genuinely different mutation is left alone",
+			callerID:  verbatim,
+			receiptID: "some-other-mutation",
+			wantID:    "some-other-mutation",
+		},
+		{
+			name:      "ids differing inside the string are left alone",
+			callerID:  "mutation padded",
+			receiptID: "mutationpadded",
+			wantID:    "mutationpadded",
+		},
+		{
+			name:      "an unnamed receipt is left alone",
+			callerID:  verbatim,
+			receiptID: "",
+			wantID:    "",
+		},
+		{
+			name:      "an empty caller id leaves the receipt alone",
+			callerID:  "",
+			receiptID: normalized,
+			wantID:    normalized,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := base
+			receipt.ClientMutationID = tc.receiptID
+			adopted := adoptCallerMutationReceipt(receipt, tc.callerID)
+			if adopted.ClientMutationID != tc.wantID {
+				t.Fatalf("receipt clientMutationId=%q, want %q", adopted.ClientMutationID, tc.wantID)
+			}
+			// Only the id may change: every other field carries the receipt's own
+			// meaning.
+			adopted.ClientMutationID = tc.receiptID
+			if adopted.Disposition != base.Disposition ||
+				adopted.ThreadID != base.ThreadID ||
+				adopted.InstanceID != base.InstanceID ||
+				adopted.TurnID != base.TurnID ||
+				adopted.ProjectionState != base.ProjectionState ||
+				!slices.Equal(adopted.QueueEntryIDs, base.QueueEntryIDs) {
+				t.Fatalf("adopted receipt = %+v, want only the id changed from %+v", adopted, base)
+			}
+		})
+	}
+}
+
+// TestAdoptResponseClientMutationIDCoversReceiptShapes pins that every response
+// shape the hub can return with a mutation receipt adopts the caller's verbatim
+// id, that the receipt's other fields survive, and that responses carrying no
+// receipt, failing responses, and an empty caller id all pass through untouched.
+//
+// The extractor below is deliberately independent of the production type switch,
+// so dropping a case there makes this test fail.
+func TestAdoptResponseClientMutationIDCoversReceiptShapes(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	receipt := appwire.MutationReceipt{
+		ClientMutationID: normalized,
+		Disposition:      appwire.MutationDispositionApplied,
+		ThreadID:         "th_1",
+		TurnID:           "turn_1",
+		ProjectionState:  appwire.MutationProjectionReflected,
+	}
+
+	cases := []struct {
+		name string
+		resp any
+		get  func(any) appwire.MutationReceipt
+	}{
+		{"turn/start", appwire.TurnStartResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnStartResponse).Receipt
+		}},
+		{"turn/steer", appwire.TurnSteerResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnSteerResponse).Receipt
+		}},
+		{"turn/interrupt", appwire.TurnInterruptResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnInterruptResponse).Receipt
+		}},
+		{"turn/queue", appwire.TurnQueueResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnQueueResponse).Receipt
+		}},
+		{"turn/drainAsSteer", appwire.TurnDrainAsSteerResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnDrainAsSteerResponse).Receipt
+		}},
+		{"turn/promoteQueuedAsSteer", appwire.TurnPromoteQueuedAsSteerResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnPromoteQueuedAsSteerResponse).Receipt
+		}},
+		{"turn/cancelQueued", appwire.TurnCancelQueuedResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.TurnCancelQueuedResponse).Receipt
+		}},
+		{"thread/clear", appwire.ThreadClearResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.ThreadClearResponse).Receipt
+		}},
+		{"notes/human/set", appwire.NotesHumanSetResponse{Receipt: receipt}, func(r any) appwire.MutationReceipt {
+			return r.(appwire.NotesHumanSetResponse).Receipt
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adopted, err := adoptResponseClientMutationID[any](tc.resp, nil, verbatim)
+			if err != nil {
+				t.Fatalf("adopt response %s returned error %v", tc.name, err)
+			}
+			got := tc.get(adopted)
+			if got.ClientMutationID != verbatim {
+				t.Fatalf("receipt clientMutationId=%q, want the caller's verbatim %q", got.ClientMutationID, verbatim)
+			}
+			got.ClientMutationID = normalized
+			if !reflect.DeepEqual(got, receipt) {
+				t.Fatalf("adopted receipt = %+v, want only the id changed from %+v", got, receipt)
+			}
+		})
+	}
+
+	// Responses with no clientMutationId have nothing to adopt and pass through.
+	for _, tc := range []struct {
+		name string
+		resp any
+	}{
+		{"goal/set", appwire.GoalSetResponse{Started: true}},
+		{"urls/remove", appwire.UrlsRemoveResponse{}},
+		{"empty", appwire.EmptyResponse{}},
+	} {
+		t.Run(tc.name+" carries no receipt", func(t *testing.T) {
+			adopted, err := adoptResponseClientMutationID[any](tc.resp, nil, verbatim)
+			if err != nil {
+				t.Fatalf("adopt response %s returned error %v", tc.name, err)
+			}
+			if adopted != tc.resp {
+				t.Fatalf("adopted %#v, want the response unchanged (%#v)", adopted, tc.resp)
+			}
+		})
+	}
+
+	failing := appwire.TurnStartResponse{Receipt: receipt}
+	adopted, err := adoptResponseClientMutationID[any](failing, errors.New("mutation failed"), verbatim)
+	if err == nil {
+		t.Fatal("adopt must hand the failure back")
+	}
+	if got := adopted.(appwire.TurnStartResponse).Receipt.ClientMutationID; got != normalized {
+		t.Fatalf("a failing response must keep the receipt as the daemon minted it: got %q, want %q", got, normalized)
+	}
+
+	unnamed, err := adoptResponseClientMutationID[any](appwire.TurnStartResponse{Receipt: receipt}, nil, "")
+	if err != nil {
+		t.Fatalf("adopt with an empty caller id returned error %v", err)
+	}
+	if got := unnamed.(appwire.TurnStartResponse).Receipt.ClientMutationID; got != normalized {
+		t.Fatalf("an empty caller id must leave the receipt alone: got %q, want %q", got, normalized)
+	}
+}
+
+// TestHubRPCTurnStartResumedSuccessCarriesVerbatimPaddedCallerID drives the
+// success path through the real turn/start resume flow: the caller submits a
+// padded clientMutationId, the hub resumes the exited session, and the resumed
+// daemon's receipt names the id the daemon trimmed. The response must carry the
+// caller's own, verbatim id so its outbox record settles, and the receipt's
+// other fields must be the daemon's.
+func TestHubRPCTurnStartResumedSuccessCarriesVerbatimPaddedCallerID(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+	oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+	t.Cleanup(func() {
+		resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+	})
+
+	// The ref must be one the hub knows, or the handler returns the first failure
+	// unchanged and never resumes at all.
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	ref := "local:" + sessionID
+
+	startCalls := 0
+	source := &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          ref,
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+		startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			startCalls++
+			if startCalls == 1 {
+				// The first send finds the exited session and triggers the resume.
+				return appwire.TurnStartResponse{}, appwire.SessionUnavailable("session has exited")
+			}
+			// The resumed daemon mints its receipt naming the id it normalized at
+			// its own boundary.
+			return appwire.TurnStartResponse{
+				Turn: appwire.Turn{ID: "turn_1"},
+				Receipt: appwire.MutationReceipt{
+					ClientMutationID: normalized,
+					Disposition:      appwire.MutationDispositionApplied,
+					ThreadID:         sessionID,
+					InstanceID:       sessionID,
+					TurnID:           "turn_1",
+					ProjectionState:  appwire.MutationProjectionReflected,
+				},
+			}, nil
+		},
+	}
+	resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+		return source, nil
+	}
+	resumeCalls := 0
+	resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+		resumeCalls++
+		return appwire.ThreadResumeResponse{Thread: source.thread}, nil
+	}
+
+	server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+	raw, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:              ref,
+		ClientMutationID: verbatim,
+		Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+	})
+	if err != nil {
+		t.Fatalf("turn/start: %v", err)
+	}
+	if startCalls != 2 {
+		t.Fatalf("start calls=%d, want 2 (the original and the post-resume retry)", startCalls)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+
+	resp, ok := raw.(appwire.TurnStartResponse)
+	if !ok {
+		t.Fatalf("turn/start response %T=%v, want appwire.TurnStartResponse", raw, raw)
+	}
+	if resp.Receipt.ClientMutationID != verbatim {
+		t.Fatalf("receipt names clientMutationId %q, want the caller's verbatim %q: the client cannot settle its record (receipt=%+v)",
+			resp.Receipt.ClientMutationID, verbatim, resp.Receipt)
+	}
+	if resp.Receipt.Disposition != appwire.MutationDispositionApplied ||
+		resp.Receipt.ThreadID != sessionID ||
+		resp.Receipt.InstanceID != sessionID ||
+		resp.Receipt.TurnID != "turn_1" ||
+		resp.Receipt.ProjectionState != appwire.MutationProjectionReflected {
+		t.Fatalf("receipt = %+v, want the daemon's own fields with only the id adopted", resp.Receipt)
 	}
 }
