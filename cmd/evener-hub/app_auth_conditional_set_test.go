@@ -396,3 +396,41 @@ func TestAuth_ApiKeyConditionalSet_RejectsEmptyValue(t *testing.T) {
 	}
 	assertWireCode(t, err, appwire.CodeInvalidParams)
 }
+
+// TestAuth_ApiKeyConditionalSet_SkippedSetDoesNotReload pins the write-only
+// reload: a skip ran its decision under the credential lock but changed
+// nothing, so it must not re-derive the instance set. A permitted write still
+// does, which the positive control asserts so the skip assertion cannot pass
+// vacuously.
+func TestAuth_ApiKeyConditionalSet_SkippedSetDoesNotReload(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, authNoneInstanceToml))
+	before := ctrl.reg.Generation()
+	resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "gateway", Value: "sk-pushed"})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(gateway): %v", err)
+	}
+	if resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+		t.Fatalf("Action = %q, want skipped", resp.Action)
+	}
+	if after := ctrl.reg.Generation(); after != before {
+		t.Fatalf("a skipped conditional set reloaded the registry (generation %d -> %d): it wrote nothing", before, after)
+	}
+
+	// Positive control: the same call on a writable instance does reload.
+	dir2 := t.TempDir()
+	stateDir2 := t.TempDir()
+	writable := newTestAuthController(t, dir2, stateDir2, writeProvidersToml(t, dir2, bearerInstanceToml))
+	beforeWrite := writable.reg.Generation()
+	written, err := writable.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "work-ant", Value: "sk-new"})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(work-ant): %v", err)
+	}
+	if written.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("Action = %q, want added", written.Action)
+	}
+	if after := writable.reg.Generation(); after == beforeWrite {
+		t.Fatalf("a landed conditional set did not reload the registry (generation %d unchanged)", beforeWrite)
+	}
+}

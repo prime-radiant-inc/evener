@@ -74,7 +74,7 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	// EmptyParams and is called exactly once; the join is on the returned
 	// entries, never an instance name passed as a parameter.
 	var listRaw json.RawMessage
-	if err := p.call(ctx, remote, appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &listRaw); err != nil {
+	if err := p.forward(ctx, remote, appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &listRaw); err != nil {
 		// A failed listing is a whole-call failure, not a per-entry one: without
 		// it there is no authority for which keys have a counterpart.
 		return appwire.HostPushCredentialsResponse{}, err
@@ -120,7 +120,7 @@ func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsourc
 	}
 
 	var statusRaw json.RawMessage
-	if err := p.call(ctx, remote, appwire.MethodEvenerAuthStatus, appwire.AuthStatusParams{Provider: name}, &statusRaw); err != nil {
+	if err := p.forward(ctx, remote, appwire.MethodEvenerAuthStatus, appwire.AuthStatusParams{Provider: name}, &statusRaw); err != nil {
 		return failed(err.Error())
 	}
 	var status appwire.AuthStatusResponse
@@ -131,7 +131,7 @@ func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsourc
 	// The read supplies the fence only; the host re-resolves the source and the
 	// revision under its credential write lock and classifies there.
 	var setRaw json.RawMessage
-	if err := p.mutationCall(ctx, remote, appwire.MethodEvenerAuthApiKeyConditionalSet, appwire.ApiKeyConditionalSetParams{
+	if err := p.forward(ctx, remote, appwire.MethodEvenerAuthApiKeyConditionalSet, appwire.ApiKeyConditionalSetParams{
 		Provider:         name,
 		Value:            value,
 		ExpectedSource:   status.ActiveSource,
@@ -146,23 +146,18 @@ func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsourc
 	return appwire.HostCredentialPushResult{Instance: name, Action: set.Action, Reason: set.Reason}
 }
 
-// call forwards one read through the same per-host client seam evener/host/request
-// uses, so the shared origin guard covers the push without a second guard.
-func (p *hubHostCredentialsPusher) call(ctx context.Context, remote *appsource.RemoteHubSource, method string, params any, out *json.RawMessage) error {
+// forward sends one push call through the same per-host client seam and the same
+// read-vs-mutation dispatch evener/host/request uses: the proxy's own mutation
+// table decides, so the shared origin guard covers the push without a second
+// guard and a read can never ride the outcome-unknown mapping (nor the
+// conditional set the retryable read mapping) by being named at a call site.
+func (p *hubHostCredentialsPusher) forward(ctx context.Context, remote *appsource.RemoteHubSource, method string, params any, out *json.RawMessage) error {
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return appwire.InternalError(fmt.Sprintf("encode %s params: %v", method, err))
+	}
+	if _, mutating := remoteHostAdminMutationMethods[method]; mutating {
+		return remote.AdminMutationCall(ctx, method, raw, out)
 	}
 	return remote.AdminCall(ctx, method, raw, out)
-}
-
-// mutationCall is call's mutating twin for evener/auth/apiKey/conditionalSet: a
-// lost response is reported as an unknown outcome rather than a retryable
-// channel failure, exactly as the proxy maps a forwarded mutation.
-func (p *hubHostCredentialsPusher) mutationCall(ctx context.Context, remote *appsource.RemoteHubSource, method string, params any, out *json.RawMessage) error {
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return appwire.InternalError(fmt.Sprintf("encode %s params: %v", method, err))
-	}
-	return remote.AdminMutationCall(ctx, method, raw, out)
 }

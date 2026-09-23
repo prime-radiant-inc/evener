@@ -342,21 +342,32 @@ func CredentialConfigRevision(r *registry.Registry, name string) string {
 	if err != nil {
 		return ""
 	}
+	return CredentialConfigRevisionResolved(res)
+}
+
+// CredentialConfigRevisionResolved is CredentialConfigRevision over an instance
+// the caller has already resolved, so a caller that resolved it for another
+// field of the same row - the instances listing's endpoint fingerprint, say -
+// does not resolve the name a second time. It contributes exactly what the
+// resolving form contributes: the same fields, in the same order, with the same
+// separators, so the two agree byte for byte on the same resolution. An
+// unresolved Resolved (no instance name) has no revision, matching the empty
+// string CredentialConfigRevision returns for a name the registry cannot
+// resolve.
+func CredentialConfigRevisionResolved(res registry.Resolved) string {
+	if strings.TrimSpace(res.Instance) == "" {
+		return ""
+	}
 	sum := sha256.New()
-	fields := []string{
-		"instance", res.Instance,
-		"provider", res.ProviderID,
-		"protocol", res.Protocol,
-		"surface", res.Surface,
-		"auth", res.Transport.Auth,
-		"baseURL", res.Transport.BaseURL,
-		"modelsEndpoint", res.Transport.ModelsEndpoint,
-		"source", res.Credential.Source,
-		"credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","),
-	}
-	for i := 0; i+1 < len(fields); i += 2 {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", fields[i], fields[i+1])
-	}
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "instance", res.Instance)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "provider", res.ProviderID)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "protocol", res.Protocol)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "surface", res.Surface)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "auth", res.Transport.Auth)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "baseURL", res.Transport.BaseURL)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "modelsEndpoint", res.Transport.ModelsEndpoint)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "source", res.Credential.Source)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
 	return hex.EncodeToString(sum.Sum(nil))
 }
 

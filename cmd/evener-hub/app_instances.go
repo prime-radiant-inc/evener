@@ -249,13 +249,18 @@ func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry
 // another, and a credential write asserting that pair would describe a
 // destination that never existed.
 func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.Instance, authored *registry.Provider, key []byte) appwire.InstanceEntry {
+	// Resolve the row's instance once: the endpoint fingerprint and the
+	// credential-configuration revision both describe this one generation of
+	// providers.toml, and instanceStatus derives the revision from this
+	// resolution instead of resolving the name a second time.
+	resolved, resolvedOK := resolvedRowInstance(r, inst)
 	// A bare controller (a construction with no auth controller wired) still
 	// describes the registry it holds: there is no credential layer to derive a
 	// status from, so the row carries an empty one rather than dereferencing a
 	// nil controller.
 	var status appwire.AuthStatusResponse
 	if c.auth != nil {
-		status = c.auth.instanceStatus(inst)
+		status = c.auth.instanceStatus(inst, resolved)
 	}
 	entry := appwire.InstanceEntry{
 		Name:                inst.Name,
@@ -265,7 +270,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		Surface:             inst.Surface,
 		Auth:                inst.Auth,
 		BaseURL:             sanitizeEndpointURL(inst.BaseURL),
-		EndpointFingerprint: destinationFingerprintKeyed(key, r, inst),
+		EndpointFingerprint: rowEndpointFingerprint(key, inst, resolved, resolvedOK),
 		Vars:                inst.Vars,
 		Implicit:            inst.Implicit,
 		Hidden:              inst.Hidden,
@@ -407,14 +412,42 @@ func destinationIdentity(resolved registry.Resolved) string {
 // (endpointFingerprintFor's empty answer conflates them; app_auth.go's
 // endpointHasDestination asks this question instead).
 func destinationInstance(r *registry.Registry, inst registry.Instance) (registry.Resolved, bool) {
-	if inst.Hidden || r == nil {
+	if inst.Hidden {
 		return registry.Resolved{}, false
 	}
-	resolved, err := r.ResolveInstance(inst.Name)
-	if err != nil || strings.TrimSpace(resolved.Transport.BaseURL) == "" {
+	resolved, ok := resolvedRowInstance(r, inst)
+	if !ok || !hasRowDestination(inst, resolved) {
 		return registry.Resolved{}, false
 	}
 	return resolved, true
+}
+
+// resolvedRowInstance resolves inst once, for the row fields that describe one
+// generation of providers.toml: the endpoint fingerprint and the
+// credential-configuration revision. ok is false when the name does not resolve
+// here at all, and the zero Resolved that travels with a false carries no
+// revision (CredentialConfigRevisionResolved). A listing row resolves with this
+// and hands the result to both consumers, so it resolves the name once instead
+// of once per field.
+func resolvedRowInstance(r *registry.Registry, inst registry.Instance) (registry.Resolved, bool) {
+	if r == nil {
+		return registry.Resolved{}, false
+	}
+	resolved, err := r.ResolveInstance(inst.Name)
+	if err != nil {
+		return registry.Resolved{}, false
+	}
+	return resolved, true
+}
+
+// hasRowDestination reports whether a resolved instance names a destination
+// this hub can fingerprint at all: not hidden, and carrying a base URL.
+// Whether the hub can *key* that fingerprint is a separate question - the key
+// file can be unreadable while the destination is perfectly real - which is why
+// destinationInstance's callers ask this of the resolved value rather than of
+// the key (see its doc).
+func hasRowDestination(inst registry.Instance, resolved registry.Resolved) bool {
+	return !inst.Hidden && strings.TrimSpace(resolved.Transport.BaseURL) != ""
 }
 
 // destinationFingerprint is the value a listing row serves and a credential
@@ -430,8 +463,17 @@ func destinationFingerprint(stateDir string, r *registry.Registry, inst registry
 // resolved (see fingerprintWithKey): List resolves one key for all its rows,
 // and every other caller resolves one per call.
 func destinationFingerprintKeyed(key []byte, r *registry.Registry, inst registry.Instance) string {
-	resolved, ok := destinationInstance(r, inst)
-	if !ok {
+	resolved, ok := resolvedRowInstance(r, inst)
+	return rowEndpointFingerprint(key, inst, resolved, ok)
+}
+
+// rowEndpointFingerprint is destinationFingerprintKeyed over a resolution the
+// caller already holds, so a row that resolved inst for its
+// credential-configuration revision does not resolve the name again here. Its
+// answer is destinationFingerprintKeyed's exactly: empty when the name did not
+// resolve or names no destination this hub can fingerprint.
+func rowEndpointFingerprint(key []byte, inst registry.Instance, resolved registry.Resolved, ok bool) string {
+	if !ok || !hasRowDestination(inst, resolved) {
 		return ""
 	}
 	return fingerprintWithKey(key, destinationIdentity(resolved))
