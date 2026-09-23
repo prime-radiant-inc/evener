@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -82,6 +83,35 @@ func TestPackShardsBalancesLongestProcessingTimeFirst(t *testing.T) {
 	}
 }
 
+// TestPackShardsSpreadsTestsTheSurveyCalledFree is the long-pole regression:
+// -test.v reports 10ms steps, so most tests survey as 0.00s, and greedy packing
+// never raised the least-loaded shard's load for them — every one of them
+// landed in the same shard (1500 of evener-hub's 2129, 3561 of agent's). Each
+// test is charged at least half a reporting step, so they spread.
+func TestPackShardsSpreadsTestsTheSurveyCalledFree(t *testing.T) {
+	costs := []testCost{{"slow", 1}}
+	for i := range 400 {
+		costs = append(costs, testCost{fmt.Sprintf("free%d", i), 0})
+	}
+	bins, _, err := packShards(costs, 4)
+	if err != nil {
+		t.Fatalf("packShards: %v", err)
+	}
+	for i, bin := range bins {
+		if len(bin) > 200 {
+			t.Fatalf("shard %d holds %d of 401 tests; zero-cost tests piled into one shard: %v", i, len(bin), lens(bins))
+		}
+	}
+}
+
+func lens(bins [][]string) []int {
+	out := make([]int, len(bins))
+	for i, bin := range bins {
+		out[i] = len(bin)
+	}
+	return out
+}
+
 func TestPackShardsTiesKeepInputOrder(t *testing.T) {
 	costs := []testCost{{"first", 1}, {"second", 1}, {"third", 1}}
 	bins, _, err := packShards(costs, 3)
@@ -104,7 +134,7 @@ func TestPackShardsRefusesEmptyTestSet(t *testing.T) {
 func TestPackShardsRefusesEmptyBins(t *testing.T) {
 	costs := []testCost{{"a", 1}, {"b", 1}, {"c", 1}}
 	_, _, err := packShards(costs, 5)
-	want := "asked for 5 shards but only 3 are non-empty; lower AGENT_SHARD_COUNT"
+	want := "asked for 5 shards but only 3 are non-empty; lower the shard count"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("packShards err = %v, want %q", err, want)
 	}

@@ -68,6 +68,13 @@ func equalWeights(listOutput string) []testCost {
 // time first, and proves the partition is a bijection over the test set
 // before anything runs: a filter bug that dropped tests would otherwise
 // present as a faster, still-green suite.
+// minTestCost is the least a test is charged when packing. `go test -v`
+// reports durations in 10ms steps, so most tests survey as 0.00s; charged at
+// zero they never raise the least-loaded shard's load, and greedy packing
+// piles every one of them into that shard. Half a step is what a "0.00s"
+// test costs on average.
+const minTestCost = 0.005
+
 func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err error) {
 	if len(costs) == 0 {
 		return nil, nil, errors.New("found no tests to shard")
@@ -86,7 +93,7 @@ func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err 
 			}
 		}
 		bins[at] = append(bins[at], tc.name)
-		loads[at] += tc.cost
+		loads[at] += max(tc.cost, minTestCost)
 	}
 
 	placed := 0
@@ -114,7 +121,7 @@ func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err 
 		}
 	}
 	if nonEmpty != n {
-		return nil, nil, fmt.Errorf("asked for %d shards but only %d are non-empty; lower AGENT_SHARD_COUNT", n, nonEmpty)
+		return nil, nil, fmt.Errorf("asked for %d shards but only %d are non-empty; lower the shard count", n, nonEmpty)
 	}
 	return bins, loads, nil
 }
