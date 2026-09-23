@@ -664,15 +664,21 @@ func TestRunAudit_SinceAuditsLegacyNamedBuckets(t *testing.T) {
 	}
 }
 
-// TestRunAudit_LegacyBucketEvidenceNamesSessions covers the evidence path
-// round 4 left raw: a check tripping in sessions whose bucket names earn no
-// emitted ref (legacy-named bucket) must name EVERY affected session by
-// bare id — not collapse them into one empty-string entry — so the
-// affected-session count, the --sessions reproduction line, and a re-run of
-// that line against RunAudit all keep working.
+// TestRunAudit_LegacyBucketEvidenceNamesSessions covers the evidence path for
+// buckets whose directory names BOTH ref grammars reject: refFor emits no
+// TranscriptRef (identifier.ValidateProjectID rejects the backslash), and
+// the doctor's own selector grammar rejects the name too (projectTokenOK
+// rejects the backslash), so followSelector falls back to a bare id — the
+// round-4/5 behavior, now scoped to this grammar-rejected class only.
+// (Selector-safe legacy names like "0123456789abcdef" now get proj: refs —
+// see TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth.) A check tripping in
+// such sessions must name EVERY affected session by bare id — not collapse
+// them into one empty-string entry — so the affected-session count, the
+// --sessions reproduction line, and a re-run of that line against RunAudit
+// all keep working.
 func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 	base := t.TempDir()
-	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	legacyBucket := stateHomeBucket(base, "back\\slash-bucket")
 	writeAuditSession(t, legacyBucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
 	writeAuditSession(t, legacyBucket, sidB, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidB))
 
@@ -715,6 +721,91 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 		if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
 			t.Errorf("re-running %q evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", f.Title, res2.SessionsChecked, res2.Unreadable)
 		}
+	}
+}
+
+// TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth is the FU2 RED case: when
+// the SAME session id is present in two different project buckets whose
+// directory names the agent ref grammar rejects (so refFor emits no
+// TranscriptRef) but the doctor's own selector grammar accepts
+// (projectTokenOK), the current code falls back to a bare id — which
+// locateAcrossBuckets finds in BOTH buckets and reports as ambiguous, so
+// RunAudit records BOTH rows as Unreadable and audits neither. The audit
+// set's coverage then no longer matches the sweep's own enumeration.
+// followSelector must instead address each row precisely via
+// proj:<bucket>:<sid>, so both rows audit and evidence names each.
+// ListSessions coverage (two rows, one per bucket) must match audit coverage
+// (two checked). This test fails on current code (both rows land Unreadable,
+// SessionsChecked=0).
+func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
+	base := t.TempDir()
+	// Both names fail identifier.ValidateProjectID (no readable-<10 base62>
+	// structure, so refFor emits no ref) but pass projectTokenOK (no path
+	// separators / NUL), so the fix can qualify each with proj:.
+	bucketA := stateHomeBucket(base, "0123456789abcdef")
+	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	// ListSessions enumerates one row per (bucket, session): two rows for the
+	// duplicate sid across two buckets — the coverage the audit must match.
+	sweep, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sweep.Sessions) != 2 {
+		t.Fatalf("ListSessions enumerated %d rows, want 2 (one per bucket for the duplicate sid)", len(sweep.Sessions))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Before the fix: both rows landed Unreadable (bare id → ambiguous across
+	// the two buckets), SessionsChecked=0. After: each is addressed precisely,
+	// both audit.
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — the duplicate sid across two selector-safe buckets must both audit (FU2)", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — neither row should be skipped as ambiguous", res.Unreadable)
+	}
+	// Coverage match: audit checks exactly the sessions the sweep enumerated.
+	if res.SessionsChecked != len(sweep.Sessions) {
+		t.Errorf("audit coverage %d != ListSessions coverage %d", res.SessionsChecked, len(sweep.Sessions))
+	}
+	// The run-timeout check trips in both; evidence must name each by its
+	// bucket-qualified proj: ref, not collapse to one bare-id entry.
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	if len(runTimeout.Evidence.SessionRefs) != 2 {
+		t.Fatalf("run-timeout finding SessionRefs = %v, want 2 (one proj: ref per bucket)", runTimeout.Evidence.SessionRefs)
+	}
+	wantA := "proj:0123456789abcdef:" + sidA
+	wantB := "proj:fedcba9876543210:" + sidA
+	refs := map[string]bool{}
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		refs[ref] = true
+	}
+	if !refs[wantA] || !refs[wantB] {
+		t.Errorf("run-timeout SessionRefs = %v, want both %q and %q", runTimeout.Evidence.SessionRefs, wantA, wantB)
+	}
+	// The reproduction line must re-run: feeding the evidence refs back as
+	// --sessions audits both again, with no unreadable rows.
+	res2, err := RunAudit(base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
+	if err != nil {
+		t.Fatalf("re-running evidence refs: %v", err)
+	}
+	if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
+		t.Errorf("re-running evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", res2.SessionsChecked, res2.Unreadable)
 	}
 }
 

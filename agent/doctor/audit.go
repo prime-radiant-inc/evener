@@ -573,17 +573,36 @@ type AuditResult struct {
 }
 
 // followSelector returns the selector that re-addresses one session: its
-// emitted transcript ref, or the bare session id when no ref was emitted —
-// refFor omits the ref for buckets whose directory names the agent ref
-// grammar cannot consume, and a bare id still sweeps to every enumerated
-// bucket, including backslash-named ones an internal proj:<name>:<sid>
-// fallback could not address (the doctor's own selector grammar rejects
-// backslash). This keeps the audit set's coverage identical to the sweep's.
-func followSelector(ref, sessionID string) string {
-	if ref == "" {
-		return sessionID
+// emitted transcript ref when refFor produced one, a bucket-qualified
+// proj:<projectID>:<sessionID> selector when it did not but the bucket name
+// is consumable by the doctor's own selector grammar, or the bare session
+// id as a last resort.
+//
+// refFor emits a ref (proj:<id>:<sid> or local:<sid>) for every bucket whose
+// directory name passes identifier.ValidateProjectID; for the rest — legacy-
+// or foreign-named buckets the agent ref grammar rejects — it emits nothing,
+// and a bare id is the only handle left. But the doctor's own selector
+// grammar (projectTokenOK) is looser than ValidateProjectID: it accepts any
+// traversal-safe name (no path separators or NUL), not only the
+// readable-<10 base62> structure ValidateProjectID requires. The gap between
+// the two is exactly the forensic collision case: the same session id
+// present in two such selector-safe legacy buckets. A bare id makes
+// locateAcrossBuckets sweep every bucket and report that duplicate as
+// ambiguous — so RunAudit records both rows as Unreadable and audits
+// neither, and the audit set's coverage no longer matches the sweep's own
+// enumeration. Qualifying each row with proj:<projectID>:<sid> (when
+// projectTokenOK admits the name) addresses it precisely via locateInBucket,
+// so both rows audit. The bare-id fallback stays only for the class both
+// grammars reject (backslash/NUL-named directories), preserving round-4/5
+// coverage there.
+func followSelector(ref, projectID, sessionID string) string {
+	if ref != "" {
+		return ref
 	}
-	return ref
+	if projectID != "" && projectTokenOK(projectID) {
+		return "proj:" + projectID + ":" + sessionID
+	}
+	return sessionID
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
@@ -613,7 +632,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			return AuditResult{}, err
 		}
 		for _, s := range sweep.Sessions {
-			refs = append(refs, followSelector(s.TranscriptRef, s.SessionID))
+			refs = append(refs, followSelector(s.TranscriptRef, s.Bucket, s.SessionID))
 		}
 		res.Unreadable = append(res.Unreadable, sweep.Unreadable...)
 	}
@@ -631,14 +650,14 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: ref, TranscriptRef: ref, Error: err.Error()})
 			continue
 		}
-		health, err := TranscriptHealth(stateBase, followSelector(paths.TranscriptRef, paths.SessionID))
+		health, err := TranscriptHealth(stateBase, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID))
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 			continue
 		}
 		source := metricSource{health: health}
 		if needsAPILog {
-			apiRes, err := APILog(stateBase, followSelector(paths.TranscriptRef, paths.SessionID), APILogOpts{SummaryOnly: true})
+			apiRes, err := APILog(stateBase, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID), APILogOpts{SummaryOnly: true})
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -647,7 +666,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			source.haveAPILog = true
 		}
 		if needsAPIHealth {
-			apiHealthRes, err := APIHealth(stateBase, followSelector(paths.TranscriptRef, paths.SessionID))
+			apiHealthRes, err := APIHealth(stateBase, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID))
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -660,7 +679,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		for _, check := range runbook.Checks {
 			tripped, err := check.evaluate(source)
 			if err != nil {
-				return AuditResult{}, fmt.Errorf("runbook %s check %q on session %s: %w", runbook.Name, check.Title, followSelector(paths.TranscriptRef, paths.SessionID), err)
+				return AuditResult{}, fmt.Errorf("runbook %s check %q on session %s: %w", runbook.Name, check.Title, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID), err)
 			}
 			if !tripped {
 				continue
@@ -680,10 +699,13 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				signatureOrder = append(signatureOrder, sig)
 			}
 			// Evidence carries the same selector the reads used: a session in
-			// a bucket with no consumable ref is named by bare id instead of
-			// dropping out, so the affected-session count, the --sessions
-			// reproduction line, and a re-run of that line all keep working.
-			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, followSelector(paths.TranscriptRef, paths.SessionID))
+			// Evidence carries the same selector the reads used: a session in
+			// a bucket whose name the agent ref grammar rejects is named by a
+			// bucket-qualified proj:<id>:<sid> selector (or bare id when the
+			// doctor's own selector grammar also rejects the name), so the
+			// affected-session count, the --sessions reproduction line, and a
+			// re-run of that line all keep working.
+			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID))
 		}
 	}
 
