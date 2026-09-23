@@ -2097,11 +2097,16 @@ export function createConversationStore() {
                   offset += chunk.length;
                   settled += 1;
                 }
-                if (settled === 0 && advance !== "") {
-                  // The wire's continuation diverges from the chunk
-                  // stream — a restart the client missed, still
-                  // streaming: the chunks belong to the dead generation
-                  // (RoboRev round 12).
+                if (settled < pending.length && offset < advance.length) {
+                  // The walk stopped at a chunk the advance cannot
+                  // account for, while the advance still holds unmatched
+                  // text — the wire diverged from the chunk stream after
+                  // the matched prefix (round 13), or before any of it
+                  // (round 12): either way the remaining chunks belong
+                  // to a generation the wire already abandoned. A walk
+                  // that consumed the whole advance is the honest
+                  // partial fold — the trailing chunks are still ahead
+                  // of the cut and stay live.
                   settled = pending.length;
                 }
               } else {
