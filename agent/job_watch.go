@@ -3690,7 +3690,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 // terminalFlush via rememberDetachedPendingLocked — exactly how
 // expireJobWatchesLocked parks a terminal output_match send — so drains, restore,
 // and pendingWatchSendDeliveries can see and settle it.
-func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status, reason string) (watchResult, error) {
+func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status, terminalReason string) (watchResult, error) {
 	// Build the one-shot detached config up front: it validates and compiles
 	// output_match into its matcher (wrapping a bad pattern as
 	// "invalid_request: output_match:"), and the send branch reuses it to carry
@@ -3701,7 +3701,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return watchResult{}, err
 	}
 
-	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: reason}
+	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: terminalReason}
 
 	// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
 	data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
@@ -3724,10 +3724,11 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	result.Fired = true
 	result.TerminalCatchup = true
 	result.Status = string(status)
+	result.Reason = terminalReason
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, key.Target)}
 	jm.mu.Lock()
-	delivery := jm.watchSendSnapshot(cfg, key.Target, reason, root)
+	delivery := jm.watchSendSnapshot(cfg, key.Target, matchReason, root)
 	delivery.allowAfterTerminalExpiry = true
 	jm.rememberDetachedPendingLocked(cfg)
 	jm.mu.Unlock()

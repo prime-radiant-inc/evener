@@ -1006,6 +1006,23 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 		failMatched.Reason != "exit_nonzero" {
 		t.Fatalf("failed-job catch-up result = %+v, want fired+terminal_catchup+command_exited_nonzero+exit_nonzero reason", failMatched)
 	}
+
+	// The send branch rebuilds the result, so it needs its own pin: the
+	// terminal reason must survive the rebuild. Send watches are created at
+	// the manager level — the job_watch tool schema has no send property —
+	// so this arm goes through configureWatch directly.
+	sendRes, sendErr := s.jobManager.configureWatch(watchArgs{
+		Target:      failRec.JobID,
+		OutputMatch: "exit 3",
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	})
+	if sendErr != nil {
+		t.Fatalf("send catch-up must not error: %v", sendErr)
+	}
+	if !sendRes.Fired || !sendRes.TerminalCatchup || sendRes.Status != string(jobstore.StatusCommandExitedNonzero) ||
+		sendRes.Reason != "exit_nonzero" {
+		t.Fatalf("send catch-up result = %+v, want fired+terminal_catchup+command_exited_nonzero+exit_nonzero reason", sendRes)
+	}
 }
 
 func TestJobWatchNoConditionErrors(t *testing.T) {
