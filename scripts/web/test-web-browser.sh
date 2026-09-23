@@ -71,11 +71,14 @@ if [ ! -f dist/index.html ]; then
 	fi
 fi
 
-# start_guard GUARD — start one guard in the background, its output in
-# $dir/GUARD.log, and record its pid.
+# start_guard INDEX — start guards[INDEX] in the background, its output in
+# $dir/GUARD.log, and record its pid at the same index. Each guard's Vite gets
+# a dep cache of its own: two Vite processes optimizing into one cache race
+# (issue #1586), and the guards run side by side.
 start_guard() {
-	local guard=$1 guard_dir="$dir/$1"
-	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" || exit 1
+	local index=$1 guard=${guards[$1]} guard_dir="$dir/${guards[$1]}"
+	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" "$guard_dir/vite-cache" || exit 1
+	export BROWSER_GUARD_VITE_CACHE_DIR="$guard_dir/vite-cache"
 	case "$guard" in
 	retirementguard)
 		# retirementguard's contract is `npm run retirementguard`: it invokes the
@@ -104,43 +107,63 @@ start_guard() {
 		HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
 		;;
 	esac
-	guard_pids+=("$!")
+	guard_pids[$index]=$!
 }
 
 # The guards are independent (each has its own Chrome profile, ephemeral
-# ports and private roots), so up to $slots of them run at once and the gate
-# takes about as long as its slowest slot instead of the sum. Each guard is a
-# real browser (and most a Vite dev server) whose tripwires assume it gets
-# CPU, so the slots are the machine's spare cores: all at once on an idle CI
-# runner, one at a time on a saturated one. BROWSER_GUARD_CONCURRENCY
-# overrides that. Verdicts still print in the fixed order above, and every
-# guard runs to its verdict so one failure does not hide another; the exit
-# status is the first nonzero one in that order.
+# ports, private roots and Vite cache), so up to $slots of them run at once,
+# and a finished guard's slot goes straight to the next one waiting. Each
+# guard is a real browser (and most a Vite dev server) whose tripwires assume
+# it gets CPU, so the slots are the machine's spare cores: all at once on an
+# idle CI runner, one at a time on a saturated one. BROWSER_GUARD_CONCURRENCY
+# overrides that. Every guard runs to its verdict so one failure does not hide
+# another; verdicts print in the fixed order above once all have finished,
+# and the exit status is the first nonzero one in that order.
 slots=${BROWSER_GUARD_CONCURRENCY:-$(load_aware_workers 0)}
 case "$slots" in
 ''|*[!0-9]*|0) slots=1 ;;
 esac
-started=0
-while [ "$started" -lt "$slots" ] && [ "$started" -lt "${#guards[@]}" ]; do
-	start_guard "${guards[$started]}"
-	started=$((started + 1))
+
+# owned_guard_running PID — whether PID is still one of this shell's running
+# jobs. Bash 3.2 (macOS) has no `wait -n`, so completion is found by asking
+# the job table, the same ownership test test-web.sh uses.
+owned_guard_running() {
+	local candidate
+	for candidate in $(jobs -pr); do
+		[ "$candidate" = "$1" ] && return 0
+	done
+	return 1
+}
+
+guard_status=()
+next=0 running=0 done_count=0
+while [ "$done_count" -lt "${#guards[@]}" ]; do
+	while [ "$running" -lt "$slots" ] && [ "$next" -lt "${#guards[@]}" ]; do
+		start_guard "$next"
+		next=$((next + 1)); running=$((running + 1))
+	done
+	reaped=0
+	for i in "${!guards[@]}"; do
+		pid=${guard_pids[$i]-}
+		[ -n "$pid" ] || continue
+		owned_guard_running "$pid" && continue
+		if wait "$pid"; then guard_status[$i]=0; else guard_status[$i]=$?; fi
+		guard_pids[$i]=""
+		running=$((running - 1)); done_count=$((done_count + 1)); reaped=1
+	done
+	# Nothing finished: look again shortly. The poll only paces the scheduler;
+	# every guard's own result still comes from wait.
+	[ "$reaped" -eq 1 ] || sleep 0.2
 done
-i=0
-for guard in "${guards[@]}"; do
-	if wait "${guard_pids[$i]}"; then
+
+for i in "${!guards[@]}"; do
+	guard=${guards[$i]}
+	if [ "${guard_status[$i]}" -eq 0 ]; then
 		printf 'PASS  web-%s\n' "$guard"
 	else
-		guard_status=$?
-		printf 'FAIL  web-%s (exit %s)\n' "$guard" "$guard_status" >&2
+		printf 'FAIL  web-%s (exit %s)\n' "$guard" "${guard_status[$i]}" >&2
 		cat "$dir/$guard.log"
-		[ "$status" -ne 0 ] || status="$guard_status"
-	fi
-	guard_pids[$i]=""
-	i=$((i + 1))
-	# A slot is free: start the next guard in order.
-	if [ "$started" -lt "${#guards[@]}" ]; then
-		start_guard "${guards[$started]}"
-		started=$((started + 1))
+		[ "$status" -ne 0 ] || status="${guard_status[$i]}"
 	fi
 done
 

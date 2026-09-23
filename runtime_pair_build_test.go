@@ -454,9 +454,10 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 			}
 		}
 	}
+	viteCaches := map[string]string{}
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(logData), "\n"), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) != 8 {
+		if len(fields) != 8 && (fields[0] != "node-env" || len(fields) != 9) {
 			continue
 		}
 		command := fields[1]
@@ -470,6 +471,15 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 			if _, expected := wantNodeCommands[command]; expected {
 				wantNodeCommands[command] = true
 				assertProcessState("node", command, fields, true)
+				// Guards run side by side, and two Vite processes optimizing
+				// into one dep cache race (issue #1586): each gets its own.
+				if len(fields) != 9 || !strings.HasPrefix(fields[8], fixture.root+string(os.PathSeparator)) {
+					t.Errorf("node %s Vite cache dir = %q, want a guard-owned directory beneath %q", command, fields[len(fields)-1], fixture.root)
+				} else if other, shared := viteCaches[fields[8]]; shared {
+					t.Errorf("node %s shares Vite cache dir %q with %s", command, fields[8], other)
+				} else {
+					viteCaches[fields[8]] = command
+				}
 			}
 		}
 	}
@@ -701,11 +711,19 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 }
 
 // TestMakeTestWebBrowserRunsTheGuardsAtOnce pins that the browser gate runs
-// guards side by side when it has the slots: with the first guard held and a
-// slot for every guard, every later Node guard must still start. A gate that
-// ran them one at a time would start none of them until the first was
-// released.
+// guards side by side and hands a finished guard's slot to the next one: with
+// the first guard held, every later Node guard must still start, both when
+// every guard has a slot and when only two do (the later guards then take
+// turns in the one free slot). A gate that ran them one at a time would start
+// none of them until the first was released, and one that reaped guards in
+// order would start only the second.
 func TestMakeTestWebBrowserRunsTheGuardsAtOnce(t *testing.T) {
+	for _, slots := range []string{"7", "2"} {
+		t.Run(slots+" slots", func(t *testing.T) { testBrowserGuardsRunAtOnce(t, slots) })
+	}
+}
+
+func testBrowserGuardsRunAtOnce(t *testing.T, slots string) {
 	const tripwire = 30 * time.Second
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
@@ -721,8 +739,8 @@ func TestMakeTestWebBrowserRunsTheGuardsAtOnce(t *testing.T) {
 	command := exec.Command("make", "test-web-browser")
 	command.Dir = fixture.root
 	command.Env = append(fixture.environment(""),
-		// Every guard gets a slot, whatever the host's load says.
-		"BROWSER_GUARD_CONCURRENCY=7",
+		// A fixed slot count, whatever the host's load says.
+		"BROWSER_GUARD_CONCURRENCY="+slots,
 		"EVENER_TEST_PROCESS_STATE_DIR="+processStateDir,
 		"EVENER_TEST_NODE_HOLD_COMMAND=scripts/layoutguard/run.mjs",
 		"EVENER_TEST_NODE_READY="+filepath.Join(fixture.root, "held-node.ready"),
@@ -1118,7 +1136,7 @@ exit 0
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "node"), []byte(`#!/bin/sh
 if [ -n "${EVENER_TEST_PROCESS_STATE_DIR:-}" ]; then
   record=$(mktemp "$EVENER_TEST_PROCESS_STATE_DIR/node.XXXXXX")
-  printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" > "$record"
+  printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${BROWSER_GUARD_VITE_CACHE_DIR:-}" > "$record"
 else
   printf 'node-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
 fi
