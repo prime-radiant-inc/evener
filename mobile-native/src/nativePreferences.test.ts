@@ -750,6 +750,36 @@ describe("transcriptMobile projection (A10)", () => {
 		expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(false);
 	});
 
+	it("migrates a legacy transcript draft checkpoint (no layout) instead of stranding it", async () => {
+		// The previous native implementation stored this hub's mobile-only
+		// checkpoint without a layout. The shared store's decoder requires one,
+		// so the port adopts the known mobile layout by compare-and-swap rather
+		// than classifying an upgradeable draft as unreadable.
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", backend),
+		);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(false);
+		expect(model.getSnapshot().transcriptMobile.draft).toMatchObject({
+			revision: 4,
+			config,
+		});
+		expect(backend.store.get("evener.native.transcript-draft.hub")).toMatchObject({
+			layout: "mobile",
+		});
+	});
+
 	it("generation-aware staleness: a draft composed under generation N does not read current when a replacement hub reuses revision N", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);

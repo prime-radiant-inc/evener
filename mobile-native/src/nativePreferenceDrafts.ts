@@ -1,9 +1,15 @@
-import { canonicalJson } from "@evener/appwire-client";
+import { canonicalJson, normalizeConfig } from "@evener/appwire-client";
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
+	TranscriptDisplayConfigV1,
+	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
 } from "@evener/appwire-client";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /** A stored record's bytes that decode (JSON.parse succeeds) to the JSON
  * value `null` - a PRESENT record, distinct from no record at all (the
@@ -260,6 +266,40 @@ export function nativeKeybindingDrafts(
 	};
 }
 
+/** A transcript checkpoint the previous native implementation wrote - the
+ * hub's mobile-only draft, stored without the shared store's `layout` field.
+ * The shared decoder rejects a record without a layout as unreadable, so a
+ * legacy record is adopted under its known mobile layout instead of stranding
+ * a saved draft on upgrade. Returns the migrated checkpoint, or null when
+ * `value` is not a readable legacy checkpoint (a record that already carries
+ * a layout, an unreadable marker, or anything else the old shape did not
+ * admit). */
+function migrateLegacyTranscriptCheckpoint(
+	value: unknown,
+): TranscriptDraftCheckpoint | null {
+	if (!isRecord(value) || "layout" in value) return null;
+	if (typeof value.id !== "string" || value.id.length === 0) return null;
+	if (
+		!Number.isSafeInteger(value.baseRevision) ||
+		(value.baseRevision as number) < 0 ||
+		typeof value.writeUncertain !== "boolean"
+	)
+		return null;
+	let config: TranscriptDisplayConfigV1;
+	try {
+		config = normalizeConfig(value.config as TranscriptDisplayConfigV1);
+	} catch {
+		return null;
+	}
+	return {
+		id: value.id,
+		layout: "mobile",
+		baseRevision: value.baseRevision as number,
+		config,
+		writeUncertain: value.writeUncertain,
+	};
+}
+
 export function nativeTranscriptDrafts(
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
@@ -276,7 +316,19 @@ export function nativeTranscriptDrafts(
 		// draftUnreadable rather than silently reading as no draft - the same
 		// contract nativeKeybindingDrafts runs, and the one discardDraft's
 		// recovery needs.
-		load: () => backend.get(key) ?? null,
+		load: () => {
+			const value = backend.get(key) ?? null;
+			const migrated = migrateLegacyTranscriptCheckpoint(value);
+			if (migrated === null) return value;
+			// Adopt the record under its known layout by compare-and-swap, so the
+			// bytes the shared store classifies are the bytes its later
+			// removeIf/replaceIf compare against. A refusal means another writer
+			// replaced it meanwhile: report what is actually there now instead of
+			// the migration.
+			return backend.replaceIf(key, value, migrated)
+				? migrated
+				: (backend.get(key) ?? null);
+		},
 		save: (checkpoint) => backend.set(key, checkpoint),
 		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
