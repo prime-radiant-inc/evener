@@ -282,8 +282,12 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 	return wtBaseRepoPath, wtBaseRepoHead
 }
 
+// buildWorktreeBaseRepo builds the repo worktreeBaseRepo caches for the whole
+// package run, so it lives in the package's fixture root, not the current
+// TMPDIR: a test that points TMPDIR at its own t.TempDir would otherwise leave
+// the cache naming a directory its cleanup removed.
 func buildWorktreeBaseRepo(run worktreeGitRunner) (path, head string, err error) {
-	dir, err := os.MkdirTemp("", "evener-worktree-base-*")
+	dir, err := os.MkdirTemp(sharedAgentTempRoot, "evener-worktree-base-*")
 	if err != nil {
 		return "", "", err
 	}
