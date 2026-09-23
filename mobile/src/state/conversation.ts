@@ -3202,9 +3202,23 @@ export function createConversationStore() {
                 continue;
               }
               pageOwnedIds.delete(old.transcriptKey ?? old.id);
-              pageOwnedIds.delete(`${old.id}:attachments`);
-              if (old.transcriptKey !== undefined) {
-                pageOwnedIds.delete(`${old.transcriptKey}:attachments`);
+              // An attachment ROW the page owns keeps the wire id the
+              // source carried at PAGE time — a reissued source under a
+              // new id orphans it, and reconstructed ids cannot find it.
+              // Match the EXISTING rows by their source identity, the
+              // same rule withPageHistory keeps them under (RoboRev
+              // round 20).
+              const withdrawnSource = old.transcriptKey ?? old.id;
+              for (const row of state.conversation.items) {
+                const source = attachmentSourceIdentity(row);
+                if (source === null) continue;
+                // The source identity can be the source's transcript
+                // key (which survives a wire-id reissue) or the bare id
+                // it carried when the page loaded it.
+                if (source !== withdrawnSource && source !== old.id) continue;
+                for (const id of ownTimelineIdentities(row)) {
+                  pageOwnedIds.delete(id);
+                }
               }
             }
           }

@@ -16884,6 +16884,89 @@ describe("ConversationStore", () => {
       expect(rowById(store, "pagey")).toBeUndefined();
     });
 
+    it("a full completion withdraws a paged attachment whose wire id changed", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // The page owns the attachment row under the wire id the source
+      // carried at page time; its source key is K.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "attachments",
+            id: "old-wire:attachments",
+            sourceTranscriptKey: "K",
+            items: [{ id: "old-wire:0", src: "https://hub.test/img" }],
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "old-wire:attachments")).toBeDefined();
+
+      // A reread reissues the source under a NEW wire id, omitting the
+      // images: the page-owned attachment survives (the round-31 rule).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "new-wire",
+                  turnId: "t1",
+                  transcriptKey: "K",
+                  type: "userMessage",
+                  text: "hi",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "old-wire:attachments")).toBeDefined();
+
+      // The turn's full completion withdraws the source: the attachment
+      // owned by the page under the OLD wire id must go with it, not
+      // survive as an orphan (RoboRev round 20).
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "full", status: "completed" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "old-wire:attachments")).toBeUndefined();
+
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "old-wire:attachments")).toBeUndefined();
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
