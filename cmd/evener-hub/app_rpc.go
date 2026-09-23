@@ -1518,7 +1518,15 @@ func registerThreadHandlers(
 			// authority — admission fences, ownership alias locks, confirmed exit,
 			// one resume — then retry the original request verbatim.
 			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
-				return appwire.TurnStartResponse{}, resumeErr
+				// This path fails with refusals that name no mutation at all -- the
+				// retirement/lifecycle "retiring" refusal, an ownership or roster
+				// error, an admission fence -- and its ownership-group fence can
+				// name a sibling alias, so hand it the same treatment as every
+				// other resume failure (see mutationResumeFailureError): the
+				// deletion outcome only when it is this caller's own target's, and
+				// otherwise the blocked-unknown envelope carrying the caller's id,
+				// rather than an unnamed error the client can never correlate.
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 			}
 			return retryAfterResume()
 		}

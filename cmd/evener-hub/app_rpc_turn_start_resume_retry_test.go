@@ -1910,6 +1910,133 @@ func TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome(t *testing.T) {
 	}
 }
 
+// TestHubRPCTurnStartRetirementResumeFailureIsCorrelated pins what turn/start
+// reports when its retirement resume fails.
+//
+// A daemon that refuses a mutation because it is retiring is resolved by
+// resumeAfterConfirmedRetirement, whose failures name no mutation at all: the
+// "retiring" lifecycle refusal (appwire.LifecycleUnavailable carries no
+// clientMutationId), admission fences, ownership and roster errors. Returning
+// one raw leaves the client's record submitting with nothing to settle it, so the
+// path now goes through mutationResumeFailureError like every other resume site:
+// an unnamed failure keeps the blocked-unknown envelope carrying the caller's own
+// id, and a deletion is kept only when it is the caller's own target's (which the
+// retirement path's own fence reports, named for the caller).
+func TestHubRPCTurnStartRetirementResumeFailureIsCorrelated(t *testing.T) {
+	const verbatim = " mutation-padded "
+
+	cases := []struct {
+		name string
+		// recordTarget makes the caller's requested target the thing that is
+		// deleted: the refusal then names a deletion of the caller's own target.
+		recordTarget    bool
+		wantID          string
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+	}{
+		{
+			name:            "an unnamed retiring resume failure is correlated for the caller",
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+		},
+		{
+			name:            "a deletion of the caller's own target keeps the deletion outcome",
+			recordTarget:    true,
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldResolve := resolveTurnStartSource
+			t.Cleanup(func() { resolveTurnStartSource = oldResolve })
+
+			// The ref must be one the hub knows, or the handler returns the first
+			// failure unchanged.
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + sessionID
+
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			startCalls := 0
+			source := &scriptedAppSource{
+				id: "local",
+				thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+					},
+				},
+				startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					startCalls++
+					if tc.recordTarget {
+						// The target is deleted after the attempt's own deletion
+						// fence passed, so the retirement fence is what reports it.
+						if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+							Ref:      ref,
+							ThreadID: sessionID,
+						}}); err != nil {
+							t.Fatalf("record the deletion: %v", err)
+						}
+					}
+					// The owning daemon refuses because it is retiring.
+					return appwire.TurnStartResponse{}, appwire.LifecycleUnavailable("retiring")
+				},
+			}
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+				return source, nil
+			}
+
+			// No ResumeLocks: the retirement resume cannot proceed and fails with
+			// its own unnamed "retiring" refusal (app_retirement_resume.go's
+			// lifecycle guard), which is the shape under test.
+			server := newHubAppServer(hubcore.WebConfig{Past: past, DeletionStore: store}, appsource.NewRegistry())
+			_, err = exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				Ref:              ref,
+				ClientMutationID: verbatim,
+				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+			})
+			if err == nil {
+				t.Fatal("turn/start reported success although the retirement resume failed")
+			}
+			if startCalls != 1 {
+				t.Fatalf("start calls=%d, want 1 (a failed retirement resume does not retry)", startCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+			}
+			data := relayedWireDataMap(t, wire.Data)
+			if gotID, _ := data["clientMutationId"].(string); gotID != tc.wantID {
+				t.Fatalf("error names clientMutationId %q, want %q: a retirement-resume failure must be correlatable (wire=%+v)", gotID, tc.wantID, wire)
+			}
+			if gotOutcome, _ := data["mutationOutcome"].(string); gotOutcome != string(tc.wantOutcome) {
+				t.Fatalf("mutationOutcome=%q, want %q (wire=%+v)", gotOutcome, tc.wantOutcome, wire)
+			}
+			if gotDisposition, _ := data["retryDisposition"].(string); gotDisposition != string(tc.wantDisposition) {
+				t.Fatalf("retryDisposition=%q, want %q (wire=%+v)", gotDisposition, tc.wantDisposition, wire)
+			}
+		})
+	}
+}
+
 // TestHubRPCTurnStartDirectRefusalKeepsPaddedCallerID drives a DIRECT refusal
 // (no resume in play) through turn/start with a padded caller id: the source's
 // startTurn refuses naming the id the daemon normalized, and the caller must get
