@@ -615,6 +615,12 @@ type testConfig struct {
 	// concurrent writer's commit must be observable. Nil in production.
 	scratchUpsertAfterLoad func()
 
+	// scratchInstallBeforeReset runs in installScratchRetentionFor right
+	// before the released-manifest reset — the window where a concurrent
+	// terminal release can tombstone the manifest between this install's
+	// view of it and the reset's own locked read. Nil in production.
+	scratchInstallBeforeReset func()
+
 	// scratchAdoptionBeforeClaim runs at the top of adoptConsumerScratch,
 	// before the pool load — the window where a terminal detach can sweep the
 	// pool after a dispose-then-adopt replacement's slot read approved the

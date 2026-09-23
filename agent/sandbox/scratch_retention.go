@@ -1075,22 +1075,28 @@ func ReleaseScratchRetention(owner ScratchOwner) error {
 }
 
 // ResetScratchRetentionIfReleased reinitializes a manifest whose terminal
-// tombstone has committed and returns the manifest to publish against. A
+// tombstone has committed and returns the manifest to publish against, plus
+// whether the reinitialization ran. A
 // terminal close removed every pin it could acquire and authorized ordinary
 // collection for the rest, so a restored session treats that durable state as
 // already gone: it mints fresh allocations rather than resuming the closed
 // session's scratch, and its first publication must be a legal write against a
 // manifest that no longer claims to be released — otherwise every write rides
 // a tombstone that authorizes collecting the session's live allocations. An
-// unreleased manifest is returned untouched.
-func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error) {
+// unreleased manifest is returned untouched with reset=false. The reset
+// verdict is computed under the reset's own manifest lock, so a caller gating
+// adoption of carried rows on it cannot race a terminal release that
+// tombstones the manifest between the caller's earlier read and the reset
+// (round 22).
+func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool, error) {
 	if err := owner.validate(); err != nil {
-		return ScratchManifest{}, err
+		return ScratchManifest{}, false, err
 	}
 	// The manifest lock is fail-fast like every scratch writer's, and a
 	// refused reset must not fail the restore it is part of — the same
 	// bounded growing backoff applies.
 	var out ScratchManifest
+	var reset bool
 	err := RetryScratchLockContention(func() error {
 		lock, err := acquireScratchRetentionLock(owner)
 		if err != nil {
@@ -1326,12 +1332,13 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 			return err
 		}
 		out = fresh
+		reset = true
 		return nil
 	})
 	if err != nil {
-		return ScratchManifest{}, err
+		return ScratchManifest{}, false, err
 	}
-	return out, nil
+	return out, reset, nil
 }
 
 // BorrowRetainedSessionScratch returns a lease-less handle to an already

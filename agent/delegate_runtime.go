@@ -2469,65 +2469,48 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 	if err := s.refreshRetainedScratchConsumer(sessionID); err != nil {
 		return false, err
 	}
-	before := scratchRefDirs(env)
 	dir, ok, contended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindSandbox)
 	if ownsFresh && ok && !contended && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
 		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
 			return false, err
 		}
 		env.DisposeSandboxScratch()
-		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+		_, transferred, err := s.adoptConsumerScratch(env, sessionID)
+		if err != nil {
 			return false, reprovisionAfterFailedAdoption(env, err)
 		}
+		if transferred {
+			// A transferred handle is the one durable adoption the failure
+			// path retains: the manifest references the allocation and the
+			// environment owns its lease.
+			return true, nil
+		}
 		// The heal keys on the transfer the environment actually owns, not on
-		// the installed report: the guard's slot read and the claim take
+		// what adoption installed: the guard's slot read and the claim take
 		// separate pool.mu holds, and a refresh fold racing the two can flip
 		// the slot to contended in between — the adoption then marks the kind
-		// pending and reports installed with NO handle transferred, and with
-		// the fresh mint already disposed the wrapper would run the session
-		// on the retained directory it holds no lease on. Ownership is the
-		// same fact the detached-pool no-op lacks (round 17), and no transfer
-		// is reported either way, so the failure path still treats a later
-		// scratch as a plain mint.
+		// pending and installs NO handle, and with the fresh mint already
+		// disposed the wrapper would run the session on the retained
+		// directory it holds no lease on (round 21). A lease-less borrow of a
+		// distinct consumer's allocation is the other install that is no
+		// transfer: the environment renders through the shared directory
+		// while its adopter keeps the lease, so the failure path must treat
+		// what the environment holds as a plain borrowed ref, not a durable
+		// adoption (round 22).
 		if envScratchRefDir(env, sandbox.ScratchKindSandbox) == "" {
 			return false, reprovisionUnclaimedSandboxScratch(env)
 		}
-		return true, nil
-	} else if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+		return false, nil
+	}
+	_, transferred, err := s.adoptConsumerScratch(env, sessionID)
+	if err != nil {
 		return false, err
 	}
-	return scratchRefsGained(before, env), nil
-}
-
-// scratchRefDirs returns the set of canonical directories env currently owns,
-// one per scratch kind, for a before/after adoption comparison that sees every
-// kind rather than the single directory SessionScratchDir reports.
-func scratchRefDirs(env *execenv.LocalExecutionEnvironment) map[string]struct{} {
-	refs, err := env.ScratchRetentionReferences()
-	if err != nil || len(refs) == 0 {
-		return nil
-	}
-	dirs := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if dir, err := filepath.Abs(ref.Dir); err == nil {
-			dirs[filepath.Clean(dir)] = struct{}{}
-		}
-	}
-	return dirs
-}
-
-// scratchRefsGained reports whether env owns a scratch directory it did not own
-// before adoption: the mark of a transferred retained handle. A no-op adoption
-// (a consumer binding with no slot to transfer) gains nothing and must not be
-// mistaken for one, or the failure path would retain a freshly minted scratch
-// it should dispose.
-func scratchRefsGained(before map[string]struct{}, env *execenv.LocalExecutionEnvironment) bool {
-	for dir := range scratchRefDirs(env) {
-		if _, ok := before[dir]; !ok {
-			return true
-		}
-	}
-	return false
+	// The shared-environment flavor of the same report: a borrow or a
+	// contended skip installs through the retained directory without
+	// transferring a lease, and only a transfer is the caller's
+	// retain-on-failure signal.
+	return transferred, nil
 }
 
 // sharedRestoreEnvironment resolves the parent environment a shared child

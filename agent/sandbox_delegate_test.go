@@ -392,6 +392,171 @@ func TestRestoreIdleFailureRetainsTheManifestReferencedChildScratch(t *testing.T
 	}
 }
 
+// A created environment's failed restore must route through the manifest
+// settlement (mintedScratch starts at ownsFresh), not the adoption retain
+// handoff. When the claim flips to contended after the disposal, the heal
+// re-provisions a fresh scratch and reports no transfer, and the settlement's
+// designed outcome for that fallback is durability: the pending-kind contract
+// pins it as a bare manifest reference beside the slot the binding still keeps
+// on the retained directory, with its lease released so a later restore of the
+// same consumer reacquires it instead of minting a third scratch. The retained
+// directory the fixture holds a lease on is never this restore's to touch.
+func TestRestoreIdleFailureSettlesTheReprovisionedFreshScratch(t *testing.T) {
+	// Isolate the scratch base: every directory this restore mints lands
+	// under it, so the settlement's disposals are observable directly, and
+	// cleanup removes directory and pin together.
+	isolated := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, isolated)
+	netDisabled := false
+	childWorkspace := t.TempDir()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		// A workspace of the child's own keeps the restore off the root's
+		// shared environment, so it creates a fresh sandboxed one — and a
+		// recorded read-only snapshot is the mode this communicate-only
+		// structured scope requires. The store's preflight wants the config
+		// projection the snapshot agrees with.
+		descriptor.WorkingDir = childWorkspace
+		descriptor.Sandbox = &delegatestore.SandboxSnapshot{Mode: "read-only", Network: &netDisabled}
+		descriptor.Config.Sandbox = "read-only"
+		descriptor.Config.SandboxNet = &netDisabled
+	})
+	sbxGit(t, fixture.workspace, "init", "-q")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root session has no scratch retention owner")
+	}
+	const bindingID = "b-settle-fresh"
+	slots, bindingRow := mintRefreshScratchBinding(t, root, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, root, fixture.childID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	root.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{fixture.childID: {SessionID: fixture.childID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+	preMinted, err := filepath.Glob(filepath.Join(isolated, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The claim flips to contended between the replacement's guard and its
+	// own hold, so the already-disposed mint forces the heal to re-provision.
+	root.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		root.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		pool := root.retainedScratch.Load()
+		pool.mu.Lock()
+		delete(pool.handles, key)
+		pool.contended[key] = struct{}{}
+		pool.mu.Unlock()
+	}
+	boom := errors.New("restored delegate construction failed")
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+
+	// The settlement dropped the re-provisioned fresh fallback: no scratch
+	// directory this restore minted remains under the base it minted in.
+	// The settlement's record: exactly the re-provisioned fallback remains
+	// under the base this restore minted in — the original mint the
+	// replacement disposed, and nothing else the restore created.
+	postMinted, err := filepath.Glob(filepath.Join(isolated, "evener-sandbox-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fallback string
+	for _, dir := range postMinted {
+		if !slices.Contains(preMinted, dir) {
+			if fallback != "" {
+				t.Fatalf("the failed restore left more than one fresh fallback behind: %q and %q", fallback, dir)
+			}
+			fallback = dir
+		}
+	}
+	if fallback == "" {
+		t.Fatal("the failed restore left no re-provisioned fallback record")
+	}
+
+	// The fallback is pinned exactly as the pending-kind contract promises: a
+	// bare manifest reference, while the binding's slot keeps naming the
+	// retained directory for a later restore to re-probe.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("the carried binding %q is absent after the failed restore", bindingID)
+	}
+	slot, hasSlot := row.Slots[sandbox.ScratchKindSandbox]
+	if !hasSlot || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the binding's slot must keep naming the retained %q: %+v", retainedDir, row.Slots)
+	}
+	current := ""
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == fixture.childID {
+			current = consumer.CurrentBindingID
+		}
+	}
+	if current != bindingID {
+		t.Fatalf("the child's consumer row names %q, want %q", current, bindingID)
+	}
+	fallbackReferenced := false
+	retainedReferenced := false
+	for _, ref := range manifest.References {
+		switch filepath.Clean(ref.Dir) {
+		case filepath.Clean(fallback):
+			fallbackReferenced = true
+		case filepath.Clean(retainedDir):
+			retainedReferenced = true
+		}
+	}
+	if !fallbackReferenced {
+		t.Fatalf("the re-provisioned fallback %q lost its bare manifest reference: %+v", fallback, manifest.References)
+	}
+	if !retainedReferenced {
+		t.Fatalf("the retained %q lost its manifest reference: %+v", retainedDir, manifest.References)
+	}
+
+	// The settlement released the fallback's lease for the next restore of
+	// this consumer to reacquire, and the retained directory survives
+	// untouched beside it.
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: fallback, Kind: sandbox.ScratchKindSandbox})
+	if err != nil {
+		t.Fatalf("the re-provisioned fallback %q was not left reacquirable: %v", fallback, err)
+	}
+	_ = handle.Retain()
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the retained %q did not survive the failed restore: %v", retainedDir, err)
+	}
+}
+
 // saveColdRestorableChild writes a committed child's session meta and an
 // empty transcript — the durable state a real committed spawn leaves — so a
 // cold restore can reconstruct the child from disk.

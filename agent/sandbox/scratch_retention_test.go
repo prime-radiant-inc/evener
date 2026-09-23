@@ -780,7 +780,7 @@ func TestResetReleasedRetriesLockContention(t *testing.T) {
 	}()
 	close(takeLock)
 	<-lockTaken
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("the reset gave up on a transient lock refusal: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestResetReleasedReconcilesLeftoverPins(t *testing.T) {
 	if err := scratch.Retain(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResetScratchRetentionIfReleased(owner); err != nil {
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err != nil {
 		t.Fatalf("reset over the settled leftover pin: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); !os.IsNotExist(err) {
@@ -856,7 +856,7 @@ func TestResetReleasedReconcilesLeftoverPins(t *testing.T) {
 	if err := ReleaseScratchRetention(owner); err != nil {
 		t.Fatalf("second terminal release: %v", err)
 	}
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("reset over the still-held pin: %v", err)
 	}
@@ -937,7 +937,7 @@ func TestResetReleasedTreatsCollectedReferenceAsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("the reset failed on an already-collected reference: %v", err)
 	}
@@ -985,7 +985,7 @@ func TestResetReleasedReleasesLeaseWhenPinRemoveFails(t *testing.T) {
 	if err := os.Chmod(scratch.Dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err == nil {
 		t.Fatal("expected the pin-remove failure to surface from the reset")
 	}
 	probe, _, err := acquireScratchLease(filepath.Join(scratch.Dir, sessionScratchLeaseName))
@@ -1150,7 +1150,7 @@ func TestResetReleasedCarriesAValidGraph(t *testing.T) {
 	if err := ReleaseScratchRetention(owner); err != nil {
 		t.Fatalf("terminal release: %v", err)
 	}
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("reset over the held pin: %v", err)
 	}
@@ -1204,7 +1204,7 @@ func TestResetReleasedDropsContendedReferenceWithoutPin(t *testing.T) {
 	if err := os.Remove(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
 		t.Fatal(err)
 	}
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("reset over the held, unpinned reference: %v", err)
 	}
@@ -1257,7 +1257,7 @@ func TestResetReleasedCarriesMultiRoleConsumerGraph(t *testing.T) {
 	if err := ReleaseScratchRetention(owner); err != nil {
 		t.Fatalf("terminal release: %v", err)
 	}
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("reset over two held pins: %v", err)
 	}
@@ -1317,7 +1317,7 @@ func TestResetReleasedDropsContendedReferenceWithForeignPin(t *testing.T) {
 	if err := writeScratchDirectoryPin(scratch.Dir, foreign, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox}); err != nil {
 		t.Fatalf("write the foreign pin: %v", err)
 	}
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("reset over a foreign held pin: %v", err)
 	}
@@ -1366,7 +1366,7 @@ func TestResetReleasedDropsFreeLeaseReferenceWithMismatchedPin(t *testing.T) {
 	if err := writeScratchDirectoryPin(scratch.Dir, owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindUnsandboxed}); err != nil {
 		t.Fatalf("write the kind-mismatched pin: %v", err)
 	}
-	fresh, err := ResetScratchRetentionIfReleased(owner)
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		t.Fatalf("reset over a mismatched free-lease pin: %v", err)
 	}
@@ -1415,7 +1415,7 @@ func TestResetReleasedAbortsOnUnreadablePin(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scratch.Dir, scratchPinName), []byte("not a pin"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err == nil {
 		t.Fatal("expected the unreadable pin to abort the reset")
 	}
 	manifest, err := LoadScratchRetention(owner)
@@ -1461,7 +1461,7 @@ func TestResetReleasedAbortsOnContendedMismatchedOwnPin(t *testing.T) {
 	if err := writeScratchDirectoryPin(scratch.Dir, owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindUnsandboxed}); err != nil {
 		t.Fatalf("write the kind-mismatched pin: %v", err)
 	}
-	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err == nil {
 		t.Fatal("expected the contended mismatched own pin to abort the reset")
 	}
 	manifest, err := LoadScratchRetention(owner)
@@ -1513,7 +1513,7 @@ func TestResetReleasedAbortsWhenOrphanedPinRemovalFails(t *testing.T) {
 	if err := os.Chmod(scratch.Dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err == nil {
 		t.Fatal("expected the orphaned pin-remove failure to surface from the reset")
 	}
 	manifest, err := LoadScratchRetention(owner)

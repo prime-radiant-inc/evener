@@ -89,7 +89,7 @@ func TestScratchRetentionConcurrentAdoption(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, err := root.adoptConsumerScratch(envs[i], fmt.Sprintf("consumer-%d", i))
+			_, _, err := root.adoptConsumerScratch(envs[i], fmt.Sprintf("consumer-%d", i))
 			results[i] = err
 		}(i)
 	}
@@ -182,7 +182,7 @@ func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
 
 			// Restore the sharing consumer BEFORE its owner's binding.
 			sharer := execenv.NewLocalExecutionEnvironment(dir)
-			adopted, err := root.adoptConsumerScratch(sharer, "consumer-sharer")
+			adopted, _, err := root.adoptConsumerScratch(sharer, "consumer-sharer")
 			if err != nil {
 				t.Fatalf("adopt sharing consumer: %v", err)
 			}
@@ -200,7 +200,7 @@ func TestScratchRetentionAdoptWrapperOnlyBeforeOwner(t *testing.T) {
 				return
 			}
 			ownerEnv := execenv.NewLocalExecutionEnvironment(dir)
-			if _, err := root.adoptConsumerScratch(ownerEnv, "consumer-owner"); err != nil {
+			if _, _, err := root.adoptConsumerScratch(ownerEnv, "consumer-owner"); err != nil {
 				t.Fatalf("adopt owner after sharing consumer: %v", err)
 			}
 			if got := ownerEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
