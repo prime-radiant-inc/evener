@@ -272,12 +272,12 @@ function overflowNode(
   return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix, passive }] : [];
 }
 
-function tierOverflow(p: RailProject, tiers: ("current" | "recent" | "archived")[]): number {
+function tierOverflow(p: RailProject, tiers: readonly ("current" | "recent" | "archived")[]): number {
   const field = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
   return tiers.reduce((sum, t) => sum + (field[t] ?? 0), 0);
 }
 
-function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
+function tierOverflowPages(p: RailProject, tiers: readonly TreeTier[]): OverflowPage[] {
   const fields = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
   return tiers.flatMap((tier) => {
     const count = fields[tier] ?? 0;
@@ -293,7 +293,7 @@ function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
   });
 }
 
-function projectOverflowNode(id: string, p: RailProject, tiers: TreeTier[]): OverflowRailNode[] {
+function projectOverflowNode(id: string, p: RailProject, tiers: readonly TreeTier[]): OverflowRailNode[] {
   return overflowNode(id, tierOverflow(p, tiers), tierOverflowPages(p, tiers));
 }
 
@@ -798,10 +798,18 @@ function activeSessionNodes(p: RailProject, isExpanded: IsExpanded, hostId?: str
  * placeholder while a project's rows have not loaded, else the variant's
  * own rows followed by the overflow that can reveal more. `id` is the
  * caller's own node id, so a grouped copy's placeholder and overflow rows
- * re-id under the copy and two copies of one project never share a node id. */
-function activeTierChildren(p: RailProject, id: string, rowsFor: () => RailNode[]): RailNode[] {
+ * re-id under the copy and two copies of one project never share a node id.
+ * `tiers` picks which hidden-row counts the overflow reports; an empty list
+ * renders no overflow at all (a host copy that is not its project's
+ * overflow carrier, see hostProjectNodes). */
+function activeTierChildren(
+  p: RailProject,
+  id: string,
+  rowsFor: () => RailNode[],
+  tiers: readonly TreeTier[] = ["current", "recent"],
+): RailNode[] {
   if (projectIsLoading(p)) return [{ id: `${id}:loading`, kind: "loading" as const }];
-  return [...rowsFor(), ...projectOverflowNode(id, p, ["current", "recent"])];
+  return [...rowsFor(), ...projectOverflowNode(id, p, tiers)];
 }
 
 /** One project's active-tier session rows (optionally one host's) in the
@@ -945,7 +953,13 @@ export function hostProjectNodes(
 ): HostRailNode[] {
   const labels = projectDisplayLabels(projects);
   const projectsByHost = new Map<string, RailProject[]>();
+  // The host whose copy carries the project-level overflow: the FIRST in
+  // the rail order the copies render in. The overflow's count and pages are
+  // the project's own, so it must read once instead of claiming "+N older"
+  // under every host that owns the project.
+  const overflowHost = new Map<RailProject, string>();
   for (const p of projects) {
+    overflowHost.set(p, orderedHosts(projectHostIds(p), sources)[0]?.id ?? LOCAL_HOST);
     for (const hostId of projectHostIds(p)) {
       const owned = projectsByHost.get(hostId) ?? [];
       owned.push(p);
@@ -958,22 +972,31 @@ export function hostProjectNodes(
       id,
       { id: hostId, label, online },
       isExpanded(id, true),
-      (projectsByHost.get(hostId) ?? []).map((p) => hostProjectCopyNode(p, hostId, labels.get(p.key), isExpanded)),
+      (projectsByHost.get(hostId) ?? []).map((p) =>
+        hostProjectCopyNode(p, hostId, labels.get(p.key), isExpanded, overflowHost.get(p) === hostId),
+      ),
     );
   });
 }
 
-/** One project's copy under one host (see hostProjectNodes). */
+/** One project's copy under one host (see hostProjectNodes).
+ * `carryProjectOverflow` names the one copy that renders the project-level
+ * overflow; the rest keep only their own rows and the loading placeholder. */
 function hostProjectCopyNode(
   p: RailProject,
   hostId: string,
   displayName: string | undefined,
   isExpanded: IsExpanded,
+  carryProjectOverflow: boolean,
 ): ProjectRailNode {
   const variant = `host:${hostId}`;
   const id = hostProjectCopyId(projectNodeExpansionKey(p.key), hostId);
   const expanded = isExpanded(id, p.default_expanded ?? false);
-  const children = projectChildren(p, isExpanded, variant, () => activeChildren(p, id, isExpanded, hostId));
+  const children = projectChildren(p, isExpanded, variant, () =>
+    carryProjectOverflow
+      ? activeChildren(p, id, isExpanded, hostId)
+      : activeTierChildren(p, id, () => activeSessionNodes(p, isExpanded, hostId), []),
+  );
   return cachedProjectNode(p, isExpanded, variant, { id, displayName, expanded, children, spawnHost: hostId });
 }
 
@@ -1014,19 +1037,24 @@ function sourcesToken(sources: readonly Source[]): string {
  * projectNodesWithHostBranches), in the host order every grouped tier uses.
  * A branch holds only that host's loaded rows and starts collapsed; its
  * identity rides the project's cached children, so it needs no cache of its
- * own. */
+ * own. Branches render only while the loaded rows themselves span hosts -
+ * the same line liveNodesGroupedByHost draws: a project whose rows sit on
+ * one host keeps today's flat children, so a lone "this host" branch cannot
+ * bury every session one expansion deeper for no grouping gained. */
 function hostBranchNodes(
   p: RailProject,
   projectId: string,
   sources: readonly Source[],
   isExpanded: IsExpanded,
-): HostRailNode[] {
-  return orderedHosts(projectHostIds(p), sources).flatMap(({ id: hostId, label, online }): HostRailNode[] => {
+): RailNode[] {
+  const branches = orderedHosts(projectHostIds(p), sources).flatMap(({ id: hostId, label, online }): HostRailNode[] => {
     const rows = activeSessionNodes(p, isExpanded, hostId);
     if (rows.length === 0) return [];
     const id = hostBranchId(projectId, hostId);
     return [{ id, kind: "host", host: { id: hostId, label, online }, expanded: isExpanded(id, false), children: rows }];
   });
+  if (branches.length <= 1) return activeSessionNodes(p, isExpanded);
+  return branches;
 }
 
 /** The Live tier's flat rows, grouped under host subheaders whenever they
@@ -1094,7 +1122,13 @@ export function revealExpansionIds(
     if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key)];
     const id = projectNodeExpansionKey(p.key);
     if (mode === "host-project") return [hostGroupId(carrier.host_id), hostProjectCopyId(id, carrier.host_id)];
-    if (mode === "project-host") return [id, hostBranchId(id, carrier.host_id)];
+    if (mode === "project-host") {
+      // Branches render only while the project's loaded rows span hosts
+      // (hostBranchNodes draws the same line), so a single-host chain stops
+      // at the project fold instead of naming a fold that does not exist.
+      const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map((n) => n.host_id));
+      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrier.host_id)] : [id];
+    }
     return [id];
   }
   const carrier = topLevelCarrier(live, ref);

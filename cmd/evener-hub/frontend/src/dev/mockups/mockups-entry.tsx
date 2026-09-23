@@ -1173,20 +1173,25 @@ function MockupsPage(): JSX.Element {
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("mockups.html is missing #root");
-// Mockup state hygiene: the spawn prefs live in localStorage, scoped to this
-// dev origin (the real app runs on another port and keeps its own). Clear
-// stale spawn-defaults from earlier mockup visits so every reload renders
-// the same deterministic form, then seed the global working dir the way a
-// returning user's browser would already have it — the pane opens on a real
-// directory with its branch chip instead of the "Choose a folder" placeholder.
-for (const key of Object.keys(localStorage)) {
-  if (key.startsWith(SPAWN_DEFAULTS_PREFIX)) localStorage.removeItem(key);
+// Mockup state hygiene, gated to the mockup server's own origin: this page
+// is ALSO served by the app's plain dev server (same vite config, so the
+// same origin as the real app), and there the shared localStorage may hold
+// a real browser's spawn defaults - a mockup visit must not wipe or rewrite
+// them. On the dedicated mockup port the origin is the mockup's own, so the
+// wipe and seeding keep every reload of the review artifact deterministic:
+// stale spawn-defaults from earlier mockup visits clear, and the global
+// working dir + model seed the way a returning user's browser would already
+// have them.
+if (location.port === "5199") {
+  for (const key of Object.keys(localStorage)) {
+    if (key.startsWith(SPAWN_DEFAULTS_PREFIX)) localStorage.removeItem(key);
+  }
+  localStorage.setItem(GLOBAL_WORKING_DIR_KEY, WORLDS.local?.recents[0] ?? "");
+  // Same for the model: a returning user has a sticky choice, and without it
+  // the pane truthfully reports "no default model configured" — a real state,
+  // but not the one this mockup is about.
+  localStorage.setItem(GLOBAL_MODEL_KEY, "anthropic/claude-sonnet-4-5");
 }
-localStorage.setItem(GLOBAL_WORKING_DIR_KEY, WORLDS.local?.recents[0] ?? "");
-// Same for the model: a returning user has a sticky choice, and without it
-// the pane truthfully reports "no default model configured" — a real state,
-// but not the one this mockup is about.
-localStorage.setItem(GLOBAL_MODEL_KEY, "anthropic/claude-sonnet-4-5");
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-canvas)";
 createRoot(rootEl).render(

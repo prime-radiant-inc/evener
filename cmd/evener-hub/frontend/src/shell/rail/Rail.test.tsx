@@ -2317,7 +2317,10 @@ describe("host grouping (organize by)", () => {
     catalogResource([
       { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
     ]),
-    projectResource("p", [summary({ ref: "devbox:p1", title: "Devbox project run", host_id: "devbox" })]),
+    projectResource("p", [
+      summary({ ref: "local:p1", title: "Local project run" }),
+      summary({ ref: "devbox:p1", title: "Devbox project run", host_id: "devbox" }),
+    ]),
   ];
 
   beforeEach(() => {
@@ -2352,14 +2355,14 @@ describe("host grouping (organize by)", () => {
     ).toEqual(["this host", "devbox"]);
     expect(within(live).getByText("Devbox live run")).toBeTruthy();
     // The default mode keeps the Projects title and its project rows; inside
-    // a project only a host with loaded rows earns a branch, and it starts
+    // a project a branch renders per host with loaded rows, and each starts
     // collapsed like any project branch.
     const projects = sectionRoot("Projects");
     expect(
       within(projects)
         .getAllByTestId("rail-row-host-group")
         .map((row) => row.textContent),
-    ).toEqual(["devbox"]);
+    ).toEqual(["this host", "devbox"]);
     expect(within(projects).queryByText("Devbox project run")).toBeNull();
     // The branch is a disclosure: activating it reveals the host's rows.
     fireEvent.click(within(projects).getByText("devbox"));

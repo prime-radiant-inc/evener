@@ -52,7 +52,7 @@ import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { LOCAL_HOST } from "../../stores/hostRouting";
-import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
+import { relativeAge, selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
@@ -555,6 +555,21 @@ function useHostOnline(hostId: string | undefined): boolean {
   });
 }
 
+// Launchability is a different question from the display flag above: a
+// host can take a launch only while the SETTLED manifest names it and it
+// reads online - the same judgment Spawn's own hostChoice makes. A host
+// the manifest has removed keeps its rows and chips (the display contract)
+// but must stop offering launches: the picker would refuse the prefilled
+// host and silently start the session on this hub, with the remote
+// working_dir.
+function useHostLaunchable(hostId: string | undefined): boolean {
+  return useNavigationStore((state) => {
+    if (hostId === undefined) return true;
+    const source = selectSources(state).find((candidate) => candidate.id === hostId);
+    return source ? source.online : false;
+  });
+}
+
 // The row's label span: the treeitem's accessible name (there is no separate
 // aria-label) and the holder of the title tooltip.
 function RailLabelSpan({ session, tooltip }: { session: RailSession; tooltip: string }): ReactNode {
@@ -804,10 +819,10 @@ function ProjectRow({
   // host group row itself draws. The attention rows still surface in
   // Needs-you.
   const showsRollup = node.spawnHost === undefined;
-  // The Spawn picker refuses an offline host; a copy nested under one must
-  // not offer a launch that would silently fall back to this hub (with the
-  // remote working_dir). An unknown host reads as online, as everywhere.
-  const canSpawn = useHostOnline(node.spawnHost);
+  // The Spawn picker refuses an offline or unknown-to-the-manifest host; a
+  // copy nested under one must not offer a launch that would silently fall
+  // back to this hub (with the remote working_dir).
+  const canSpawn = useHostLaunchable(node.spawnHost);
   return (
     <span className={CLASS.railRow}>
       {/* Same title-line anatomy as SessionRow: outdented signal dot, name,

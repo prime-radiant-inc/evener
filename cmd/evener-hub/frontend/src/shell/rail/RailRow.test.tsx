@@ -2122,6 +2122,10 @@ describe("project row", () => {
   // A host-first copy's + button must launch on the host the copy nests
   // under, or every host's copy silently spawns on this hub.
   test("a project copy's New-session button prefills the copy's host", async () => {
+    seedSources([
+      { id: "local", label: "this host", kind: "local", online: true },
+      { id: "devbox", label: "devbox", kind: "appwire", online: true },
+    ]);
     render(
       <RailRow
         node={
@@ -2159,6 +2163,23 @@ describe("project row", () => {
       spawnHost: "ci-runner",
     } as ProjectRailNode;
     render(<RailRow node={offlineCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByRole("button", { name: "New session in Proj" })).toBeNull();
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "New session" })).toBeNull();
+  });
+
+  // A host the manifest no longer names must not offer a launch either:
+  // Spawn's settled list would refuse the prefilled host and silently start
+  // the session on this hub, with the remote working_dir. The display
+  // default (unknown reads online) is for chips, not launch decisions.
+  test("a copy whose host the manifest no longer names offers no New-session launch", async () => {
+    seedSources([{ id: "local", label: "this host", kind: "local", online: true }]);
+    const removedCopy = {
+      ...projectRailNode(apiProject()),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+    } as ProjectRailNode;
+    render(<RailRow node={removedCopy} info={info({ hasChildren: true })} actions={actions()} />);
     expect(screen.queryByRole("button", { name: "New session in Proj" })).toBeNull();
     await openMenu(/actions for/i);
     expect(screen.queryByRole("menuitem", { name: "New session" })).toBeNull();
