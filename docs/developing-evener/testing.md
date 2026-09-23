@@ -412,6 +412,16 @@ explicitly set. The CI web job runs make test-web, make build-web, and
 make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
 test so frontend tests are not duplicated.
 
+Two packages run as cost-balanced shards: the agent module through
+`evener dev agent-shards` and cmd/evener-hub, beside the rest of the root
+module, through `evener dev hub-shards` (cmd/evener-dev/agentshards.go). Each
+is one binary of thousands of mostly serial tests, so splitting it across
+processes is what bounds its wall time (hub: ~80s serial, ~13s as eight
+shards). A shard's `-test.run` arrives through `EVENER_SHARD_RUN_FILE`, which
+the package's TestMain applies with `shardrun.ConfigureRunFile` and then
+unsets, so a test that re-execs its own binary as a helper keeps its explicit
+`-test.run`. `AGENT_SHARDS=0` and `HUB_SHARDS=0` fall back to one `go test`.
+
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
 For Go streams, the runner copies ambient GOENV settings into that owned root
