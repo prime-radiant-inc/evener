@@ -1388,6 +1388,70 @@ func TestRunAudit_SessionRefsAgentConsumableForNonCanonicalBuckets(t *testing.T)
 	}
 }
 
+// TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap is the roborev
+// fix round 7 finding-1 RED case: DoctorCommand is built from
+// doctorRefsBySig, which is never capped. Before round 6 it was built from
+// f.Evidence.SessionRefs AFTER the evidenceSessionRefCap truncation, so it
+// was bounded to 200 refs. A fleet-wide finding (evidenceSessionRefCap+5
+// sessions in one canonical bucket, each with a distinct proj: ref) now
+// emits a DoctorCommand with all 205 comma-joined selectors — the mid-JSON
+// overflow the cap exists to prevent. The fix must cap reproRefs at
+// evidenceSessionRefCap before joining, with an honest omission note.
+func TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap(t *testing.T) {
+	base := t.TempDir()
+	// One canonical bucket (ValidateProjectID-valid) with cap+5 distinct
+	// sessions — each gets a unique proj: ref via refFor, so doctorRefsBySig
+	// grows to cap+5 entries (all reproducible, no non-reproducible).
+	bucket := stateHomeBucket(base, hash1)
+	const extra = 5
+	total := evidenceSessionRefCap + extra
+	sids := make([]string, total)
+	for i := range sids {
+		sids[i] = newSessionsTestSID(t)
+		writeAuditSession(t, bucket, sids[i], oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sids[i]))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != total {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, total)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+	// Extract the --sessions value (strip trailing comment).
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	sessionsValue, ok := strings.CutPrefix(dc, prefix)
+	if !ok {
+		t.Fatalf("DoctorCommand %q missing prefix %q", dc, prefix)
+	}
+	if idx := strings.Index(sessionsValue, "#"); idx >= 0 {
+		sessionsValue = sessionsValue[:idx]
+	}
+	sessionsValue = strings.TrimSpace(sessionsValue)
+	refs := strings.Split(sessionsValue, ",")
+	// DoctorCommand must be capped: at most evidenceSessionRefCap refs in
+	// the --sessions value, not all cap+5.
+	if len(refs) > evidenceSessionRefCap {
+		t.Errorf("DoctorCommand --sessions has %d refs, want <= %d (evidenceSessionRefCap) — DoctorCommand must be bounded like SessionRefs (round 7 finding 1)", len(refs), evidenceSessionRefCap)
+	}
+	// The cap must be disclosed: the command must indicate refs were
+	// omitted so it is not mistaken for a complete reproduction line.
+	if !strings.Contains(dc, "omitted") {
+		t.Errorf("DoctorCommand %q must disclose that reproducible refs were omitted past the cap (round 7 finding 1)", dc)
+	}
+}
+
 func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
 	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
