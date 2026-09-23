@@ -2116,10 +2116,12 @@ export function createConversationStore() {
             // exactly as the unbounded main would have.
             const freshIdentities = new Set<string>();
             const freshToolCallIds = new Set<string>();
+            const freshItems: ItemModel[] = [];
             for (const turn of conversation.turns) {
               for (const item of turn.items) {
                 freshIdentities.add(item.transcriptKey ?? item.id);
                 freshIdentities.add(item.id);
+                freshItems.push(item);
                 addIncomingToolCallId(item, freshToolCallIds);
               }
             }
@@ -2382,7 +2384,40 @@ export function createConversationStore() {
               return stripped ?? item;
             };
             const retainedTurnsForMerge = currentConvForMerge.turns.map(
-              (turn) => {
+              (rawTurn) => {
+                // RoboRev round 26: the snapshot can name a turn active
+                // while its bounded window omits the turn itself and
+                // re-serves one of the turn's items under another turn
+                // id. The turn is then covered ONLY through the shared
+                // item, and the twin filter below would delete the
+                // turn's unmatched live items — the working set the
+                // read itself says is still running — while the history
+                // merge folds the turn away through the shared identity,
+                // taking the turn id every later frame names with it.
+                // Drop only the re-served items from the retained copy
+                // (the package identity rule, the same match
+                // withLiveActiveTurn reads): the turn keeps its
+                // unmatched items through the round-22 wholesale rule
+                // and survives the merge under its own id. A turn the
+                // fresh read carries by ID keeps everything as before —
+                // the merge folds those copies properly, with the
+                // retained side supplying fields the fresh fragments
+                // omit.
+                let turn = rawTurn;
+                if (
+                  rawTurn.id === conversation.activeTurnId &&
+                  !freshTurnById.has(rawTurn.id)
+                ) {
+                  const items = rawTurn.items.filter(
+                    (item) =>
+                      !freshItems.some((fresh) =>
+                        itemIdentityMatches(item, fresh),
+                      ),
+                  );
+                  if (items.length !== rawTurn.items.length) {
+                    turn = { ...rawTurn, items };
+                  }
+                }
                 // A turn the snapshot does not cover keeps everything
                 // only when something owns its wholesale retention: the
                 // compact memory the remembered-alias folds read

@@ -17576,6 +17576,117 @@ describe("ConversationStore", () => {
       });
     });
 
+    it("a paged refresh keeps the named active turn's unmatched members live", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "act-old",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  status: "completed",
+                } as ThreadItem,
+                {
+                  id: "act-live",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c2",
+                  status: "inProgress",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // The reread names t1 active, omits the turn, and re-serves the
+      // completed member under t9 (RoboRev round 26): the turn is covered
+      // only through the shared item, and its unmatched live member is
+      // the working set — it must stay updatable, not merely displayed.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [
+                {
+                  id: "act-old",
+                  turnId: "t9",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "act-live")).toMatchObject({
+        kind: "activity",
+        state: "running",
+      });
+
+      // A later delta for the surviving member finds its containing turn
+      // and lands: the merge used to delete the unmatched items of a turn
+      // covered only through a shared item, so the frame had no turn to
+      // update and no row-changing frame kept the row either.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "act-live",
+          callId: "c2",
+          delta: "tool-result",
+        },
+      } as AnyNotification);
+      expect(
+        (rowById(store, "act-live") as { detail?: { output?: string } })?.detail
+          ?.output,
+      ).toContain("tool-result");
+
+      // And an unrelated row-changing frame does not drop the member.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "act-live")).toBeDefined();
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
