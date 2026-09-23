@@ -257,8 +257,10 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 	// parser can trust the description attr as a producer gloss and never
 	// as the old display-label fallback (which shipped the raw command and
 	// has no intent attr at all).
-	attrs = append(attrs, notificationAttr("intent", n.Intent))
-	attrs = append(attrs, notificationAttr("output_bytes", strconv.FormatInt(n.OutputBytes, 10)))
+	attrs = append(attrs,
+		notificationAttr("intent", n.Intent),
+		notificationAttr("output_bytes", strconv.FormatInt(n.OutputBytes, 10)),
+	)
 	if n.Status == string(jobstore.StatusExhausted) {
 		attrs = append(attrs,
 			notificationAttr("budget", n.ExhaustionBudget),

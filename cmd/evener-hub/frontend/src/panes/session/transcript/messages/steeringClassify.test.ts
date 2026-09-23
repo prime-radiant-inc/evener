@@ -97,13 +97,13 @@ Job job_42 completed.
   expect(n.secondary).toBe('Running "go test" to find the failure');
 });
 
-// A failed job's head line is "<title> <intent>" and nothing else: the
-// caller's stated rationale names the purpose of the run, while the exit
-// code and reason live in the expanded card's metadata. The description
-// gloss deliberately stays off the error head too: pre-intent blocks
-// shipped the raw command as their description attr (the producer's old
-// display-label fallback), and the parser cannot tell a gloss from that
-// fallback — so for error tones the head shows intent only.
+// A failed job's head line is "<title> <intent>": the caller's stated
+// rationale names the purpose of the run, while the exit code and reason
+// live in the expanded card's metadata. The description attr reaches the
+// error head only when an explicit empty intent marks the block post-split
+// (the test below pins that); a block with no intent attribute at all is
+// pre-split history, whose description may be the raw command — those
+// heads show nothing.
 test("a failed job's head carries the caller's intent and nothing else", () => {
   const block = `<job-notification job_id="job_f" event="failed" job_type="shell" description="go test ./cmd/evener-hub" intent="Running the mid-turn kill reproduction." status="failed" reason="exit_nonzero" output_bytes="13816" exit_code="1" transcript_ref="job:job_f">
 Job job_f failed. Output is available through read_transcript(transcript_ref="job:job_f") if needed.
