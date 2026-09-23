@@ -5,7 +5,7 @@ import { Component, type ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import * as pageReload from "../../shell/pageReload";
-import { installLocalStorage } from "../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -46,31 +46,6 @@ function StubConnectDialog({ onClose }: { onClose(): void; onConnected(): void }
       </button>
     </div>
   );
-}
-
-// Node 26 shadows jsdom's real localStorage with a non-functional global
-// under vitest; Spawn reads spawn-defaults through it on mount - the same
-// in-memory stand-in every spawn test uses.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  get length(): number {
-    return this.store.size;
-  }
-  key(index: number): string | null {
-    return Array.from(this.store.keys())[index] ?? null;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
 }
 
 // A ready FakeClient with no configured provider, so the spawn pane offers
@@ -119,7 +94,7 @@ function captureExpectedError(expectedError: Error) {
 }
 
 beforeAll(() => {
-  installLocalStorage(new MemoryStorage() as unknown as Storage);
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

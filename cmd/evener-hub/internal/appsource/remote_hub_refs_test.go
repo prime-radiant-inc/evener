@@ -68,8 +68,14 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	}
 	// The mask is a filter over the remote's own claim, not a replacement for it:
 	// nothing outside the capability set may change.
-	if thread.Source != "host" || thread.Evener.Ref != "host:t1" || thread.Evener.InstanceID != "inst-1" {
-		t.Fatalf("masked thread = %+v, want refs and opaque fields untouched", thread.Evener)
+	if thread.Source != "host" {
+		t.Fatalf("masked thread source = %q, want host", thread.Source)
+	}
+	if thread.Evener.Ref != "host:t1" {
+		t.Fatalf("masked thread ref = %q, want host:t1", thread.Evener.Ref)
+	}
+	if thread.Evener.InstanceID != "inst-1" {
+		t.Fatalf("masked thread instance = %q, want inst-1", thread.Evener.InstanceID)
 	}
 }
 
@@ -177,10 +183,14 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			continue
 		}
 		// Only the actions remoteForwardedThreadCapabilities names may be
-		// advertised: Shutdown is forwarded today, every other staged action is
-		// masked. Stating the expected set here keeps a field from riding along
-		// with a neighbour's enablement.
-		wantAdvertised := tc.field == "Shutdown"
+		// advertised. The expectation is read from that set rather than restated as
+		// a literal here, so enabling another action cannot leave this test agreeing
+		// with a stale copy of it.
+		wantAdvertised, ok := capabilityFieldValue(maskedRemoteThreadCapabilities, tc.field)
+		if !ok {
+			t.Errorf("capability %s is not a field of the shared masked set", tc.field)
+			continue
+		}
 		if advertised != wantAdvertised {
 			t.Errorf("capability %s advertised = %v, want %v", tc.field, advertised, wantAdvertised)
 		}

@@ -76,14 +76,26 @@ gate_init_budgets() {
 	# starting every shard at once (unchanged) while a smaller or busier one
 	# starts fewer.
 	export AGENT_SHARD_CONCURRENCY=${AGENT_SHARD_CONCURRENCY-$(gate_budget 8 8)}
-	# cmd/evener-hub's shards (evener dev hub-shards), which run beside the rest
-	# of the root module. Eight balance its ~2100 mostly-serial tests to ~9s
-	# each; per-shard width, survey width and concurrency are budgeted exactly
-	# like the agent's, so a loaded or one-CPU host shrinks both runners.
-	export HUB_SHARD_COUNT=${HUB_SHARD_COUNT-8}
-	export HUB_SHARD_PARALLEL=${HUB_SHARD_PARALLEL-$(gate_budget 3 3)}
-	export HUB_SHARD_SURVEY_PARALLEL=${HUB_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}
-	export HUB_SHARD_CONCURRENCY=${HUB_SHARD_CONCURRENCY-$(gate_budget 8 8)}
+	# The root-module packages sharded beside the root go test (evener dev
+	# hub-shards / cli-shards): cmd/evener-hub's ~2100 and cmd/evener's ~340
+	# mostly-serial tests. Their per-shard width, survey width and concurrency
+	# are budgeted exactly like the agent's, so a loaded or one-CPU host shrinks
+	# every runner. Each runner's concurrency is its own budget, not a share of
+	# one: the two overlap only while the CLI's shards run (about 12s at the
+	# head of the root wave), and the gate already lets its streams contend
+	# rather than coordinating one CPU budget across them.
+	gate_init_shard_budgets HUB 8
+	gate_init_shard_budgets CLI 6
+}
+
+# gate_init_shard_budgets PREFIX COUNT — export PREFIX_SHARD_COUNT (default
+# COUNT) and PREFIX_SHARD_PARALLEL / _SURVEY_PARALLEL / _CONCURRENCY from the
+# same budgets as the agent's shards; an explicit value in the environment wins.
+gate_init_shard_budgets() {
+	eval "export ${1}_SHARD_COUNT=\${${1}_SHARD_COUNT-$2}"
+	eval "export ${1}_SHARD_PARALLEL=\${${1}_SHARD_PARALLEL-$(gate_budget 3 3)}"
+	eval "export ${1}_SHARD_SURVEY_PARALLEL=\${${1}_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}"
+	eval "export ${1}_SHARD_CONCURRENCY=\${${1}_SHARD_CONCURRENCY-$(gate_budget 8 8)}"
 }
 
 # gate_module_flags MODULE — the -p/-parallel flags run-module-tests.sh hands

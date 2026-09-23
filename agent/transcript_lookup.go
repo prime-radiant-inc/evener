@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -139,6 +140,12 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 
 // enumerateBuckets returns the state-root dirs under <stateHome>/evener/projects/*.
 // It returns bucket roots, not their sessions subdirectories.
+//
+// Divergence, deliberate: this sweep filters bucket dirs through
+// identifier.ValidateProjectID, while the doctor's sweep (agent/doctor's
+// globBuckets) takes every directory — a forensic tool must see legacy- or
+// foreign-named buckets that hold real sessions. If either policy changes,
+// change both deliberately.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	pattern := filepath.Join(stateHome, "evener", "projects", "*")
 	matches, err := transcriptBucketGlob(pattern)
@@ -167,23 +174,11 @@ func validLocalBucketDir(stateDir string) bool {
 	return identifier.ValidateProjectID(filepath.Base(stateDir)) == nil
 }
 
-// stateHomeFor returns the stateHome (the <base> parent two levels above the
-// evener/projects/<project-id> path) for a bucket state dir, or "" if the state dir is
-// not under evener/projects/<project-id>.
+// stateHomeFor returns the stateHome for a bucket state dir via the shared
+// layout helper (userdirs.StateHomeForBucketDir — also used by the doctor's
+// cross-bucket sweep, so the two cannot drift apart).
 func stateHomeFor(stateDir string) string {
-	// Expect the layout: <stateHome>/evener/projects/<project-id>
-	// filepath.Dir(stateDir) == <stateHome>/evener/projects
-	// filepath.Dir(that)     == <stateHome>/evener
-	// filepath.Dir(that)     == <stateHome>
-	projects := filepath.Dir(stateDir)
-	if filepath.Base(projects) != "projects" {
-		return ""
-	}
-	evener := filepath.Dir(projects)
-	if filepath.Base(evener) != "evener" {
-		return ""
-	}
-	return filepath.Dir(evener)
+	return userdirs.StateHomeForBucketDir(stateDir)
 }
 
 // transcriptPath builds the path to a transcript JSONL file.

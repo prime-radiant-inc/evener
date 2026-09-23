@@ -186,8 +186,8 @@ func TestLoadTranscript_RejectsUnknownFields(t *testing.T) {
 	}
 }
 
-// locateInBucket falls through to constructing the bucket path when the hash was
-// not enumerated, and reports not-found for an unknown hash.
+// A proj: ref naming a bucket that is not among the enumerated ones is an
+// explicit not-found error, not a silent empty result.
 func TestLocate_ProjRefUnknownHash(t *testing.T) {
 	base := t.TempDir()
 	writeSession(t, stateHomeBucket(base, hash1), sidA) // projects/ exists, but hash2 does not
