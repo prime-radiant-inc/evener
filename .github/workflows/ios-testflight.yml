@@ -47,9 +47,7 @@ jobs:
           exit 1
 
   archive-and-upload:
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || inputs.recovery_run_id == '')
+    if: inputs.recovery_run_id == '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     timeout-minutes: 90
     steps:
@@ -92,14 +90,14 @@ jobs:
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
         run: |
           set -euo pipefail
-          if [[ -n "$IOS_BUILD_NUMBER_INPUT" ]]; then
-            build_number="$IOS_BUILD_NUMBER_INPUT"
-          else
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             # A main-push run carries no manual input: take the next build
             # number from App Store Connect for the current marketing version.
             IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
               bundle exec fastlane ios next_build_number
             build_number="$(cat "$IOS_BUILD_NUMBER_OUTPUT")"
+          else
+            build_number="$IOS_BUILD_NUMBER_INPUT"
           fi
           [[ "$build_number" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}(\.[0-9]{1,2})?)?$ ]] || {
             echo "build_number must be Apple-compatible: 1-4 digit major, optional 1-2 digit minor and patch components" >&2
@@ -266,10 +264,7 @@ jobs:
           exit "$cleanup_status"
 
   verify-upload:
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.recovery_run_id != '' &&
-      github.ref == 'refs/heads/main'
+    if: inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     permissions:
       contents: read
