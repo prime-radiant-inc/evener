@@ -86,6 +86,15 @@ const HOST_SELECT_EXPR = `(() => {
   }) ?? null;
 })()`;
 
+// HOST_SELECT_PRESENT_EXPR is that same probe reduced to a serializable boolean.
+// waitPage evaluates with returnByValue, and a DOM ELEMENT does not survive that
+// transfer - CDP omits `value` for a node - so an element-returning probe is
+// `undefined` on every poll and can never satisfy the wait, however long it
+// polls: it reports "the picker never appeared" while the picker is on screen.
+// Presence waits therefore use this form; the element itself is only ever
+// consumed INSIDE the page (selectHost's own expression), never returned.
+const HOST_SELECT_PRESENT_EXPR = `(() => (${HOST_SELECT_EXPR}) !== null ? true : null)()`;
+
 // labeledInputExpr locates a text input by the FormRow label that names it, the
 // same way HOST_SELECT_EXPR locates the Host picker: the launch form's text
 // fields take their accessible name from a <label htmlFor>, and widgets/input
@@ -463,7 +472,7 @@ class Driver {
     await this.waitPage(SETTINGS_CONTENT_EXPR, { label: `settings content at ${url}` });
     // The rail is replaced by the settings pane on this route; rail-brand is a
     // marker of the session shell, not of settings, so it is not asserted here.
-    const select = await this.waitPage(HOST_SELECT_EXPR, { label: `Host picker at ${url}` }).then(() =>
+    const select = await this.waitPage(HOST_SELECT_PRESENT_EXPR, { label: `Host picker at ${url}` }).then(() =>
       this.hostSelectState(),
     );
     check(
