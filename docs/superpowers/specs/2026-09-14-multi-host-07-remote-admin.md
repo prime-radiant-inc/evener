@@ -453,8 +453,13 @@ Concretely:
   instance on the host" — the table row below. The local key is not pushed under
   a guessed provider.
 
-**Implementation status:** landed - `cmd/evener-hub/app_host_credentials.go`
-implements this join. The shipped wire types (`AuthStatusParams.Provider`,
+**Implementation status:** landed on the controller side and the wire -
+`cmd/evener-hub/app_host_credentials.go` implements this join over
+`evener/auth/status` and `evener/auth/apiKey/conditionalSet`. The pane action
+that starts a push from the remote-credentials sheet is its own follow-up change
+(the frontend bullet in this component's plan below), so this note records what
+the controller and the wire contract do, not the whole of 07c. The shipped wire
+types (`AuthStatusParams.Provider`,
 `AuthApiKeySetParams.Provider`, `InstanceEntry.Name/Base/ProviderID`,
 `appwire/types.go`) still do not disambiguate instance from provider, and they
 do not need to: the join is resolved once, locally, against `instance/list`.
@@ -599,13 +604,16 @@ that omits the field) sends the zero value, which the host interprets as "no
 revision fence" — the source fence (`ExpectedSource`) still applies. A
 revision the controller did not observe is never fabricated.
 
-**Implementation status:** landed - `evener/auth/apiKey/conditionalSet` is in
-the AppWire catalog with `ApiKeyConditionalSetParams`/
-`ApiKeyConditionalSetResponse`, and `ConfigRevision` is exposed on both
-`AuthStatusResponse` and `InstanceEntry` (`appwire/types.go`), populated from
-the host's effective credential-configuration revision. `ExpectedRevision` is
-sourced from that field, and the controller's push calls the conditional set
-rather than the racy status-then-`apiKey/set` pair.
+**Implementation status:** landed on the controller side and the wire -
+`evener/auth/apiKey/conditionalSet` is in the AppWire catalog with
+`ApiKeyConditionalSetParams`/`ApiKeyConditionalSetResponse`, and
+`ConfigRevision` is exposed on both `AuthStatusResponse` and `InstanceEntry`
+(`appwire/types.go`), populated from the host's effective
+credential-configuration revision. `ExpectedRevision` is sourced from that
+field, and the controller's push calls the conditional set rather than the racy
+status-then-`apiKey/set` pair. The pane action that drives a push from the
+remote-credentials sheet is a separate follow-up change (the frontend bullet
+below), so this note records the host-side contract, not the whole of 07c.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
@@ -720,7 +728,8 @@ Decompose component 07 into four landable PRs.
   report is rendered from that response's `Status` (or a second, explicitly
   report-only status read), not from the pre-write capture read.
 - Add the push action to the remote-credentials pane in the frontend
-  (`src/panes/settings/sections/credentials/`).
+  (`src/panes/settings/sections/credentials/`) - its own follow-up change, not
+  part of the controller-side work the status notes above record as landed.
 - No new on-disk state on the controller.
 
 ### PR 07d — host device-login affordance + best-effort OAuth copy warning
