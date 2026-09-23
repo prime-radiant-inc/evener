@@ -397,7 +397,9 @@ run_module() {
 		# one as an "exit status N" line on stderr, so the runner's 129/130/143
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
-		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		# The shards get the gate's fuzz-owned skip like every other module;
+		# coverage-floor.sh already measures agent without those tests.
+		(cd .. && AGENT_SHARD_SKIP="$fuzz_test_skip" go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
