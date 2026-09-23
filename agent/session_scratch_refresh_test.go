@@ -1239,6 +1239,77 @@ func TestScratchRefreshReprobesContendedSlotAfterRelease(t *testing.T) {
 	}
 }
 
+// TestContendedFallbackScratchIsPinnedAtAdoption pins round 19's Medium: the
+// pending marker protected the binding row but nothing pinned the fallback
+// mint at adoption — the mint hook ran before the binding install, and a
+// restored session that crashes or idles out before its next publication
+// leaves the fallback it works in collectible. The fallback must be pinned as
+// a bare protected reference the moment its kind is marked pending.
+func TestContendedFallbackScratchIsPinnedAtAdoption(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CONTENDEDPIN1"
+	const bindingID = "b-contended-pin"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	// The contended pool: the fixture handle keeps its lease (the in-process
+	// contention the adoption must skip), no reacquired handle.
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{canonicalScratchDir(retainedDir): {}},
+		adopted:   map[string]string{},
+	})
+
+	// The production resume shape: the sandbox is provisioned and its fresh
+	// scratch minted BEFORE adoption — the mint whose pin hook no-ops, because
+	// the binding is only installed by the adoption that follows.
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the resume-time fresh sandbox scratch: %v", err)
+	}
+	freshSandbox := env.SessionScratchDir()
+	if freshSandbox == "" || filepath.Clean(freshSandbox) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", freshSandbox, retainedDir)
+	}
+
+	if _, err := s.adoptRestoredConsumerScratch(env, consumerID, true); err != nil {
+		t.Fatalf("restore adoption over a contended sandbox slot: %v", err)
+	}
+	// No first-command publication runs between the adoption and this read:
+	// the fallback's protection must not depend on one arriving before a
+	// crash or an idle release.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	if slot, ok := row.Slots[sandbox.ScratchKindSandbox]; !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the fallback displaced the binding row's slot: got %+v, want the retained %q", row.Slots, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(freshSandbox) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the fallback sandbox mint %q was left unpinned at adoption: its work is collectible before the next publication", freshSandbox)
+	}
+}
+
 // TestContendedRetainedSlotKeepsBindingRowAcrossMint pins the round-10
 // continuity contract for the production cold-restore shape: resume provisions
 // the sandbox and EnableSandbox mints a fresh scratch BEFORE adoption, so a

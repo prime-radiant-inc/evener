@@ -1375,10 +1375,104 @@ func TestResetReleasedDropsFreeLeaseReferenceWithMismatchedPin(t *testing.T) {
 			t.Fatalf("the reset carried a reference whose pin fails identity verification: %+v", fresh.References)
 		}
 	}
-	// The mismatched pin file is left in place: nothing references it, so it
-	// is inert until the directory's own sweep collects it.
+	// Round 19 flipped this pin's fate: the lease is ours right now, so the
+	// reset finishes the release for the malformed pin it owns instead of
+	// stranding an orphan the collector conservatively retains, with a
+	// diagnostic, forever. The directory becomes ordinary.
+	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); !os.IsNotExist(err) {
+		t.Fatalf("the reset left a malformed pin it owns and could remove: stat got %v, want not exist", err)
+	}
+}
+
+// TestResetReleasedAbortsOnUnreadablePin pins round 19's Medium: a pin the
+// reset cannot read might be anyone's protection, so committing past it could
+// strand an orphan the collector conservatively retains forever. The reset
+// must abort with the tombstone intact, so a later retry heals a transient
+// read failure.
+func TestResetReleasedAbortsOnUnreadablePin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-unreadable", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); err != nil {
+		t.Fatalf("publish the pre-release consumer: %v", err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	// Free the lease so the reset's free-lease branch takes this reference,
+	// then corrupt the pin past reading.
+	_ = scratch.Retain()
+	if err := os.WriteFile(filepath.Join(scratch.Dir, scratchPinName), []byte("not a pin"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+		t.Fatal("expected the unreadable pin to abort the reset")
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Released {
+		t.Fatal("the aborted reset committed an unreleased manifest past a pin it could not read")
+	}
+}
+
+// TestResetReleasedAbortsOnContendedMismatchedOwnPin covers the contended arm
+// of the same round-19 finding: our own malformed pin under a lease we do not
+// hold must abort the reset too — the contention is transient (a live holder
+// releases), so the tombstone's retry reaches this reference through the
+// free-lease branch, which removes the malformed pin and finishes the
+// release.
+func TestResetReleasedAbortsOnContendedMismatchedOwnPin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-mismatch-c", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); err != nil {
+		t.Fatalf("publish the pre-release consumer: %v", err)
+	}
+	// The lease stays held (the contended branch) and the pin is replaced with
+	// our own naming the wrong kind.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if err := os.Remove(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeScratchDirectoryPin(scratch.Dir, owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindUnsandboxed}); err != nil {
+		t.Fatalf("write the kind-mismatched pin: %v", err)
+	}
+	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+		t.Fatal("expected the contended mismatched own pin to abort the reset")
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Released {
+		t.Fatal("the aborted reset committed an unreleased manifest past its own malformed pin")
+	}
 	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
-		t.Fatalf("the reset removed a pin it merely failed to verify: %v", err)
+		t.Fatalf("the aborted reset disturbed the mismatched pin: %v", err)
 	}
 }
 

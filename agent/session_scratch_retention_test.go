@@ -1871,3 +1871,77 @@ func TestRetirementResumedUnsandboxedRootKeepsRetainedScratch(t *testing.T) {
 		t.Fatalf("retained unsandboxed artifact lost at original path %q: bytes=%q err=%v", artifact, got, err)
 	}
 }
+
+// TestResumedRootUnsandboxedAdoptionSurvivesPoolDetach pins round 19's
+// Medium: the unsandboxed replacement tail discarded the adoption's result, so
+// a pool detach between its slot read and its claim disposed the launcher's
+// mint and installed nothing — and the next command's lazy mint, finding no
+// pending marker, claimed the binding's unsandboxed slot and permanently
+// displaced the retained allocation.
+func TestResumedRootUnsandboxedAdoptionSurvivesPoolDetach(t *testing.T) {
+	root := t.TempDir()
+	const sessionID = "01RESUMEROOTDETACHU1"
+	const bindingID = "b-resume-detach-unsandboxed"
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, sessionID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(retainedDir): slots[sandbox.ScratchKindUnsandboxed]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: {SessionID: sessionID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	// A launcher environment whose own command already minted its unsandboxed
+	// scratch before the restore, exactly as session_worktree_resume.go
+	// describes.
+	env := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+	if _, err := env.ExecCommand(context.Background(), "true", 5000, root, nil); err != nil {
+		t.Fatalf("mint launcher scratch: %v", err)
+	}
+	launchMint := envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)
+	if launchMint == "" || filepath.Clean(launchMint) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture launcher scratch %q must exist apart from the retained %q", launchMint, retainedDir)
+	}
+
+	// The detach lands on the tail's claim: the first adoptConsumerScratch
+	// call belongs to the (slotless) sandbox section, the second to the
+	// unsandboxed tail that follows the disposal.
+	calls := 0
+	s.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		calls++
+		if calls == 2 {
+			s.retainedScratchSealed.Store(true)
+			s.detachRetainedScratch()
+		}
+	}
+	if err := s.adoptResumedRootScratch(env, sessionID); err != nil {
+		t.Fatalf("resumed-root adoption across the detach: %v", err)
+	}
+	// The next spawned command lazily mints a replacement unsandboxed scratch
+	// and publishes it.
+	if _, err := env.ExecCommand(context.Background(), "true", 5000, root, nil); err != nil {
+		t.Fatalf("mint the replacement unsandboxed scratch: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindUnsandboxed]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the replacement mint displaced the binding row's unsandboxed slot: got %+v, want the retained %q", row.Slots, retainedDir)
+	}
+}

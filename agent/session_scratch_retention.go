@@ -1347,6 +1347,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 	// sandbox scratch) is left exposed; only absent kinds are restored, so a
 	// retained wrapper never replaces a live allocation.
 	existingKinds := map[string]bool{}
+	markedPending := false
 	if refs, err := env.ScratchRetentionReferences(); err == nil {
 		for _, ref := range refs {
 			existingKinds[ref.Kind] = true
@@ -1371,6 +1372,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			if slot.OwnsLease && pool.scratchSlotContended(filepath.Clean(slot.Dir)) &&
 				filepath.Clean(envScratchRefDir(env, kind)) != filepath.Clean(slot.Dir) {
 				env.MarkRetainedSlotPending(kind)
+				markedPending = true
 			}
 			continue
 		}
@@ -1409,6 +1411,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				// would race a concurrent refresh fold flipping the mark
 				// between the two holds (round 16).
 				env.MarkRetainedSlotPending(kind)
+				markedPending = true
 				continue
 			}
 			return false, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
@@ -1446,6 +1449,18 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// ever re-probe the original (round 10): mark the kind pending so
 			// the mint pins as a bare protected reference instead.
 			env.MarkRetainedSlotPending(kind)
+			markedPending = true
+		}
+	}
+	if markedPending {
+		// A contended slot's fallback mint is protected the moment its kind is
+		// marked pending: the mint hook ran before the binding install, so
+		// nothing else pins it until the next publication — which a restored
+		// session may never reach before a crash or an idle release, leaving
+		// the fallback it works in collectible. Pin the owned handles now; the
+		// pending kind pins as a bare protected reference (round 19).
+		if err := env.PinOwnedScratch(); err != nil {
+			return false, err
 		}
 	}
 	return true, nil
@@ -1637,7 +1652,22 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		return nil
 	}
 	env.DisposeUnsandboxedScratch()
-	if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+	gained, err := s.adoptConsumerScratch(env, sessionID)
+	if err != nil || !gained {
+		// The pool can detach — or the consumer row can die — between the slot
+		// read and the tail's claim, and the adoption then installs nothing:
+		// the launcher's unsandboxed mint is already disposed and the next
+		// spawned command lazily mints another. Without a pending marker that
+		// mint's publication claims the binding's unsandboxed slot with the
+		// new directory, permanently displacing the retained allocation — the
+		// unsandboxed flavor of the continuity loss the pending machinery
+		// exists to prevent (round 19). The mark makes the next publication pin
+		// the replacement as a bare protected reference instead, and the next
+		// restore re-probes the original; the failed-adoption exit takes it
+		// too, since a surviving launcher environment mints the same way.
+		env.MarkRetainedSlotPending(sandbox.ScratchKindUnsandboxed)
+	}
+	if err != nil {
 		return err
 	}
 	return nil

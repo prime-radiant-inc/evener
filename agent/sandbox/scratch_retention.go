@@ -1184,20 +1184,39 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 			}
 			lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
 			if contended {
-				// The pin decides whether the pair is still real — and it
-				// must be exactly this owner's pin for the directory and
-				// kind: a pin the crash window removed leaves nothing a
-				// carried reference could pair with (round 16), and a
-				// readable pin that is foreign, unreadable, or otherwise
-				// fails that identity verification would wedge every later
-				// restore the same way (round 17). The lease is not ours,
-				// so whatever file is there is left for whoever owns it and
-				// the reference dies with the manifest.
-				if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil &&
-					pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind {
+				pin, pinErr := readScratchDirectoryPin(dir)
+				switch {
+				case os.IsNotExist(pinErr):
+					// A pin the crash window removed leaves nothing a carried
+					// reference could pair with: the reference dies with the
+					// manifest (round 16).
+				case pinErr != nil:
+					// An unreadable pin: the reset cannot tell whose protection
+					// it is. Abort with the tombstone intact rather than commit
+					// past an orphan the collector conservatively retains, with
+					// a diagnostic, forever; a later reset retries once the
+					// read heals (round 19).
+					return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
+				case pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+					// Exactly this owner's pin for the directory and kind: the
+					// pair is still real, and the carry keeps it coherent with
+					// the holder's protection.
 					if err := carryReference(dir, ref.Kind); err != nil {
 						return err
 					}
+				case pin.Owner == owner:
+					// Our own pin with a directory or kind this reference
+					// cannot verify. The lease is not ours to remove against,
+					// but the contention is transient — a live holder releases —
+					// so abort rather than commit past it: the tombstone stays,
+					// and the next reset reaches this reference through the
+					// free-lease branch, which removes the malformed pin and
+					// finishes the release (round 19).
+					return fmt.Errorf("sandbox: retention pin for %q does not identify this owner's pin for the directory and kind", dir)
+				default:
+					// A foreign pin under contention: leave the file — it
+					// belongs to its own manifest — and drop the reference
+					// (round 17).
 				}
 				continue
 			}
@@ -1212,28 +1231,51 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 				}
 				return fmt.Errorf("sandbox: acquire retention lease for %q: %w", dir, err)
 			}
-			switch pin, pinErr := readScratchDirectoryPin(dir); {
-			case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+			// finishRelease removes this owner's pin now that the lease is
+			// ours, releasing the lease on the way out of a failure.
+			finishRelease := func() error {
 				if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
-					// The lease must not outlive the failed reset: release it
-					// on the way out or the leaked flock holds the directory
-					// against every later writer.
 					if releaseErr := lease.Release(); releaseErr != nil {
 						return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, errors.Join(rmErr, releaseErr))
 					}
 					return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
 				}
+				return nil
+			}
+			switch pin, pinErr := readScratchDirectoryPin(dir); {
+			case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind:
+				// The real pair with its lease now free: finish the release.
+				if err := finishRelease(); err != nil {
+					return err
+				}
 			case os.IsNotExist(pinErr):
 				// Already absent; the reference dies with the manifest.
+			case pinErr == nil && pin.Owner == owner:
+				// Our own pin with a directory or kind this reference cannot
+				// verify — garbage this owner wrote, and the lease is ours
+				// right now, so finish the release for it exactly like the
+				// matched case: remove the malformed pin and let the
+				// reference die with the manifest. Leaving it would strand an
+				// orphan an unreleased manifest does not reference, which the
+				// collector conservatively retains, with a diagnostic, forever
+				// (round 19).
+				if err := finishRelease(); err != nil {
+					return err
+				}
+			case pinErr == nil:
+				// A foreign pin: leave the file — its coherence is its own
+				// manifest's business — and drop the reference, which no
+				// longer has a pair here (round 17).
 			default:
-				// An unreadable, foreign, or identity-mismatched pin:
-				// leave the file — a foreign pin belongs to its own
-				// manifest, and a malformed one nothing references is
-				// inert until the directory's own sweep collects it — and
-				// drop the reference. Carrying it would commit a pair the
-				// graph reader rejects on every later restore, with
-				// Released false again and no later reset to repair it
-				// (round 17 narrowed round 13's carry-everything read).
+				// An unreadable pin: the reset cannot even tell whose
+				// protection it is, and committing past it would strand the
+				// same retained-forever orphan. Abort with the tombstone
+				// intact; a later reset retries once the read heals (round
+				// 19).
+				if releaseErr := lease.Release(); releaseErr != nil {
+					return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, errors.Join(pinErr, releaseErr))
+				}
+				return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
 			}
 			if releaseErr := lease.Release(); releaseErr != nil {
 				return fmt.Errorf("sandbox: release retention lease for %q: %w", dir, releaseErr)
