@@ -16756,6 +16756,72 @@ describe("ConversationStore", () => {
       ).toBe(false);
     });
 
+    it("a full turn completion withdraws a page-loaded item it omits", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [{ kind: "user", id: "pagey", text: "paged content" } as MobileTimelineItem],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // A live frame brings the paged item into the active turn.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            id: "pagey",
+            turnId: "t1",
+            type: "userMessage",
+            text: "paged content",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      expect(rowById(store, "pagey")).toBeDefined();
+
+      // The turn's full completion omits the item: the reducer withdraws
+      // it, and the page-history layer must not resurrect the row (RoboRev
+      // round 18).
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "full",
+            status: "completed",
+            items: [userMessageItem("other", "kept")],
+          },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "pagey")).toBeUndefined();
+
+      // And no later frame restores it either.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "pagey")).toBeUndefined();
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

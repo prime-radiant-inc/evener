@@ -3174,6 +3174,37 @@ export function createConversationStore() {
             pageOwnedIds.delete(target.transcriptKey ?? target.id);
           }
         }
+        // An active turn's FULL completion is the other frame that
+        // removes model items: the stamp's item list replaces the turn's,
+        // so an item the stamp omits is withdrawn exactly like a reset —
+        // and its page entries must go with it, or withPageHistory would
+        // resurrect the row the frame withdrew (RoboRev round 18).
+        if (n.method === "turn/completed") {
+          const params = n.params as {
+            turn?: { id?: string; itemsView?: string; items?: ThreadItem[] };
+          };
+          const stamp = params.turn;
+          if (
+            stamp?.itemsView === "full" &&
+            Array.isArray(stamp.items) &&
+            stamp.id !== undefined &&
+            state.conversation.activeTurnId === stamp.id
+          ) {
+            const oldTurn = state.conversation.turns.find(
+              (turn) => turn.id === stamp.id,
+            );
+            for (const old of oldTurn?.items ?? []) {
+              if (stamp.items.some((item) => itemIdentityMatches(old, item))) {
+                continue;
+              }
+              pageOwnedIds.delete(old.transcriptKey ?? old.id);
+              pageOwnedIds.delete(`${old.id}:attachments`);
+              if (old.transcriptKey !== undefined) {
+                pageOwnedIds.delete(`${old.transcriptKey}:attachments`);
+              }
+            }
+          }
+        }
         if (applied !== state.conversation) {
           if (changesRows(state.conversation, applied)) {
             const projected = withPageHistory(
