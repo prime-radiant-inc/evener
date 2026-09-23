@@ -177,8 +177,10 @@ export default defineConfig({
     // Vitest use on many-core hosts; the canonical npm test command instead
     // sizes itself from the host's spare capacity (scripts/lib/load-aware-workers.sh),
     // keeping four workers on an idle host so the root gate retains capacity
-    // for its Go streams.
-    maxWorkers: Math.max(1, Math.min(os.availableParallelism(), 12)),
+    // for its Go streams. Never fewer than two, whatever the entry point: with
+    // one worker vitest shares a single VM context across every file (see
+    // src/testSetup.ts), so a one-CPU container must still get two.
+    maxWorkers: Math.max(2, Math.min(os.availableParallelism(), 12)),
     setupFiles: ["./src/testSetup.ts"],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in
