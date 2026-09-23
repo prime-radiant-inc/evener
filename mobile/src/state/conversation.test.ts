@@ -15741,6 +15741,188 @@ describe("ConversationStore", () => {
       expect(rowById(store, "msg-1:attachments")).toBeUndefined();
     });
 
+    it("strips chunks the snapshot settled past, not just up to", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello", "inProgress")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: " world",
+        },
+      } as AnyNotification);
+
+      // The snapshot's cut is AHEAD of the client's chunks: its settled
+      // text contains the chunk and then some the client never received
+      // (RoboRev round 7).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello world!", "inProgress")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "item-a")?.pendingText,
+      ).toBeUndefined();
+
+      // The stream continues on the snapshot's base.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: ".",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Hello world!.",
+      });
+    });
+
+    it("a live steering twin does not ride a turn the snapshot reissued under a new id", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [userMessageItem("shared-1", "hi")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // A live steering injection lands in the active turn beside the
+      // stable user item.
+      store.getState().applyNotification({
+        method: "evener/steering/injected",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          text: "go left",
+          kind: "user",
+          source: "user",
+          startedAt: 1000,
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter(
+          (row) => row.kind === "user" && row.text === "go left",
+        ),
+      ).toHaveLength(1);
+
+      // The reread reissues the turn under a NEW id — the merge still
+      // folds it through the shared user item — carrying the canonical
+      // steer the transcript persisted.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1-fresh",
+              status: "completed",
+              items: [
+                userMessageItem("shared-1", "hi"),
+                {
+                  type: "steering",
+                  id: "item_steering_0",
+                  turnId: "t1-fresh",
+                  text: "go left",
+                  status: "completed",
+                  source: "user",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.items.filter(
+          (row) => row.kind === "user" && row.text === "go left",
+        ),
+      ).toHaveLength(1);
+
+      // The next row-changing frame must not project the twin back
+      // beside the canonical copy.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter(
+          (row) => row.kind === "user" && row.text === "go left",
+        ),
+      ).toHaveLength(1);
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .filter((item) => item.type === "steering"),
+      ).toHaveLength(1);
+    });
+
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

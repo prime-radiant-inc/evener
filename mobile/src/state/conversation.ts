@@ -1989,17 +1989,21 @@ export function createConversationStore() {
             // Two rules drop retained items before the merge, both about
             // transients no authoritative read can justify keeping.
             //
-            // Rule 1 — the fresh read covers a turn: on the retained side
-            // of such a turn, an item the fresh read neither re-issues
-            // nor matches is a live twin the snapshot supersedes (the
-            // response-cut contract: a frame folded during the read is in
-            // the snapshot that arrives), and the merge would otherwise
-            // keep it beside the canonical copy — under a live id with no
-            // transcript key to match, a re-served steering item used to
-            // come back as a twin, and the next row-changing frame
-            // projected both. Matched items stay (they are the merge's own
-            // fold inputs) and page items stay. Turns the fresh read does
-            // NOT carry keep everything: they are the page history this
+            // Rule 1 — the fresh read covers a turn when it carries the
+            // turn's id OR shares an item identity with it (the merge
+            // folds turns through shared items too, so a turn reissued
+            // under a new id is just as covered — RoboRev round 7). On
+            // the retained side of a covered turn, an item the fresh
+            // read neither re-issues nor matches is a live twin the
+            // snapshot supersedes (the response-cut contract: a frame
+            // folded during the read is in the snapshot that arrives),
+            // and the merge would otherwise keep it beside the canonical
+            // copy — under a live id with no transcript key to match, a
+            // re-served steering item used to come back as a twin, and
+            // the next row-changing frame projected both. Matched items
+            // stay (they are the merge's own fold inputs) and page items
+            // stay. Page-owned turns and turns the fresh read does NOT
+            // cover keep everything: they are the page history this
             // block exists to preserve, their folds run through the
             // remembered aliases below, and their out-of-window payloads
             // compact in the bound afterwards.
@@ -2014,6 +2018,22 @@ export function createConversationStore() {
             // other page row (the round-31 coverage rule reads exactly
             // that), so only the non-page warnings drop.
             const freshTurnIds = new Set(conversation.turns.map((turn) => turn.id));
+            const turnCoveredBySnapshot = (turn: TurnModel): boolean => {
+              if (
+                pageOwnedTurnIds.has(turn.id) ||
+                pageOwnedCompactTurnIds.has(turn.id)
+              ) {
+                return false;
+              }
+              return (
+                freshTurnIds.has(turn.id) ||
+                turn.items.some(
+                  (item) =>
+                    freshIdentities.has(item.transcriptKey ?? item.id) ||
+                    freshIdentities.has(item.id),
+                )
+              );
+            };
             // Rule 3 — a retained item's pending delta chunks are the
             // response streaming ahead of the transcript: the snapshot's
             // settled text folds every chunk the wire received before its
@@ -2042,13 +2062,25 @@ export function createConversationStore() {
                 freshTextByKey.get(item.transcriptKey ?? item.id) ??
                 freshTextById.get(item.id);
               if (freshText === undefined) return item;
-              // The largest prefix-run the text ends with, not the first:
-              // with chunks [" world", "!"] the text "Hello world!" ends
-              // with the FULL run but not with " world" alone, so a
-              // monotonic walk would settle nothing (RoboRev round 6).
+              // Position-relative against the retained base, not a
+              // suffix check on the full text: the wire folds chunks in
+              // order, so the snapshot's text is the retained base plus
+              // everything it folded before the cut — and the cut can
+              // sit AHEAD of the chunks the client received (base
+              // "Hello", pending [" world"], text "Hello world!"),
+              // which a suffix scan cannot see (RoboRev rounds 6-7).
+              // The largest run of chunks the advance STARTS with is
+              // exactly what the wire settled; a text that does not
+              // start with the base rewrote it, and the chunks keep
+              // their conservative fallback — the wire never rewrites
+              // agent text mid-stream.
+              const advance = freshText.startsWith(item.text)
+                ? freshText.slice(item.text.length)
+                : null;
+              if (advance === null) return item;
               let settled = 0;
               for (let run = 1; run <= pending.length; run += 1) {
-                if (freshText.endsWith(pendingTextJoined(pending.slice(0, run)))) {
+                if (advance.startsWith(pendingTextJoined(pending.slice(0, run)))) {
                   settled = run;
                 }
               }
@@ -2113,7 +2145,7 @@ export function createConversationStore() {
             };
             const retainedTurnsForMerge = currentConvForMerge.turns.map(
               (turn) => {
-                const afterTwins = freshTurnIds.has(turn.id)
+                const afterTwins = turnCoveredBySnapshot(turn)
                   ? turn.items.filter(
                       (item) =>
                         pageOwnedIds.has(item.transcriptKey ?? item.id) ||
