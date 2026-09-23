@@ -27,6 +27,11 @@ import (
 type hubHostCredentialsPusher struct {
 	admin *hubHostAdminController
 	creds *credentials.Store
+	// credsErr is why creds is nil, when it is: the store could not be read
+	// (credentials.LoadStore, carried here from the auth controller's own
+	// resolution). It is what the refusal below names, instead of claiming no
+	// store was ever configured.
+	credsErr error
 }
 
 // Push copies every local credentials-store entry to params.Host's own store and
@@ -65,7 +70,11 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 		return appwire.HostPushCredentialsResponse{}, err
 	}
 	if p.creds == nil {
-		return appwire.HostPushCredentialsResponse{}, appwire.InternalError("credential push requires a local credentials store")
+		reason := "credential push requires a local credentials store"
+		if p.credsErr != nil {
+			reason = "credential push requires a local credentials store, and this hub's could not be read: " + p.credsErr.Error()
+		}
+		return appwire.HostPushCredentialsResponse{}, appwire.InternalError(reason)
 	}
 
 	// Read the local store first: the entry keys are the instance names. Sorted

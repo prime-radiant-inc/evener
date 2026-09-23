@@ -23,8 +23,13 @@ import (
 )
 
 type hubAuthController struct {
-	stateDir          string
-	creds             *credentials.Store
+	stateDir string
+	creds    *credentials.Store
+	// credsErr is the error of resolving that store at construction
+	// (hubCredentialStore) when there was none to resolve: creds is nil then,
+	// every read answers "no stored key" (storedKey) and every write refuses
+	// with this reason (credentialsUnavailable) rather than dereferencing nil.
+	credsErr          error
 	cfg               authopenai.Config
 	client            *http.Client
 	now               func() time.Time
@@ -127,11 +132,11 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		authEnv = effectiveHubAuthEnv(launchEnv[0])
 	}
 	stateDir := openAIStateDirFromEnv(authEnv)
-	credsPath := filepath.Join(filepath.Dir(stateDir), "credentials.toml")
-	store, _ := credentials.LoadStore(credsPath)
+	store, storeErr := hubCredentialStore(stateDir, nil)
 	c := &hubAuthController{
 		stateDir:             stateDir,
 		creds:                store,
+		credsErr:             storeErr,
 		cfg:                  cfg,
 		client:               client,
 		now:                  time.Now,
@@ -149,8 +154,7 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		credentialTestLoader: loadCredentialTestClient,
 		credentialTests:      map[string]*credentialTestCall{},
 	}
-	c.setCredential = c.creds.Set
-	c.clearCredential = c.creds.Clear
+	c.wireCredentialStore()
 	return c
 }
 
@@ -177,16 +181,64 @@ func hubAuthCredentialsPath(stateRoot string) string {
 // supported evener/auth/apiKey/set while the credential push refused it with
 // "requires a local credentials store".
 //
-// A store that cannot be loaded still comes back nil, for the reason the
-// controller's own fallback ignores that error: there is no path-less store
-// that is better than none, and a surface given nil reports its own typed
-// refusal (the push's guard) instead of writing a credential nothing reads.
-func hubCredentialStore(stateRoot string, store *credentials.Store) *credentials.Store {
+// It never returns a nil store with no reason: LoadStore's error travels back
+// with it, because there is no path-less store that is better than none (its
+// writes would silently no-op and lose credentials) and a caller that dropped
+// the error would dereference nil on the next credential read or write. Callers
+// keep the pair - the controller carries it as credsErr, and app_rpc.go hands
+// it to the push through credentialStore - so an unreadable credentials.toml is
+// one fact every credential surface answers from.
+func hubCredentialStore(stateRoot string, store *credentials.Store) (*credentials.Store, error) {
 	if store != nil {
-		return store
+		return store, nil
 	}
-	loaded, _ := credentials.LoadStore(hubAuthCredentialsPath(stateRoot))
-	return loaded
+	loaded, err := credentials.LoadStore(hubAuthCredentialsPath(stateRoot))
+	if err != nil {
+		return nil, err
+	}
+	return loaded, nil
+}
+
+// wireCredentialStore installs the store's write paths on c, or the refusal
+// that stands in for them when there is no usable store. This is the one place
+// a nil store could be dereferenced through setCredential or clearCredential,
+// so it is also the one place that decides what happens instead.
+func (c *hubAuthController) wireCredentialStore() {
+	if c.creds == nil {
+		c.setCredential = func(string, string) error { return c.credentialsUnavailable() }
+		c.clearCredential = func(string) error { return c.credentialsUnavailable() }
+		return
+	}
+	c.setCredential = c.creds.Set
+	c.clearCredential = c.creds.Clear
+}
+
+// storedKey reads the instance's file-layer key, answering "no key" when this
+// hub has no usable store: a read must not panic where a write refuses.
+func (c *hubAuthController) storedKey(name string) (string, bool) {
+	if c.creds == nil {
+		return "", false
+	}
+	return c.creds.Get(name)
+}
+
+// credentialsUnavailable is the refusal every credential write answers with
+// when this hub has no usable store. That is the hub's own state rather than
+// the caller's, so it is InternalError, and it names the file when the file is
+// why: an operator cannot fix a store by changing the request.
+func (c *hubAuthController) credentialsUnavailable() error {
+	if c.credsErr != nil {
+		return appwire.InternalError("the credentials store cannot be read, so no credential can be saved: " + c.credsErr.Error())
+	}
+	return appwire.InternalError("this hub has no credentials store to save a credential in")
+}
+
+// credentialStore is the store this controller resolved at construction
+// (hubCredentialStore) and the error of that resolution, so a second credential
+// surface - app_rpc.go's remote credential push - reads the one answer instead
+// of resolving again and possibly disagreeing.
+func (c *hubAuthController) credentialStore() (*credentials.Store, error) {
+	return c.creds, c.credsErr
 }
 
 // newHubAuthControllerWithStore creates a controller backed by an explicit credentials store,
@@ -204,13 +256,17 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 	// A nil store should never happen in production (main.go always supplies
 	// one). Fall back to the on-disk default store — the same path
 	// newHubAuthController uses — rather than a path-less store whose writes
-	// would silently no-op and lose credentials. hubCredentialStore is that
-	// resolution, and the server constructor resolves it once so every
-	// credential surface gets this same store rather than its own answer.
-	store = hubCredentialStore(stateRoot, store)
+	// would silently no-op and lose credentials. hubCredentialStore is that one
+	// resolution, and app_rpc.go reads its result off this controller
+	// (credentialStore) so every credential surface gets the same store.
+	// Its error is kept rather than dropped: a store that cannot be loaded
+	// leaves creds nil, and the guards below answer from that instead of
+	// dereferencing nil.
+	store, storeErr := hubCredentialStore(stateRoot, store)
 	c := &hubAuthController{
 		stateDir:             stateDir,
 		creds:                store,
+		credsErr:             storeErr,
 		cfg:                  cfg,
 		client:               client,
 		now:                  time.Now,
@@ -228,8 +284,7 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 		credentialTestLoader: loadCredentialTestClient,
 		credentialTests:      map[string]*credentialTestCall{},
 	}
-	c.setCredential = c.creds.Set
-	c.clearCredential = c.creds.Clear
+	c.wireCredentialStore()
 	if hubAuthControllerSetup != nil {
 		hubAuthControllerSetup(c)
 	}
@@ -472,7 +527,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		}
 		codex = c.instanceIsCodex(name)
 		if !codex {
-			_, hadFile := c.creds.Get(name)
+			_, hadFile := c.storedKey(name)
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return clrErr
 			}
@@ -494,7 +549,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 			removed = r
 			return nil
 		}
-		if _, hasFile := c.creds.Get(name); hasFile {
+		if _, hasFile := c.storedKey(name); hasFile {
 			if clrErr := c.clearCredential(name); clrErr != nil {
 				return clrErr
 			}
@@ -1432,7 +1487,7 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance, resolved ...r
 		resp, _ := c.openAIInstanceStatus(inst.Name, resolved...)
 		return resp
 	}
-	_, hasFile := c.creds.Get(inst.Name)
+	_, hasFile := c.storedKey(inst.Name)
 	// The registry names an environment credential "env:<VAR>", and that
 	// variable is the one the pane shows.
 	envVar := ""
@@ -1502,7 +1557,7 @@ func (c *hubAuthController) openAIInstanceStatus(name string, resolved ...regist
 	// "none" when one does not. A stored key under this name is reported as a
 	// diagnostic only — calling it a sign-in would claim a credential the
 	// spawn gate refuses (kata z1gm).
-	_, hasFile := c.creds.Get(name)
+	_, hasFile := c.storedKey(name)
 
 	source := "none"
 	var active authopenai.AuthStatus
