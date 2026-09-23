@@ -22012,6 +22012,132 @@ describe("ConversationStore", () => {
       expect(ids).toContain("new-wire-Z:attachments");
     });
 
+    // RoboRev round 2 (panel Medium 1): the rehydrate's retained-turn bound
+    // must read the same window the publish will show. The publish seats the
+    // transient warnings before the cap, and a seated notice consumes a cap
+    // slot — an unseated bound keeps a page turn's full payloads alive for a
+    // row the seated cap just evicted, so the model would carry page history
+    // the actual 500-row display window no longer holds.
+    it("bounds the rehydrate's retained page payloads against the seated window the publish shows", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t-live",
+              status: "completed",
+              items: [
+                {
+                  ...userMessageItem("live-1", "live row"),
+                  position: { entry: 50, item: 0 },
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // One older page loads a single page-owned row below the live row.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "page-row",
+                turnId: "tp",
+                type: "userMessage",
+                text: "page text",
+                position: { entry: 1, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "cursor-2",
+        ),
+        nextCursor: "cursor-2",
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      expect(rows(store).map((row) => row.id)).toEqual(["page-row", "live-1"]);
+      // The warning arrives while the live row is the newest row the window
+      // holds, so it anchors there and seats directly after it.
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store)).toHaveLength(3);
+      expect(rows(store)[2]?.kind).toBe("failure");
+      // A resync reread fills the window: the page row, the live row, and
+      // 498 fresh rows project to exactly the retained cap, and the seated
+      // notice makes the publish's window one row larger — the cap's
+      // eviction falls on the page row.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t-live",
+              status: "completed",
+              items: [
+                {
+                  ...userMessageItem("live-1", "live row"),
+                  position: { entry: 50, item: 0 },
+                },
+              ],
+            }),
+            makeTurn({
+              id: "t-fresh",
+              status: "completed",
+              items: Array.from({ length: 498 }, (_, i) => ({
+                type: "userMessage" as const,
+                id: `fresh-${i}`,
+                turnId: "t-fresh",
+                text: `fresh ${i}`,
+                position: { entry: 100 + i, item: 0 },
+                status: "completed" as const,
+              })),
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      const awaitRehydrateRead = async (count: number): Promise<void> => {
+        for (let i = 0; i < 40 && service.readProjectionCalls.length < count; i += 1) {
+          await Promise.resolve();
+        }
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+      await awaitRehydrateRead(2);
+      // The publish seats the notice and the cap evicts the page row: the
+      // seated window the display shows — the live row, the seated notice,
+      // and the fresh rows — no longer holds the page row.
+      expect(rows(store)).toHaveLength(500);
+      expect(rows(store).some((row) => row.id === "page-row")).toBe(false);
+      expect(
+        rows(store).filter((row) => row.kind === "failure"),
+      ).toHaveLength(1);
+      // The retained-turn bound must read that same seated window: the page
+      // turn's payloads left the keep-window, so the model trims the turn to
+      // its compact identity — full payloads for rows the display window no
+      // longer holds would keep re-projecting on every later merge.
+      const pageTurn = store
+        .getState()
+        .conversation?.turns.find((turn) => turn.id === "tp");
+      expect(pageTurn?.items.length).toBe(0);
+    });
+
     it("carries no page history across a reread when the cap already trimmed it", async () => {
       const service = new FakeConversationService();
       const initialThreadItems: ThreadItem[] = [];

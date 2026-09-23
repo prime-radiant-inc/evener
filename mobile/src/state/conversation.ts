@@ -2958,9 +2958,18 @@ export function createConversationStore() {
             // fragments supplied, and only out-of-window payloads trim. The
             // final retained rows are the window; the pass settles page
             // turn ownership with the same bound.
+            // RoboRev round 2 (panel Medium 1): the window must be the one
+            // the publish below will actually show — capAndTruncate seats
+            // the transient warnings before the cap, and a seated notice
+            // consumes a cap slot, so an unseated bound would retain page
+            // payloads for rows the seated cap just evicted.
             mergedTurns = boundRetainedTurns(
               mergedTurns,
-              capItems(projectTimeline({ ...merged, turns: mergedTurns })),
+              capItems(
+                seatTransientWarnings(
+                  projectTimeline({ ...merged, turns: mergedTurns }),
+                ),
+              ),
               mergedItemFoldIdentities,
               conversation.activeTurnId,
             );
