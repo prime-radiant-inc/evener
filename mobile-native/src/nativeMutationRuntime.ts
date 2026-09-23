@@ -16,6 +16,8 @@ import {
 	type MutationOutboxOptions,
 	type MutationStopBarrier,
 	type MutationOutboxStorage,
+	type MutationPersistenceSnapshot,
+	type MutationRecoveryRecord,
 	type SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
 import type {
@@ -39,7 +41,11 @@ export interface NativeMutationRuntimeOptions {
 type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	listOutbox(targetRef?: string): Promise<MutationOutboxRecord<MutationAttachmentRef>[]>;
 	readStopEpoch(targetRef: string): Promise<number>;
+	listRecovery(targetRef: string): Promise<MutationRecoveryRecord<MutationAttachmentRef>[]>;
+	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 };
+
+export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
 
 export interface NativeMutationReadLease {
 	readonly targetKey: string;
@@ -95,7 +101,22 @@ function intentFor(request: NativeMutationRequest): MutationIntent {
 
 export type NativeMutationRequest = ConversationMutationRequest;
 
-export class NativeMutationRuntime implements ConversationMutationSubmitter {
+// The native durable-read contract: the shared snapshot shape, scoped to
+// one composite hub/conversation target. The storage's listRecovery
+// requires the exact key, so the all-targets form of the shared
+// MutationPersistencePort has no native backing and is not part of this
+// contract: the target is a required parameter, not an optional one the
+// runtime would have to reject at runtime behind a port claim. The
+// runtime still satisfies the shared port structurally - a required-arg
+// method widens to the port's optional-arg method shape - which is what
+// lets it feed createMutationProjectionFence with no adapter.
+export interface NativeMutationPersistenceRead {
+	read(targetRef: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
+}
+
+export class NativeMutationRuntime
+	implements ConversationMutationSubmitter, NativeMutationPersistenceRead
+{
 	readonly storage: NativeStorage;
 	readonly #outbox: MutationOutbox;
 	readonly #dispatcher: MutationDispatcher;
@@ -104,6 +125,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	readonly #storageListeners = new Set<NativeMutationStorageListener>();
 	#started = false;
 
 	#getClient(targetRef?: string): AppwireClientLike | undefined {
@@ -126,6 +148,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		});
 		this.#dispatcher = new MutationDispatcher(this.storage, {
 			getClient: (targetRef) => this.#getClient(targetRef),
+			onStorageChange: (targetRefs) => this.#notifyStorageChange(targetRefs),
 			onBlockedMutation: (targetRef) => this.#blockAfterUnknownOutcome(targetRef),
 		});
 		const outboxOptions: MutationOutboxOptions = {
@@ -151,6 +174,43 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 		if (!this.#started) return;
 		this.#started = false;
 		await this.#outbox.stop();
+	}
+
+	// The scoped durable read (NativeMutationPersistenceRead): the snapshot
+	// is the package's own shape and the composite target key is required.
+	// The all-targets form of the shared MutationPersistencePort has no
+	// native backing - the storage's listRecovery requires the exact key -
+	// so the structural widening that hands this runtime to a port-shaped
+	// reference is the one route to it that remains: it fails loudly there
+	// rather than returning a snapshot that silently drops recovery rows,
+	// and the fence machinery already degrades a rejected read to a no-op
+	// refresh.
+	async read(targetRef: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>> {
+		if (targetRef === undefined) throw new Error("targetRef is required for native persistence reads");
+		const [outbox, optimistic, recovery] = await Promise.all([
+			this.storage.listOutbox(targetRef),
+			this.storage.listOptimistic(targetRef),
+			this.storage.listRecovery(targetRef),
+		]);
+		return { outbox, optimistic, recovery };
+	}
+
+	// The one native recovery write with no dispatcher involvement, so the
+	// runtime publishes the change itself. The notify follows the write's
+	// completion, not its rows-affected count - the zero-included rule the
+	// discard paths carry (docs/design/stop-cancellation-outbox.md §4, and
+	// §6's zero-deletion cleanups): a discard whose DELETE commits over
+	// zero rows still refreshes every projection built on subscribeStorage,
+	// and a failed write stays silent, its error propagating unnotified.
+	async discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean> {
+		const discarded = await this.storage.discardRecovery(clientMutationId, targetRef);
+		this.#notifyStorageChange([targetRef]);
+		return discarded;
+	}
+
+	subscribeStorage(listener: NativeMutationStorageListener): () => void {
+		this.#storageListeners.add(listener);
+		return () => this.#storageListeners.delete(listener);
 	}
 
 	registerTarget(
@@ -239,7 +299,10 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 			if (!this.#isCurrentRead(lease)) return "stale";
 			for (const record of records) {
 				if (record.state !== "submitting" || !record.attempted) continue;
-				await this.storage.markUnknown(record.clientMutationId, "blockedUnknown", { onlyAttempted: true });
+				const blocked = await this.storage.markUnknown(record.clientMutationId, "blockedUnknown", {
+					onlyAttempted: true,
+				});
+				if (blocked) this.#notifyStorageChange([lease.targetKey]);
 				if (!this.#isCurrentRead(lease)) return "stale";
 			}
 		}
@@ -281,7 +344,8 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 			// them. The interrupt itself passes no barrier - it IS the click
 			// the epoch records.
 			await this.start();
-			await this.#outbox.enqueueInterruptAndCancel(intent);
+			const record = await this.#outbox.enqueueInterruptAndCancel(intent);
+			this.#notifyStorageChange([record.targetRef]);
 			return undefined;
 		}
 		// The click-time half of the stop barrier, captured before the
@@ -292,8 +356,20 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter {
 			stopEpoch: await this.storage.readStopEpoch(intent.targetRef),
 		};
 		await this.start();
-		await this.#outbox.enqueueIntent(intent, undefined, barrier);
+		const record = await this.#outbox.enqueueIntent(intent, undefined, barrier);
+		this.#notifyStorageChange([record.targetRef]);
 		return undefined;
+	}
+
+	#notifyStorageChange(targetRefs: readonly string[]): void {
+		const refs = [...new Set(targetRefs)];
+		for (const listener of this.#storageListeners) {
+			try {
+				listener(refs);
+			} catch (error) {
+				console.error("Native mutation storage listener failed", error);
+			}
+		}
 	}
 }
 

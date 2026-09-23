@@ -1299,7 +1299,16 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+		// A queued message is a session mutation a past thread advertises, so it
+		// carries the same exited == never-exited contract as turn/start: the hub
+		// resumes the session and retries the write (withSessionResume). Without
+		// it a queue write against a thread whose daemon has exited was refused
+		// outright, which is exactly the route the web composer chooses for a
+		// message sent while it already has a send in flight against a finished
+		// session (appwire-client/typescript/sendQueueAvailability.ts) — so the
+		// message was dropped instead of being queued behind the resume that send
+		// had started.
+		return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnQueueResponse{}, err

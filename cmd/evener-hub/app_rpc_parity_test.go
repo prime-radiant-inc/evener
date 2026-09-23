@@ -404,41 +404,19 @@ func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
 }
 
 // TestHubRPCTurnControlsDoNotResumeExitedSession locks in the qp94 exception
-// classification: the turn-in-flight controls (steer, interrupt, queue,
-// drainAsSteer, promoteQueuedAsSteer, cancelQueued) gate on an active turn,
-// which a cold exited session cannot have. They must fail at the gate rather
-// than resurrect the daemon — resuming to a fresh idle session would give the
-// control nothing to act on.
+// classification: the controls that act on a turn already in flight (steer,
+// interrupt, drainAsSteer, promoteQueuedAsSteer, cancelQueued) gate on that
+// turn, which a cold exited session cannot have. They must fail at the gate
+// rather than resurrect the daemon — resuming to a fresh idle session would
+// give the control nothing to act on.
+//
+// Queue is deliberately NOT in this set any more: a queued message needs no
+// turn to act on (the daemon runs it as the next one), the web composer routes
+// a message there for a finished session, and a queue write against an exited
+// session used to be refused outright — dropping the message. It carries the
+// same resume-and-retry contract as send; the positive half is
+// TestHubRPCTurnQueueResumesExitedSession.
 func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
-	newExitedHub := func(t *testing.T) (*appwire.Client, *bool) {
-		t.Helper()
-		root := t.TempDir()
-		workingDir := t.TempDir()
-		stateDir := filepath.Join(root, "projects", "project-past-0000000000")
-		buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
-		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-		if _, err := past.Rebuild(); err != nil {
-			t.Fatal(err)
-		}
-		runDir := t.TempDir()
-		resumeCalled := false
-		spawner := &fakeRPCSpawner{
-			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
-				resumeCalled = true
-				return rendezvous.Entry{}, nil
-			},
-		}
-		roster := hubcore.NewRoster(runDir, nil)
-		hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
-		t.Cleanup(hub.Close)
-		client := dialHubRPC(t, hub)
-		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatalf("Initialize: %v", err)
-		}
-		return client, &resumeCalled
-	}
-
 	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
 	ref := "local:" + sessionID
 	ctx := context.Background()
@@ -453,9 +431,6 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 		{"interrupt", func(c *appwire.Client) error {
 			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref})
 		}},
-		{"queue", func(c *appwire.Client) error {
-			return c.TurnQueue(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
-		}},
 		{"drainAsSteer", func(c *appwire.Client) error {
 			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, ExpectedQueueRevision: 0, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
 		}},
@@ -469,7 +444,7 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			client, resumeCalled := newExitedHub(t)
+			client, resumeCalled := newExitedSessionHub(t)
 			if err := tc.call(client); err == nil {
 				t.Fatalf("%s on exited session succeeded; want gate error", tc.name)
 			}
@@ -477,6 +452,61 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 				t.Fatalf("%s resurrected an exited session; turn controls must stay live-only", tc.name)
 			}
 		})
+	}
+}
+
+// newExitedSessionHub serves one local thread known only to the past index —
+// no daemon behind it — and reports whether anything resumed it. It is the
+// fixture for the turn controls' resume classification, both halves.
+func newExitedSessionHub(t *testing.T) (*appwire.Client, *bool) {
+	t.Helper()
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	resumeCalled := false
+	spawner := &fakeRPCSpawner{
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalled = true
+			return rendezvous.Entry{}, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	return client, &resumeCalled
+}
+
+// TestHubRPCTurnQueueResumesExitedSession is the positive half of the queue
+// classification above: a queued message is the user speaking, so a queue write
+// against an exited session resumes the daemon the same way send does instead
+// of being refused. The write itself is not asserted here (this fixture's
+// spawner publishes no daemon, so there is nothing to queue against); the
+// delivery end to end is cmd/evener-hub/e2e_queue_prompt_exited_test.go.
+func TestHubRPCTurnQueueResumesExitedSession(t *testing.T) {
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	client, resumeCalled := newExitedSessionHub(t)
+	err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
+		ClientMutationID:   "test-mutation",
+		ExpectedInstanceID: sessionID,
+		Ref:                "local:" + sessionID,
+		Input:              []appwire.InputItem{{Type: "text", Text: "x"}},
+	})
+	if err == nil {
+		t.Fatal("turn/queue against an exited session succeeded with no daemon to queue against")
+	}
+	if !*resumeCalled {
+		t.Fatalf("turn/queue did not resume the exited session: %v", err)
 	}
 }
 
