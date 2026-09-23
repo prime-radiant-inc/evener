@@ -117,9 +117,11 @@ Concretely the proxied method names are (all `ScopeHub` in
   (`src/stores/extensions.ts:388`), and `evener/paths/complete`
   (`src/stores/extensions.ts:393`) — and would otherwise fail closed with
   `appwire.InvalidParams`, breaking path validation, auto-completion, and
-  directory creation in remote panes. **Implementation status:** the 07a
-  proxy's allow-list as written covers the five admin families only; adding the
-  discovery set above is a tracked 07a follow-up, not a present fact.
+  directory creation in remote panes. **Implementation status:** landed — the
+  07a allow-list (`remoteHostAdminMethods`, `cmd/evener-hub/app_host_admin.go`)
+  carries this discovery set beside the five admin families, and the checked-in
+  `cmd/evener-hub/host_request_methods.txt` is the spawn-form subset that the Go
+  and TypeScript parity tests both read.
   This is the same discovery set component 06 enumerates; the two must be a
   single shared source of truth or covered by a scripted-host parity test that
   forwards each method through the envelope (component 06, §"Frontend changes").
@@ -322,9 +324,14 @@ only**; the admin surface has no local-state variant of a remote-host action, so
 the correct disposition for a remote-originated remote-dispatch request is the
 typed refusal.
 
-**Implementation status:** no `origin` exists in the request context today
-(component 05, §"Ref translation detail"), and no admin handler consults one;
-this guard is the implementing PR's requirement.
+**Implementation status:** landed — the origin travels in the request context,
+stamped once at the hub's `/rpc` edge from the attach bridge marker
+(`X-Evener-Bridge`) by `cmd/evener-hub/host_routing_origin.go`; the value lives
+in `appsource.WithHostRoutingOrigin`/`HostRoutingOrigin` because the guard's
+shared dispatch seam reads it too. Both halves are in place and share one
+refusal body (`refuseRemoteOrigin`, typed `appwire.InvalidParams` naming the
+origin): the dial half (`guardRemoteHostDial`) and the dispatch half
+(`appsource.guardRemoteDispatch`).
 
 **Coverage:** a scenario test that injects a remote-originated
 `evener/host/request` — and the credential push, the non-local force-stop, and
@@ -370,8 +377,13 @@ type HostNotificationParams struct {
   subscribe to it. Without the catalog entry neither the Go client nor the
   generated TS types can name or type this notification — it is the same
   registration every other hub-originated notification carries.
-  **Implementation status:** neither the method nor its params type is in the
-  catalog today; this is the implementing PR's requirement.
+  **Implementation status:** landed — `evener/host/notification` is in the
+  AppWire notification catalog (`appwire/protocol.go`) with
+  `HostNotificationParams` (`appwire/types.go`), and the hub-side fan-out emits
+  it (`cmd/evener-hub/app_host_admin.go`) for the host-owned config
+  notifications: auth/updated, launch/updated, marketplace/updated,
+  plugin/updated, and settings/agentsDoc/changed. The client-side unwrapping
+  into host-scoped stores is 07b.
 
 ### Credential push method
 
