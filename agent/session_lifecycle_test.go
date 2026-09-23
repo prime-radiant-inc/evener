@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1872,5 +1873,39 @@ func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
 				t.Fatalf("selectDrainNextAction(%+v) = (%v,%v), want (%v,%v)", tc.in, got, skip, tc.want, tc.skip)
 			}
 		})
+	}
+}
+
+// Close's environment-work join waits on exactly the admissions it can name:
+// ending one admission's handle twice must not let the join past another that
+// is still live. The seam runs on the joining goroutine just before it blocks,
+// so ending the second admission there is the only way the join returns.
+func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	first, ok := s.beginEnvWork("first")
+	if !ok {
+		t.Fatal("first environment work was refused")
+	}
+	second, ok := s.beginEnvWork("second")
+	if !ok {
+		t.Fatal("second environment work was refused")
+	}
+	s.endEnvWork(first)
+	s.endEnvWork(first)
+	if got := s.outstandingEnvWork(); !slices.Equal(got, []string{"second"}) {
+		t.Fatalf("outstanding after ending first twice = %q, want [second]", got)
+	}
+	waited := false
+	s.cfg.testOnly.closeAwaitingEnvWork = func() {
+		waited = true
+		s.endEnvWork(second)
+	}
+	s.joinEnvWorkWithinCloseBudget(context.Background())
+	if !waited {
+		t.Fatal("the join returned without waiting for the admission still live")
+	}
+	if got := s.outstandingEnvWork(); len(got) != 0 {
+		t.Fatalf("outstanding after the join = %q, want none", got)
 	}
 }

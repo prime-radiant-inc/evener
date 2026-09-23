@@ -595,14 +595,14 @@ type testConfig struct {
 	// turns a red/green question into a positive fact. Nil in production.
 	closeAfterDisposeSweepJoin func()
 
-	// closeAwaitingEnvWork observes Close() arriving at its environment-work
-	// join (joinEnvWorkWithinCloseBudget) with admitted work still outstanding,
-	// just before it blocks there. It is the positive signal a fence test holds
-	// admitted work against: close reaching the join and waiting proves the
-	// work is fenced, while a close that is missing the join, or whose join does
-	// not track the held work, never calls it and reaches environment cleanup
-	// instead. A join with nothing outstanding does not call it. Nil in
-	// production.
+	// closeAwaitingEnvWork observes Close() at its environment-work join
+	// (joinEnvWorkWithinCloseBudget) immediately before it blocks there: the
+	// join holds the drained channel of live admitted work, which only the
+	// last admission's endEnvWork closes, and the close budget is not yet
+	// spent. It is the positive signal a fence test holds admitted work
+	// against. A close that is missing the join never calls it and reaches
+	// environment cleanup instead; a join with nothing outstanding, or with its
+	// budget already spent, does not call it either. Nil in production.
 	closeAwaitingEnvWork func()
 
 	// envCleanupObserved observes every environment Close() runs Cleanup on,
