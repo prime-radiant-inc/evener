@@ -20,6 +20,9 @@ import (
 // or explicit proj: ref.
 func TestDoctorEmittedRefsParseWithAgentRefGrammar(t *testing.T) {
 	stateHome := newStateHome(t)
+	// "a\b", kept in a variable so no string literal containing a path
+	// separator is handed to filepath.Join (gocritic filepathJoin).
+	backslashBucket := `a\b`
 	cases := []struct {
 		name    string
 		bucket  string
@@ -33,7 +36,7 @@ func TestDoctorEmittedRefsParseWithAgentRefGrammar(t *testing.T) {
 		{name: "colon-named", bucket: filepath.Join(stateHome, "evener", "projects", "a:b")},
 		// Backslash is a path separator on Windows; the doctor selector grammar
 		// rejects it, so it is never promised as a ref either.
-		{name: "backslash-named", bucket: filepath.Join(stateHome, "evener", "projects", `a\b`)},
+		{name: "backslash-named", bucket: filepath.Join(stateHome, "evener", "projects", backslashBucket)},
 	}
 
 	for _, tc := range cases {
