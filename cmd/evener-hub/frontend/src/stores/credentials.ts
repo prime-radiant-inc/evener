@@ -6,7 +6,7 @@
 // core which client the rows belong to, and the core listens for
 // evener/auth/updated on that client itself.
 
-import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type { HostPushCredentialsResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
@@ -14,7 +14,13 @@ import {
 } from "@evener/appwire-client/state/credentials";
 import { useEffect, useRef } from "react";
 import { createStore, useStore } from "zustand";
-import { type ConnectionStoreState, connectionStore, onConnectionNotification, useConnectionStore } from "./connection";
+import {
+  type ConnectionStoreState,
+  connectedClientPort,
+  connectionStore,
+  onConnectionNotification,
+  useConnectionStore,
+} from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
 import { type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
@@ -31,6 +37,11 @@ export type CredentialsStoreState = CredentialInstancesState;
 // The hub echoes ownClientId into the evener/auth/updated broadcast, so this
 // page attributes its own echo by identity rather than provider plus timing.
 export const credentialsStore = createCredentialInstancesStore({ ownClientId });
+
+// The shared client port (stores/connection.ts), labelled by this store: the
+// push resolves connectionStore's CURRENT client at call time, so a call before
+// AppShell's connect() fails loudly and a reconnect needs no rewiring.
+const { requireClient } = connectedClientPort("credentials");
 
 export function useCredentialsStore(): CredentialsStoreState;
 export function useCredentialsStore<T>(selector: (state: CredentialsStoreState) => T): T;
@@ -359,6 +370,18 @@ function startHostRead(
     return { ...previous, loading: true, error: null, readGeneration: generation, readPublished };
   }
   return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision, readGeneration: generation, readPublished };
+}
+
+/** pushHostCredentials copies THIS hub's local provider-instance keys to `host`
+ * through evener/host/pushCredentials (component 07c) and returns that host's
+ * own per-entry report verbatim. The local store is the push's SOURCE, so the
+ * controller's own hub is never a meaningful target and a caller names a remote
+ * host; the selected host comes from the settings route (stores/settingsHost.ts).
+ * The response carries no key value - only instance/action/reason - so nothing
+ * here can read, render, or log one. A refusal (an unknown or unattached host, a
+ * refused dispatch) rejects to the caller rather than returning an empty report. */
+export async function pushHostCredentials(host: string): Promise<HostPushCredentialsResponse> {
+  return requireClient().request("evener/host/pushCredentials", { host });
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in
