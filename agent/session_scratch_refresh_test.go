@@ -745,7 +745,9 @@ func TestScratchRestoreAdoptionReportsNoTransferForABorrow(t *testing.T) {
 // release can seal, detach, and tombstone the allocation in between. The bare
 // borrow checks nothing but the directory's existence, so pre-fix it
 // installed a Released, pin-less, lease-less directory the collector is free
-// to remove from under the restored environment.
+// to remove from under the restored environment. Round 32 tightened the
+// report: the declined borrow is not-installed, so the caller reprovisions
+// fresh scratch instead of reading a success with the allocation missing.
 func TestScratchBorrowDeclinesATerminallyReleasedDirectory(t *testing.T) {
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
@@ -793,8 +795,8 @@ func TestScratchBorrowDeclinesATerminallyReleasedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("adopt the wrapper binding over a terminal release: %v", err)
 	}
-	if !installed {
-		t.Fatal("the adoption did not run")
+	if installed {
+		t.Fatal("the adoption reported an install over a terminal-released pool: the decline must reach the caller as not-installed")
 	}
 	// The directory itself still exists — the release retains pooled handles
 	// rather than deleting — so a bare existence check would pass; the
@@ -804,6 +806,59 @@ func TestScratchBorrowDeclinesATerminallyReleasedDirectory(t *testing.T) {
 	}
 	if got := env.SessionScratchDir(); filepath.Clean(got) == filepath.Clean(retainedDir) {
 		t.Fatalf("the adoption borrowed the terminal-released %q: the environment would run on a collectible, lease-less directory", retainedDir)
+	}
+}
+
+// TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool pins round 32's
+// second Medium: the guarded borrow's sealed/detached skip returned true —
+// session's own retirement release reported success with the shared
+// allocation silently missing. The decline must report not-installed so the
+// caller's detached-pool report routes the restore to fresh scratch.
+func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01BORROWSEAL1"
+	const bindingID = "b-borrow-sealed"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	wrapperRow := bindingRow
+	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The retirement release lands inside the snapshot-to-borrow window. It
+	// seals and detaches the pool but never tombstones the manifest and never
+	// removes pins (round 28), so the disk still reads the directory
+	// retained: the decline must come from the seal, and the caller must be
+	// able to see that the borrow installed nothing.
+	s.cfg.testOnly.scratchAdoptionBeforeBorrow = func() {
+		s.releaseRetirementScratch()
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the wrapper binding over a retirement seal: %v", err)
+	}
+	if installed {
+		t.Fatalf("the adoption reported an install over the retirement-sealed pool: the shared allocation is silently missing instead of declined to fresh scratch")
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) == filepath.Clean(retainedDir) {
+		t.Fatalf("the adoption borrowed the retirement-sealed %q", retainedDir)
 	}
 }
 
@@ -1911,6 +1966,73 @@ func TestContendedSlotWithoutLiveAllocationKeepsBindingRow(t *testing.T) {
 	}
 	if !pinned {
 		t.Fatalf("the first mint %q was left unpinned: a protected allocation must publish a reference", minted)
+	}
+}
+
+// TestSwapKeepsBorrowedSlotsNonOwning pins round 32's first Medium: the
+// environment swap wrote every moved slot to the target binding with
+// OwnsLease:true, so a wrapper-only slot — a borrowed directory whose lease
+// another binding owns — was promoted to a lease-owning slot. The manifest
+// would then claim the target owns a lease that was never transferred.
+func TestSwapKeepsBorrowedSlotsNonOwning(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01SWAPWRAP1"
+	const bindingID = "b-swap-wrapper"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	wrapperRow := bindingRow
+	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	// The source environment borrows the retained directory lease-less, so
+	// its binding row carries the wrapper-only slot the swap must move.
+	source := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { source.Cleanup(); source.DisposeSandboxScratch() })
+	if _, _, err := s.adoptRetainedScratchFor(source, bindingID, consumerID); err != nil {
+		t.Fatalf("source adoption of the wrapper binding: %v", err)
+	}
+	if got := source.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(retainedDir) {
+		t.Fatalf("fixture: the source did not borrow the retained %q (got %q)", retainedDir, got)
+	}
+
+	target := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { target.Cleanup(); target.DisposeSandboxScratch() })
+	if err := s.stageScratchSwapBinding(target, source, consumerID); err != nil {
+		t.Fatalf("stage the swap binding: %v", err)
+	}
+	targetBinding, err := target.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, targetBinding.BindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", targetBinding.BindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the swap dropped the borrowed slot: got %+v", row.Slots)
+	}
+	if slot.OwnsLease {
+		t.Fatalf("the swap promoted the borrowed slot to a lease-owning slot: the manifest would claim the target owns a lease that was never transferred")
 	}
 }
 

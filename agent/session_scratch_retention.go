@@ -360,7 +360,12 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 			if _, kept := keptKinds[kind]; kept {
 				continue
 			}
-			targetRecord.Slots[kind] = sandbox.ScratchSlot{Dir: slot.Dir, OwnsLease: true}
+			// The slot moves verbatim, its OwnsLease flag with it: a
+			// wrapper-only slot is a borrowed directory whose lease another
+			// binding owns, and promoting it to a lease-owning slot would
+			// make the manifest claim the target owns a lease that was never
+			// transferred (round 32).
+			targetRecord.Slots[kind] = slot
 		}
 		if hook := s.cfg.testOnly.scratchSwapBeforeUpdate; hook != nil {
 			hook()
@@ -1508,8 +1513,20 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			if takenBy == adopterID {
 				return false, nil, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 			}
-			if _, err := s.borrowRetainedScratchIfLive(pool, env, bindingID, kind, slot); err != nil {
+			installed, err := s.borrowRetainedScratchIfLive(pool, env, bindingID, kind, slot)
+			if err != nil {
 				return false, nil, err
+			}
+			if !installed {
+				// The borrow declined. A pool that detached mid-window makes the
+				// whole adoption's report the detached-pool one so the caller
+				// reprovisions fresh scratch (round 18); any other decline —
+				// sealed, or a directory the collector may take — leaves this
+				// kind to fresh scratch and the row naming a directory a later
+				// refresh can re-probe (round 32).
+				if s.retainedScratch.Load() != pool {
+					return false, nil, nil
+				}
 			}
 			continue
 		}
@@ -1543,8 +1560,14 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// only while the allocation is still live: the claim's snapshot
 			// is one pool-lock hold earlier, and the terminal release can
 			// seal, detach, and tombstone in between (round 30).
-			if _, err := s.borrowRetainedScratchIfLive(pool, env, bindingID, kind, slot); err != nil {
+			installed, err := s.borrowRetainedScratchIfLive(pool, env, bindingID, kind, slot)
+			if err != nil {
 				return false, nil, err
+			}
+			if !installed {
+				if s.retainedScratch.Load() != pool {
+					return false, nil, nil
+				}
 			}
 		case handle != nil:
 			if hook := s.cfg.testOnly.scratchAdoptionAfterClaim; hook != nil {
@@ -1634,7 +1657,12 @@ func (s *Session) borrowRetainedScratchIfLive(pool *retainedScratchPool, env *ex
 		borrowErr = borrowRetainedScratch(env, bindingID, kind, slot)
 	}
 	pool.mu.Unlock()
-	return true, borrowErr
+	// The bool reports whether the borrow INSTALLED, not whether the disk
+	// reads retained: a sealed or detached pool declines with the install
+	// silently skipped, and reporting that as success left the adoption
+	// claiming a shared allocation the environment never received (round
+	// 32).
+	return !sealed && live, borrowErr
 }
 
 // scratchSlotContended reports whether slot key's lease was held elsewhere in
@@ -2112,14 +2140,6 @@ func releaseRetainedScratchPool(pool *retainedScratchPool) {
 	}
 }
 
-// detachRetainedScratch unpublishes and releases the retained-scratch pool.
-// The detach itself — the compare-and-swap that unpublishes the pointer —
-// runs under the pool mutex, so a concurrent refresh's fold, which installs
-// and revalidates publication under the same mutex, can never land rows in a
-// pool that was already dead: the fold either completes entirely inside the
-// pool's published lifetime or declines and retries against the current
-// pointer. Handles are still released outside the mutex so a concurrent
-// adoption never observes a half-cleared map.
 // sealRetainedScratch marks this session's retained-scratch pool sealed,
 // storing the seal under the live pool's own lock: a wrapper borrow that
 // holds the lock across its install either completes before the seal or
@@ -2137,6 +2157,14 @@ func (s *Session) sealRetainedScratch() {
 	pool.mu.Unlock()
 }
 
+// detachRetainedScratch unpublishes and releases the retained-scratch pool.
+// The detach itself — the compare-and-swap that unpublishes the pointer —
+// runs under the pool mutex, so a concurrent refresh's fold, which installs
+// and revalidates publication under the same mutex, can never land rows in a
+// pool that was already dead: the fold either completes entirely inside the
+// pool's published lifetime or declines and retries against the current
+// pointer. Handles are still released outside the mutex so a concurrent
+// adoption never observes a half-cleared map.
 func (s *Session) detachRetainedScratch() {
 	pool := s.retainedScratch.Load()
 	if pool == nil {

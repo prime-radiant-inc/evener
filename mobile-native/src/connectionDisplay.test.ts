@@ -177,6 +177,12 @@ it("useLiveReadiness refuses a stale callback inside the commit-to-effect window
 		return createElement(Probe);
 	}
 	const tree = render(createElement(Owner));
+	// The mount's landing render refuses — a pairing is never born-settled by
+	// the render it arrives in — so the first committed render whose callback
+	// the settled birth authorizes is the same-props update after the settle.
+	act(() => {
+		tree.update(createElement(Owner));
+	});
 	expect(windowVerdict).toBe(true);
 	hubId = "hub-2";
 	client = second;
@@ -219,6 +225,12 @@ it("useLiveReadiness refuses a ready-captured callback while the connection stat
 		return createElement(Probe);
 	}
 	const tree = render(createElement(Owner));
+	// The mount's landing render refuses — a pairing is never born-settled by
+	// the render it arrives in — so the first committed render whose callback
+	// the settled birth authorizes is the same-props update after the settle.
+	act(() => {
+		tree.update(createElement(Owner));
+	});
 	// hub-1's connection is genuinely ready: the captured callback authorizes.
 	expect(windowVerdict).toBe(true);
 
@@ -451,6 +463,83 @@ it("a hub re-key keeps refusing the previous hub's ready pairing until the conne
 	expect(display.result.current).toBe("none");
 	expect(renderClient.result.current).toBe(second);
 	expect(live.result.current()).toBe(true);
+});
+
+// Round 32's High: a re-keyed remount lands while the connection still
+// reports the previous hub's ready client — the store's selection moves
+// before the connection re-points — and none of the guards may treat the
+// props a mount was born with as earned. The wiring's own update path walls
+// that pairing; the mount must not serve, trust, or authorize it on the
+// render it lands with.
+it("a re-keyed remount refuses the previous hub's pairing on the render it lands with", () => {
+	const first = {} as AppwireClient;
+	// The landing render's products, captured where that render itself would
+	// use them: the first layout effect observes the landing commit before
+	// any settling effect adopts anything. The settle re-renders the
+	// state-driven hooks trigger would otherwise overwrite the capture
+	// before it could be read.
+	let landedDisplay: ReturnType<typeof useConnectionDisplay> | null = null;
+	let landedClient: AppwireClient | null = null;
+	let probed = false;
+	let landingDisplay: ReturnType<typeof useConnectionDisplay> | null = null;
+	let landingClient: AppwireClient | null = null;
+	let deferred: LiveReadiness = () => false;
+	let windowVerdict: boolean | null = null;
+	function Probe() {
+		useLayoutEffect(() => {
+			if (probed) {
+				return;
+			}
+			probed = true;
+			landingDisplay = landedDisplay;
+			landingClient = landedClient;
+			windowVerdict = deferred();
+		});
+		return null;
+	}
+	function Owner() {
+		landedDisplay = useConnectionDisplay("hub-2", "ready", false);
+		landedClient = useRenderClient(first, "ready", "hub-2");
+		deferred = useLiveReadiness("hub-2", first, "ready");
+		return createElement(Probe);
+	}
+	render(createElement(Owner));
+	// None of the guards treats the props the mount was born with as earned.
+	expect(landingDisplay).toBe("wall");
+	expect(landingClient).toBeNull();
+	expect(windowVerdict).toBe(false);
+
+	// After the settle the pairing is adopted — the bounded residual these
+	// hooks cannot close on their own: none of them can see which hub the
+	// connection's client actually belongs to, so the connection layer's
+	// re-point is what retires a stale pairing the mount landed on.
+	expect(landedDisplay).toBe("none");
+	expect(landedClient).toBe(first);
+	expect(deferred()).toBe(true);
+});
+
+// Round 32's retention Medium: the effect that resets `everReady` on a hub
+// move re-armed it in the same run when the moved render still carried the
+// previous hub's ready state, so the new hub retained content it never
+// showed. The re-arm must be gated on the same render's scope move.
+it("useConnectionDisplay: a hub move while ready does not retain content the next hub never showed", () => {
+	let hubId = "hub-1";
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	// Mount-already-ready: the settle earns trust and retention for hub-1.
+	display.rerender();
+	expect(display.result.current).toBe("none");
+
+	// The re-key: hubId moves while the connection still reports ready.
+	hubId = "hub-2";
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+
+	// The state drops after the move settled: hub-2 has never been ready, so
+	// nothing it never showed may stay mounted behind a banner.
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("wall");
 });
 
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {

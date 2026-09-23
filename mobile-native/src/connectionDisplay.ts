@@ -58,7 +58,11 @@ export function useLiveReadiness(
 	// The pairing is settled by the effect below, never during render: a
 	// render React abandons midway must not leave ref writes behind.
 	const current = useRef({ scope, client, state });
-	const bornScope = useRef({ client, scope });
+	// Seeded empty: the props a remount was born with are not a birth — a
+	// re-keyed remount can land on the previous hub's still-ready pairing —
+	// so the settling effect records the first birth, and the render before
+	// it refuses the pairing the mount arrived with (round 32).
+	const bornScope = useRef<{ client: object | null; scope: string }>({ client: null, scope });
 	const lastObserved = useRef({ scope, client, state });
 	const generation = useRef(0);
 	// Synchronous on the observed pairing move, before any effect runs: this
@@ -155,13 +159,18 @@ export function useConnectionDisplay(
 	const everReady = useRef(false);
 	const fatalRecovery = useRef(false);
 	const scope = useRef<string | undefined>(hubId);
-	// The hub whose connection the current ready state vouches for: set at
-	// mount and on every transition INTO ready, read on every ready render. A
-	// hub change alone — the re-key window's only event — never re-records
-	// it, so however long the connection keeps reporting the previous hub's
-	// client as ready under the new hub, the trust stays with the hub that
-	// earned it.
-	const [trustedScope, setTrustedScope] = useState<string | undefined>(hubId);
+	// The hub whose connection the current ready state vouches for: seeded
+	// empty at mount, recorded on the first transition INTO ready the
+	// settling effect observes and on every later one, read on every ready
+	// render. A hub change alone — the re-key window's only event — never
+	// re-records it, so however long the connection keeps reporting the
+	// previous hub's client as ready under the new hub, the trust stays with
+	// the hub that earned it. The mount's own ready state earns the trust
+	// only through the settling effect, never on the render it arrives in:
+	// a re-keyed remount can land on the previous hub's still-ready pairing,
+	// and the props a mount was born with are not evidence it vouches for
+	// this hub (round 32).
+	const [trustedScope, setTrustedScope] = useState<string | undefined>(undefined);
 	const lastState = useRef<ConnectionState | "unmounted">("unmounted");
 	// The hub the refs still record retention for. The reset itself runs in
 	// the effect below, so this render computes with voided values instead of
@@ -182,7 +191,12 @@ export function useConnectionDisplay(
 			}
 			lastState.current = state;
 		}
-		if (state === "ready") {
+		if (state === "ready" && !scopeMoved) {
+			// The retention arm is gated on the same render's scopeMoved: in
+			// the re-key window the moved render still carries the previous
+			// hub's ready state, and re-arming on it would retain content for
+			// a hub that has never been ready — the reset above would be
+			// undone by the very effect run that performed it (round 32).
 			everReady.current = true;
 			fatalRecovery.current = false;
 		} else if (fatal) {
@@ -249,6 +263,17 @@ export function whenReady<A extends unknown[]>(
  * for the one render before its settling effect runs). A return to a hub
  * whose adoption still stands serves immediately.
  *
+ * The adoption is seeded empty — scope undefined — so a fresh mount serves
+ * nothing on its first render however ready the props claim: a remount of
+ * this wiring (the screens key their bodies to the hub id) can land on props
+ * that are still the previous hub's pairing — the store's selection moves
+ * before the connection re-points — and the props a mount was born with are
+ * never evidence the pairing earned anything. The settling effect performs
+ * the first adoption exactly like every later one, and the empty scope seed
+ * is what withholds the mount's first render; a ready render beyond it still
+ * serves the live client prop, so a replacement that arrives ready is never
+ * delayed a render behind the stores keyed on it (round 32).
+ *
  * The adoption is state, not a ref, because it gates what the ready renders
  * hand out: a connection can deliver a new hub's client and its readiness in
  * one commit, and without the adoption's own re-render the stores that read
@@ -260,7 +285,7 @@ export function useRenderClient(
 ): AppwireClient | null {
 	const [adoption, setAdoption] = useState<{ client: AppwireClient | null; scope: string | undefined }>(() => ({
 		client: null,
-		scope: hubId,
+		scope: undefined,
 	}));
 	useEffect(() => {
 		if (state === "ready" && client !== null && client !== adoption.client) {
