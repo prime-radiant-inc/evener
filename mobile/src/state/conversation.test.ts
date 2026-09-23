@@ -4523,12 +4523,13 @@ describe("ConversationStore", () => {
           .map((row) => row.id),
       ).toEqual(["wire-new:attachments"]);
       // The notice seats through the source identity the SOURCE row owns,
-      // so it sits after the source row, above the attachments row it
-      // arrived after.
+      // after the attachments that follow the source — the position it
+      // arrived at, with the source/attachment pair left adjacent (the
+      // cap cut drops orphans by that adjacency).
       expect(reissued.map((row) => [row.kind, row.id])).toEqual([
         ["user", "wire-new"],
-        ["failure", "warning:1"],
         ["attachments", "wire-new:attachments"],
+        ["failure", "warning:1"],
       ]);
       // A later row-changing rebuild keeps the notice seated.
       store.getState().applyNotification({
@@ -4550,10 +4551,84 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
         ["user", "wire-new"],
-        ["failure", "warning:1"],
         ["attachments", "wire-new:attachments"],
+        ["failure", "warning:1"],
         ["user", "u2"],
       ]);
+    });
+
+    // RoboRev follow-up to the panel round 2 fix: a notice anchored
+    // through an attachment row's source identity must not seat BETWEEN
+    // the source and its attachments. capItems' cap cut drops a leading
+    // attachment whose source fell off the cut (an orphaned attachment's
+    // lingering source identity makes loadOlder's F10 admission rule
+    // refuse a genuine older page copy of that source, forever) — and it
+    // only scans a LEADING RUN of attachments: a notice seated between
+    // the pair became the first retained row at the cut, the scan stopped
+    // before reaching the attachment, and the orphan survived.
+    it("drops an attachment at the cap cut even when a warning is seated at its source's position", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                {
+                  type: "userMessage",
+                  id: "wire-old",
+                  transcriptKey: "stable-message",
+                  text: "old",
+                  images: [{ type: "image", url: "https://hub.test/old" }],
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(rows(store).map((row) => row.kind)).toEqual([
+        "user",
+        "attachments",
+      ]);
+      // An idle warning lands while the attachments row is the nearest
+      // model row.
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store)).toHaveLength(3);
+      // Grow the transcript past the retained cap so the cut lands right
+      // after the source row: [user, notice, attachments, a1..a498] is
+      // 501 rows and the cap keeps the newest 500.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      for (let i = 1; i <= 498; i++) {
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: agentMessageItem(`a${i}`, `message ${i}`),
+          },
+        } as AnyNotification);
+      }
+      const after = rows(store);
+      // The source fell off the cut; its attachment left with it, and the
+      // notice kept its seat.
+      expect(after.some((row) => row.id === "wire-old")).toBe(false);
+      expect(after.some((row) => row.kind === "attachments")).toBe(false);
+      expect(after.filter((row) => row.kind === "failure")).toHaveLength(1);
+      expect(after).toHaveLength(499);
     });
 
     it("preserves a command description through live item projection", async () => {

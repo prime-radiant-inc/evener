@@ -713,9 +713,10 @@ export function createConversationStore() {
   // nothing after the reissue and the next rebuild pruned the notice
   // (RoboRev panel round 2) — so attachment rows anchor through their
   // STABLE source identity (attachmentSourceIdentity), which the reissue
-  // keeps. The seating walk resolves that anchor on the source row, so
-  // the notice seats after the source row, above the attachments row it
-  // arrived after: the position its anchor names, as for any other row.
+  // keeps. The seating walk resolves that anchor on the source row and
+  // seats the notice after the attachments that follow it (never between
+  // the pair — see capAndTruncate), so the notice keeps the position it
+  // arrived at, after the attachments row that was the nearest row then.
   function arrivalAnchor(
     items: MobileTimelineItem[],
     noticeIdentities: ReadonlySet<string>,
@@ -771,7 +772,8 @@ export function createConversationStore() {
       }
     }
     const seated: MobileTimelineItem[] = [...noticesBeforeEverything];
-    for (const item of conversation.items) {
+    for (let index = 0; index < conversation.items.length; index += 1) {
+      const item = conversation.items[index];
       seated.push(item);
       // RoboRev round 37: anchors resolve through the identities the row
       // OWNS, not just its own top-level one — pagination can seat an older
@@ -784,7 +786,26 @@ export function createConversationStore() {
       if (noticesByAnchor.size === 0) continue;
       for (const identity of ownTimelineIdentities(item)) {
         const bucket = noticesByAnchor.get(identity);
-        if (bucket !== undefined) seated.push(...bucket);
+        if (bucket === undefined) continue;
+        // A notice anchored through an attachment row's source identity
+        // seats after the attachments that follow the source, never
+        // between the pair: capItems' cap cut drops a leading attachment
+        // whose source fell off the cut and only scans a LEADING RUN of
+        // attachments, so a notice seated between the pair would become
+        // the first retained row at the cut and the orphan behind it
+        // would survive — its lingering source identity then makes
+        // loadOlder's F10 admission rule refuse a genuine older page copy
+        // of that source, forever. This is also the position the notice
+        // arrived at: the attachments row was the nearest row when it
+        // landed (RoboRev panel round 2).
+        while (
+          index + 1 < conversation.items.length &&
+          attachmentSourceIdentity(conversation.items[index + 1]) === identity
+        ) {
+          index += 1;
+          seated.push(conversation.items[index]);
+        }
+        seated.push(...bucket);
       }
     }
     const items = capItems(seated).map((item) => truncateItem(item, bound));
