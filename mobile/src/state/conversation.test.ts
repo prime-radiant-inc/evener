@@ -16963,6 +16963,222 @@ describe("ConversationStore", () => {
       expect(rows(store).some((row) => row.id === "X")).toBe(false);
     });
 
+    // RoboRev #2213 round 1 (Medium): the reset above takes the row off the
+    // screen, but the page ownership the removed item recorded used to
+    // outlive the removal — and the wire reuses item ids across stream
+    // restarts (the reset→started protocol), so the restarted live row
+    // inherited a claim that described content the model no longer held and
+    // survived an authoritative snapshot that omitted it.
+    it("a reset that reuses the item id clears its page ownership: an omitting rehydrate cannot resurrect the restarted row", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t2", items: [], status: "completed" })],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "X",
+                turnId: "t1",
+                type: "agentMessage",
+                text: "page answer",
+                position: { entry: 10, item: 0 },
+                status: "completed",
+              },
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).some((row) => row.id === "X")).toBe(true);
+
+      // The wire retracts X and restarts the stream under the SAME id.
+      store.getState().applyNotification({
+        method: "item/agentMessage/reset",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "X",
+        },
+      } as AnyNotification);
+      expect(rows(store).some((row) => row.id === "X")).toBe(false);
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: agentMessageItem("X", "restarted", "inProgress"),
+        },
+      } as AnyNotification);
+      expect(rowById(store, "X")).toMatchObject({
+        kind: "assistant",
+        markdown: "restarted",
+      });
+
+      // The authoritative snapshot omits X: the restarted row is live state
+      // the wire no longer carries, not page history — it must not come back.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t2", items: [], status: "completed" })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rows(store).some((row) => row.id === "X")).toBe(false);
+    });
+
+    // The same seam on the completion side: a full turn/completed replaces
+    // the turn's item set, so the items its stamp omits leave the model —
+    // and the page ownership they recorded must leave with them, the
+    // identities an omitted item's attachment row resolves its source by
+    // included. The wire reuses ids across turns, so a stale claim would
+    // resurrect a later live row an authoritative snapshot omits.
+    it("a full completion's omitted items lose page ownership, attachment identities included: an omitting rehydrate cannot resurrect a reused id", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The older page is a FRAGMENT of the active turn itself (the
+      // resumed-old-turn shape): its items fold into t1 as page history the
+      // window never held on its own — a keyed source with its image, and a
+      // tool call beside it.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "old-wire",
+                turnId: "t1",
+                transcriptKey: "K",
+                type: "userMessage",
+                text: "hi",
+                images: [{ type: "image", url: "https://hub.test/img" }],
+                position: { entry: 10, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+              {
+                id: "gone-tool",
+                turnId: "t1",
+                type: "commandExecution",
+                toolName: "shell",
+                output: "page output",
+                position: { entry: 11, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "old-wire:attachments")).toBeDefined();
+      expect(rowById(store, "gone-tool")).toBeDefined();
+
+      // The turn's full completion omits both: the model withdraws their
+      // last copies, rows and attachment with them.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "full",
+            status: "completed",
+            items: [userMessageItem("other", "kept")],
+          },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "old-wire")).toBeUndefined();
+      expect(rowById(store, "old-wire:attachments")).toBeUndefined();
+      expect(rowById(store, "gone-tool")).toBeUndefined();
+
+      // The wire reuses both ids live in the next turn — the keyed source
+      // with its image again, so its attachment row returns with it.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: {
+            id: "old-wire",
+            turnId: "t2",
+            transcriptKey: "K",
+            type: "userMessage",
+            text: "hi again",
+            images: [{ type: "image", url: "https://hub.test/img" }],
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: {
+            id: "gone-tool",
+            turnId: "t2",
+            type: "commandExecution",
+            toolName: "shell",
+            output: "live again",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      expect(rowById(store, "old-wire:attachments")).toBeDefined();
+      expect(rowById(store, "gone-tool")).toBeDefined();
+
+      // The authoritative snapshot omits both everywhere: the restarted rows
+      // are live state the wire no longer carries, not page history — they
+      // must not come back, the attachment included.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("other", "kept")],
+            }),
+            makeTurn({
+              id: "t2",
+              status: "inProgress",
+              items: [userMessageItem("kept-live", "kept")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t2" }),
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "old-wire")).toBeUndefined();
+      expect(rowById(store, "old-wire:attachments")).toBeUndefined();
+      expect(rowById(store, "gone-tool")).toBeUndefined();
+    });
+
     // A replayed input image reaches a page with no bytes and no stamped
     // url, only its content sha. D23d: the store's own merge hydrates the
     // page against the merged MODEL's serving session — the route the hub

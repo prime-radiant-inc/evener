@@ -45,7 +45,6 @@ import type {
   InputItem,
   ItemModel,
   MutationReceipt,
-  ThreadItem,
   TurnModel,
   ThreadModel,
   WarningParams,
@@ -56,7 +55,6 @@ import type {
   MobileTimelineItem,
 } from "../conversation/project";
 import {
-  activityIdentity,
   attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
@@ -459,6 +457,10 @@ export function createConversationStore() {
   ): MobileConversation {
     const next = applyNotification(conversation, n, Date.now());
     carryFoldIdentities(conversation.turns, next.turns);
+    // #2213 round 1: settle the page-ownership record against what the
+    // frame removed from the model before anything reads it (the publish
+    // below, the reread a settled turn can request).
+    clearPageOwnershipForFrameRemovals(conversation, next, n);
     return next;
   }
   // D23d: page-owned timeline identities — the item identities (and
@@ -1170,6 +1172,58 @@ export function createConversationStore() {
     for (const claim of claimsToRetire) pageItemIds.delete(claim);
     for (const claim of claimsToAdd) pageItemIds.add(claim);
     return claimsToAdd;
+  }
+
+  // RoboRev #2213 round 1 (Medium): a reset and a full turn/completed REMOVE
+  // items from the model — the wire authoritatively withdrew them — and the
+  // page ownership those identities recorded must not outlive the removal.
+  // A stale claim promotes the identity's NEXT holder to page history: the
+  // wire reuses item ids across stream restarts (the reset→started
+  // protocol) and across turns, so a restarted live row would ride a claim
+  // that describes content the model no longer holds and survive an
+  // authoritative rehydrate that omits it. Ownership follows CONTENT, so a
+  // claim clears only when the frame took the identity's last model copy —
+  // a page copy another turn still backs keeps it (the identity-keyed rule
+  // the recorders write, and the retention a surviving page fragment owns
+  // by design). The spellings cleared are the pair every recorder writes —
+  // key-first and bare id — which is also the pair an omitted item's
+  // attachment row resolves its source by (attachmentSourceIdentity reads
+  // the source's transcript key, else the bare id the ":attachments" row id
+  // carries), so the attachment's page ownership retires with its source's.
+  function clearPageOwnershipForFrameRemovals(
+    before: MobileConversation,
+    after: MobileConversation,
+    n: AnyNotification,
+  ): void {
+    // Only the removal frames reach this walk; every other kind adds or
+    // merges content. These two are the only reducer paths that remove —
+    // a reset filters the named item out, and a full completion stamp
+    // replaces the active turn's item set (the bare and non-active settle
+    // paths never remove).
+    if (n.method !== "item/agentMessage/reset" && n.method !== "turn/completed") {
+      return;
+    }
+    // A frame the reducer dropped left the turns untouched.
+    if (after.turns === before.turns) return;
+    const heldAfter = new Set<string>();
+    for (const turn of after.turns) {
+      for (const item of turn.items) {
+        heldAfter.add(item.transcriptKey ?? item.id);
+        heldAfter.add(item.id);
+      }
+    }
+    for (const turn of before.turns) {
+      for (const item of turn.items) {
+        if (
+          heldAfter.has(item.transcriptKey ?? item.id) ||
+          heldAfter.has(item.id)
+        ) {
+          continue;
+        }
+        pageItemIds.delete(item.transcriptKey ?? item.id);
+        pageItemIds.delete(item.id);
+      }
+    }
   }
 
   // RoboRev round 24: a refresh can NAME the live working set's turn while
