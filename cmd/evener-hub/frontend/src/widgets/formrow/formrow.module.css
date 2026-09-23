@@ -11,9 +11,7 @@
    * intends. The row would then refuse to shrink and overflow its flex
    * container instead of letting the control's own ellipsis do its job
    * (kata p6g8: the overflowing row visually collided with the next field).
-   * No browser guard covers this now: the p6g8 layoutguard case reproduced
-   * a spawn config row Spawn.tsx no longer renders, and deleting this
-   * declaration had stopped failing it, so the case was removed. */
+   * No browser guard covers this declaration. */
   min-width: 0;
 }
 
