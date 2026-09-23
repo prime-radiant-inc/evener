@@ -17783,6 +17783,67 @@ describe("ConversationStore", () => {
       expect(rowById(store, "ask-1")).toMatchObject({ kind: "question" });
     });
 
+    it("a preserved reply settles the snapshot's ask under one projection", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [askUserItem("ask-old", VALID_ASK_ARGS)],
+            }),
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                userMessageItem("reply-1", "I choose A"),
+                askUserItem("ask-new", VALID_ASK_ARGS),
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1", askPending: true }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // The older ask is answered by the live turn's reply; only the
+      // newer ask stays answerable.
+      expect(rowById(store, "ask-old")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "ask-new")).toMatchObject({ kind: "question" });
+
+      // The refresh omits the live turn (naming it active) while its
+      // snapshot still carries the OLDER ask: the preserved reply must
+      // settle that ask in the SAME projection the preserved rows come
+      // from — projecting the two turn sets separately left the
+      // snapshot's answered card displayed while the answer sheet
+      // (pendingQuestions, over the combined model) already dropped it
+      // (RoboRev round 28).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [askUserItem("ask-old", VALID_ASK_ARGS)],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1", askPending: true }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "ask-old")).toMatchObject({ kind: "activity" });
+      expect(rowById(store, "ask-new")).toMatchObject({ kind: "question" });
+      expect(rowById(store, "reply-1")).toBeDefined();
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

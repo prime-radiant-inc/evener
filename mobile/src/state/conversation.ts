@@ -57,9 +57,11 @@ import {
   attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
+  liveAsksFor,
   MAX_ITEM_BYTES,
   ownTimelineIdentities,
   projectConversation,
+  projectTimeline,
   RETAINED_ITEM_CAP,
   timelineIdentity,
   timelineIdentities,
@@ -1002,7 +1004,6 @@ export function createConversationStore() {
     previous: MobileConversation | null,
     sameInstance: boolean,
     projected: MobileConversation,
-    freshTurns: TurnModel[],
   ): MobileConversation {
     const activeId = projected.activeTurnId;
     if (
@@ -1021,7 +1022,7 @@ export function createConversationStore() {
     // the canonical one — the next row-changing frame would project the
     // twin (the package identity rule, the same match the page merge's
     // twin filter reads).
-    const freshItems = freshTurns.flatMap((turn) => turn.items);
+    const freshItems = projected.turns.flatMap((turn) => turn.items);
     const preservedItems = liveTurn.items.filter(
       (item) => !freshItems.some((fresh) => itemIdentityMatches(item, fresh)),
     );
@@ -1029,68 +1030,37 @@ export function createConversationStore() {
       preservedItems.length === liveTurn.items.length
         ? liveTurn
         : { ...liveTurn, items: preservedItems };
-    // Every identity the projection carries, in both spellings — the
-    // round-29 rule: a keyless reissue matches a keyed row by bare id.
-    const identities = new Set<string>();
-    for (const row of projected.items) {
-      for (const identity of timelineIdentities(row)) identities.add(identity);
-      identities.add(row.id);
-      if (row.kind === "activity" && row.members) {
-        for (const member of row.members) identities.add(member.id);
-      }
-    }
-    const projectedAttachmentSources = new Set(
-      projected.items
-        .map((row) => attachmentSourceIdentity(row))
-        .filter((id): id is string => id !== null),
-    );
-    // Every identity the preserved turn owns: its surviving items'
-    // identities in both spellings, plus the turn id a projected failure
-    // row would carry.
-    const liveIdentities = new Set([preservedTurn.id]);
-    for (const item of preservedTurn.items) {
-      liveIdentities.add(item.transcriptKey ?? item.id);
-      liveIdentities.add(item.id);
-    }
-    // The preserved turn's rows reproject from the MODEL through the
-    // canonical projector with the REFRESHED conversation's own thread
-    // fields (RoboRev round 27): a row copied from the previous
-    // projection bakes in the previous askPending — a settled ask the
-    // snapshot says is no longer pending would keep rendering its
-    // answerable card, and an ask the snapshot says IS pending would keep
-    // rendering as an ordinary tool activity, both stale until the next
-    // row-changing frame. The module's own contract makes this exact —
-    // rows are always a function of turns (page prepends excepted, and
-    // the live turn owns none) — and the projector renders streamed
-    // chunks and activity state the same way the live applier does.
-    const reprojected = projectConversation({
+    // One asks scan over the COMBINED turns (RoboRev round 28): the
+    // question gating reads the wire's askPending plus WHICH asks the
+    // combined model still holds pending, and rows appended from two
+    // separate scans disagreed with the answer sheet — a snapshot ask the
+    // preserved turn's user reply had already answered kept its
+    // answerable card in the snapshot's own rows while pendingQuestions
+    // (over the combined model) correctly dropped it, until the next
+    // row-changing frame. The scan is the one thing the two turn sets
+    // must share; the projections themselves stay separate, so
+    // clustering stays within each set and the retained cluster shapes
+    // survive exactly as the page prepend and the live preserve build
+    // them. A row copied from the previous projection would instead bake
+    // in the previous askPending (RoboRev round 27) — the projector
+    // renders streamed chunks and activity state the same way the live
+    // row applier does, so the reprojection is exact.
+    const combinedAsks = liveAsksFor({
       ...projected,
-      turns: [preservedTurn],
+      turns: [...projected.turns, preservedTurn],
     });
-    // Cluster rows are judged per member, not whole: a member the snapshot
-    // re-served must not drag the live members it does not carry down
-    // with it — the cluster rebuilds around the survivors exactly the way
-    // the page prepend rebuilds its own (round 25).
-    const liveRows = reprojected.items.flatMap((row): MobileTimelineItem[] => {
-      if (![...timelineIdentities(row), row.id].some((id) => liveIdentities.has(id))) {
-        return [];
-      }
-      if (row.kind !== "activity" || row.members === undefined) {
-        return supersededBy(row, identities, projectedAttachmentSources) ? [] : [row];
-      }
-      const { members, unchanged } = ownedClusterMembers(
-        row,
-        identities,
-        (identity) => liveIdentities.has(identity),
-      );
-      if (unchanged) return supersededBy(row, identities, projectedAttachmentSources) ? [] : [row];
-      if (members.length === 0) return [];
-      return [rebuildOwnedCluster(row, members)];
-    });
+    const freshRows = projectTimeline(
+      { ...projected, turns: projected.turns },
+      combinedAsks,
+    );
+    const preservedRows = projectTimeline(
+      { ...projected, turns: [preservedTurn] },
+      combinedAsks,
+    );
     return {
       ...projected,
       turns: [...projected.turns, preservedTurn],
-      items: [...projected.items, ...liveRows],
+      items: [...freshRows, ...preservedRows],
     };
   }
 
@@ -2052,14 +2022,16 @@ export function createConversationStore() {
           const preserveTurnHistory =
             sameInstance &&
             (pageOwnedTurnIds.size > 0 || pageOwnedCompactTurnIds.size > 0);
-          const merged = withLiveActiveTurn(
-            currentConvForMerge,
-            sameInstance,
-            preservePageHistory
-              ? withPageHistory(currentConvForMerge, conversation)
-              : conversation,
-            conversation.turns,
-          );
+          // The live-turn preserve reprojects first (round 28): the page
+          // prepend then restores page-only rows against the COMBINED
+          // projection, so a page row the preserved turn also carries
+          // dedupes exactly like one the snapshot carried.
+          const merged = preservePageHistory
+            ? withPageHistory(
+                currentConvForMerge,
+                withLiveActiveTurn(currentConvForMerge, sameInstance, conversation),
+              )
+            : withLiveActiveTurn(currentConvForMerge, sameInstance, conversation);
           // The page's cursor is the newer one when its history is kept: the
           // reread's reflects the full readProjection, which does not include
           // the paged rows.
