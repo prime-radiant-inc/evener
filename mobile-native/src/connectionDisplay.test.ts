@@ -185,6 +185,41 @@ it("useRenderClient: a hub change drops the previous hub's client instead of fal
 	expect(hook.result.current).toBeNull();
 });
 
+// The re-key window the hooks' own doc comments describe: the navigator has
+// re-keyed the screen to hub-2 while the connection still reports hub-1's
+// client as "ready". That state is the previous hub's say-so — no request may
+// run and nothing may render on that pairing until the connection reports for
+// the new hub.
+it("a hub re-key with the old client still ready walls, withholds the client, and refuses live readiness", () => {
+	const first = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const renderClient = renderHook(() => useRenderClient(client, state, hubId));
+	const live = renderHook(() => useLiveReadiness(hubId, client, state));
+	const deferred = live.result.current;
+
+	// hub-1's connection is genuinely ready: everything reports on its client.
+	expect(display.result.current).toBe("none");
+	expect(renderClient.result.current).toBe(first);
+	expect(deferred()).toBe(true);
+	expect(live.result.current()).toBe(true);
+
+	// The re-key: only hubId moves. The client object and state are unchanged
+	// — still hub-1's client, still reporting ready — so this render carries
+	// no information from hub-2's connection at all.
+	hubId = "hub-2";
+	display.rerender();
+	renderClient.rerender();
+	live.rerender();
+	expect(display.result.current).toBe("wall");
+	expect(renderClient.result.current).toBeNull();
+	expect(live.result.current()).toBe(false);
+	// A deferred captured before the move stays refused as well.
+	expect(deferred()).toBe(false);
+});
+
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
 	const handler = vi.fn();
 	whenReady(() => false, handler)("a", 1);

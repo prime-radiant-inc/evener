@@ -9,12 +9,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -349,6 +353,177 @@ func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
 
 	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
 		t.Errorf("failed delegate restore left scratch %v, which nothing will ever release", leaked)
+	}
+}
+
+// saveColdRestorableChild writes a committed child's session meta and an
+// empty transcript — the durable state a real committed spawn leaves — so a
+// cold restore can reconstruct the child from disk.
+func saveColdRestorableChild(t *testing.T, stateDir string, base schema.SessionMeta, childID, parentID, task, workdir string, depth int) {
+	t.Helper()
+	childMeta := base
+	childMeta.ID = childID
+	childMeta.ParentSessionID = parentID
+	childMeta.IsSubagent = true
+	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, childID), transcript.Header{
+		SessionID:       childID,
+		ParentSessionID: parentID,
+		Task:            task,
+		ProfileID:       "openai",
+		Model:           "gpt-5.2",
+		WorkingDir:      workdir,
+		Depth:           depth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A grandchild restore runs as the CHILD owner, and a child never runs
+// prepareRetainedScratch — so the failed restore settles with no pool, the
+// exact state the round-11 nil-pool dispose branch was written for. But the
+// environment it fails on can be the live parent's shared one, not a fresh
+// one this restore created: the caller's mintedScratch gate only proves the
+// environment held no SCRATCH at adoption time, while the parent's
+// world-usable TMPDIR container — provisioned long before this restore and
+// still serving the parent's spawned children — is something
+// DisposeUnadoptedScratch also removes, breaking removeUnsandboxedTmpLocked's
+// own rule that a live env keeps its container. The settle must drop the
+// failed construction's fresh mint without taking the live parent's container
+// with it.
+func TestRestoreIdleFailureOnASharedEnvKeepsTheParentTempContainer(t *testing.T) {
+	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	root, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	// The child owner: its own working directory gives it a private plain
+	// unsandboxed environment (the write-capable ceiling keeps the restore off
+	// the read-only floor), and being a child it owns no retained-scratch pool.
+	childID := identifier.MustNewSessionID()
+	childWorkspace := t.TempDir()
+	childConfig := meta.Config.Clone()
+	childConfig.AgentName = "subagent"
+	childDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    childID,
+		TranscriptRef:     encodeRef("", childID),
+		OwnerSessionID:    meta.ID,
+		VisibleSessionID:  meta.ID,
+		Task:              "own the grandchild's restore",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            childConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, childID, meta.ID, childDescriptor.Task, childWorkspace, 1)
+	childSub, _, err := (delegateRuntime{owner: root}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: childDescriptor,
+	})
+	if err != nil {
+		t.Fatalf("restore the child owner: %v", err)
+	}
+	defer childSub.sess.discardRestoredCandidate()
+	parent := childSub.sess
+	if parent.retainedScratch.Load() != nil {
+		t.Fatal("fixture expected the child owner to hold no retained-scratch pool")
+	}
+	parentEnv, ok := parent.env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("child owner env = %T, want a local environment", parent.env)
+	}
+	if dir := parentEnv.SessionScratchDir(); dir != "" {
+		t.Fatalf("fixture expected the child owner's environment scratchless before the grandchild restore, got %q", dir)
+	}
+
+	// The parent's environment has already served commands, so it holds the
+	// world-usable TMPDIR container every spawned child receives. The scratch
+	// that first command minted is then dropped — DisposeUnsandboxedScratch's
+	// own contract keeps the container and its lease — so the grandchild's
+	// restore enters against a scratchless environment that nonetheless holds
+	// a live container: exactly the live-parent shape.
+	probe, err := parentEnv.ExecCommand(context.Background(), `printf %s "$TMPDIR"`, 5000, "", nil)
+	if err != nil {
+		t.Fatalf("probe the parent's TMPDIR: %v", err)
+	}
+	containerDir := strings.TrimSpace(probe.Stdout)
+	if containerDir == "" {
+		t.Fatal("fixture expected the parent environment to hold a TMPDIR container")
+	}
+	parentEnv.DisposeUnsandboxedScratch()
+	if dir := parentEnv.SessionScratchDir(); dir != "" {
+		t.Fatalf("fixture expected the parent environment scratchless before the grandchild restore, got %q", dir)
+	}
+
+	// The grandchild is committed against the child owner with the SAME
+	// working directory, which is what routes its restore onto the parent's
+	// live shared environment instead of building a fresh one.
+	grandchildID := identifier.MustNewSessionID()
+	grandchildConfig := meta.Config.Clone()
+	grandchildConfig.AgentName = "subagent"
+	grandchildDescriptor := delegatestore.Descriptor{
+		ChildSessionID:    grandchildID,
+		TranscriptRef:     encodeRef("", grandchildID),
+		OwnerSessionID:    childID,
+		VisibleSessionID:  childID,
+		Task:              "fail construction on the shared environment",
+		AgentType:         "default",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+		FrozenRolePrompt:  defaultSubagentInstructions,
+		ToolNameCeiling:   []string{"communicate", "write_file"},
+		WorkingDir:        childWorkspace,
+		LocalEnvPolicy:    "default",
+		Config:            grandchildConfig,
+		Resumable:         true,
+	}
+	saveColdRestorableChild(t, stateDir, meta, grandchildID, childID, grandchildDescriptor.Task, childWorkspace, 2)
+	// The snapshot only runs commands in a repo, and running commands is what
+	// mints the shared environment's scratch.
+	sbxGit(t, childWorkspace, "init", "-q")
+	scratchBase := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, scratchBase)
+	boom := errors.New("grandchild construction failed")
+	parent.cfg.testOnly.skipGitSnapshot = false
+	parent.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	if _, _, err := (delegateRuntime{owner: parent}).restoreIdle(delegateStartCommit{
+		lease:      delegateLease{delegateID: identifier.MustNewDelegateID()},
+		ctx:        context.Background(),
+		descriptor: grandchildDescriptor,
+	}); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+
+	// The grandchild's construction minted a fresh scratch on the shared
+	// environment; that mint is this restore's own garbage (the round-11
+	// contract holds for a child owner too), so it must be gone.
+	if dirs := scratchDirsIn(t, scratchBase); len(dirs) != 0 {
+		t.Errorf("failed grandchild restore left scratch %v, which nothing will ever release", dirs)
+	}
+	// The parent's container is NOT this restore's to remove: the live parent
+	// and its already-spawned children still point at it as TMPDIR.
+	if _, err := os.Stat(containerDir); err != nil {
+		t.Errorf("the failed grandchild restore destroyed the live parent's TMPDIR container %q: %v", containerDir, err)
 	}
 }
 

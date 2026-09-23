@@ -21,7 +21,10 @@ export function isReady(state: ConnectionState): boolean {
 export type LiveReadiness = () => boolean;
 
 /** Keeps a deferred request tied to the render that opened it: the current
- * state must still be ready for the same hub and client before it may run. */
+ * state must still be ready for the same hub and client before it may run —
+ * and in the re-key window, where the hub has moved while the connection
+ * still reports the previous hub's client as ready, that pairing is the
+ * previous hub's say-so and authorizes nothing. */
 export function useLiveReadiness(
 	scope: string,
 	client: object | null,
@@ -29,12 +32,23 @@ export function useLiveReadiness(
 ): LiveReadiness {
 	const current = useRef({ scope, client, state });
 	current.current = { scope, client, state };
+	// The last pairing an effect settled is the trusted one. A moved scope
+	// still carrying the client the previous scope adopted is the re-key
+	// window the doc comment describes; the effect below re-establishes the
+	// pair, so exactly the moved render refuses.
+	const established = useRef({ scope, client });
+	const stalePair =
+		established.current.scope !== scope && established.current.client === client;
+	useEffect(() => {
+		established.current = { scope, client };
+	}, [scope, client]);
 	return useCallback(
 		() =>
+			!stalePair &&
 			current.current.scope === scope &&
 			current.current.client === client &&
 			current.current.state === "ready",
-		[scope, client],
+		[scope, client, stalePair],
 	);
 }
 
@@ -70,7 +84,8 @@ export function connectionDisplay(
  * hub says nothing about the next one: both refs are reset as soon as
  * `hubId` moves, and the new hub's first render already reads them as void,
  * so a hub the profile is still moving toward inherits neither the banner
- * history nor the fatal wall of the one before it. */
+ * history nor the fatal wall of the one before it. That first moved render
+ * walls outright — the state it reports still belongs to the previous hub. */
 export function useConnectionDisplay(
 	hubId: string | undefined,
 	state: ConnectionState,
@@ -99,11 +114,15 @@ export function useConnectionDisplay(
 			fatalRecovery.current = true;
 		}
 	}, [state, fatal, hubId]);
-	return connectionDisplay(
-		state,
-		scopeMoved ? false : everReady.current,
-		fatal || (scopeMoved ? false : fatalRecovery.current),
-	);
+	// The connection reports the PREVIOUS hub in the re-key window (`hubId`
+	// has moved while the connection still reports the old one), and this
+	// hook cannot see which client that state vouches for. Void the whole
+	// moved render — the wall is the fail-closed display — and read retention
+	// only on the renders after the effect settles the new scope.
+	if (scopeMoved) {
+		return "wall";
+	}
+	return connectionDisplay(state, everReady.current, fatal || fatalRecovery.current);
 }
 
 /** Wraps a handler so it no-ops unless the live readiness predicate is true: the shared guard an
@@ -159,6 +178,14 @@ export function useRenderClient(
 		}
 		if (state === "ready") lastClient.current = client;
 	}, [state, hubId, client]);
+	// In the re-key window the connection still reports the PREVIOUS hub's
+	// client as ready, and lastClient.current is exactly that previous
+	// adoption, so a moved scope still carrying it must not hand it out as
+	// though the new hub's connection had vouched for it. The new hub's own
+	// client is a different object and passes.
+	if (scopeMoved && client === lastClient.current) {
+		return null;
+	}
 	return state === "ready" ? client : scopeMoved ? null : lastClient.current;
 }
 

@@ -1781,8 +1781,10 @@ func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir strin
 }
 
 // settleFailedRestoreScratch settles the per-session scratch a failed delegate
-// restore left on the environment that restore created, so its teardown never
-// removes a directory the root's durable retention manifest still references.
+// restore left on the environment it restored onto — one the restore created,
+// or the live parent's it merely shared — so its teardown never removes a
+// directory the root's durable retention manifest still references, and never
+// takes a live environment's temp container with it.
 // A binding's slots are transferred one at a time and binding.Slots has no
 // order, so an adoption can commit an earlier slot and then fail on a later one,
 // leaving the environment holding an allocation the pool has already handed
@@ -1798,8 +1800,13 @@ func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir strin
 // transfer with no handle behind it; any other referenced allocation is
 // released (its lease given up, its directory kept, as any handoff does).
 // adopterID is the consumer the failed adoption ran for. Only what the manifest
-// does not reference — the environment's own fresh mint — is disposed.
-func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, adopterID string) {
+// does not reference — the environment's own fresh mint — is disposed, and the
+// disposal respects ownership: an environment this restore created dies with
+// the failure, dirs and world-usable temp container both, while a shared one
+// belongs to the live parent, so only its unreferenced scratch directories are
+// dropped and the parent's container — which the children it already spawned
+// still use as TMPDIR — stays. createdEnv is the caller's ownsFresh.
+func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, adopterID string, createdEnv bool) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		disposeUnadoptedScratch(env)
@@ -1814,20 +1821,32 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 		return
 	}
 	if s.retainedScratch.Load() == nil {
+		if !createdEnv {
+			// A shared environment is the live parent's own object. The failed
+			// construction's fresh mint is still this restore's to drop, but the
+			// parent's world-usable temp container is not: DisposeUnadoptedScratch
+			// would remove it (removeUnsandboxedTmpLocked), breaking the env
+			// layer's own rule that a live env keeps its container for the
+			// children already spawned through it.
+			local.DisposeSandboxScratch()
+			local.DisposeUnsandboxedScratch()
+			return
+		}
 		// No pool exists to classify anything. This is the state every failed
-		// CHILD construction reaches — prepareRetainedScratch never runs for a
-		// child — and every reference this environment holds was published by
-		// this very restore: the fresh mint the failed construction pinned
-		// under its own new binding. Keeping it would leak a directory nothing
-		// will ever reacquire; disposing is exactly the fresh-mint contract.
-		// (When the manifest is released or empty the loop below reaches the
-		// same outcome anyway.) The precondition is the caller's, not the
-		// manifest's: the single production caller routes any environment
-		// that gained an adopted allocation to its retain branch before this
-		// settlement runs, and a manifest read cannot take that
-		// classification over — the round-11 mint is manifest-referenced
-		// exactly like an adopted allocation, so settling by the manifest
-		// demonstrably regresses the pinned dispose contract.
+		// CHILD construction reaches on an environment this restore created —
+		// prepareRetainedScratch never runs for a child — and every reference
+		// such an environment holds was published by this very restore: the
+		// fresh mint the failed construction pinned under its own new binding.
+		// Keeping it would leak a directory nothing will ever reacquire;
+		// disposing is exactly the fresh-mint contract. (When the manifest is
+		// released or empty the loop below reaches the same outcome anyway.)
+		// The precondition is the caller's, not the manifest's: the single
+		// production caller routes any environment that gained an adopted
+		// allocation to its retain branch before this settlement runs, and a
+		// manifest read cannot take that classification over — the round-11
+		// mint is manifest-referenced exactly like an adopted allocation, so
+		// settling by the manifest demonstrably regresses the pinned dispose
+		// contract.
 		local.DisposeUnadoptedScratch()
 		return
 	}
@@ -1853,7 +1872,14 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 	}
 	// Whatever is left is the restore's own fresh mint, which no manifest
 	// references and no later restore would reacquire.
-	local.DisposeUnadoptedScratch()
+	if createdEnv {
+		local.DisposeUnadoptedScratch()
+		return
+	}
+	// The shared parent keeps its world-usable temp container: only the
+	// scratch directories this restore's failure left behind are dropped.
+	local.DisposeSandboxScratch()
+	local.DisposeUnsandboxedScratch()
 }
 
 // retainedScratchReferenceDirs returns the canonical directories this session's

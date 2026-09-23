@@ -2271,8 +2271,10 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			// Adoption can transfer one slot of the child's binding and then
 			// fail on another, and its recovery can pin a fresh mint; either
 			// way a blanket dispose would remove a directory the manifest still
-			// references. Settle it by what the manifest names.
-			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID)
+			// references. Settle it by what the manifest names; createdEnv
+			// (ownsFresh) tells the settle whether the environment is this
+			// restore's own or the live parent's shared object.
+			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID, ownsFresh)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
