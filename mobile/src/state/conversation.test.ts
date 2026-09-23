@@ -18150,6 +18150,96 @@ describe("ConversationStore", () => {
       expect(failureRows()[0]?.title).toBe("fresh boom");
     });
 
+    // RoboRev round 32, pagination-side fold: loadOlder's merge folds a
+    // failed page turn into a retained turn that shares its item — the
+    // merged model carries the error under the RETAINED turn, but the
+    // committed page row still said failure:<page turn>, so the next
+    // row-changing frame projected the carrier's failure beside it: the
+    // same failure twice. The row and its page ownership must migrate with
+    // the fold at the pagination commit too (rounds 30-31 covered the
+    // rehydrate side), with the same one-row-per-identity reconciliation.
+    it("migrates a failed page turn's failure row when the pagination merge folds it into a retained turn", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t1",
+                  type: "agentMessage",
+                  text: "retained text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
+          {
+            kind: "failure",
+            id: "failure:t0",
+            title: "page boom",
+            detail: "page boom",
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t0",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      // The fold moved the failure onto the retained turn — the committed
+      // row must carry the carrier's identity, not the folded page turn's.
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t1");
+
+      // A row-changing frame projects the carrier's failure from the
+      // model — still one row, same identity.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t1");
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

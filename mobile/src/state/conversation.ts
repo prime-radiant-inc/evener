@@ -2999,6 +2999,77 @@ export function createConversationStore() {
             // the retained-side folds name the carrier a bridged compact
             // turn's content landed in.
             transferFoldedCompactedEntries(strippedPageTurns, pageMerge?.folds.newerTurnFolds);
+            // RoboRev round 32: the pagination merge folds a failed page
+            // turn into the retained turn that shares its item — the
+            // merged model carries the error under the CARRIER, but the
+            // committed page row still names failure:<page turn>, so the
+            // next row-changing frame projects failure:<carrier> beside
+            // it: the same failure twice. The row and its page ownership
+            // migrate with the fold here too (rounds 30-31 did the
+            // rehydrate side), with the same one-row-per-identity
+            // reconciliation: the carrier's own failure row (a retained
+            // row the current side already owned) wins, renamed rows keep
+            // first-come order, and a rename landing on an existing
+            // identity drops instead of duplicating.
+            if (pageMerge) {
+              const pageTurnsById = new Map(
+                (pageMerge.olderTurns ?? []).map((turn) => [turn.id, turn]),
+              );
+              const pageFailureRenames = new Map<string, string>();
+              // The pagination merge passes the page turns as the merge's
+              // OLDER side, so the page turns a group absorbed are named
+              // by folds.olderTurnFolds (output id -> page turn ids);
+              // newerTurnFolds names the retained side's own members.
+              for (const [outputId, olderTurnIds] of pageMerge.folds.olderTurnFolds) {
+                for (const olderTurnId of olderTurnIds) {
+                  const olderTurn = pageTurnsById.get(olderTurnId);
+                  if (!olderTurn?.error) continue;
+                  const olderIdentity = failureRowIdentity(olderTurnId);
+                  if (!pageOwnedIds.has(olderIdentity)) continue;
+                  pageFailureRenames.set(
+                    olderIdentity,
+                    failureRowIdentity(outputId),
+                  );
+                }
+              }
+              if (pageFailureRenames.size > 0) {
+                const nativeFailureIds = new Set<string>();
+                for (const row of merged) {
+                  if (row.kind === "failure" && !pageFailureRenames.has(row.id)) {
+                    nativeFailureIds.add(row.id);
+                  }
+                }
+                const seenRenamedIds = new Set<string>();
+                const droppedRows = new Set<number>();
+                for (let i = 0; i < merged.length; i++) {
+                  const row = merged[i]!;
+                  if (row.kind !== "failure") continue;
+                  const renamedId = pageFailureRenames.get(row.id);
+                  if (renamedId === undefined) continue;
+                  if (
+                    nativeFailureIds.has(renamedId) ||
+                    seenRenamedIds.has(renamedId)
+                  ) {
+                    droppedRows.add(i);
+                    continue;
+                  }
+                  seenRenamedIds.add(renamedId);
+                  merged[i] = { ...row, id: renamedId };
+                }
+                for (let i = merged.length - 1; i >= 0; i--) {
+                  if (droppedRows.has(i)) merged.splice(i, 1);
+                }
+                for (const [
+                  olderIdentity,
+                  survivorIdentity,
+                ] of pageFailureRenames) {
+                  pageOwnedIds.delete(olderIdentity);
+                  if (seenRenamedIds.has(survivorIdentity)) {
+                    pageOwnedIds.add(survivorIdentity);
+                  }
+                }
+              }
+            }
             // #1919 follow-up: bound the retained turn payloads against the
             // final retained rows (pageMerged), after the merge — the pass
             // prunes pageOwnedTurnIds with the same bound, moving a page turn
