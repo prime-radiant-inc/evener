@@ -660,7 +660,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		for _, check := range runbook.Checks {
 			tripped, err := check.evaluate(source)
 			if err != nil {
-				return AuditResult{}, fmt.Errorf("runbook %s check %q on session %s: %w", runbook.Name, check.Title, paths.TranscriptRef, err)
+				return AuditResult{}, fmt.Errorf("runbook %s check %q on session %s: %w", runbook.Name, check.Title, followSelector(paths.TranscriptRef, paths.SessionID), err)
 			}
 			if !tripped {
 				continue
@@ -679,7 +679,11 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				checkBySignature[sig] = check
 				signatureOrder = append(signatureOrder, sig)
 			}
-			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, paths.TranscriptRef)
+			// Evidence carries the same selector the reads used: a session in
+			// a bucket with no consumable ref is named by bare id instead of
+			// dropping out, so the affected-session count, the --sessions
+			// reproduction line, and a re-run of that line all keep working.
+			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, followSelector(paths.TranscriptRef, paths.SessionID))
 		}
 	}
 
