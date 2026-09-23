@@ -441,10 +441,13 @@ deterministic test pass.
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
-count) minus the 1-minute load average rounded up, clamped to at least two and
+count) minus the 1-minute load average rounded up, clamped to at least one and
 at most four. A checkout where the helper cannot be read falls back to a flat
-four, which is what the gate used before the helper existed. The floor of two
-is a correctness bound, not a tuning one: see the vmThreads note below.
+four, which is what the gate used before the helper existed. On top of that,
+`vitest_run_args` (scripts/lib/gate-budgets.sh) and vite.config.ts's default
+never hand Vitest fewer than two workers. That floor is a correctness bound,
+not a tuning one, and it lives there rather than in the shared helper: see the
+vmThreads note below.
 The four is a ceiling, not a fixed pool. Vitest's own default pool is
 `os.availableParallelism()`, which oversubscribed a 10-core host under the
 combined load of `make test`'s sibling Go streams and starved otherwise causal
