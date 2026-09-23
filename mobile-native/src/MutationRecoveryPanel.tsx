@@ -180,20 +180,20 @@ export function recoveryFailureMessage(error: unknown): string {
 // The recovery entry point: a healthy, connected conversation whose composer
 // has no error and no uncertain submission still needs a way into the recovery
 // modal when a target holds recoverable rows - a durable row outlives the
-// transient error that surfaced it. A failed acquisition also offers the entry,
-// so the failure can be retried in the modal instead of being invisible.
+// transient error that surfaced it. The affordance is strictly row-conditional:
+// zero rows means no entry, so no dead control ships that opens an empty
+// recovery surface (durable submission, which makes rows exist, is a later
+// slice; until then this stays hidden and activates with no further UI change).
 export function shouldOfferRecoveryEntry({
 	connected,
 	deliveryConcern,
 	count,
-	failed,
 }: {
 	connected: boolean;
 	deliveryConcern: boolean;
 	count: number;
-	failed: boolean;
 }): boolean {
-	return connected && !deliveryConcern && (count > 0 || failed);
+	return connected && !deliveryConcern && count > 0;
 }
 
 export interface RecoveryPanelSurface {

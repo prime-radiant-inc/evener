@@ -259,29 +259,21 @@ async function flush() {
 	});
 }
 
-it("offers the recovery entry only to a connected, unconcerned conversation with rows or a failure", () => {
+it("offers the recovery entry only when the snapshot has rows, never as a dead affordance", () => {
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: false,
 			count: 1,
-			failed: false,
 		}),
 	).toBe(true);
+	// Zero rows = no entry, even after a failure: the affordance is
+	// row-conditional, so nothing ships that opens an empty recovery surface.
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: false,
 			count: 0,
-			failed: true,
-		}),
-	).toBe(true);
-	expect(
-		shouldOfferRecoveryEntry({
-			connected: true,
-			deliveryConcern: false,
-			count: 0,
-			failed: false,
 		}),
 	).toBe(false);
 	expect(
@@ -289,7 +281,6 @@ it("offers the recovery entry only to a connected, unconcerned conversation with
 			connected: true,
 			deliveryConcern: true,
 			count: 3,
-			failed: false,
 		}),
 	).toBe(false);
 	expect(
@@ -297,9 +288,45 @@ it("offers the recovery entry only to a connected, unconcerned conversation with
 			connected: false,
 			deliveryConcern: false,
 			count: 3,
-			failed: false,
 		}),
 	).toBe(false);
+});
+
+it("hides the entry while the snapshot is empty and shows it when rows arrive", async () => {
+	const targetKey = JSON.stringify(["hub-a", "ref-a"]);
+	let rows: MutationRecoveryRecord<MutationAttachmentRef>[] = [];
+	const runtime = fakeRuntime({
+		read: async () => ({ outbox: [], optimistic: [], recovery: rows }),
+	});
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	expect(result.current.count).toBe(0);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: result.current.count,
+		}),
+	).toBe(false);
+
+	rows = [recovery(targetKey, "row-1", 1, "rejected")];
+	act(() => result.current.retry());
+	await flush();
+	expect(result.current.count).toBe(1);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: result.current.count,
+		}),
+	).toBe(true);
 });
 
 it("surfaces a failed runtime acquisition and clears it on retry", async () => {
@@ -324,15 +351,15 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 		"mutations db unavailable",
 	);
 	expect(result.current.count).toBe(0);
-	// The failure is not invisible: the entry offers a way into the modal.
+	// Zero rows = no entry, even after a failure: the affordance is
+	// row-conditional, so a failed surface opens no dead control.
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: false,
 			count: result.current.count,
-			failed: result.current.failed,
 		}),
-	).toBe(true);
+	).toBe(false);
 
 	mode = "ok";
 	act(() => result.current.retry());
@@ -341,6 +368,13 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 	expect(result.current.error).toBeNull();
 	expect(result.current.failed).toBe(false);
 	expect(result.current.count).toBe(1);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: result.current.count,
+		}),
+	).toBe(true);
 });
 
 it("surfaces a rejected discard instead of leaving an unhandled rejection", async () => {

@@ -2541,7 +2541,6 @@ export function ConversationScreen({
 									connected,
 									deliveryConcern,
 									count: recovery.count,
-									failed: recovery.failed,
 								}) ? (
 									<Action
 										tone="quiet"
