@@ -633,6 +633,91 @@ func TestRunAudit_RequiresSessionsOrSince(t *testing.T) {
 	}
 }
 
+// TestRunAudit_SinceAuditsLegacyNamedBuckets proves the --since audit set
+// covers buckets whose directory names the agent ref grammar cannot consume
+// (round 3's refFor emits no TranscriptRef for them): the session is audited
+// via its bare id — never recorded as a blank-identity unreadable with the
+// misleading "no session selector" error — so the operator keeps both the
+// coverage and the identity of every swept session.
+func TestRunAudit_SinceAuditsLegacyNamedBuckets(t *testing.T) {
+	base := t.TempDir()
+	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	writeSessionsFixtureSession(t, legacyBucket, sidA,
+		transcript.Header{CreatedAt: time.Now(), Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, time.Now())
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the legacy-named bucket's session must be audited", res.SessionsChecked)
+	}
+	// Invariant: no Unreadable entry ever carries a blank identity.
+	for _, u := range res.Unreadable {
+		if u.SessionID == "" {
+			t.Errorf("Unreadable entry with a blank session_id: %+v", u)
+		}
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — a session with no emitted ref is audited, not skipped as unreadable", res.Unreadable)
+	}
+}
+
+// TestRunAudit_LegacyBucketEvidenceNamesSessions covers the evidence path
+// round 4 left raw: a check tripping in sessions whose bucket names earn no
+// emitted ref (legacy-named bucket) must name EVERY affected session by
+// bare id — not collapse them into one empty-string entry — so the
+// affected-session count, the --sessions reproduction line, and a re-run of
+// that line against RunAudit all keep working.
+func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
+	base := t.TempDir()
+	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	writeAuditSession(t, legacyBucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, legacyBucket, sidB, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidB))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
+	}
+	if len(res.Findings) != 2 {
+		t.Fatalf("Findings = %d, want 2 (both checks trip in both sessions): %+v", len(res.Findings), res.Findings)
+	}
+	for _, f := range res.Findings {
+		if len(f.Evidence.SessionRefs) != 2 {
+			t.Errorf("finding %q SessionRefs = %v, want both affected sessions listed", f.Title, f.Evidence.SessionRefs)
+		}
+		named := map[string]bool{}
+		for _, ref := range f.Evidence.SessionRefs {
+			if ref == "" {
+				t.Errorf("finding %q carries a blank evidence ref: %v", f.Title, f.Evidence.SessionRefs)
+				continue
+			}
+			named[ref] = true
+		}
+		if !named[sidA] || !named[sidB] {
+			t.Errorf("finding %q SessionRefs = %v, want %q and %q by bare id", f.Title, f.Evidence.SessionRefs, sidA, sidB)
+		}
+		if !strings.Contains(f.Evidence.DoctorCommand, sidA) || !strings.Contains(f.Evidence.DoctorCommand, sidB) {
+			t.Errorf("finding %q DoctorCommand = %q, want the reproduction line to name both sessions by bare id", f.Title, f.Evidence.DoctorCommand)
+		}
+		// The reproduction line must actually re-run: feeding the evidence
+		// refs back as --sessions audits both sessions again, with no
+		// blank-identity unreadable rows.
+		res2, err := RunAudit(base, rb, AuditOpts{Sessions: f.Evidence.SessionRefs})
+		if err != nil {
+			t.Fatalf("re-running %q DoctorCommand refs: %v", f.Title, err)
+		}
+		if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
+			t.Errorf("re-running %q evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", f.Title, res2.SessionsChecked, res2.Unreadable)
+		}
+	}
+}
+
 func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
 	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
