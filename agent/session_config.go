@@ -675,6 +675,10 @@ type testConfig struct {
 	// publish can land in, because the detach takes no manifest lock the
 	// refresh's install hold would serialize on. Nil in production.
 	scratchTerminalReleaseAfterDetach func()
+	// scratchRetirementAfterDetach runs inside releaseRetirementScratch right
+	// after the retained pool detaches, the window a racing refresh's seed
+	// CAS can land in. It is nil in production and test-only.
+	scratchRetirementAfterDetach func()
 
 	// scratchTerminalReleaseAttempt observes each terminal-release attempt
 	// at 1, in the same position as the environment pin probe: inside the

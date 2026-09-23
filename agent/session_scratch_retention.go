@@ -947,7 +947,15 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 					// outcome, reached from the reacquire: the leases this
 					// pass already took are handed back above, the refresh
 					// declines, and the restore proceeds on fresh scratch a
-					// later reset will reinitialize into (round 14).
+					// later reset will reinitialize into (round 14). The
+					// decline is not a leave-alone: a pool published before
+					// this pass keeps serving rows the tombstone no longer
+					// authorizes — the adoption seam reading the pool right
+					// below would transfer a retained allocation over a
+					// released manifest — so the published consumer rows
+					// clear exactly like the pass-start decline (round 24,
+					// round 28).
+					s.clearRetainedScratchConsumerRows()
 					return nil
 				}
 				return fmt.Errorf("retained scratch refresh %q: %w", ref.Dir, err)

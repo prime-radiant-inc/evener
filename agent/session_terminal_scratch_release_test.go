@@ -170,6 +170,87 @@ func TestTerminalReleaseSealDeclinesInFlightRefreshSeed(t *testing.T) {
 	}
 }
 
+// TestRetirementScratchSealDeclinesInFlightRefreshSeed pins round 28's second
+// Medium: releaseRetirementScratch detached the pool without setting the seal
+// the terminal and child-teardown paths set, so a refresh pass interleaved
+// between the detach and its seed CAS republished a pool for a session that
+// had already released its runtime — and because the retirement consumed
+// closeOnce, the terminal release that would sweep the republished pool can
+// never run: its handles hold every retained directory's lease for the
+// daemon's life, marking the slots contended for future cold restores and
+// pinning the directories against the collector.
+func TestRetirementScratchSealDeclinesInFlightRefreshSeed(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root had no scratch retention owner")
+	}
+	const consumerID = "01RETIRESEAL1"
+	const bindingID = "b-retire-seal"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	// Leases free: the refresh must be able to reacquire — the in-flight
+	// state the retirement then races.
+	releaseRefreshFixtureLeases(t, slots)
+	if s.retainedScratch.Load() != nil {
+		t.Fatal("fixture expected no published pool: the paused pass must take the seed path")
+	}
+
+	refreshPaused := make(chan struct{})
+	resumeRefresh := make(chan struct{})
+	refreshDone := make(chan error, 1)
+	s.cfg.testOnly.scratchRefreshBeforeInstall = func(string) {
+		close(refreshPaused)
+		<-resumeRefresh
+	}
+	detached := make(chan struct{})
+	resumeRetirement := make(chan struct{})
+	s.cfg.testOnly.scratchRetirementAfterDetach = func() {
+		close(detached)
+		<-resumeRetirement
+	}
+
+	go func() { refreshDone <- s.refreshRetainedScratchConsumer(consumerID) }()
+	<-refreshPaused
+	retirementDone := make(chan struct{})
+	go func() {
+		defer close(retirementDone)
+		s.releaseRetirementScratch()
+	}()
+	<-detached
+	// The retirement detach has swept the pointer and nothing will ever run
+	// the terminal release after it — the retirement consumed closeOnce — so
+	// a seed that lands in this window is republished forever: let the
+	// refresh's install land inside it.
+	close(resumeRefresh)
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("the sealed decline must not fail the in-flight restore: %v", err)
+	}
+	close(resumeRetirement)
+	<-retirementDone
+
+	if s.retainedScratch.Load() != nil {
+		t.Fatal("the refresh published a seed pool after the retirement detach; nothing can ever release its handles")
+	}
+	if !s.retainedScratchSealed.Load() {
+		t.Fatal("the retirement left the session unsealed: a later refresh could republish the same orphaned pool")
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Released {
+		t.Fatal("the retirement wrote a Released tombstone it must never write")
+	}
+	// The retirement keeps every durable record: the pin survives beside the
+	// manifest the sealed refresh never touched.
+	const pinName = ".evener-retained-session.json"
+	if _, err := os.Stat(filepath.Join(retainedDir, pinName)); err != nil {
+		t.Fatalf("the interleaved refresh's pin went missing: %v", err)
+	}
+}
+
 // TestTerminalReleaseRetriesManifestLockContention pins the round-11 terminal
 // lock race: the tombstone transaction takes the manifest's fail-fast update
 // lock, so an in-process writer holding it must refuse the terminal release

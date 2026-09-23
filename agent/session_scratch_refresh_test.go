@@ -2305,6 +2305,80 @@ func TestScratchRefreshOpenDeclinesOnReleasedManifest(t *testing.T) {
 	}
 }
 
+// TestScratchRefreshOpenDeclineDropsThePublishedRows pins round 28's first
+// Medium: the refresh's open loop declined on ErrScratchRetentionReleased —
+// releasing only the leases that pass reacquired — while leaving an
+// already-published pool's consumer and binding rows servable, so the
+// adoption seam reading the pool right below the refresh transferred a
+// retained allocation the tombstone no longer authorizes. The open-decline
+// must clear the published rows exactly like the pass-start decline (the
+// round-24 contract).
+func TestScratchRefreshOpenDeclineDropsThePublishedRows(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01OPENDECLROWS1"
+	const bindingID = "b-open-decl-rows"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	// Leases free: the pass's first reacquire succeeds for real; the second
+	// open returns the release race's sentinel — the manifest released
+	// between this pass's snapshot and the open.
+	for _, handle := range slots {
+		if err := handle.Retain(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An already-published pool whose rows predate the pass: its consumer row
+	// is what the adoption seam reads first, and its binding row has drifted
+	// (the unsandboxed slot missing), so the pass runs its open loop to
+	// re-derive the rows — the exact pass an already-published pool keeps.
+	drifted := bindingRow
+	drifted.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: bindingRow.Slots[sandbox.ScratchKindSandbox],
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: drifted},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+	s.cfg.testOnly.scratchRefreshOpenOverride = func(ref sandbox.ScratchReference, call int) error {
+		if call >= 2 {
+			return sandbox.ErrScratchRetentionReleased
+		}
+		return nil
+	}
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("the open-decline must not fail the restore: %v", err)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the open-decline detached the pool")
+	}
+	pool.mu.Lock()
+	_, staleRow := pool.consumers[consumerID]
+	pool.mu.Unlock()
+	if staleRow {
+		t.Fatal("the open-decline left the published consumer row servable over the released manifest")
+	}
+	// The pass's first reacquire must have been handed back with the
+	// decline, or the released manifest's allocation stays pinned.
+	for kind, handle := range slots {
+		reopened, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: handle.Dir, Kind: kind})
+		if err != nil {
+			t.Fatalf("re-open %s after the declined pass: %v", kind, err)
+		}
+		if err := reopened.Retain(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // TestScratchReinstallRegistersAfterManifestReset pins the round-15 rebind gap:
 // after a terminal release and the reset it provokes, an environment carrying
 // its old binding identity found that binding missing from the fresh manifest

@@ -254,6 +254,14 @@ func (s *Session) releaseChildRuntimeForRetirement(ctx context.Context) error {
 // session can be restored at its original paths. It never writes the Released
 // tombstone and never removes a durable pin.
 func (s *Session) releaseRetirementScratch() {
+	// Seal before the detach, exactly like the terminal and child-teardown
+	// paths: the retired session is never resumed in-process, and the
+	// retirement consumes closeOnce — the terminal release that would sweep a
+	// republished pool can never run afterward — so a refresh pass interleaved
+	// between the detach and its seed CAS would publish a pool nothing can
+	// ever release, holding every retained directory's lease for the daemon's
+	// life (round 28).
+	s.retainedScratchSealed.Store(true)
 	s.mu.Lock()
 	current := s.env
 	parentShared := s.parentSharedEnv
@@ -277,6 +285,9 @@ func (s *Session) releaseRetirementScratch() {
 		env.RetainSessionScratch()
 	}
 	s.detachRetainedScratch()
+	if hook := s.cfg.testOnly.scratchRetirementAfterDetach; hook != nil {
+		hook()
+	}
 }
 
 // releaseTerminalScratchRetention writes the terminal tombstone for this
