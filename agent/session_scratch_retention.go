@@ -2203,7 +2203,12 @@ func (s *Session) rebuildSandboxWrapper(env *execenv.LocalExecutionEnvironment, 
 	if env.Sandbox == nil {
 		return errors.New("scratch retention: sandbox wrapper has no resolved policy")
 	}
-	wrapper, err := sandbox.NewWrapper(*env.Sandbox, env.Sandbox.HostBinaryPath(), dir)
+	// The slot dir may be spelled relatively (manifest rows store the
+	// supplied spelling): the wrapper must carry the canonical absolute
+	// path, or every command forked under it resolves a relative TMPDIR
+	// against its own working directory instead of the retained scratch
+	// (round 47).
+	wrapper, err := sandbox.NewWrapper(*env.Sandbox, env.Sandbox.HostBinaryPath(), canonicalScratchDir(dir))
 	if err != nil {
 		return err
 	}

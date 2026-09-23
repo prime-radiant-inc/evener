@@ -2541,6 +2541,42 @@ func TestResumedRootKeepsTheEnvScratchAcrossSpellings(t *testing.T) {
 	}
 }
 
+// TestRebuildSandboxWrapperCanonicalizesTheScratchDir pins round 47's
+// wrapper half: the replacement branches passed the consumer row's raw
+// directory into the wrapper rebuild, so a row spelled relatively
+// rebuilt the kernel wrapper around a relative scratch path — every
+// command forked under it would resolve its TMPDIR against its own
+// working directory instead of the retained scratch. The wrapper must
+// carry the canonical absolute path.
+func TestRebuildSandboxWrapperCanonicalizesTheScratchDir(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("fixture: provision the wrap-capable policy: %v", err)
+	}
+	if env.Wrapper == nil {
+		t.Fatal("fixture: the policy provisioned no wrapper")
+	}
+	absDir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, absDir)
+	if err != nil {
+		t.Fatalf("fixture: relative spelling of %q: %v", absDir, err)
+	}
+	if err := s.rebuildSandboxWrapper(env, rel); err != nil {
+		t.Fatalf("rebuild the wrapper around the relative spelling: %v", err)
+	}
+	got := env.SessionScratchDir()
+	if filepath.Clean(got) != filepath.Clean(absDir) {
+		t.Fatalf("the wrapper rebuilt around a relative scratch path: commands would fork with a relative TMPDIR (got %q, want %q)", got, absDir)
+	}
+}
+
 // TestScratchRefreshBacksOffLockContention pins the round-11 backoff gap: the
 // refresh's re-derive loop retried a fail-fast manifest-lock refusal
 // immediately, so five passes — microseconds each — could all lose to one
