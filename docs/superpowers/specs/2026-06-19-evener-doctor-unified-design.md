@@ -217,7 +217,7 @@ The `agent/doctor` package does not re-parse anything — it imports the real fo
 
 ### Shared conventions
 
-- First positional arg is a **session selector** in the form the running agent's `read_session_transcript` accepts: `""`/`current`, `local:<SID>`, `proj:<hash>:<SID>`, or a bare `<SID>` (searched across buckets; ambiguity reported with candidate refs). `evener doctor locate` is the shared resolver the other three reuse (same in-process resolution) so there is no second selector dialect.
+- First positional arg is a **session selector** in the form the running agent's `read_session_transcript` accepts: `""`/`current`, `local:<SID>`, `proj:<hash>:<SID>`, or a bare `<SID>` (searched across buckets; ambiguity reported with the buckets it was found in). `evener doctor locate` is the shared resolver the other three reuse (same in-process resolution) so there is no second selector dialect.
 - `--json` emits the underlying struct as JSON for machine consumers; default is a human summary.
 - `--state-dir` overrides the resolved root (mirrors `evener --state-dir`), so the tools work against an E2E scratch root. Base precedence matches evener (§8.4): `--state-dir` › `EVENER_STATE_DIR` › `$XDG_STATE_HOME` › `~/.local/state`.
 

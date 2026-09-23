@@ -110,7 +110,7 @@ the first two. Every one traces to a pain above.
 Shared conventions for all subcommands:
 - First positional arg is a **session selector** in the form `resolveTranscript`
   already accepts: `""`/`current`, `local:<SID>`, `proj:<hash>:<SID>`, or a bare
-  `<SID>` (searched across buckets, ambiguity reported with candidate refs). This
+  `<SID>` (searched across buckets, ambiguity reported with the buckets it was found in). This
   reuse means the locator semantics are identical to what the running agent's
   `read_session_transcript` tool already uses — no second dialect.
 - `--json` emits the underlying typed struct as JSON for machine consumers; default
