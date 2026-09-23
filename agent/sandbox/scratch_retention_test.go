@@ -1381,3 +1381,52 @@ func TestResetReleasedDropsFreeLeaseReferenceWithMismatchedPin(t *testing.T) {
 		t.Fatalf("the reset removed a pin it merely failed to verify: %v", err)
 	}
 }
+
+// TestResetReleasedAbortsWhenOrphanedPinRemovalFails pins round 18's Medium:
+// the contended pair-death path ignored a failed removal of this owner's
+// orphaned pin and committed the reset anyway — and a readable pin under an
+// unreleased manifest that has no reference to it is conservatively retained
+// with a diagnostic on every sweep, forever. The reset must abort instead and
+// leave the manifest Released, so a later reset retries the removal.
+func TestResetReleasedAbortsWhenOrphanedPinRemovalFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the read-only directory fixture cannot make os.Remove fail on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("the read-only directory fixture cannot make os.Remove fail for root")
+	}
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	t.Cleanup(func() { _ = os.Chmod(scratch.Dir, 0o700) })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	// No consumer row is published, so the reset's carry path lets the pair
+	// die — and the lease the scratch keeps makes that death contended, the
+	// branch whose pin removal went unchecked.
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	// A read-only directory makes the orphaned pin's removal fail while the
+	// pin itself still reads back valid and the lease still flocks.
+	if err := os.Chmod(scratch.Dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResetScratchRetentionIfReleased(owner); err == nil {
+		t.Fatal("expected the orphaned pin-remove failure to surface from the reset")
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Released {
+		t.Fatal("the aborted reset committed an unreleased manifest over an unremovable orphan pin")
+	}
+}

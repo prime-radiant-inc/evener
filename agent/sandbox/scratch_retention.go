@@ -1123,7 +1123,7 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 		// pin is removed and the reference drops; a foreign pin belongs to its
 		// own manifest and is left alone.
 		carriedBindings := make(map[string]ScratchBinding)
-		carryReference := func(dir, kind string) {
+		carryReference := func(dir, kind string) error {
 			ownerID, owned := leaseOwningBinding(manifest, dir)
 			binding, found := scratchBindingByID(manifest.Bindings, ownerID)
 			consumers := consumersNamingScratchBinding(manifest.Consumers, ownerID)
@@ -1133,11 +1133,18 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 				// carrying either would wedge every later restore on the
 				// fresh manifest. Let the pair die together, removing only
 				// this owner's pin (a foreign pin belongs to its own
-				// manifest).
+				// manifest). The removal must not be swept aside: a pin the
+				// committed manifest has no reference for is retained with a
+				// diagnostic on every sweep, forever, and Released false
+				// again means no later reset comes back for it (round 18) —
+				// abort instead, leaving the tombstone for a retry once the
+				// filesystem failure clears.
 				if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil && pin.Owner == owner {
-					_ = os.Remove(filepath.Join(dir, scratchPinName))
+					if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
+						return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
+					}
 				}
-				return
+				return nil
 			}
 			fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: kind})
 			// The binding narrows to the slots whose directories carried: its
@@ -1157,6 +1164,7 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 					narrowed.Slots[slotKind] = slot
 				}
 			}
+			return nil
 		}
 		// The terminal release that tombstoned this manifest removed every
 		// pin whose lease it could take; the ones left behind were contended
@@ -1187,7 +1195,9 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, error
 				// the reference dies with the manifest.
 				if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil &&
 					pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == ref.Kind {
-					carryReference(dir, ref.Kind)
+					if err := carryReference(dir, ref.Kind); err != nil {
+						return err
+					}
 				}
 				continue
 			}

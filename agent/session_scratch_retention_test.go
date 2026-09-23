@@ -625,7 +625,7 @@ func TestRetirementColdDelegateScratchManifest(t *testing.T) {
 	}
 
 	env := execenv.NewLocalExecutionEnvironment(dir)
-	if err := root.adoptRetainedScratchFor(env, "E0", root.id); err != nil {
+	if _, err := root.adoptRetainedScratchFor(env, "E0", root.id); err != nil {
 		t.Fatalf("adoptRetainedScratchFor: %v", err)
 	}
 	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
@@ -638,7 +638,7 @@ func TestRetirementColdDelegateScratchManifest(t *testing.T) {
 	// A second adoption of the same binding must fail rather than duplicate the
 	// lease onto another environment.
 	other := execenv.NewLocalExecutionEnvironment(dir)
-	if err := root.adoptRetainedScratchFor(other, "E0", root.id); err == nil {
+	if _, err := root.adoptRetainedScratchFor(other, "E0", root.id); err == nil {
 		t.Fatal("adopted an already-transferred binding onto a second environment")
 	}
 	env.RetainSessionScratch()

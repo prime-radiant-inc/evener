@@ -622,6 +622,12 @@ type testConfig struct {
 	// production.
 	scratchAdoptionBeforeClaim func()
 
+	// scratchAdoptionBeforeTransfer runs at the top of adoptRetainedScratchFor,
+	// before its own pool load — the second window where a terminal detach can
+	// sweep the pool after adoptConsumerScratch already read the consumer row
+	// and approved the transfer. Nil in production.
+	scratchAdoptionBeforeTransfer func()
+
 	// scratchAdoptionAfterClaim runs immediately after adoptRetainedScratchFor
 	// claims a pooled handle and before the environment restore installs it —
 	// the window where a terminal detach must not release the claimed lease.

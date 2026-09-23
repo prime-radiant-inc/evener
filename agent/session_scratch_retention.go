@@ -82,13 +82,26 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 			}
 			freshBinding, ok := findScratchBinding(fresh, existing.BindingID)
 			if !ok {
-				// The reset orphaned the old rows: republish the identity
-				// without its stale slots, exactly as an inherited identity
-				// arrives — the environment's owned handles re-pin their
-				// slots on the next publication.
-				republished := existing
-				republished.Slots = nil
-				freshBinding = republished
+				// The reset orphaned the old rows. An identity whose
+				// environment still owns live handles must not be
+				// re-published slotless: the reset's carry never reached
+				// those allocations (their pair died with the old manifest),
+				// so this registration is their one durable home — re-pin
+				// them, then re-derive from the manifest the pin just moved.
+				// An inherited identity owns nothing to pin, so the pin is a
+				// no-op there and the slotless republish below is exactly
+				// what arrives (round 18).
+				if err := env.PinOwnedScratch(); err != nil {
+					return err
+				}
+				if fresh, err = sandbox.LoadScratchRetention(owner); err != nil {
+					return err
+				}
+				if freshBinding, ok = findScratchBinding(fresh, existing.BindingID); !ok {
+					republished := existing
+					republished.Slots = nil
+					freshBinding = republished
+				}
 			}
 			// The revision check refuses a manifest that moved since these
 			// rows were derived — the consumer merge replaces rows
@@ -1304,27 +1317,31 @@ func (s *Session) prepareRetainedScratch() error {
 
 // adoptRetainedScratchFor transfers the owning slots of exactly bindingID from
 // the pool onto env for adopterID, installs wrapper-only borrows without
-// duplicating lease ownership, and verifies the binding identity. It is a no-op
-// when no pool was prepared, so a session with no retention manifest keeps its
-// existing path. A distinct consumer sharing an allocation that another session
-// already adopted receives a lease-less borrow, while the same consumer asking
-// twice is refused.
-func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment, bindingID, adopterID string) error {
+// duplicating lease ownership, and verifies the binding identity. It reports
+// whether a live pool was there to transfer from: a no-op on a detached pool
+// returns installed=false, so a caller whose disposal already ran cannot
+// mistake the no-op for a transferred allocation (round 18). A distinct
+// consumer sharing an allocation that another session already adopted receives
+// a lease-less borrow, while the same consumer asking twice is refused.
+func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment, bindingID, adopterID string) (bool, error) {
 	if env == nil {
-		return nil
+		return false, nil
+	}
+	if hook := s.cfg.testOnly.scratchAdoptionBeforeTransfer; hook != nil {
+		hook()
 	}
 	pool := s.retainedScratch.Load()
 	if pool == nil {
-		return nil
+		return false, nil
 	}
 	pool.mu.Lock()
 	binding, ok := pool.bindings[bindingID]
 	pool.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("retained scratch: binding %q is not in the manifest", bindingID)
+		return false, fmt.Errorf("retained scratch: binding %q is not in the manifest", bindingID)
 	}
 	if err := env.SetScratchRetentionBinding(pool.owner, binding); err != nil {
-		return err
+		return false, err
 	}
 	// A kind this environment already provisions (an eagerly provisioned
 	// sandbox scratch) is left exposed; only absent kinds are restored, so a
@@ -1365,10 +1382,10 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// held elsewhere in this process (contended), or its owner binding
 			// has not been adopted yet.
 			if pool.scratchSlotTakenBy(key) == adopterID {
-				return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+				return false, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 			}
 			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
-				return err
+				return false, err
 			}
 			continue
 		}
@@ -1394,12 +1411,12 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				env.MarkRetainedSlotPending(kind)
 				continue
 			}
-			return fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+			return false, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 		case already:
 			// A distinct consumer sharing the allocation borrows the same
 			// directory without doubling the lease its adopter holds.
 			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
-				return err
+				return false, err
 			}
 		case handle != nil:
 			if hook := s.cfg.testOnly.scratchAdoptionAfterClaim; hook != nil {
@@ -1415,11 +1432,11 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				if !pool.releaseScratchSlotClaim(key, adopterID, handle) {
 					_ = handle.Retain()
 				}
-				return err
+				return false, err
 			}
 			pool.finishRetainedScratchSlot(key)
 		case !contended:
-			return fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
+			return false, fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
 		case contended:
 			// The slot's lease is held elsewhere in this process — typically
 			// the idle-release teardown racing this restore — so adoption
@@ -1431,7 +1448,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			env.MarkRetainedSlotPending(kind)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // borrowRetainedScratch installs a lease-less borrow of one retained directory
@@ -1556,10 +1573,11 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 	if !ok || consumer.CurrentBindingID == "" {
 		return false, nil
 	}
-	if err := s.adoptRetainedScratchFor(env, consumer.CurrentBindingID, sessionID); err != nil {
+	installed, err := s.adoptRetainedScratchFor(env, consumer.CurrentBindingID, sessionID)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return installed, nil
 }
 
 // adoptResumedRootScratch adopts sessionID's retained allocation onto env on

@@ -498,6 +498,82 @@ func TestRestoreAdoptionSurvivesPoolDetachAfterDisposal(t *testing.T) {
 	}
 }
 
+// TestRestoreAdoptionSurvivesPoolDetachBetweenLoads pins round 18's High: the
+// pool can detach between adoptConsumerScratch's row read and
+// adoptRetainedScratchFor's own pool load. The inner transfer silently no-ops
+// on a detached pool while the outer adoption reported a successful transfer,
+// so the round-17 heal never fired and the restored delegate kept running on
+// a wrapper naming a retained directory it owns no lease on.
+func TestRestoreAdoptionSurvivesPoolDetachBetweenLoads(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RESTOREDETACH2"
+	const bindingID = "b-restore-detach-2"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(retainedDir): slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	// The detach lands in the second window: after the outer adoption read
+	// the consumer row, before the transfer reloads the pool.
+	s.cfg.testOnly.scratchAdoptionBeforeTransfer = func() {
+		s.cfg.testOnly.scratchAdoptionBeforeTransfer = nil
+		s.retainedScratchSealed.Store(true)
+		s.detachRetainedScratch()
+	}
+	adopted, err := s.adoptRestoredConsumerScratch(env, consumerID, true)
+	if err != nil {
+		t.Fatalf("restore adoption across the between-loads detach: %v", err)
+	}
+	if adopted {
+		t.Fatal("a detached-pool no-op reported a transferred allocation")
+	}
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := ""
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			owned = ref.Dir
+		}
+	}
+	if owned == "" {
+		t.Fatalf("the between-loads detach left the restored session with no owned sandbox scratch (SessionScratchDir %q)", env.SessionScratchDir())
+	}
+	if filepath.Clean(owned) == filepath.Clean(retainedDir) {
+		t.Fatalf("the restored session runs on the retained %q with no lease", retainedDir)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(owned) {
+		t.Fatalf("the wrapper %q does not name the owned scratch %q", got, owned)
+	}
+	if _, err := os.Stat(owned); err != nil {
+		t.Fatalf("the re-provisioned scratch is not on disk: %v", err)
+	}
+}
+
 // TestRestoreAdoptsPoolOwnedHandleDespiteStaleContentionMark pins the round-5
 // healing at the replacement guard: a pool left holding both a reacquired
 // handle and a contention record for the same directory — the wedged state
@@ -1850,6 +1926,78 @@ func TestScratchReinstallRegistersAfterManifestReset(t *testing.T) {
 	row := scratchConsumerFor(t, manifest, s.id)
 	if row.CurrentBindingID != installed.BindingID {
 		t.Fatalf("the reinstall left the consumer unregistered: current binding = %q, want the environment's %q", row.CurrentBindingID, installed.BindingID)
+	}
+}
+
+// TestScratchReinstallRepinsOwnedScratchAfterManifestReset pins round 18's
+// Medium: a reset-orphaned identity whose environment still owned live
+// handles was re-registered slotless, leaving the owned scratch with no
+// manifest reference, slot, or pin until some later mint happened to
+// publish it.
+func TestScratchReinstallRepinsOwnedScratchAfterManifestReset(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("fixture binding installation: %v", err)
+	}
+	installed, err := env.ScratchRetentionBinding()
+	if err != nil {
+		t.Fatalf("read the installed binding: %v", err)
+	}
+	live := env.SessionScratchDir()
+	if live == "" {
+		t.Fatal("fixture environment owns no scratch")
+	}
+	// Move the consumer role onto a second binding before the release, so the
+	// reset's carry path lets the orphaned pair die instead of carrying it
+	// (the carried shape is pinned by TestScratchReinstallKeepsLiveLeasedScratch).
+	slots, _ := mintRefreshScratchBinding(t, s, "b-role-move", sandbox.ScratchKindSandbox)
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision, nil,
+		[]sandbox.ScratchConsumerBinding{{SessionID: s.id, CurrentBindingID: "b-role-move"}}); err != nil {
+		t.Fatalf("move the consumer role off the environment's binding: %v", err)
+	}
+
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if err := s.installScratchRetention(env); err != nil {
+		t.Fatalf("reinstall over the reset manifest: %v", err)
+	}
+
+	manifest, err = sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, installed.BindingID)
+	if !ok {
+		t.Fatalf("the reinstall dropped the environment's binding %q", installed.BindingID)
+	}
+	slot, has := row.Slots[sandbox.ScratchKindSandbox]
+	if !has || filepath.Clean(slot.Dir) != filepath.Clean(live) {
+		t.Fatalf("the republished binding %q does not name the environment's live scratch %q: %+v", installed.BindingID, live, row.Slots)
+	}
+	// The repin must also restore the pin: an open of the live directory has
+	// to fail on the environment's own held lease, not on a missing pin.
+	if _, err := sandbox.OpenRetainedSessionScratch(owner, sandbox.ScratchReference{Dir: live, Kind: sandbox.ScratchKindSandbox}); !errors.Is(err, sandbox.ErrScratchRetentionLeaseHeld) {
+		t.Fatalf("the environment's live scratch was left unpinned: open got %v, want %v", err, sandbox.ErrScratchRetentionLeaseHeld)
+	}
+	role := scratchConsumerFor(t, manifest, s.id)
+	if role.CurrentBindingID != installed.BindingID {
+		t.Fatalf("the reinstall left the consumer unregistered: current binding = %q, want the environment's %q", role.CurrentBindingID, installed.BindingID)
 	}
 }
 
