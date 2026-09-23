@@ -186,6 +186,12 @@ func refFor(projectID, sid string) string {
 	if identifier.ValidateProjectID(projectID) != nil {
 		return ""
 	}
+	return projRef(projectID, sid)
+}
+
+// projRef builds the proj:<projectID>:<sid> selector form shared by refFor
+// and followSelector. The grammar-safety check stays at each call site.
+func projRef(projectID, sid string) string {
 	return "proj:" + projectID + ":" + sid
 }
 

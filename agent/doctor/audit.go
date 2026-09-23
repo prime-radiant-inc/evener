@@ -599,8 +599,8 @@ func followSelector(ref, projectID, sessionID string) string {
 	if ref != "" {
 		return ref
 	}
-	if projectID != "" && projectTokenOK(projectID) {
-		return "proj:" + projectID + ":" + sessionID
+	if projectTokenOK(projectID) {
+		return projRef(projectID, sessionID)
 	}
 	return sessionID
 }
@@ -650,14 +650,20 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: ref, TranscriptRef: ref, Error: err.Error()})
 			continue
 		}
-		health, err := TranscriptHealth(stateBase, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID))
+		// sel is the selector every read and evidence entry for this session
+		// uses: the transcript ref when refFor produced one, a bucket-qualified
+		// proj:<id>:<sid> for a selector-safe legacy bucket, or the bare id as a
+		// last resort. Computed once after Locate; reused at every read/evidence
+		// site below so the grammar scan and string build run once, not five times.
+		sel := followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID)
+		health, err := TranscriptHealth(stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 			continue
 		}
 		source := metricSource{health: health}
 		if needsAPILog {
-			apiRes, err := APILog(stateBase, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID), APILogOpts{SummaryOnly: true})
+			apiRes, err := APILog(stateBase, sel, APILogOpts{SummaryOnly: true})
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -666,7 +672,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			source.haveAPILog = true
 		}
 		if needsAPIHealth {
-			apiHealthRes, err := APIHealth(stateBase, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID))
+			apiHealthRes, err := APIHealth(stateBase, sel)
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -679,7 +685,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		for _, check := range runbook.Checks {
 			tripped, err := check.evaluate(source)
 			if err != nil {
-				return AuditResult{}, fmt.Errorf("runbook %s check %q on session %s: %w", runbook.Name, check.Title, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID), err)
+				return AuditResult{}, fmt.Errorf("runbook %s check %q on session %s: %w", runbook.Name, check.Title, sel, err)
 			}
 			if !tripped {
 				continue
@@ -699,13 +705,12 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				signatureOrder = append(signatureOrder, sig)
 			}
 			// Evidence carries the same selector the reads used: a session in
-			// Evidence carries the same selector the reads used: a session in
 			// a bucket whose name the agent ref grammar rejects is named by a
 			// bucket-qualified proj:<id>:<sid> selector (or bare id when the
 			// doctor's own selector grammar also rejects the name), so the
 			// affected-session count, the --sessions reproduction line, and a
 			// re-run of that line all keep working.
-			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID))
+			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, sel)
 		}
 	}
 
