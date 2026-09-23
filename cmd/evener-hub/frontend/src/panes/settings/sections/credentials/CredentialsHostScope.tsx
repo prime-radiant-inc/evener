@@ -20,7 +20,7 @@ import { isLocalHost } from "../../../../stores/hostRouting";
 import { useHostsStore } from "../../../../stores/hosts";
 import { EmptyState, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { HostPicker, hostIdentityFor, isConfiguredHost } from "../../HostPicker";
+import { HostPicker, isConfiguredHost, useHostIdentityFor } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsHostScope.module.css";
@@ -44,6 +44,9 @@ export interface CredentialsHostScopeProps {
 export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
   const { host } = useSettingsHost();
   const load = useHostsStore((state) => state.load);
+  // The identity the registry gives the selected name, kept across a registry
+  // re-read that has not answered yet (see the hook's own note).
+  const identity = useHostIdentityFor(load, host);
 
   // The scope's body is one of three states; computed here rather than as a
   // nested ternary in the JSX.
@@ -60,7 +63,7 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
       </p>
     );
   } else {
-    body = <RemoteHostInstances host={host} identity={hostIdentityFor(load, host)} />;
+    body = <RemoteHostInstances host={host} identity={identity} />;
   }
 
   return (
@@ -101,7 +104,9 @@ function RemoteHostInstances({ host, identity }: { host: string; identity: strin
     <section className={CLASS.remote} aria-label={title}>
       <h3 className={CLASS.heading}>{title}</h3>
       <p className={CLASS.note}>Read-only. These are {host}'s own provider instances, not this hub's.</p>
-      {pending && <Skeleton />}
+      {/* An error is an answer: the skeleton is for "nothing, and no failure,
+          yet" - beside a refusal it would read as "still working". */}
+      {pending && state.error === null && <Skeleton />}
       {state.error !== null && (
         <p className={CLASS.error}>
           Couldn't read providers from {host}: {state.error}

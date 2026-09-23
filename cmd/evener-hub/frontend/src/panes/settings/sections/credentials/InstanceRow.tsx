@@ -42,15 +42,16 @@ function metaText(instance: InstanceEntry): string {
   return unconfigured === null ? styleInfo : `${unconfigured} · ${styleInfo}`;
 }
 
-export interface InstanceRowProps {
-  instance: InstanceEntry;
-  /** Read-only rendering: identity and meta only, no button and no chevron. */
-  readOnly?: boolean;
-  /** Required whenever readOnly is not set: selecting the row opens the sheet. */
-  onSelect?: () => void;
-}
+/** The two variants, as a type rather than a comment: an interactive row MUST
+ * carry onSelect (or its button renders with no handler), and a read-only row
+ * has nothing to select. */
+export type InstanceRowProps = { instance: InstanceEntry } & (
+  | { readOnly: true }
+  | { readOnly?: false; onSelect: () => void }
+);
 
-export function InstanceRow({ instance, readOnly = false, onSelect }: InstanceRowProps) {
+export function InstanceRow(props: InstanceRowProps) {
+  const { instance } = props;
   const meta = metaText(instance);
   // Both variants render this node, so a read-only row states exactly what the
   // tappable one does.
@@ -65,12 +66,12 @@ export function InstanceRow({ instance, readOnly = false, onSelect }: InstanceRo
       <div className={CLASS.meta}>{meta}</div>
     </div>
   );
-  if (readOnly) {
+  if (props.readOnly) {
     return <li className={CLASS.row}>{body}</li>;
   }
   return (
     <li>
-      <button type="button" className={`${CLASS.row} ${CLASS.rowButton}`} onClick={onSelect}>
+      <button type="button" className={`${CLASS.row} ${CLASS.rowButton}`} onClick={props.onSelect}>
         {body}
         <span className={CLASS.chevron} aria-hidden="true">
           <Chevron direction="right" />

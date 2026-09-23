@@ -322,6 +322,9 @@ test("a connection transition re-reads the selected host's own listing", async (
   // The connection is replaced; beta's own hub answers with a newer listing.
   const replacement = new FakeClient("ready");
   replacement.on("evener/instance/list", () => CONTROLLER_LIST);
+  // The picker now re-reads the registry on the current connection (M-1), so a
+  // replacement client must answer it the way a real hub does.
+  replacement.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   replacement.on("evener/host/request", () => RELOADED_HOST_LIST);
   await act(async () => connectionStore.getState().connect(replacement));
 
@@ -348,11 +351,35 @@ test("a transition that orphans the first read never reads as 'no instances'", a
 
   const replacement = new FakeClient("ready");
   replacement.on("evener/instance/list", () => CONTROLLER_LIST);
+  // See above: the registry is re-read on the connection that is current now.
+  replacement.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   replacement.on("evener/host/request", () => HOST_LIST);
   await act(async () => connectionStore.getState().connect(replacement));
 
   expect(screen.queryByText(/No provider instances on beta/)).toBeNull();
   expect(await screen.findByText("on-beta")).toBeTruthy();
+});
+
+// L-1: with no successful read, readIdentity is null and the pane is pending -
+// but an ERROR is an answer, and a loading skeleton beside it reads as "still
+// working" when the host has already refused. The skeleton is for the state it
+// was written for: nothing (and no failure) yet.
+test("an error without a successful read shows no loading skeleton", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
+  fake.on("evener/host/request", () => {
+    throw new WireError('host "beta" is not attached', -32000);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta (offline)" });
+  await user.selectOptions(select, "beta");
+
+  expect(await screen.findByText(/host "beta" is not attached/)).toBeTruthy();
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
 });
 
 // Medium (roborev): the partition map is keyed by NAME alone, so a host removed

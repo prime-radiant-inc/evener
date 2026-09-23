@@ -141,27 +141,48 @@ hostsStore.subscribe((state) => {
   forgetPartitionsForRegistry(state.load);
 });
 
+// survivesRegistry answers whether `partition` may be kept for `name`: the
+// registry must still list the name, and - when the rows were read under a known
+// identity - that identity must be the one the registry gives the name now. An
+// unknown identity (null) proves no mismatch.
+function survivesRegistry(
+  load: Extract<HostsLoadState, { phase: "ready" }>,
+  name: string,
+  partition: HostInstanceState,
+): boolean {
+  const row = load.hosts.find((candidate) => candidate.name === name && !candidate.removed);
+  if (row === undefined) return false;
+  return partition.readIdentity === null || partition.readIdentity === hostIdentity(row);
+}
+
 /** forgetPartitionsForRegistry drops every partition whose rows were read under
  * a registration the registry no longer lists: the name is gone (removed, or no
  * longer configured) or its entry has changed, so the rows belong to a host this
- * browser can no longer name. Partitions read without a known identity are left
- * alone - an unknown identity proves no mismatch. */
+ * browser can no longer name.
+ *
+ * Dropping also invalidates the reads already in flight for that name - the same
+ * per-host ordering guard two overlapping reads of one host use - because such
+ * an answer was issued by the registration being forgotten and would otherwise
+ * re-create the partition this drop just removed. */
 export function forgetPartitionsForRegistry(load: HostsLoadState): void {
   if (load.phase !== "ready") return;
-  hostInstancesStore.setState((previous) => {
-    let changed = false;
-    const hosts: Record<string, HostInstanceState> = {};
-    for (const [name, partition] of Object.entries(previous.hosts)) {
-      const row = load.hosts.find((candidate) => candidate.name === name && !candidate.removed);
-      const identity = row === undefined ? null : hostIdentity(row);
-      if (row === undefined || (partition.readIdentity !== null && partition.readIdentity !== identity)) {
-        changed = true;
-        continue;
-      }
-      hosts[name] = partition;
-    }
-    return changed ? { ...previous, hosts } : previous;
-  });
+  const current = hostInstancesStore.getState().hosts;
+  const forgotten = new Set(
+    Object.entries(current)
+      .filter(([name, partition]) => !survivesRegistry(load, name, partition))
+      .map(([name]) => name),
+  );
+  if (forgotten.size === 0) return;
+  hostInstancesStore.setState((previous) => ({
+    ...previous,
+    hosts: Object.fromEntries(Object.entries(previous.hosts).filter(([name]) => !forgotten.has(name))) as Record<
+      string,
+      HostInstanceState
+    >,
+  }));
+  for (const name of forgotten) {
+    hostRequestVersions.set(name, (hostRequestVersions.get(name) ?? 0) + 1);
+  }
 }
 
 /** hostPartition reads one host's own partition, or the empty one before that

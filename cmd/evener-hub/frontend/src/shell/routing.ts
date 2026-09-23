@@ -147,6 +147,11 @@ function splitURL(target: string): { path: string; search: string; hash: string 
 function withSettingsHost(target: string): string {
   const { path, search, hash } = splitURL(target);
   if (urlToPane(path)?.type !== "settings") return target;
+  // The host belongs to the SETTINGS route, so only a settings route may carry
+  // one out of itself: a non-settings URL that merely carries `?host=` (a
+  // hand-typed link, another surface's own parameter) must not leak it onto a
+  // settings target.
+  if (urlToPane(window.location.pathname)?.type !== "settings") return target;
   const params = new URLSearchParams(search);
   if (params.has(HOST_QUERY_PARAM)) return target;
   const current = new URLSearchParams(window.location.search).get(HOST_QUERY_PARAM);

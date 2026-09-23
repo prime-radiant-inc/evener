@@ -285,3 +285,20 @@ test("navigate carries nothing when the current route names no host", () => {
   expect(window.location.pathname).toBe("/settings/theme");
   expect(window.location.search).toBe("");
 });
+
+// M-4: the host belongs to the settings route, so only a settings route may
+// carry one out of itself. A non-settings URL that merely carries a `host`
+// parameter must not leak it onto a settings target.
+test("navigate does not carry a host out of a non-settings route", () => {
+  window.history.pushState({}, "", "/new?host=ghost");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});
+
+test("navigate does not carry a host out of a session route", () => {
+  window.history.pushState({}, "", "/s/local:abc?host=ghost");
+  navigate("/settings");
+  expect(window.location.pathname).toBe("/settings");
+  expect(window.location.search).toBe("");
+});

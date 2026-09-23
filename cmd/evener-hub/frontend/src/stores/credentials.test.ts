@@ -3,6 +3,7 @@ import type {
   AuthTestResponse,
   HostForwardedResult,
   HostRequestParams,
+  HostRow,
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
@@ -24,7 +25,7 @@ import {
   staleListingHeld,
   useCredentialsStore,
 } from "./credentials";
-import { hostsStore } from "./hosts";
+import { hostIdentity, hostsStore } from "./hosts";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 function connectFakeClient(): FakeClient {
@@ -2663,5 +2664,54 @@ describe("notification-triggered refetch", () => {
 
     expect(hostInstancesStore.getState().hosts).toEqual({});
     hostsStore.getState().resetForTests();
+  });
+
+  // The contested half of the identity question: a name can be removed and
+  // re-registered, and a read issued by the PRIOR registration can still be in
+  // flight when that happens. Forgetting the partition has to refuse that
+  // answer too, or it re-creates the partition the drop just removed.
+  test("an answer in flight when the host is removed cannot re-create its partition", async () => {
+    const fake = connectFakeClient();
+    let finish!: (value: HostForwardedResult) => void;
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const read = fetchHost("buildbox", "entry-a");
+    await Promise.resolve();
+
+    // Removed: the registry's ready snapshot no longer lists the name at all.
+    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+    expect(hostInstancesStore.getState().hosts).toEqual({});
+
+    // The old answer lands last. It was issued by a registration that is gone.
+    finish(REMOTE_LIST as unknown as HostForwardedResult);
+    await read;
+
+    expect(hostInstancesStore.getState().hosts).toEqual({});
+    hostsStore.getState().resetForTests();
+  });
+
+  // Adjudication evidence, pinned in code: the listing carries no registration
+  // generation, and `removed` is live state rather than identity - so a host
+  // removed and re-added with the identical entry is, to this frontend, exactly
+  // the same host. Only a changed entry is a different one.
+  test("a re-registration with the identical entry is the same identity", () => {
+    const configured: HostRow = {
+      name: "buildbox",
+      address: "a.example",
+      user: "j",
+      roots: [],
+      origin: "sidecar",
+      attached: true,
+      midAttach: false,
+      removed: false,
+    };
+    expect(hostIdentity({ ...configured, removed: true, attached: false })).toBe(hostIdentity(configured));
+    expect(hostIdentity({ ...configured, attached: false })).toBe(hostIdentity(configured));
+    expect(hostIdentity({ ...configured, address: "b.example" })).not.toBe(hostIdentity(configured));
   });
 });

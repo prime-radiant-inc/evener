@@ -321,3 +321,12 @@ describe("the read-only variant", () => {
     expect(button.classList.contains(styles.rowButton!)).toBe(true);
   });
 });
+
+// L-2: the contract is in the props type, not in a comment. A row that is not
+// read-only must carry onSelect, or an interactive button renders with no
+// handler. This is a compile-time assertion checked by tsc: if the props type
+// stops requiring onSelect, the directive below is unused and tsc fails.
+test("the props type requires onSelect whenever the row is not read-only", () => {
+  // @ts-expect-error a row that is not readOnly must be given onSelect
+  render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} />);
+});

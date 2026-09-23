@@ -8,9 +8,12 @@
 // stays visible; the pane consuming the selection decides what an unknown host
 // renders (CredentialsHostScope says so honestly).
 import type { HostRow } from "@evener/appwire-client";
+import { useEffect, useRef } from "react";
+import { useConnectionStore } from "../../stores/connection";
 import { isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
 import { type HostsLoadState, hostIdentity, hostsStore, useHostsStore } from "../../stores/hosts";
 import { FormRow, Select, type SelectOption } from "../../widgets";
+import { HOST_POLL_MS } from "./sections/hosts";
 import { useConnectedEffect } from "./sections/useConnectedEffect";
 import { useSettingsHost } from "./settingsHost";
 
@@ -39,12 +42,39 @@ export function hostIdentityFor(load: HostsLoadState, host: string): string | nu
   return row === undefined ? null : hostIdentity(row);
 }
 
+/** useHostIdentityFor is hostIdentityFor, remembering the last identity a READY
+ * registry gave the name. A registry re-read that fails, or is still in flight,
+ * cannot say the name now means another host - so it must not discard the
+ * identity the last successful answer established, nor flap the remote reads
+ * keyed on it (a flap re-issues the host's listing once per phase). Only a ready
+ * answer replaces it, including with null when the name is gone. */
+export function useHostIdentityFor(load: HostsLoadState, host: string): string | null {
+  const known = useRef<{ host: string; identity: string | null }>({ host, identity: null });
+  if (known.current.host !== host || load.phase === "ready") {
+    known.current = { host, identity: hostIdentityFor(load, host) };
+  }
+  return known.current.identity;
+}
+
 export function HostPicker() {
   const { host, selectHost } = useSettingsHost();
   const load = useHostsStore((state) => state.load);
+  const { client, state: connection } = useConnectionStore();
   // The host registry is the Settings pane's own source of configured hosts
   // (stores/hosts.ts); this picker reads it, it does not add a second one.
-  useConnectedEffect(() => hostsStore.getState().fetch(), []);
+  //
+  // The read follows the CONNECTION: a reconnect or a client swap must not leave
+  // the picker - or the registry identity every remote read keys on - describing
+  // the hub that was. And it re-reads on the registry's own quiet-refresh
+  // cadence, because a host added or removed by another client is observable here
+  // only by asking again: there is no controller-side host lifecycle notification
+  // on the wire, which is why the Hosts section re-reads on this same cadence
+  // (sections/hosts.tsx) rather than this picker inventing one.
+  useConnectedEffect(() => hostsStore.getState().fetch(), [client, connection]);
+  useEffect(() => {
+    const id = setInterval(() => void hostsStore.getState().refresh(), HOST_POLL_MS);
+    return () => clearInterval(id);
+  }, []);
 
   const hostRows = selectableHostRows(load);
   const options: SelectOption[] = [
