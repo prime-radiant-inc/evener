@@ -5,7 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 // recoveredTurnSession builds the reported flow's durable state: a turn/start
@@ -638,6 +640,59 @@ func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *tes
 	if claimed.StableTurnID != inheritedTurnID {
 		t.Fatalf("claim after the failed recovered turn = %q, want the recovered turn %q before the follow-up %q",
 			claimed.StableTurnID, inheritedTurnID, followUp.Turn.ID)
+	}
+}
+
+// TestRecordedRecoveredTurnIsNotHandedBackEvenWhenTheMarkWriteFailed pins the
+// duplicate the give-back must not cause. The user-input turn is durably appended
+// BEFORE the store's incorporation mark is written, so a mark write that fails
+// leaves a pending the store still calls "claimed" whose turn is already on disk.
+// Gated on the mark alone, the give-back would return that claim, the runner
+// would re-claim it, and the recovered prompt's user turn would be appended --
+// and its model round run -- a second time.
+//
+// The mark failure itself has no seam, so the test builds the exact state it
+// leaves: the recovered turn's user entry is in the transcript, the pending is
+// still claimed, and the run then fails.
+func TestRecordedRecoveredTurnIsNotHandedBackEvenWhenTheMarkWriteFailed(t *testing.T) {
+	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
+
+	restored.cfg.testOnly.clientMutationStartAnnounced = func() {
+		restored.cfg.testOnly.clientMutationStartAnnounced = nil
+		// The entry lands; the mark write is the step that failed.
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User("the prompt that died mid-turn"))
+		turn.ClientMutationID = deadMutationID
+		turn.StableTurnID = inheritedTurnID
+		if err := restored.appendUserInputTurnRefusingPoison(turn); err != nil {
+			t.Errorf("append the recovered turn's user entry: %v", err)
+		}
+	}
+	restored.cfg.testOnly.failTurnBeforeRecording = func() error { return errors.New("run failed after the entry landed") }
+
+	if _, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {}); runErr == nil || !processed {
+		t.Fatalf("the recovered turn's run: processed=%v err=%v, want the claim committed and the run failed", processed, runErr)
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "claimed" {
+		t.Fatalf("recovered pending after a failure whose user entry already landed = %q, want it left claimed: handing it back would append the prompt twice", got)
+	}
+	if restored.recoveredTurnClaimReturned {
+		t.Fatal("the give-back fired for a turn whose user entry is already in the transcript")
+	}
+
+	// Nothing may run again: the recorded turn is not re-claimable, so no second
+	// append and no second model round.
+	_, again, againErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {})
+	if again {
+		t.Fatalf("the recovered turn ran again after its prompt was already recorded (err=%v)", againErr)
+	}
+	count := 0
+	for _, entry := range restored.history {
+		if entry.ClientMutationID == deadMutationID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("the transcript holds %d user turns for the recovered prompt %q, want exactly 1", count, deadMutationID)
 	}
 }
 
