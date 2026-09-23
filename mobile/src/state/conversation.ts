@@ -2065,9 +2065,17 @@ export function createConversationStore() {
               // about the stream: the chunks stay live whatever the
               // retained base reads.
               if (itemTextPresence(fresh) !== "provided") return item;
-              // Position-relative against the retained base, not a
-              // suffix check on the full text: the wire folds chunks in
-              // order, so the snapshot's text is the retained base plus
+              // A SETTLED snapshot item — completed or failed, text
+              // provided — is the whole response: its text has no room
+              // for chunks appended to any earlier base, prefix or no
+              // prefix ("Hello there" against base "Hello" with pending
+              // [" world"] used to keep the chunk and render "Hello
+              // there world" — RoboRev round 11).
+              //
+              // While the item still STREAMS, reconcile position-
+              // relative against the retained base, not by a suffix
+              // check on the full text: the wire folds chunks in order,
+              // so the snapshot's text is the retained base plus
               // everything it folded before the cut — and the cut can
               // sit AHEAD of the chunks the client received (base
               // "Hello", pending [" world"], text "Hello world!"),
@@ -2075,9 +2083,13 @@ export function createConversationStore() {
               // The largest run of chunks the advance starts with is
               // exactly what the wire settled — walked once at an
               // advancing offset (RoboRev round 8: slice-and-join per
-              // prefix was quadratic in the chunk count); a text that
+              // prefix was quadratic in the chunk count).
               let settled = 0;
-              if (fresh.text.startsWith(item.text)) {
+              const snapshotSettled =
+                fresh.status !== undefined && fresh.status !== "inProgress";
+              if (snapshotSettled) {
+                settled = pending.length;
+              } else if (fresh.text.startsWith(item.text)) {
                 const advance = fresh.text.slice(item.text.length);
                 let offset = 0;
                 for (const chunk of pending) {
