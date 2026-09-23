@@ -305,4 +305,40 @@ export class DraftDocument {
 			/* Unsaved recovered text stays visible. */
 		}
 	}
+
+	// Restores a rejected mutation's recovered text into the composer in one
+	// savepointed repository write (DraftRepository.write), so a failed restore
+	// can never leave the draft half-written. It refuses to clobber a composer
+	// that already holds a draft or an image, and preserves an uncertain
+	// submission's own unconfirmed text and images while it restores. Returns
+	// whether the text was written; a failed write leaves the stored draft
+	// untouched and surfaces through the snapshot's error.
+	restoreRecoveredDraft(text: string): boolean {
+		const { record, loaded, submitting, error } = this.snapshot;
+		if (
+			this.forgotten ||
+			!loaded ||
+			submitting ||
+			error !== null ||
+			text.length === 0 ||
+			record.draft !== "" ||
+			(record.images?.length ?? 0) > 0
+		)
+			return false;
+		try {
+			this.persist(
+				{
+					draft: text,
+					unconfirmed: record.unconfirmed,
+					...(record.unconfirmedImages?.length
+						? { unconfirmedImages: record.unconfirmedImages }
+						: {}),
+				},
+				false,
+			);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 }
