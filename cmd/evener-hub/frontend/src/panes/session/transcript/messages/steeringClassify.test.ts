@@ -97,13 +97,13 @@ Job job_42 completed.
   expect(n.secondary).toBe('Running "go test" to find the failure');
 });
 
-// A failed job's head line is "<title> <intent>" and nothing else: the
-// caller's stated rationale names the purpose of the run, while the exit
-// code and reason live in the expanded card's metadata. The description
-// gloss deliberately stays off the error head too: pre-intent blocks
-// shipped the raw command as their description attr (the producer's old
-// display-label fallback), and the parser cannot tell a gloss from that
-// fallback — so for error tones the head shows intent only.
+// A failed job's head line is "<title> <intent>": the caller's stated
+// rationale names the purpose of the run, while the exit code and reason
+// live in the expanded card's metadata. The description attr reaches the
+// error head only when an explicit empty intent marks the block post-split
+// (the test below pins that); a block with no intent attribute at all is
+// pre-split history, whose description may be the raw command — those
+// heads show nothing.
 test("a failed job's head carries the caller's intent and nothing else", () => {
   const block = `<job-notification job_id="job_f" event="failed" job_type="shell" description="go test ./cmd/evener-hub" intent="Running the mid-turn kill reproduction." status="failed" reason="exit_nonzero" output_bytes="13816" exit_code="1" transcript_ref="job:job_f">
 Job job_f failed. Output is available through read_transcript(transcript_ref="job:job_f") if needed.
@@ -129,6 +129,21 @@ Job job_f failed.
   // The description still parses; the card's raw disclosure keeps it
   // inspectable.
   expect(n.description).toContain("git rev-parse");
+});
+
+test("an error head with an explicit empty intent shows the description gloss", () => {
+  // Post-split wire shape: the producer always stamps intent, so an empty
+  // value marks a real gloss in the description, never the old command
+  // fallback (which has no intent attr at all).
+  const block = `<job-notification job_id="job_g" event="failed" job_type="shell" description="Run the repository gates" intent="" status="failed" reason="exit_nonzero" exit_code="1">
+Job job_g failed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("error");
+  // The parsed object keeps its empty-to-undefined normalization; the head
+  // grammar is where the empty intent's meaning shows.
+  expect(n.intent).toBeUndefined();
+  expect(n.secondary).toBe("Run the repository gates");
 });
 
 // The title keeps the three failure vocabularies apart: "Command failed" /

@@ -51,7 +51,7 @@ Call the `doctor_evener` tool — the in-process equivalent of the `evener
 doctor` CLI, running against this session's own state root by default (no
 shell, no PATH, no cwd dependence; the CLI shell-out failed with
 `command not found` when the binary wasn't installed). Its `selector` argument
-is the CLI's first positional: `local:<id>`, `proj:<hash>:<id>`, or a bare
+is the CLI's first positional: `local:<id>`, `proj:<project-id>:<id>`, or a bare
 `<id>` (searched across buckets). `state_dir` targets a different root.
 Results are the CLI's `--json` struct shapes. The same commands also run as
 `evener doctor <cmd>` for humans and scripts.
