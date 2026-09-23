@@ -17419,6 +17419,163 @@ describe("ConversationStore", () => {
       expect((rowById(store, "act") as { state?: string }).state).toBe("completed");
     });
 
+    it("a reread that omits a failed turn does not keep its error as a ghost", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // The turn fails live: its error projects a failure row.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "",
+            status: "failed",
+            error: { message: "boom" },
+          },
+        },
+      } as AnyNotification);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      expect(failureRows()).not.toHaveLength(0);
+
+      // The reread omits the failed turn ENTIRELY — its window no longer
+      // reaches it — and names no active turn: the turn's items drop, and
+      // nothing that survives (not the snapshot, not a page) owns the
+      // failure, so it must not ride the emptied turn back onto the
+      // screen (RoboRev round 25).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t9", status: "completed", items: [userMessageItem("later", "fresh")] }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(failureRows()).toHaveLength(0);
+
+      // And no later row-changing frame resurrects it.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(failureRows()).toHaveLength(0);
+    });
+
+    it("a preserved live cluster keeps the members the snapshot does not carry", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "act-old",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  status: "completed",
+                } as ThreadItem,
+                {
+                  id: "act-live",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c2",
+                  status: "inProgress",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // No loadOlder: no page history exists yet. The two adjacent tool
+      // calls cluster into ONE activity row keyed by the first member.
+      expect(
+        (rowById(store, "act-old") as { members?: { id: string }[] })?.members?.map(
+          (member) => member.id,
+        ),
+      ).toEqual(["act-old", "act-live"]);
+
+      // The reread names t1 active, omits the turn, but its snapshot
+      // carries the OLDER member under another turn: the live member must
+      // not go down with the cluster (RoboRev round 25 — the whole-row
+      // supersede rejected everything when one member was carried).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [
+                {
+                  id: "act-old",
+                  turnId: "t9",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // The member the snapshot re-served reads from the snapshot's copy.
+      expect(rowById(store, "act-old")).toMatchObject({
+        kind: "activity",
+        state: "completed",
+      });
+      // The live member the snapshot does not carry survives, rebuilt
+      // around itself.
+      expect(rowById(store, "act-live")).toMatchObject({
+        kind: "activity",
+        state: "running",
+      });
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

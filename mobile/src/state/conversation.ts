@@ -442,6 +442,53 @@ function supersededBy(
   return sourceId !== null && supersedingSources.has(sourceId);
 }
 
+  // The members of a cluster row its owner still holds, judged per member
+  // rather than whole (RoboRev round 25): one member the projection already
+  // carries must not drag the members it does not down with it, and only
+  // the owner's own members are the retention worth keeping. The page
+  // prepend and the live-active preserve both read this so the two cluster
+  // paths cannot drift apart.
+  function ownedClusterMembers(
+    item: Extract<MobileTimelineItem, { kind: "activity" }>,
+    identities: ReadonlySet<string>,
+    owns: (identity: string) => boolean,
+  ): {
+    members: NonNullable<Extract<MobileTimelineItem, { kind: "activity" }>["members"]>;
+    unchanged: boolean;
+  } {
+    const all = item.members ?? [];
+    const members = all.filter(
+      (member) =>
+        !identities.has(activityIdentity(member)) && owns(activityIdentity(member)),
+    );
+    return { members, unchanged: members.length === all.length };
+  }
+
+  // The rebuilt cluster row: every identity-bearing field follows the new
+  // first member — the old first member's key and position name what the
+  // projection now holds, so spreading them would make the next publish
+  // read the row as a duplicate and drop the history it still carries. The
+  // state follows the projector's own cluster rule (running when any member
+  // runs, else completed — failed members never join a run), and a single
+  // surviving member is a plain activity row rather than a cluster of one.
+  function rebuildOwnedCluster(
+    item: Extract<MobileTimelineItem, { kind: "activity" }>,
+    members: NonNullable<Extract<MobileTimelineItem, { kind: "activity" }>["members"]>,
+  ): MobileTimelineItem {
+    const first = members[0]!;
+    return {
+      ...item,
+      id: first.id,
+      label: first.label,
+      family: first.family,
+      detail: first.detail,
+      state: members.some((member) => member.state === "running") ? "running" : "completed",
+      transcriptKey: first.transcriptKey,
+      position: first.position,
+      ...(members.length === 1 ? { members: undefined } : { members }),
+    };
+  }
+
 // A source's identity when its own item explicitly clears its output images
 // (outputImages: [], distinct from omitted/undefined — the wire's only way
 // to say "these are gone", not merely "unchanged since the last frame":
@@ -916,30 +963,14 @@ export function createConversationStore() {
     // cluster member is recorded individually (loadOlder unions
     // ownTimelineIdentities per row), so real page clusters keep their
     // members; only the non-page riders drop.
-    const members = item.members.filter(
-      (member) =>
-        !identities.has(activityIdentity(member)) &&
-        pageOwnedIds.has(activityIdentity(member)),
+    const { members, unchanged } = ownedClusterMembers(
+      item,
+      identities,
+      (identity) => pageOwnedIds.has(identity),
     );
-    if (members.length === item.members.length) return duplicates(item) ? null : item;
-    const first = members[0];
-    if (first === undefined) return null;
-    // Every identity-bearing field comes from the new first member, including
-    // the absence of one: spreading `item` would keep the SUPERSEDED member's
-    // transcriptKey and position, which name what the projection now holds, so
-    // the next publish would read this row as a duplicate and drop the history
-    // it still carries.
-    return {
-      ...item,
-      id: first.id,
-      label: first.label,
-      family: first.family,
-      detail: first.detail,
-      state: members.some((member) => member.state === "running") ? "running" : "completed",
-      transcriptKey: first.transcriptKey,
-      position: first.position,
-      ...(members.length === 1 ? { members: undefined } : { members }),
-    };
+    if (unchanged) return duplicates(item) ? null : item;
+    if (members.length === 0) return null;
+    return rebuildOwnedCluster(item, members);
   }
 
   // Prune page ownership for identities the displayed rows no longer carry:
@@ -971,6 +1002,7 @@ export function createConversationStore() {
     previous: MobileConversation | null,
     sameInstance: boolean,
     projected: MobileConversation,
+    freshTurns: TurnModel[],
   ): MobileConversation {
     const activeId = projected.activeTurnId;
     if (
@@ -983,6 +1015,20 @@ export function createConversationStore() {
     }
     const liveTurn = previous.turns.find((turn) => turn.id === activeId);
     if (liveTurn === undefined) return projected;
+    // Items the fresh read carries under another turn are the snapshot's:
+    // the read omits the live turn itself, so every identity match is a
+    // re-serve, and the preserved copy would ride the model back beside
+    // the canonical one — the next row-changing frame would project the
+    // twin (the package identity rule, the same match the page merge's
+    // twin filter reads).
+    const freshItems = freshTurns.flatMap((turn) => turn.items);
+    const preservedItems = liveTurn.items.filter(
+      (item) => !freshItems.some((fresh) => itemIdentityMatches(item, fresh)),
+    );
+    const preservedTurn =
+      preservedItems.length === liveTurn.items.length
+        ? liveTurn
+        : { ...liveTurn, items: preservedItems };
     // Every identity the projection carries, in both spellings — the
     // round-29 rule: a keyless reissue matches a keyed row by bare id.
     const identities = new Set<string>();
@@ -998,22 +1044,37 @@ export function createConversationStore() {
         .map((row) => attachmentSourceIdentity(row))
         .filter((id): id is string => id !== null),
     );
-    // Every identity the live turn owns: its items' identities in both
-    // spellings, plus the turn id a projected failure row would carry.
-    const liveIdentities = new Set([liveTurn.id]);
-    for (const item of liveTurn.items) {
+    // Every identity the preserved turn owns: its surviving items'
+    // identities in both spellings, plus the turn id a projected failure
+    // row would carry.
+    const liveIdentities = new Set([preservedTurn.id]);
+    for (const item of preservedTurn.items) {
       liveIdentities.add(item.transcriptKey ?? item.id);
       liveIdentities.add(item.id);
     }
-    const liveRows = previous.items.filter(
-      (row) =>
-        [...timelineIdentities(row), row.id].some((id) =>
-          liveIdentities.has(id),
-        ) && !supersededBy(row, identities, projectedAttachmentSources),
-    );
+    // Cluster rows are judged per member, not whole: a member the snapshot
+    // re-served must not drag the live members it does not carry down
+    // with it — the cluster rebuilds around the survivors exactly the way
+    // the page prepend rebuilds its own (round 25).
+    const liveRows = previous.items.flatMap((row): MobileTimelineItem[] => {
+      if (![...timelineIdentities(row), row.id].some((id) => liveIdentities.has(id))) {
+        return [];
+      }
+      if (row.kind !== "activity" || row.members === undefined) {
+        return supersededBy(row, identities, projectedAttachmentSources) ? [] : [row];
+      }
+      const { members, unchanged } = ownedClusterMembers(
+        row,
+        identities,
+        (identity) => liveIdentities.has(identity),
+      );
+      if (unchanged) return supersededBy(row, identities, projectedAttachmentSources) ? [] : [row];
+      if (members.length === 0) return [];
+      return [rebuildOwnedCluster(row, members)];
+    });
     return {
       ...projected,
-      turns: [...projected.turns, liveTurn],
+      turns: [...projected.turns, preservedTurn],
       items: [...projected.items, ...liveRows],
     };
   }
@@ -1982,6 +2043,7 @@ export function createConversationStore() {
             preservePageHistory
               ? withPageHistory(currentConvForMerge, conversation)
               : conversation,
+            conversation.turns,
           );
           // The page's cursor is the newer one when its history is kept: the
           // reread's reflects the full readProjection, which does not include
@@ -2363,8 +2425,13 @@ export function createConversationStore() {
                 // coverage fields, so a snapshot whose covering turn
                 // carries no error must not inherit the retained failure:
                 // the next row-changing frame would project a failure
-                // row neither side holds (RoboRev round 23). The
-                // exemption keys on ownership of the failure CONTENT,
+                // row neither side holds (RoboRev round 23). A turn the
+                // read omits ENTIRELY is the same authority statement —
+                // when its items drop with it and no wholesale retention
+                // owns the turn (the round-22 active rule, the compact
+                // memory), the error is a ghost the next row-changing
+                // frame would reproject from an emptied turn (round 25).
+                // The exemption keys on ownership of the failure CONTENT,
                 // not of the turn: the failure row's identity IS the turn
                 // id (failureItem), so a page that carried the failure
                 // owns it as retained history (the round-31 rule) — but
@@ -2382,9 +2449,9 @@ export function createConversationStore() {
                           .find((candidate) => candidate !== undefined);
                 if (
                   turn.error !== undefined &&
-                  covering !== undefined &&
-                  covering.error === undefined &&
-                  !pageOwnedIds.has(turn.id)
+                  !keepWholesale &&
+                  !pageOwnedIds.has(turn.id) &&
+                  (covering === undefined || covering.error === undefined)
                 ) {
                   return { ...reconciled, error: undefined };
                 }
