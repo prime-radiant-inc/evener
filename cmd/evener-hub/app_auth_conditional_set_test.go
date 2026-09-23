@@ -39,6 +39,20 @@ base = "anthropic"
 api_key = "$AUTHORED_KEY"
 `
 
+// credentialHeadersInstanceToml is one instance whose credential resolves from
+// an authored credential_headers entry, which outranks the file layer the push
+// writes. The shape is the registry's own: credential_headers is a string map
+// (llm/registry/write.go's setStringMap), and registry.credential reads the
+// Authorization entry, expanding its $VAR reference
+// (llm/registry/instances.go).
+const credentialHeadersInstanceToml = `[providers.gateway-hdr]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+
+[providers.gateway-hdr.credential_headers]
+Authorization = "Bearer $WORK_HDR_KEY"
+`
+
 func loadStoredKey(t *testing.T, credsDir, name string) (string, bool) {
 	t.Helper()
 	store, err := credentials.LoadStore(filepath.Join(credsDir, "credentials.toml"))
@@ -307,11 +321,27 @@ func TestAuth_ApiKeyConditionalSet_ClassifiesNonWritableSchemes(t *testing.T) {
 		toml     string
 		instance string
 		env      map[string]string
+		// wantSource, when set, pins the source the fixture must actually resolve
+		// from: a case that skipped for a different reason than it claims would
+		// otherwise pass for the wrong reason.
+		wantSource string
+		// wantReason, when set, pins the exact Reason the classification must
+		// produce. The Reason strings are user-visible, and for a source an
+		// explicit branch names it is also what tells that branch apart from the
+		// switch's catch-all skip: without this, moving credential_headers out of
+		// its branch would still skip (via default) with a vaguer message, and no
+		// test would notice.
+		wantReason string
 	}{
 		{name: "codex-oauth", toml: codexInstanceToml, instance: "work"},
 		{name: "gcp-adc", toml: gcpADCInstanceToml, instance: "vertexish"},
 		{name: "auth-none", toml: authNoneInstanceToml, instance: "gateway"},
 		{name: "providers-toml-api-key", toml: apiKeyInstanceToml, instance: "authored", env: map[string]string{"AUTHORED_KEY": "sk-authored"}},
+		{
+			name: "credential-headers", toml: credentialHeadersInstanceToml, instance: "gateway-hdr", env: map[string]string{"WORK_HDR_KEY": "sk-hdr"},
+			wantSource: "credential_headers",
+			wantReason: "gateway-hdr resolves its credential from providers.toml (credential_headers), which outranks the file layer",
+		},
 		{name: "environment", toml: bearerInstanceToml, instance: "work-ant", env: map[string]string{"WORK_ANT_KEY": "sk-env"}},
 	}
 	for _, tc := range cases {
@@ -322,6 +352,9 @@ func TestAuth_ApiKeyConditionalSet_ClassifiesNonWritableSchemes(t *testing.T) {
 			before, err := ctrl.Status(appwire.AuthStatusParams{Provider: tc.instance})
 			if err != nil {
 				t.Fatalf("Status(%s): %v", tc.instance, err)
+			}
+			if tc.wantSource != "" && before.ActiveSource != tc.wantSource {
+				t.Fatalf("Status(%s).ActiveSource = %q, want %q: the fixture does not resolve from the source this case is about", tc.instance, before.ActiveSource, tc.wantSource)
 			}
 			resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
 				Provider:       tc.instance,
@@ -336,6 +369,9 @@ func TestAuth_ApiKeyConditionalSet_ClassifiesNonWritableSchemes(t *testing.T) {
 			}
 			if resp.Reason == "" {
 				t.Fatal("Reason is empty for a skip; the report cannot say why")
+			}
+			if tc.wantReason != "" && resp.Reason != tc.wantReason {
+				t.Fatalf("Reason = %q, want %q", resp.Reason, tc.wantReason)
 			}
 			if _, has := loadStoredKey(t, dir, tc.instance); has {
 				t.Fatalf("a key was stored for a skipped instance %q", tc.instance)
