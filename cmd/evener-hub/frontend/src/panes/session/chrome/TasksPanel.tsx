@@ -85,7 +85,7 @@ import { Button, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { STATUS_TOUCH, TaskCheck } from "../transcript/tools/taskCheck";
+import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
 import styles from "./taskspanel.module.css";
 
 export interface TasksPanelProps {
@@ -142,6 +142,7 @@ const CLASS = {
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
   notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
   note: requireClass(styles.note, "taskspanel.module.css", "note"),
+  srOnly: requireClass(styles.srOnly, "taskspanel.module.css", "srOnly"),
 };
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
@@ -290,6 +291,10 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
       <TaskCheck touch={STATUS_TOUCH[task.status]} />
       <span className={CLASS.summaryMain}>
         <span className={CLASS.summaryLine}>
+          {/* The glyph is aria-hidden by design; its status word rides
+              visually-hidden beside the label, the same word the card's
+              rows carry. */}
+          <span className={CLASS.srOnly}>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</span>
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>

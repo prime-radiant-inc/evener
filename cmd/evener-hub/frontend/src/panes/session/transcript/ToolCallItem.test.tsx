@@ -749,6 +749,31 @@ test("a foldByDefault descriptor settles folded even at activity level, and open
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
+test("a foldByDefault descriptor stays folded under the full preset's open baseline, and still opens on click", () => {
+  // Full is the strongest force-open the app has: entering the level
+  // establishes an open disclosure baseline for the whole scope, and only an
+  // explicit store entry outranks a baseline. foldByDefault is the
+  // descriptor's claim that its collapsed line already carries the news, so
+  // its posture must hold there too - settled folded, with the reader's own
+  // click still winning (the explicit entry beats everything).
+  registerToolRenderer({
+    match: "tci_fold_full",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "tci_fold_full_scope",
+    <ToolCallItem item={item({ toolName: "tci_fold_full" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);

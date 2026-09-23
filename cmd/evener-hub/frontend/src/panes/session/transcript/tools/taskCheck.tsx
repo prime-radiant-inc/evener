@@ -34,6 +34,18 @@ export const STATUS_TOUCH: Record<TaskStatus, TaskTouch> = {
   cancelled: "cancelled",
 };
 
+// The word assistive tech reads for each touch - the visible flag label is
+// gone on both task surfaces, so the status rides along visually-hidden
+// beside the glyph. "pending" belongs to a slot state (the card window's
+// next task, the pane's open row), never to a mutation touch.
+export const TOUCH_WORD: Record<TaskTouch, string> = {
+  added: "added",
+  done: "done",
+  cancelled: "cancelled",
+  started: "started",
+  pending: "pending",
+};
+
 const CLASS = {
   check: requireClass(styles.check, "taskcheck.module.css", "check"),
   added: requireClass(styles.added, "taskcheck.module.css", "added"),

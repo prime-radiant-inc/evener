@@ -343,6 +343,29 @@ test("every row leads with the shared TaskCheck glyph matching its task's status
   await expectTouch("Prepare release notes", "pending");
 });
 
+test("every row carries a visually hidden status word beside its aria-hidden glyph", async () => {
+  // TaskCheck is a picture of state, deliberately aria-hidden; the row's
+  // status rides along visually hidden instead (the same word the card's
+  // rows carry), or a screen reader cannot tell done from cancelled.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  const expectWord = async (description: string, word: string) => {
+    const row = (await screen.findByText(description)).closest("[data-testid='task-row']");
+    const srWord = row?.querySelector("span[class*='srOnly']");
+    expect(srWord?.textContent).toBe(word);
+  };
+  await expectWord("Implement artifact store", "done");
+  await expectWord("Transition to implementation plan", "cancelled");
+  await expectWord("Extend transcript API", "started");
+  await expectWord("Prepare release notes", "pending");
+});
+
 test("a live row shows a relative updated time", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

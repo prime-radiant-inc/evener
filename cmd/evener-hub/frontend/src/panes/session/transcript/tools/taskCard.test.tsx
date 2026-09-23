@@ -422,6 +422,80 @@ test("window ink: settled is struck, the working task is emphasized, the next on
   expect(within(rows[2]!).getByText("sixth").className).toContain("descNext");
 });
 
+test("the settled slot orders by parsed time: same-second fractional stamps compare chronologically, not as strings", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 2, status: "done", notes: "the fresh note" }] },
+      "Updated 2→done. Progress: 2/2 tasks complete.",
+      {
+        // RFC3339Nano trims trailing zeros, so same-second stamps come in
+        // different LENGTHS: ".5Z" is EARLIER than ".55Z", but byte-order
+        // comparison says "5Z" > "55Z" and pins the older task in the
+        // settled slot - dropping the fresh note riding the newer settle.
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "earlier fractional",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:58:00.5Z",
+          },
+          {
+            id: 2,
+            type: "implement",
+            description: "later fractional",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:58:00.55Z",
+          },
+          { id: 3, type: "implement", description: "current", prompt: "", status: "in_progress", started: true },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled", "current"]);
+  expect(within(rows[0]!).getByText("later fractional")).toBeTruthy();
+  expect(within(rows[0]!).getByText("the fresh note")).toBeTruthy();
+});
+
+test("the settled slot orders by parsed time across differing UTC offsets", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "done" }] },
+      "Updated 1→done. Progress: 2/2 tasks complete.",
+      {
+        // 14:58+02:00 is 12:58Z - EARLIER than 13:00Z - but byte-order
+        // comparison reads the wall-clock digits and picks the earlier one.
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "later instant",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T13:00:00Z",
+          },
+          {
+            id: 2,
+            type: "implement",
+            description: "earlier instant",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:58:00+02:00",
+          },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const row = screen.getAllByTestId("task-card-row")[0]!;
+  expect(row.getAttribute("data-kind")).toBe("settled");
+  expect(row.textContent).toContain("later instant");
+});
+
 test("the status rides along visually-hidden on every window row", () => {
   renderItem(mainUpdate());
   openRow();

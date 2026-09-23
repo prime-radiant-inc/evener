@@ -83,6 +83,24 @@ describe("store shape", () => {
   });
 });
 
+describe("baseline-skipping reads", () => {
+  test("ignoreBaseline resolves explicit first, then the fallback, never the scope baseline", () => {
+    const store = createDisclosureStore();
+    const key = scopedDisclosureId("live", "tool");
+    store.beginBaseline("live", ["tool"], true);
+    // Without the option the open baseline wins over any fallback.
+    expect(store.isOpen(key, false)).toBe(true);
+    // With it, the baseline is skipped: an explicit choice still outranks
+    // everything, and only then does the fallback answer.
+    expect(isDisclosureOpenIn(store.getState(), key, false, { ignoreBaseline: true })).toBe(false);
+    expect(isDisclosureOpenIn(store.getState(), key, true, { ignoreBaseline: true })).toBe(true);
+    store.setOpen(key, true);
+    expect(isDisclosureOpenIn(store.getState(), key, false, { ignoreBaseline: true })).toBe(true);
+    store.setOpen(key, false);
+    expect(isDisclosureOpenIn(store.getState(), key, true, { ignoreBaseline: true })).toBe(false);
+  });
+});
+
 /** Reads an id the way every adapter's view hook does: through the store-bound
  * isOpen, with the scope's configuration default as the fallback. */
 function readOpen(store: DisclosureStore, scope: string, id: string, fallback: boolean): boolean {

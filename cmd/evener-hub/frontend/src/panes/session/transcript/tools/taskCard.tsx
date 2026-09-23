@@ -42,7 +42,7 @@ import { Meter, OpenButton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { STATUS_TOUCH, TaskCheck, type TaskTouch } from "./taskCheck";
+import { STATUS_TOUCH, TaskCheck, type TaskTouch, TOUCH_WORD } from "./taskCheck";
 import styles from "./taskcard.module.css";
 import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
 
@@ -231,17 +231,6 @@ function isTaskMutation(item: ItemModel): boolean {
   return (mutationRows(item) ?? []).length > 0;
 }
 
-// The word assistive tech reads for each touch - the visible flag label is
-// gone, so the status rides along visually-hidden beside the glyph. "pending"
-// belongs to the window's next slot, not to a mutation touch.
-const TOUCH_WORD: Record<TaskTouch, string> = {
-  added: "added",
-  done: "done",
-  cancelled: "cancelled",
-  started: "started",
-  pending: "pending",
-};
-
 // The text mark the folded summary line carries per mutation touch: the
 // checkbox grammar in text form. "started" reads best as the arrow it means.
 export const SUMMARY_MARK: Record<MutationTouch, string> = {
@@ -303,7 +292,16 @@ export interface TaskWindow {
 export function stateWindow(tasks: TaskRow[] | null): TaskWindow {
   if (!tasks) return {};
   const settledAll = tasks.filter((task) => task.status === "done" || task.status === "cancelled");
-  const settleKey = (task: TaskRow) => task.completedAt ?? task.updatedAt ?? "";
+  // Parse the stamps, never compare them as strings: RFC3339Nano trims
+  // trailing zeros, so same-second stamps arrive in different lengths
+  // (".5Z" sorts after ".55Z" byte-wise even though it is the earlier
+  // instant), and mixed UTC offsets compare by wall-clock digits rather
+  // than instants. An absent or unparseable stamp reads as -Infinity, so
+  // any real timestamp wins over it.
+  const settleKey = (task: TaskRow) => {
+    const at = Date.parse(task.completedAt ?? task.updatedAt ?? "");
+    return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+  };
   // >= makes the later list entry win a tie, so equal/absent timestamps
   // resolve to the most recent settle in list order rather than the first.
   let settled: TaskRow | undefined;

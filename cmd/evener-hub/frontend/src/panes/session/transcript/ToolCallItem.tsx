@@ -258,15 +258,22 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const superseded = supersededBySuccess(item, thread);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
-  // foldByDefault opts the body out of the level's expand-details default
-  // (activity/full force-expand every body otherwise): its fallback stays
-  // closed at every level, so only the reader's own toggle opens it - and an
-  // explicit store entry still wins over any fallback afterward.
-  const configDefault =
-    (descriptor.foldByDefault ? false : expandDetailsByDefault(config)) ||
-    disclosureDefault(disclosureScope, item.id, false);
+  // foldByDefault opts the body out of every open-by-default posture: the
+  // level's expand-details default (activity/full force-expand every body
+  // otherwise) AND the full preset's open baseline, the strongest form of
+  // that default - an ordinary fallback can never beat a baseline, so the
+  // read below skips it for these rows. The fallback stays closed at every
+  // level, so only the reader's own toggle opens it - and that explicit
+  // store entry still wins over everything afterward.
+  const configDefault = descriptor.foldByDefault
+    ? false
+    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
   const disclosureFallback = configDefault || (autoDefault && !superseded);
-  const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
+  const expanded = isDisclosureOpen(
+    disclosureKey,
+    disclosureFallback,
+    descriptor.foldByDefault ? { ignoreBaseline: true } : undefined,
+  );
 
   // The descriptor's statusLine hook renders the row's standalone status
   // line in the slot below the summary; the delegate descriptor is the one
