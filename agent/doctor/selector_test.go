@@ -12,6 +12,9 @@ func TestParseSelector(t *testing.T) {
 		{in: sidA, wantSID: sidA},
 		{in: "local:" + sidA, wantSID: sidA},
 		{in: "proj:" + hash1 + ":" + sidA, wantHash: hash1, wantSID: sidA},
+		// A legacy- or foreign-named bucket directory is addressable by the
+		// refs Locate itself emits for it; only traversal shapes are rejected.
+		{in: "proj:0123456789abcdef:" + sidA, wantHash: "0123456789abcdef", wantSID: sidA},
 		{in: "", wantErr: true},
 		{in: "current", wantErr: true},
 		{in: "proj:onlyonepart", wantErr: true},    // missing the :<id>
@@ -21,6 +24,14 @@ func TestParseSelector(t *testing.T) {
 		{in: "../escape", wantErr: true},
 		{in: "a/b", wantErr: true},
 		{in: "has.dot", wantErr: true},
+		// The relaxed project-id policy must still refuse everything that
+		// could turn the token into a path component escape.
+		{in: "proj:../h:" + sidA, wantErr: true},
+		{in: "proj:..:" + sidA, wantErr: true},
+		{in: "proj:.:" + sidA, wantErr: true},
+		{in: "proj:a/b:" + sidA, wantErr: true},
+		{in: "proj:a\\b:" + sidA, wantErr: true},
+		{in: "proj:a\x00b:" + sidA, wantErr: true},
 	}
 	for _, tt := range tests {
 		got, err := parseSelector(tt.in)
