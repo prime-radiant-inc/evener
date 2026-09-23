@@ -35,21 +35,10 @@ func TestMain(m *testing.M) {
 }
 
 // liveShardTimeout bounds how long a shard binary waits for the peers the run
-// should be running beside. It only has to cover process startup, so it is
-// generous. A capped run spends the whole window by design, because the peers
-// it waits for are held back, so a caller expecting that sets
-// SHARD_FIXTURE_LIVE_TIMEOUT to a shorter window: it only has to outlast the
-// moment a broken, uncapped runner would have launched the next shard, which
-// is back-to-back with the first.
+// should be running beside, or for word that the runner is holding them back.
+// It only has to cover process startup, and a passing run never spends it: it
+// is the tripwire for a probe that could not measure.
 const liveShardTimeout = 5 * time.Second
-
-// liveShardWindow is liveShardTimeout, or SHARD_FIXTURE_LIVE_TIMEOUT when set.
-func liveShardWindow() time.Duration {
-	if d, err := time.ParseDuration(os.Getenv("SHARD_FIXTURE_LIVE_TIMEOUT")); err == nil && d > 0 {
-		return d
-	}
-	return liveShardTimeout
-}
 
 // announceLiveShard, when SHARD_FIXTURE_LIVE_DIR is set, records this test
 // binary as a live process for as long as it runs. A run executes one binary
@@ -90,9 +79,15 @@ func announceLiveShard() func() {
 	if err := os.WriteFile(live, []byte("live\n"), 0o644); err != nil {
 		return nil
 	}
+	// SHARD_FIXTURE_RUNNER_WAITING names the file the caller writes when the
+	// runner blocks for a free slot. Its presence while this process is alive
+	// proves the runner is holding a peer back rather than running it, so a
+	// capped run stops waiting there instead of timing out.
+	runnerWaiting := os.Getenv("SHARD_FIXTURE_RUNNER_WAITING")
 	observed := 1 // this process is live
-	deadline := time.Now().Add(liveShardWindow())
+	deadline := time.Now().Add(liveShardTimeout)
 	reached := false
+	held := false
 	for time.Now().Before(deadline) {
 		if n := countMarkers(dir, "live.*"); n > observed {
 			observed = n
@@ -101,7 +96,19 @@ func announceLiveShard() func() {
 			reached = true
 			break
 		}
+		if runnerWaiting != "" {
+			if _, err := os.Stat(runnerWaiting); err == nil {
+				held = true
+				break
+			}
+		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if held {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("held.%d", pid)), []byte("held\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("seen.%d", pid)),
+			[]byte(strconv.Itoa(observed)+"\n"), 0o644)
+		return func() { _ = os.Remove(live) }
 	}
 	if reached {
 		// Rendezvous before anyone leaves: a peer that reached the barrier and

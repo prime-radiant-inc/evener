@@ -507,42 +507,45 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 // and a one-CPU cgroup still got one live process per shard.
 //
 // The fixture reports the peak population of live shard binaries and waits for
-// its peers' markers rather than sleeping a fixed time, so the uncapped case
-// reaches both shards' markers and the capped case cannot. A capped run is
-// expected to write timeout markers -- that is the second shard being held back
-// -- while an uncapped run must not, which is what keeps a probe that simply
-// failed to measure from passing as a low-concurrency observation.
+// its peers' markers rather than sleeping a fixed time. Uncapped, both shards
+// reach each other. Capped, the runner itself says when it holds the second
+// shard back: its slotWait seam writes a marker the moment a shard has to wait
+// for a free slot, and a live shard that sees it records a held observation
+// instead of waiting for a peer that must not come. No time window decides
+// either case: a runner that ignored the cap would never wait for a slot, so
+// both shards would run and the peak would read 2. A timeout marker means the
+// probe could not measure, and fails either case.
 func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		concurrency int
 		wantPeak    int
-		wantTimeout bool
-		// window is how long each shard waits for its peer: the default bound
-		// when the peer must arrive, and a short negative window when it must
-		// not (each serialized shard spends all of it).
-		window string
+		wantHeld    bool
 	}{
-		{"uncapped runs every shard at once", 0, 2, false, ""},
-		{"capped serializes the shards", 1, 1, true, "1s"},
+		{"uncapped runs every shard at once", 0, 2, false},
+		{"capped serializes the shards", 1, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, stdout, stderr, _ := e2eConfig(t)
 			cfg.noSurvey = true
 			cfg.concurrency = tc.concurrency
 			liveDir := t.TempDir()
+			runnerWaiting := filepath.Join(liveDir, "runner-waiting")
+			cfg.slotWait = func() { _ = os.WriteFile(runnerWaiting, nil, 0o644) }
 			t.Setenv("SHARD_FIXTURE_LIVE_DIR", liveDir)
 			t.Setenv("SHARD_FIXTURE_LIVE_EXPECT", "2")
-			t.Setenv("SHARD_FIXTURE_LIVE_TIMEOUT", tc.window)
+			t.Setenv("SHARD_FIXTURE_RUNNER_WAITING", runnerWaiting)
 			if rc := runShards(cfg); rc != 0 {
 				t.Fatalf("run rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 			}
 			if got := peakLiveShards(t, liveDir); got != tc.wantPeak {
 				t.Fatalf("peak concurrent shard processes = %d, want %d\nstdout:\n%s", got, tc.wantPeak, stdout)
 			}
-			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); (timeouts > 0) != tc.wantTimeout {
-				t.Fatalf("timeout markers = %d, wantTimeout %v; the probe never saw its peers\nstdout:\n%s",
-					timeouts, tc.wantTimeout, stdout)
+			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); timeouts > 0 {
+				t.Fatalf("timeout markers = %d; the probe could not measure\nstdout:\n%s", timeouts, stdout)
+			}
+			if held := len(globMarkers(t, liveDir, "held.*")); (held > 0) != tc.wantHeld {
+				t.Fatalf("held markers = %d, wantHeld %v\nstdout:\n%s", held, tc.wantHeld, stdout)
 			}
 		})
 	}
