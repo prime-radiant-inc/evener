@@ -296,11 +296,21 @@ export function stateWindow(tasks: TaskRow[] | null): TaskWindow {
   // trailing zeros, so same-second stamps arrive in different lengths
   // (".5Z" sorts after ".55Z" byte-wise even though it is the earlier
   // instant), and mixed UTC offsets compare by wall-clock digits rather
-  // than instants. An absent or unparseable stamp reads as -Infinity, so
-  // any real timestamp wins over it.
-  const settleKey = (task: TaskRow) => {
-    const at = Date.parse(task.completedAt ?? task.updatedAt ?? "");
-    return Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at;
+  // than instants. The fraction is split off BEFORE Date.parse - engines
+  // are free to differ on rounding more than three fractional digits, and
+  // one call can settle two tasks in the same batch microseconds apart, so
+  // the sub-millisecond digits must survive. The second-resolution base
+  // parses identically everywhere; the fraction folds back as whole
+  // milliseconds plus a sub-millisecond remainder. An absent or
+  // unparseable stamp reads as -Infinity, so any real timestamp wins over
+  // it.
+  const settleKey = (task: TaskRow): number => {
+    const raw = task.completedAt ?? task.updatedAt ?? "";
+    const parts = raw.match(/^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(\D.*)$/);
+    const at = Date.parse(parts ? `${parts[1]}${parts[3]}` : raw);
+    if (Number.isNaN(at)) return Number.NEGATIVE_INFINITY;
+    const fraction = parts?.[2]?.padEnd(9, "0") ?? "000000000";
+    return at + Number(fraction.slice(0, 3)) + Number(`0.${fraction.slice(3)}`);
   };
   // >= makes the later list entry win a tie, so equal/absent timestamps
   // resolve to the most recent settle in list order rather than the first.

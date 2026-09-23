@@ -496,6 +496,43 @@ test("the settled slot orders by parsed time across differing UTC offsets", () =
   expect(row.textContent).toContain("later instant");
 });
 
+test("the settled slot orders by parsed time within the same millisecond", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "done" }] },
+      "Updated 1→done. Progress: 2/2 tasks complete.",
+      {
+        // One call can settle two tasks in a single batch, microseconds
+        // apart: 900µs and 100µs both parse to the same whole millisecond,
+        // so the sub-millisecond digits must still order the pair
+        // chronologically rather than falling back to list position.
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "later sub-millisecond",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:58:00.0009Z",
+          },
+          {
+            id: 2,
+            type: "implement",
+            description: "earlier sub-millisecond",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:58:00.0001Z",
+          },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const row = screen.getAllByTestId("task-card-row")[0]!;
+  expect(row.getAttribute("data-kind")).toBe("settled");
+  expect(row.textContent).toContain("later sub-millisecond");
+});
+
 test("the status rides along visually-hidden on every window row", () => {
   renderItem(mainUpdate());
   openRow();
