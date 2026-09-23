@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -517,9 +518,13 @@ func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 		concurrency int
 		wantPeak    int
 		wantTimeout bool
+		// window is how long each shard waits for its peer: the default bound
+		// when the peer must arrive, and a short negative window when it must
+		// not (each serialized shard spends all of it).
+		window string
 	}{
-		{"uncapped runs every shard at once", 0, 2, false},
-		{"capped serializes the shards", 1, 1, true},
+		{"uncapped runs every shard at once", 0, 2, false, ""},
+		{"capped serializes the shards", 1, 1, true, "1s"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, stdout, stderr, _ := e2eConfig(t)
@@ -528,6 +533,7 @@ func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 			liveDir := t.TempDir()
 			t.Setenv("SHARD_FIXTURE_LIVE_DIR", liveDir)
 			t.Setenv("SHARD_FIXTURE_LIVE_EXPECT", "2")
+			t.Setenv("SHARD_FIXTURE_LIVE_TIMEOUT", tc.window)
 			if rc := runShards(cfg); rc != 0 {
 				t.Fatalf("run rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
 			}
@@ -591,16 +597,34 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 
 // buildEvenerDev compiles the real evener-dev binary (whose `dev` subcommand
 // runs agent-shards) for signal-delivery scenarios.
+// buildEvenerDev returns the evener-dev binary, compiled once per package run
+// into TestMain's directory: the tests that exec it only need the same binary,
+// and linking it again for each cost seconds apiece. The build gets the
+// isolated toolchain env explicitly; each caller still isolates its own env for
+// the commands it runs next.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
 	isolateToolchainEnv(t)
-	bin := filepath.Join(t.TempDir(), "evener-dev")
-	cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("building evener-dev: %v\n%s", err, out)
+	evenerDevBuild.once.Do(func() {
+		bin := filepath.Join(evenerDevBinDir, "evener-dev")
+		cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
+		cmd.Env = append(os.Environ(), "GOENV=off", "GOFLAGS=")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			evenerDevBuild.err = fmt.Errorf("building evener-dev: %w\n%s", err, out)
+			return
+		}
+		evenerDevBuild.bin = bin
+	})
+	if evenerDevBuild.err != nil {
+		t.Fatal(evenerDevBuild.err)
 	}
-	return bin
+	return evenerDevBuild.bin
+}
+
+var evenerDevBuild struct {
+	once sync.Once
+	bin  string
+	err  error
 }
 
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {

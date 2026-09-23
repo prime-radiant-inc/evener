@@ -36,9 +36,20 @@ func TestMain(m *testing.M) {
 
 // liveShardTimeout bounds how long a shard binary waits for the peers the run
 // should be running beside. It only has to cover process startup, so it is
-// generous; a capped run spends it by design, because the peers it is waiting
-// for are held back.
+// generous. A capped run spends the whole window by design, because the peers
+// it waits for are held back, so a caller expecting that sets
+// SHARD_FIXTURE_LIVE_TIMEOUT to a shorter window: it only has to outlast the
+// moment a broken, uncapped runner would have launched the next shard, which
+// is back-to-back with the first.
 const liveShardTimeout = 5 * time.Second
+
+// liveShardWindow is liveShardTimeout, or SHARD_FIXTURE_LIVE_TIMEOUT when set.
+func liveShardWindow() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("SHARD_FIXTURE_LIVE_TIMEOUT")); err == nil && d > 0 {
+		return d
+	}
+	return liveShardTimeout
+}
 
 // announceLiveShard, when SHARD_FIXTURE_LIVE_DIR is set, records this test
 // binary as a live process for as long as it runs. A run executes one binary
@@ -80,7 +91,7 @@ func announceLiveShard() func() {
 		return nil
 	}
 	observed := 1 // this process is live
-	deadline := time.Now().Add(liveShardTimeout)
+	deadline := time.Now().Add(liveShardWindow())
 	reached := false
 	for time.Now().Before(deadline) {
 		if n := countMarkers(dir, "live.*"); n > observed {
