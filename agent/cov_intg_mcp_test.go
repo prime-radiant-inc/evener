@@ -43,10 +43,7 @@ func intg_buildMCPServer(t *testing.T) string {
 		// The same placement rule as the worktree base repo: a package
 		// fixture must outlive the test that first builds it, so it never
 		// lands inside an isolated test's own t.TempDir.
-		intgMCPServerDir, errIntgMCPServer = os.MkdirTemp(ambientTestTempRoot, "evener-intgmcpserver-*")
-		if errIntgMCPServer != nil {
-			return
-		}
+		intgMCPServerDir = packageFixtureTempDir(t, "evener-intgmcpserver-*")
 		intgMCPServerPath = filepath.Join(intgMCPServerDir, "intgmcpserver")
 		cmd := exec.Command("go", "build", "-o", intgMCPServerPath, "./testdata/intgmcpserver")
 		out, err := cmd.CombinedOutput()
