@@ -782,15 +782,21 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	// before the follow-up.
 	//
 	// Keyed on the RECOVERED turn and on its prompt not being recorded -- never
-	// on the error's type. Two things hold it shut: returnUnrunStartClaim
+	// on the error's type. Three things hold it shut: returnUnrunStartClaim
 	// refuses a claim whose transcript entry already landed (which is what would
-	// run a turn twice), and an ordinary turn this process started is not the
-	// recovered turn, so its claim is left exactly as it was.
+	// run a turn twice); an ordinary turn this process started is not the
+	// recovered turn, so its claim is left exactly as it was; and the give-back
+	// is bounded to ONCE per recovered turn (recoveredTurnClaimReturned), because
+	// the wake it sends drives an immediate retry. One in-process retry is for a
+	// failure that may be transient; a second consecutive failure of the same
+	// turn is deferred to restart recovery instead of spinning on it.
 	if err != nil && claimed.StableTurnID == s.recoveredTurnID &&
+		!s.recoveredTurnClaimReturned &&
 		!s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
 		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
 			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
 		}
+		s.recoveredTurnClaimReturned = true
 	}
 	return result, true, err
 }

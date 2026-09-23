@@ -641,6 +641,65 @@ func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *tes
 	}
 }
 
+// TestFailedRecoveredTurnGivesItsClaimBackOnlyOnce pins the BOUND on the
+// give-back: one in-process retry for a failure that may be transient, then the
+// claim is left claimed so restart recovery owns it rather than the process
+// spinning on a persistent failure. The cost is pinned honestly, not smoothed
+// over: once the one-shot is spent and the recovered turn is stuck claimed, the
+// claim selection skips it and the follow-up admitted behind it IS claimed next,
+// moving ActiveTurnID onto the follow-up. Restart recovery still replays the
+// recovered turn, so its prompt is not lost -- it just runs after the follow-up
+// in that case.
+func TestFailedRecoveredTurnGivesItsClaimBackOnlyOnce(t *testing.T) {
+	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
+
+	var followUp appwire.TurnStartResponse
+	restored.cfg.testOnly.clientMutationStartAnnounced = func() {
+		restored.cfg.testOnly.clientMutationStartAnnounced = nil
+		followUp = acceptFollowUp(t, restored, "cm-follow-up", "the follow-up")
+	}
+	restored.cfg.testOnly.failTurnBeforeRecording = func() error { return errors.New("pre-turn failure") }
+
+	// First failure: the claim is handed back, so the recovered turn is
+	// claimable again and runs ahead of the follow-up.
+	if _, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {}); runErr == nil || !processed {
+		t.Fatalf("first run of the recovered turn: processed=%v err=%v", processed, runErr)
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "accepted" {
+		t.Fatalf("recovered pending after the first failure = %q, want it handed back as accepted", got)
+	}
+	if !restored.recoveredTurnClaimReturned {
+		t.Fatal("the give-back did not spend its one-shot for the recovered turn")
+	}
+
+	// Second consecutive failure of the same turn: the bound is spent, so the
+	// claim stays claimed -- today's behaviour -- and restart recovery owns it.
+	if _, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {}); runErr == nil || !processed {
+		t.Fatalf("second run of the recovered turn: processed=%v err=%v", processed, runErr)
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "claimed" {
+		t.Fatalf("recovered pending after the SECOND failure = %q, want it left claimed: the give-back is bounded to one retry", got)
+	}
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != inheritedTurnID {
+		t.Fatalf("ActiveTurnID after the second failure = %q, want the recovered turn %q still claimed", got, inheritedTurnID)
+	}
+
+	// The known cost of the bound, pinned: stuck claimed, the recovered turn is
+	// skipped by the selection, so the follow-up IS claimed next and takes the
+	// slot -- it runs before the recovered turn, which restart recovery replays.
+	claimed, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim after the bounded second failure: ok=%v err=%v", ok, err)
+	}
+	if claimed.StableTurnID != followUp.Turn.ID {
+		t.Fatalf("claim after the bounded second failure = %q, want the follow-up %q claimed ahead of the stuck recovered turn %q (the known cost of the bound)",
+			claimed.StableTurnID, followUp.Turn.ID, inheritedTurnID)
+	}
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != followUp.Turn.ID {
+		t.Fatalf("ActiveTurnID once the follow-up is claimed = %q, want %q", got, followUp.Turn.ID)
+	}
+}
+
 // TestFailedOrdinaryTurnKeepsItsClaim pins what must NOT change: a turn this
 // process started, failing the same way before its prompt is recorded, keeps its
 // claim exactly as it does today. Only the inherited recovered turn's claim is

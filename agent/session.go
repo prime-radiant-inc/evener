@@ -539,6 +539,15 @@ type Session struct {
 	// is never reused, so the field needs no clearing: once the inherited turn
 	// ends, no later active turn can equal it again.
 	recoveredTurnID string
+	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
+	// in-process retry. The first failure of the inherited turn before its prompt
+	// is recorded hands its claim back, and the runner wake drives the immediate
+	// retry; a SECOND consecutive failure of the same turn leaves the claim
+	// claimed, so restart recovery owns it rather than the process spinning on a
+	// failure that is plainly not transient. Like recoveredTurnID it is a
+	// per-process fact and is deliberately never persisted -- the turn id it
+	// guards is never reused, so it needs no clearing.
+	recoveredTurnClaimReturned bool
 	// clientMutationAppendedTurn flags that a restore-time client-mutation
 	// recovery appended turns to the transcript file. Restore consults it
 	// after the recovery pass to decide whether the retained transcript
