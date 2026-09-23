@@ -335,3 +335,28 @@ func TestLocate_LegacyBucketRefRoundTrip(t *testing.T) {
 		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
 	}
 }
+
+// TestLocate_ColonNamedBucketRefRoundTrip is the reviewer's round-trip for a
+// bucket whose directory name contains a colon: colons are legal in
+// directory names, the sweep enumerates the bucket, so the ref Locate emits
+// for its sessions must itself re-parse and re-locate.
+func TestLocate_ColonNamedBucketRefRoundTrip(t *testing.T) {
+	base := t.TempDir()
+	colonBucket := stateHomeBucket(base, "a:b")
+	writeSession(t, colonBucket, sidA)
+
+	first, err := Locate(base, sidA)
+	if err != nil {
+		t.Fatalf("bare-id Locate into colon-named bucket: %v", err)
+	}
+	if want := "proj:a:b:" + sidA; first.TranscriptRef != want {
+		t.Fatalf("TranscriptRef = %q, want %q", first.TranscriptRef, want)
+	}
+	second, err := Locate(base, first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("re-Locate via emitted ref %q: %v", first.TranscriptRef, err)
+	}
+	if second.TranscriptPath != first.TranscriptPath || second.ProjectID != first.ProjectID {
+		t.Errorf("round trip moved: first=%+v second=%+v", first, second)
+	}
+}
