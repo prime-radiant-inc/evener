@@ -726,24 +726,24 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 
 // TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth is the FU2 RED case: when
 // the SAME session id is present in two different project buckets whose
-// directory names the agent ref grammar rejects (so refFor emits no
-// TranscriptRef) but the doctor's own selector grammar accepts
-// (projectTokenOK), the current code falls back to a bare id — which
-// locateAcrossBuckets finds in BOTH buckets and reports as ambiguous, so
-// RunAudit records BOTH rows as Unreadable and audits neither. The audit
-// set's coverage then no longer matches the sweep's own enumeration.
-// followSelector must instead address each row precisely via
-// proj:<bucket>:<sid>, so both rows audit and evidence names each.
+// directory names pass identifier.ValidateProjectID (so refFor emits proj:
+// refs and followSelector returns them), the pre-FU2 code's bare-id
+// fallback made locateAcrossBuckets find the sid in BOTH buckets and
+// report it as ambiguous, so RunAudit recorded BOTH rows as Unreadable and
+// audited neither. The audit set's coverage then no longer matched the
+// sweep's own enumeration. followSelector must instead address each row
+// precisely via proj:<bucket>:<sid>, so both rows audit and evidence names
+// each.
 // ListSessions coverage (two rows, one per bucket) must match audit coverage
-// (two checked). This test fails on current code (both rows land Unreadable,
+// (two checked). This test fails on pre-FU2 code (both rows land Unreadable,
 // SessionsChecked=0).
 func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	base := t.TempDir()
-	// Both names fail identifier.ValidateProjectID (no readable-<10 base62>
-	// structure, so refFor emits no ref) but pass projectTokenOK (no path
-	// separators / NUL), so the fix can qualify each with proj:.
-	bucketA := stateHomeBucket(base, "0123456789abcdef")
-	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	// Both names pass identifier.ValidateProjectID (readable-<10 base62>
+	// structure), so refFor emits proj: refs and followSelector returns them
+	// — addressing each row precisely via locateInBucket.
+	bucketA := stateHomeBucket(base, hash1)
+	bucketB := stateHomeBucket(base, hash2)
 	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 
@@ -789,8 +789,8 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	if len(runTimeout.Evidence.SessionRefs) != 2 {
 		t.Fatalf("run-timeout finding SessionRefs = %v, want 2 (one proj: ref per bucket)", runTimeout.Evidence.SessionRefs)
 	}
-	wantA := "proj:0123456789abcdef:" + sidA
-	wantB := "proj:fedcba9876543210:" + sidA
+	wantA := "proj:" + hash1 + ":" + sidA
+	wantB := "proj:" + hash2 + ":" + sidA
 	refs := map[string]bool{}
 	for _, ref := range runTimeout.Evidence.SessionRefs {
 		refs[ref] = true
@@ -806,6 +806,67 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	}
 	if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
 		t.Errorf("re-running evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", res2.SessionsChecked, res2.Unreadable)
+	}
+}
+
+// TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames is the roborev fix
+// round 1 RED case: projectTokenOK admits commas, spaces, and shell
+// metacharacters in legacy bucket names, so followSelector emits a proj: ref
+// the CLI splits --sessions on ',' (cmd/evener-doctor/main.go:524), so a ref
+// containing a comma breaks the reproduction line (it splits into two
+// invalid selectors), and a name with a space or shell metacharacter is a
+// shell injection vector. The fix narrows followSelector's proj: emission to
+// the ValidateProjectID alphabet ([A-Za-z0-9-]); everything else falls back
+// to the bare session id — the pre-FU2 behavior for those names. This test
+// exercises the comma-join + CLI-split layer (not the structured slice) and
+// must fail on current head (the comma-bucket ref enters DoctorCommand).
+func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
+	// Bucket names that pass projectTokenOK but are unsafe in a comma-joined
+	// --sessions reproduction line: a comma (CLI splits it), a space (shell
+	// word-break), and a '$' (shell expansion).
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket"} {
+		t.Run(bucketName, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, bucketName)
+			writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
+
+			rb := mustParseFixtureRunbook(t)
+			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.SessionsChecked != 1 {
+				t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+			}
+			if len(res.Findings) == 0 {
+				t.Fatalf("no findings — the check should trip")
+			}
+			dc := res.Findings[0].Evidence.DoctorCommand
+
+			// Extract the --sessions value from DoctorCommand and split it
+			// the way the CLI does: plain strings.Split on ','. Each element
+			// must resolve back to the session via Locate, or the
+			// reproduction line is broken.
+			//   evener doctor audit --runbook NAME --sessions <value>
+			prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+			if !strings.HasPrefix(dc, prefix) {
+				t.Fatalf("DoctorCommand = %q, want prefix %q", dc, prefix)
+			}
+			sessionsValue := strings.TrimPrefix(dc, prefix)
+			splitRefs := strings.Split(sessionsValue, ",")
+			for _, ref := range splitRefs {
+				if _, err := Locate(base, ref); err != nil {
+					t.Errorf("DoctorCommand %q: splitting --sessions on ',' yields %q, which does not resolve: %v (comma-join + CLI-split layer is broken)", dc, ref, err)
+				}
+			}
+			// The ref must not contain a comma (which would split into an
+			// invalid selector) or a space/shell metacharacter (injection).
+			for _, ref := range splitRefs {
+				if strings.ContainsAny(ref, ", \t$\x00") {
+					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
+				}
+			}
+		})
 	}
 }
 

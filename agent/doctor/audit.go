@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"primeradiant.com/evener/identifier"
 )
 
 // Finding is the atomic output of a doctor audit, per
@@ -575,31 +576,35 @@ type AuditResult struct {
 // followSelector returns the selector that re-addresses one session: its
 // emitted transcript ref when refFor produced one, a bucket-qualified
 // proj:<projectID>:<sessionID> selector when it did not but the bucket name
-// is consumable by the doctor's own selector grammar, or the bare session
-// id as a last resort.
+// passes the same ValidateProjectID alphabet refFor uses ([A-Za-z0-9-]), or
+// the bare session id as a last resort.
 //
 // refFor emits a ref (proj:<id>:<sid> or local:<sid>) for every bucket whose
 // directory name passes identifier.ValidateProjectID; for the rest — legacy-
 // or foreign-named buckets the agent ref grammar rejects — it emits nothing,
-// and a bare id is the only handle left. But the doctor's own selector
-// grammar (projectTokenOK) is looser than ValidateProjectID: it accepts any
-// traversal-safe name (no path separators or NUL), not only the
-// readable-<10 base62> structure ValidateProjectID requires. The gap between
-// the two is exactly the forensic collision case: the same session id
-// present in two such selector-safe legacy buckets. A bare id makes
-// locateAcrossBuckets sweep every bucket and report that duplicate as
-// ambiguous — so RunAudit records both rows as Unreadable and audits
-// neither, and the audit set's coverage no longer matches the sweep's own
-// enumeration. Qualifying each row with proj:<projectID>:<sid> (when
-// projectTokenOK admits the name) addresses it precisely via locateInBucket,
-// so both rows audit. The bare-id fallback stays only for the class both
-// grammars reject (backslash/NUL-named directories), preserving round-4/5
-// coverage there.
+// and a bare id is the only handle left. The doctor's own selector grammar
+// (projectTokenOK) is looser than ValidateProjectID — it accepts any
+// traversal-safe name — but that alphabet includes commas, spaces, and shell
+// metacharacters that break DoctorCommand's comma-joined --sessions
+// reproduction line (the CLI splits --sessions on ','). So followSelector
+// gates its proj: emission on the same ValidateProjectID alphabet refFor
+// uses, not the looser projectTokenOK: the names in the gap between the two
+// (selector-safe but not ValidateProjectID-safe) get proj: refs only when
+// their alphabet is inert in the reproduction line. Names outside even that
+// alphabet — including commas, spaces, shell metacharacters, and the
+// backslash/NUL class — fall back to the bare session id, preserving the
+// pre-FU2 behavior for those names. The forensic collision case (the same
+// session id in two ValidateProjectID-safe legacy buckets) is still
+// resolved: both get proj: refs that address precisely via locateInBucket,
+// so both rows audit and the audit set's coverage matches the sweep's.
+// The --sessions reproduction line keeps working for every ref
+// followSelector emits; names that fall back to bare id keep the
+// pre-FU2 ambiguous-across-buckets behavior the brief's Do-not preserves.
 func followSelector(ref, projectID, sessionID string) string {
 	if ref != "" {
 		return ref
 	}
-	if projectTokenOK(projectID) {
+	if identifier.ValidateProjectID(projectID) == nil {
 		return projRef(projectID, sessionID)
 	}
 	return sessionID
