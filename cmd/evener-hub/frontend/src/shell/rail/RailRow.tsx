@@ -405,14 +405,25 @@ function spawnInProject(project: RailProject, host?: string): void {
 // a remote host also owns, with a toast that names the hosts (Rail.test.tsx
 // pins it), so the person gets an explanation instead of an item that is
 // silently missing. The row keeps no ownership verdict of its own.
-function projectMenuItems(project: RailProject, actions: RailRowActions, spawnHost?: string): MenuItem[] {
+function projectMenuItems(
+  project: RailProject,
+  actions: RailRowActions,
+  spawnHost?: string,
+  canSpawn = true,
+): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
-    {
-      id: "new-session",
-      label: "New session",
-      onSelect: () => spawnInProject(project, spawnHost),
-    },
+    // An offline host copy offers no launch at all: the request would
+    // silently fall back to this hub with the remote working_dir.
+    ...(canSpawn
+      ? [
+          {
+            id: "new-session",
+            label: "New session",
+            onSelect: () => spawnInProject(project, spawnHost),
+          },
+        ]
+      : []),
     {
       id: "favorite",
       label: project.favorite ? "Remove from pinned" : "Add to pinned",
@@ -534,8 +545,11 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
 // of the refresh (round nine). A host the fresh manifest has dropped still
 // leaves its rows reading online once the NEW manifest lands, which is the
 // unchanged "unknown host" contract below.
-function useHostOnline(hostId: string): boolean {
+function useHostOnline(hostId: string | undefined): boolean {
   return useNavigationStore((state) => {
+    // No host to consult (a flat row asking whether its spawn needs a
+    // gate): reads as online, the same default an unknown host gets below.
+    if (hostId === undefined) return true;
     const source = selectDisplaySources(state).find((candidate) => candidate.id === hostId);
     return source ? source.online : true;
   });
@@ -784,13 +798,23 @@ function ProjectRow({
 }) {
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
+  // A host-first copy claims no aggregate rollup: rollup_state and
+  // rollup_attn are project-wide wire facts, and an honest per-host count
+  // would need wire support the manifest does not carry - the same line the
+  // host group row itself draws. The attention rows still surface in
+  // Needs-you.
+  const showsRollup = node.spawnHost === undefined;
+  // The Spawn picker refuses an offline host; a copy nested under one must
+  // not offer a launch that would silently fall back to this hub (with the
+  // remote working_dir). An unknown host reads as online, as everywhere.
+  const canSpawn = useHostOnline(node.spawnHost);
   return (
     <span className={CLASS.railRow}>
       {/* Same title-line anatomy as SessionRow: outdented signal dot, name,
           trailing chevron on a branch row. */}
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={project.rollup_state ?? "idle"} />
+          <Signal wireState={showsRollup ? (project.rollup_state ?? "idle") : "idle"} />
           {/* Same reasoning as SessionRow's own label above. displayName is
               the UX-fix decoration railNodes.ts's projectDisplayLabels
               stamps on when this project's name collides with a sibling's
@@ -825,9 +849,9 @@ function ProjectRow({
           pair share one cell - the menu covers the badge while revealed
           instead of reserving width beside it. */}
       <span className={CLASS.rightSlot}>
-        {attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
+        {showsRollup && attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
         <span className={CLASS.actions}>
-          {project.key !== NO_PROJECT_KEY && (
+          {project.key !== NO_PROJECT_KEY && canSpawn && (
             <IconButton
               label={`New session in ${project.name}`}
               icon={<span aria-hidden="true">{"+"}</span>}
@@ -837,7 +861,7 @@ function ProjectRow({
               onClick={() => spawnInProject(project, node.spawnHost)}
             />
           )}
-          <ActionsMenu label={project.name} items={projectMenuItems(project, actions, node.spawnHost)} />
+          <ActionsMenu label={project.name} items={projectMenuItems(project, actions, node.spawnHost, canSpawn)} />
         </span>
       </span>
     </span>

@@ -702,18 +702,6 @@ export function topLevelAncestorRef(projects: readonly RailProject[], ref: strin
   return null;
 }
 
-/** The projectnode: id of the project (or test-run) whose sessions include
- * `ref`, or null when `ref` is a top-level tier entry (needs-you/live/pinned)
- * or lives in an unloaded archived stub - i.e. nothing to un-collapse before
- * scrolling. Rail's reveal effect (railController's /project) uses this to
- * expand the right project section, matching the id projectNodes assigns. */
-export function projectNodeIdForSessionRef(projects: readonly RailProject[], ref: string): string | null {
-  for (const project of projects) {
-    if (sessionListHasRef(project.sessions, ref)) return projectNodeExpansionKey(project.key);
-  }
-  return null;
-}
-
 /** Builds rail nodes for the Projects and Test-runs tiers: both are
  * TreeProject[] on the wire, both ship their sessions inline (no lazy
  * load - only archived-project stubs omit sessions; see
@@ -1000,9 +988,26 @@ export function projectNodesWithHostBranches(
   sources: readonly Source[],
   isExpanded: IsExpanded,
 ): ProjectRailNode[] {
-  return projectNodesWith(projects, isExpanded, "host-branches", (p, id) =>
+  return projectNodesWith(projects, isExpanded, `host-branches${sourcesToken(sources)}`, (p, id) =>
     activeTierChildren(p, id, () => hostBranchNodes(p, id, sources, isExpanded)),
   );
+}
+
+// A manifest update swaps the sources ARRAY identity while the project
+// objects keep theirs, and the branches embed host facts (label, online)
+// read from that array - so the children cache must key on the snapshot
+// too, or the branches keep stale facts until the project object itself
+// changes. One token per array identity, minted on first sight.
+let sourcesTokenCounter = 0;
+const sourcesTokens = new WeakMap<readonly Source[], string>();
+function sourcesToken(sources: readonly Source[]): string {
+  let token = sourcesTokens.get(sources);
+  if (token === undefined) {
+    sourcesTokenCounter += 1;
+    token = `#${sourcesTokenCounter}`;
+    sourcesTokens.set(sources, token);
+  }
+  return token;
 }
 
 /** The per-host branches inside one loaded project (see
@@ -1065,31 +1070,50 @@ function topLevelCarrier(nodes: readonly RailSession[], ref: string): RailSessio
  * project then its per-host branch in "Project, then host", and a Live host
  * subheader for a live row whenever Live groups. An archived-tier row routes
  * to its project's archived-group fold instead - the one tier no grouping
- * mode rewrites. Empty when nothing loaded holds the ref yet - the reveal's
- * location-lookup path owns that case. Callers expand one id per pass and
- * re-run, so reaching the end of the chain means every fold it needs is
- * already open. */
+ * mode rewrites - unless `options.rowsUnderProjectNode` says these projects
+ * render every row under the project's own node (whole-archived projects
+ * do; see archivedProjectNodes). Empty when nothing loaded holds the ref
+ * yet - the reveal's location-lookup path owns that case. Callers expand
+ * one id per pass and re-run, so reaching the end of the chain means every
+ * fold it needs is already open. */
 export function revealExpansionIds(
   projects: readonly RailProject[],
   live: readonly RailSession[],
   ref: string,
   mode: RailGroupingMode,
+  options?: { rowsUnderProjectNode?: boolean },
 ): string[] {
   for (const p of projects) {
     const carrier = topLevelCarrier(p.sessions, ref);
     if (!carrier) continue;
     // An archived-tier row renders in the Archived sessions section's
     // archived-group fold (archivedSessionGroups), never under the flat or
-    // grouped project branch, whatever mode the rail is in.
-    if (isArchivedTier(carrier)) return [archivedGroupId(p.key)];
+    // grouped project branch, whatever mode the rail is in - unless these
+    // projects render every row under their own node (whole-archived
+    // projects do; see archivedProjectNodes).
+    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key)];
     const id = projectNodeExpansionKey(p.key);
     if (mode === "host-project") return [hostGroupId(carrier.host_id), hostProjectCopyId(id, carrier.host_id)];
     if (mode === "project-host") return [id, hostBranchId(id, carrier.host_id)];
     return [id];
   }
   const carrier = topLevelCarrier(live, ref);
-  if (carrier && new Set(live.map((n) => n.host_id)).size > 1) return [liveHostGroupId(carrier.host_id)];
+  // Flat mode renders Live ungrouped (Rail wraps it only while grouping),
+  // so a subheader id would name a fold that does not exist.
+  if (carrier && mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1)
+    return [liveHostGroupId(carrier.host_id)];
   return [];
+}
+
+/** The expansion ids that mean "this project's rows are in view" under the
+ * current grouping: the project's own node, plus - in host-first mode - one
+ * id per host copy. Rail's lazy-load effect loads whichever project has any
+ * of these expanded, so expanding a copy of an unloaded project fetches its
+ * rows instead of sticking on the loading placeholder forever. */
+export function projectLoadExpansionKeys(p: RailProject, mode: RailGroupingMode): string[] {
+  const id = projectNodeExpansionKey(p.key);
+  if (mode !== "host-project") return [id];
+  return [id, ...projectHostIds(p).map((hostId) => hostProjectCopyId(id, hostId))];
 }
 
 function projectChildren(

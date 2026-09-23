@@ -2145,6 +2145,25 @@ describe("project row", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  // The Spawn picker refuses an offline host; the copy's own affordances
+  // must not offer a launch that would silently fall back to this hub with
+  // the remote working_dir.
+  test("an offline host copy offers no New-session launch", async () => {
+    seedSources([
+      { id: "local", label: "this host", kind: "local", online: true },
+      { id: "ci-runner", label: "ci-runner", kind: "appwire", online: false },
+    ]);
+    const offlineCopy = {
+      ...projectRailNode(apiProject()),
+      id: "projectnode:p1@ci-runner",
+      spawnHost: "ci-runner",
+    } as ProjectRailNode;
+    render(<RailRow node={offlineCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByRole("button", { name: "New session in Proj" })).toBeNull();
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "New session" })).toBeNull();
+  });
+
   test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
     const observer = vi.fn();
     const firstInfo = info({ hasChildren: true });
@@ -2245,6 +2264,21 @@ describe("project row", () => {
 
     rerender(<RailRow node={projectRailNode(apiProject({ rollup_attn: 0 }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("0")).toBeNull();
+  });
+
+  // A host-first copy claims no aggregate rollup: rollup_state and rollup_attn
+  // are project-wide wire facts, and an honest per-host count would need wire
+  // support the manifest does not carry - the same line the host group row
+  // itself draws. The attention rows still surface in Needs-you.
+  test("a host copy shows no project rollup signal or badge", () => {
+    const copy = {
+      ...projectRailNode(apiProject({ rollup_state: "warning", rollup_attn: 3 })),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+    } as ProjectRailNode;
+    render(<RailRow node={copy} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByText("3")).toBeNull();
   });
 
   test("menu offers 'Archive project' for an active project and calls onToggleArchiveProject", async () => {

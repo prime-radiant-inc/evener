@@ -38,7 +38,6 @@ import {
   selectPinSectionSummaries,
   selectPinSections,
   selectRailModel,
-  selectSources,
 } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
@@ -100,6 +99,7 @@ import {
   overrideLookup,
   pinSectionDisclosureID,
   pinSectionOverflowNode,
+  projectLoadExpansionKeys,
   projectNodes,
   projectNodesWithHostBranches,
   type RailGroupingMode,
@@ -984,20 +984,21 @@ function NavigationRail({
   const expanded = useNavigationStore((state) => state.expanded);
   const attention = useNavigationStore((state) => selectAttentionSummary(state));
   // The rail's organize-by setting. Host grouping turns on only when the
-  // manifest has named a remote source - decided on the SETTLED list
-  // (selectSources), not the display view, so an in-flight revalidation
-  // cannot blink the whole rail between shapes; the spawn picker reads the
-  // display list for what it SHOWS (its own sticky-display contract) but
-  // never has to make a layout decision from it. A hub with no configured
-  // hosts keeps today's rail exactly. The builders below read the DISPLAY
-  // view instead: a host group's online flag and label are display facts,
-  // and a revalidation must not flip groups offline for the length of the
-  // refresh (the same sticky contract the session rows' host chips read).
+  // manifest has named a remote source, and the decision reads the DISPLAY
+  // list (last-known): grouping is a layout fact, and the settled list
+  // (selectSources) empties for the length of any revalidation, which would
+  // blink the whole rail flat and back. Launchability stays on the settled
+  // list where it belongs - the spawn picker reads it - so a host the fresh
+  // manifest removed is still never launchable; the rail's SHAPE merely
+  // keeps the last-known hosts until the read settles. The builders read
+  // the display list too: a host group's online flag and label are display
+  // facts, and a revalidation must not flip groups offline for the length
+  // of the refresh (the same sticky contract the session rows' host chips
+  // read). A hub with no configured hosts keeps today's rail exactly.
   const grouping = usePrefsStore((state) => state.sidebarGrouping);
   const setGrouping = usePrefsStore((state) => state.setSidebarGrouping);
-  const groupingSources = useNavigationStore(selectSources);
   const displaySources = useNavigationStore(selectDisplaySources);
-  const hostGrouping = groupingSources.some((source) => source.id !== LOCAL_HOST);
+  const hostGrouping = displaySources.some((source) => source.id !== LOCAL_HOST);
   const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
   const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
@@ -1165,7 +1166,9 @@ function NavigationRail({
       rootGeneration.current = generation;
     }
     for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
-      const expanded = isExpanded(projectNodeExpansionKey(project.key), project.default_expanded ?? false);
+      const expanded = projectLoadExpansionKeys(project, groupingMode).some((id) =>
+        isExpanded(id, project.default_expanded ?? false),
+      );
       if (
         !expanded ||
         project.loaded === true ||
@@ -1178,7 +1181,7 @@ function NavigationRail({
         continue;
       loadProjectRoot(project.key);
     }
-  }, [navigationMode, resources, isExpanded, loadProjectRoot]);
+  }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
   useEffect(() => {
     if (!revealTarget) return;
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
@@ -1191,11 +1194,13 @@ function NavigationRail({
     }
     // The chain must name folds that actually render: only the Projects
     // section honors the grouping, so grouped ids apply to it alone while
-    // the always-flat tiers (test runs, archived projects) keep flat ids
-    // whatever the mode.
+    // the always-flat tiers keep flat ids whatever the mode. A test run's
+    // archived rows still route to the archived-group fold; a whole-archived
+    // project renders every row under its own node instead.
     const chain = [
       ...revealExpansionIds(resources.projects, resources.live, revealTarget, groupingMode),
-      ...revealExpansionIds([...resources.testRuns, ...resources.archivedProjects], [], revealTarget, "flat"),
+      ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
+      ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
     ];
     const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
     if (nextFold) {

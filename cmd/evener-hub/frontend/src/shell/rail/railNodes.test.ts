@@ -2,7 +2,7 @@
 
 import type { NavigationWatchSummary, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { OverflowRailNode, RailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
+import type { HostRailNode, OverflowRailNode, RailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
 import {
   activeWatchCount,
   archivedCount,
@@ -14,7 +14,6 @@ import {
   needsYouDescendantCount,
   overrideLookup,
   pinSectionDisclosureID,
-  projectNodeIdForSessionRef,
   projectNodes,
   projectNodesWithHostBranches,
   revealExpansionIds,
@@ -472,7 +471,6 @@ describe("resource projection semantics", () => {
       sessions: [session({ ref: "top", row_id: "top", children: [session({ ref: "child", row_id: "child" })] })],
     });
     expect(overrideLookup(new Map([["x", true]]))("x", false)).toBe(true);
-    expect(projectNodeIdForSessionRef([p], "child")).toBe("projectnode:p1");
     expect(topLevelAncestorRef([p], "child")).toBe("top");
     expect(topLevelAncestorRef([p], "missing")).toBeNull();
   });
@@ -661,10 +659,12 @@ describe("host grouping (organize by)", () => {
     ]);
   });
 
-  test("revealExpansionIds opens a Live host subheader exactly while live rows span hosts", () => {
+  test("revealExpansionIds opens a Live host subheader only while Live renders grouped", () => {
     const twoHosts = [on("local", "l1"), on("devbox", "d1")];
     expect(revealExpansionIds([], twoHosts, "devbox:d1", "project-host")).toEqual(["livehost:devbox"]);
     expect(revealExpansionIds([], [on("local", "l1")], "local:l1", "project-host")).toEqual([]);
+    // Flat mode renders Live ungrouped, so no subheader exists to expand.
+    expect(revealExpansionIds([], twoHosts, "devbox:d1", "flat")).toEqual([]);
   });
 
   test("revealExpansionIds is empty for a ref nothing loaded holds (the location path owns it)", () => {
@@ -700,6 +700,15 @@ describe("host grouping (organize by)", () => {
     expect(revealExpansionIds([evener], [], "devbox:a1", "host-project")).toEqual(["archivedgroup:evener"]);
   });
 
+  test("a whole-archived project's rows reveal under its own node, not the archived group", () => {
+    // archivedProjectNodes renders every row (whatever its tier) under the
+    // project's own node, so the reveal must not route to the group fold.
+    const old = project({ key: "old", sessions: [on("devbox", "a1", { tier: "archived" })] });
+    expect(revealExpansionIds([old], [], "devbox:a1", "flat", { rowsUnderProjectNode: true })).toEqual([
+      "projectnode:old",
+    ]);
+  });
+
   test("hosts order by their display labels, ties broken by id", () => {
     const labeled: Source[] = [
       { id: "local", label: "this host", kind: "local", online: true },
@@ -715,5 +724,16 @@ describe("host grouping (organize by)", () => {
       "host:zz-host",
       "host:aa-host",
     ]);
+  });
+
+  test("a project-first host branch rebuilds when the manifest's source facts change", () => {
+    const evener = project({ key: "evener", sources: ["devbox"], sessions: [on("devbox", "d1")] });
+    const branchHost = (nodes: readonly RailNode[]): HostRailNode | undefined =>
+      nodes.find((child): child is HostRailNode => child.kind === "host");
+    const source = (label: string): Source => ({ id: "devbox", label, kind: "appwire", online: true });
+    const before = projectNodesWithHostBranches([evener], [source("devbox")], closed);
+    expect(branchHost(before[0]?.children ?? [])).toMatchObject({ host: { id: "devbox", label: "devbox" } });
+    const after = projectNodesWithHostBranches([evener], [source("renamed box")], closed);
+    expect(branchHost(after[0]?.children ?? [])).toMatchObject({ host: { id: "devbox", label: "renamed box" } });
   });
 });

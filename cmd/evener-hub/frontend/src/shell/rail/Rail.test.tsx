@@ -2499,6 +2499,42 @@ describe("host grouping (organize by)", () => {
     }
   });
 
+  // The lazy-load effect must key on the ids the current grouping actually
+  // renders: expanding a host-first copy fetches the project's rows, or the
+  // copy sticks on its loading placeholder forever.
+  test("expanding a host-first copy of an unloaded project loads its rows", async () => {
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "projectnode:p@devbox": true }));
+    installState(
+      [catalogResource([{ key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"] }])],
+      remoteManifest(),
+    );
+    navigationStore.setState({ loadProject });
+    try {
+      render(<Rail />);
+      await act(async () => undefined);
+      expect(loadProject).toHaveBeenCalledWith("p");
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("host grouping holds its shape across a manifest revalidation (last-known sources)", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState([catalogResource([{ key: "p", name: "Project", session_count: 1 }])], remoteManifest());
+    render(<Rail />);
+    expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+    // An invalidation that targets the manifest marks it stale; grouping is
+    // a layout decision and must not blink to flat for the read's length.
+    const settled = navigationStore.getState().manifest;
+    if (!settled) throw new Error("no manifest installed");
+    act(() => {
+      navigationStore.setState({ manifest: { ...settled, stale: true } });
+    });
+    expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+  });
+
   test("the organize row sits hard right, chrome like the headings around it", () => {
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
       /\/\*[\s\S]*?\*\//g,
