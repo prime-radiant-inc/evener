@@ -199,3 +199,40 @@ func childCredentialSource(t *testing.T, stateDir string, env map[string]string,
 	}
 	return res.Credential.Source
 }
+
+// A default model row overriding auth to none makes the bare-name launch
+// credentialless by design: the listing resolves under the row's scheme and
+// warns nothing. The spawn gate reads that same listing, so it must accept
+// the launch — refusing it because the provider-level scheme still says
+// header would block a session the registry says needs no credential at all.
+func TestCredentialAgreement_RowAuthOverrideNeedsNoCredential(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	clearProviderKeysFromEnvironment(t)
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	store, err := credentials.LoadStore(dir + "/credentials.toml")
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	reg := newProbeRegistry(t, stateDir, store, nil,
+		map[string]registry.Provider{
+			"gw": {
+				Base:     "openai-compatible",
+				Protocol: registry.ProtocolOpenAIChat,
+				Transport: registry.Transport{
+					BaseURL:    "https://gw.internal.example/v1",
+					Auth:       registry.AuthHeader,
+					AuthHeader: "X-K",
+				},
+				CredentialHeaders: map[string]string{"X-K": "$MISSING"},
+				DefaultModel:      "house-model",
+				Models: map[string]registry.Model{
+					"house-model": {Transport: &registry.Transport{Auth: registry.AuthNone}},
+				},
+			},
+		})
+	if err := validateProviderCredentials("gw", reg); err != nil {
+		t.Fatalf("the spawn gate refused a launch whose default row overrides auth to none: %v", err)
+	}
+}

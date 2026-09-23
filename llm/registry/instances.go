@@ -849,12 +849,15 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 }
 
 // Instances lists every instance in default ranking with its credential
-// source and warnings (spec §11.2).
+// source and warnings (spec §11.2). The auth scheme is the one the same
+// row-merged transport picks — the launch a bare instance name makes — so
+// a default row overriding auth moves the listing's scheme with it.
 func (r *Registry) Instances() []Instance {
 	def, _, _ := r.DefaultInstance()
 	var out []Instance
 	for _, inst := range r.rankedInstances() {
 		cred, warns := r.credential(inst.rec)
+		t := r.listingTransport(inst.rec)
 		h := inst.rec.head
 		base := ""
 		if !inst.rec.curated && inst.rec.providerID != inst.name {
@@ -866,10 +869,10 @@ func (r *Registry) Instances() []Instance {
 		}
 		out = append(out, Instance{
 			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: h.Protocol, Surface: h.Surface,
-			Auth: h.Transport.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
+			Auth: t.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
 			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 			CredentialSource: cred.Source, Warnings: warns,
-			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, r.listingTransport(inst.rec), cred),
+			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, t, cred),
 		})
 	}
 	return out

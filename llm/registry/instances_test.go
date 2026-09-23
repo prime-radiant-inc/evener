@@ -1230,6 +1230,9 @@ func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
 		if inst.Name != "gw" {
 			continue
 		}
+		if inst.Auth != "none" {
+			t.Fatalf("listing auth = %q; the row's none override is the scheme the bare-name launch signs with", inst.Auth)
+		}
 		if strings.Contains(strings.Join(inst.Warnings, ";"), "no credential") {
 			t.Fatalf("listing warnings = %v; the row's none scheme is quiet about the missing credential", inst.Warnings)
 		}
