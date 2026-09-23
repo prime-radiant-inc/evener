@@ -220,15 +220,16 @@ export function MarketplaceBrowser({
       setSelected(null);
   }, [selected, state.marketplaces]);
   // Every write goes through the gate; a refusal reads as busy, a throw as
-  // failure. remove() runs its own copy of this shape below, because an
-  // applied removal must reach the parent's guard and warning rather than
-  // this view's error slot.
+  // failure. A not-ready press runs nothing and retires nothing - the copy
+  // the user was reading survives the no-op. remove() runs its own copy of
+  // this shape below, because an applied removal must reach the parent's
+  // guard and warning rather than this view's error slot.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
-    setError(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (revision.current !== version) return;
     if (outcome === "not-ready") return;
+    setError(null);
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed") setError(WRITE_FAILED);
   }

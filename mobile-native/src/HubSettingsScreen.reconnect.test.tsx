@@ -14,7 +14,6 @@
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { ConnectionState } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubSettingsScreen } from "./HubSettingsScreen";
@@ -24,6 +23,7 @@ import {
 	nativeModuleMock,
 	render,
 	renderedText,
+	screenConnection as connection,
 } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
@@ -77,16 +77,6 @@ const props = {
 	route: { params: { hubId: "hub-1" } },
 	navigation: { navigate: () => {} },
 } as unknown as ComponentProps<typeof HubSettingsScreen>;
-
-function connection(client: unknown, state: ConnectionState) {
-	return {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client,
-		state,
-		fatal: false,
-		retry: () => {},
-	};
-}
 
 it("re-reads the overview once a flap the screen survived is ready again", async () => {
 	const hub = new FakeClient("ready");
