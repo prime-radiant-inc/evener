@@ -582,7 +582,7 @@ func UpdateScratchBindings(owner ScratchOwner, expectedRevision uint64, bindings
 // different binding already owns is demoted to a wrapper borrow. It never
 // replaces a whole stale record.
 func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding) error {
-	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, -1)
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, 0, false)
 }
 
 // UpsertScratchBindingAtRevision publishes one binding and its consumer
@@ -593,7 +593,7 @@ func UpsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumer S
 // check turns that race into ErrScratchRetentionStaleRevision for the caller
 // to retry by re-deriving.
 func UpsertScratchBindingAtRevision(owner ScratchOwner, binding ScratchBinding, consumer ScratchConsumerBinding, expectedRevision uint64) error {
-	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, int64(expectedRevision))
+	return upsertScratchBinding(owner, binding, []ScratchConsumerBinding{consumer}, expectedRevision, true)
 }
 
 // ScratchLockContentionDelay returns the growing spacing the bounded retry
@@ -638,10 +638,16 @@ func RetryScratchLockContention(fn func() error) error {
 // owned by the agent layer, and a shared environment's mint must not re-point
 // its owner's consumer (or erase its recorded roles).
 func UpsertScratchBindingOnly(owner ScratchOwner, binding ScratchBinding) error {
-	return upsertScratchBinding(owner, binding, nil, -1)
+	return upsertScratchBinding(owner, binding, nil, 0, false)
 }
 
-func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding, expectedRevision int64) error {
+// upsertScratchBinding publishes binding and consumers with an optional
+// expected-revision guard: checkRevision false is the unchecked legacy path;
+// true refuses a manifest that moved past expectedRevision. Absence is the
+// explicit flag, never a sign bit — revisions are uint64, and a narrowing
+// conversion would read every revision above MaxInt64 as the unchecked path
+// (round 24).
+func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers []ScratchConsumerBinding, expectedRevision uint64, checkRevision bool) error {
 	if err := owner.validate(); err != nil {
 		return err
 	}
@@ -660,10 +666,10 @@ func upsertScratchBinding(owner ScratchOwner, binding ScratchBinding, consumers 
 	if manifest.Released {
 		return ErrScratchRetentionReleased
 	}
-	// A negative expectedRevision is the unchecked legacy path; a mismatching
-	// revision refuses the upsert so a caller holding a superseded snapshot
-	// re-derives instead of clobbering whatever committed in between.
-	if expectedRevision >= 0 && manifest.Revision != uint64(expectedRevision) {
+	// A mismatching revision refuses the upsert so a caller holding a
+	// superseded snapshot re-derives instead of clobbering whatever committed
+	// in between.
+	if checkRevision && manifest.Revision != expectedRevision {
 		return fmt.Errorf("%w: manifest %d does not match expected %d", ErrScratchRetentionStaleRevision, manifest.Revision, expectedRevision)
 	}
 	if err := applyScratchBindingUpdate(&manifest, binding, consumers); err != nil {
@@ -1131,7 +1137,7 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		carriedBindings := make(map[string]ScratchBinding)
 		carryReference := func(dir, kind string) error {
 			ownerID, owned := leaseOwningBinding(manifest, dir)
-			binding, found := scratchBindingByID(manifest.Bindings, ownerID)
+			_, found := scratchBindingByID(manifest.Bindings, ownerID)
 			consumers := consumersNamingScratchBinding(manifest.Consumers, ownerID)
 			if !owned || !found || len(consumers) == 0 {
 				// Ownerless, or an owning binding no consumer names — the
@@ -1148,21 +1154,26 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 				return removeDyingReferencePin(owner, dir)
 			}
 			fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: kind})
-			// The binding narrows to the slots whose directories carried: its
+			// The reference travels with every binding whose slot names its
+			// directory, not only the lease owner: a wrapper-only slot is a
+			// distinct consumer's identity for the same retained allocation,
+			// and dropping it orphaned that consumer's row in the narrowing
+			// pass below — its next restore then minted fresh scratch instead
+			// of borrowing the directory it still held (round 24). Each carried
+			// binding narrows to the slots whose directories carried: its
 			// other slots may name pins the terminal release already removed,
 			// and a slot naming an unpinned directory fails the graph reader.
-			narrowed, ok := carriedBindings[ownerID]
-			if !ok {
-				narrowed = binding
-				narrowed.Slots = map[string]ScratchSlot{}
-				carriedBindings[ownerID] = narrowed
-			}
-			for slotKind, slot := range binding.Slots {
-				if !slot.OwnsLease {
-					continue
-				}
-				if slotDir, err := canonicalScratchPath(slot.Dir); err == nil && slotDir == dir {
-					narrowed.Slots[slotKind] = slot
+			for _, binding := range manifest.Bindings {
+				for slotKind, slot := range binding.Slots {
+					if slotDir, err := canonicalScratchPath(slot.Dir); err == nil && slotDir == dir {
+						narrowed, ok := carriedBindings[binding.BindingID]
+						if !ok {
+							narrowed = binding
+							narrowed.Slots = map[string]ScratchSlot{}
+							carriedBindings[binding.BindingID] = narrowed
+						}
+						narrowed.Slots[slotKind] = slot
+					}
 				}
 			}
 			return nil

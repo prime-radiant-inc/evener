@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1093,6 +1094,44 @@ func TestScratchUpsertAtRevisionRefusesMovedManifest(t *testing.T) {
 	}
 }
 
+// TestScratchUpsertAtRevisionChecksRevisionsAboveMaxInt64 pins round 24's Low:
+// the at-revision upsert carried its expected revision through an int64 and
+// read a negative narrowing conversion as the "unchecked" sentinel, so
+// revisions past MaxInt64 silently bypassed the staleness check the parameter
+// exists to enforce. The check must be guarded by an explicit expected/absent
+// flag, never by the sign of a conversion.
+func TestScratchUpsertAtRevisionChecksRevisionsAboveMaxInt64(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-rev-24", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the binding: %v", err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Revision = math.MaxInt64 + 10
+	if err := writeScratchRetention(owner, manifest); err != nil {
+		t.Fatalf("force the revision past int64: %v", err)
+	}
+	err = UpsertScratchBindingAtRevision(owner, binding, consumer, math.MaxInt64+11)
+	if !errors.Is(err, ErrScratchRetentionStaleRevision) {
+		t.Fatalf("upsert from a superseded revision above MaxInt64: %v, want %v", err, ErrScratchRetentionStaleRevision)
+	}
+	// The same upsert derived from the manifest as it stands still publishes.
+	if err := UpsertScratchBindingAtRevision(owner, binding, consumer, math.MaxInt64+10); err != nil {
+		t.Fatalf("upsert at the standing revision above MaxInt64: %v", err)
+	}
+}
+
 // TestScratchRevalidationReportsReleasedTyped pins the round-15 typing gap: the
 // post-lease revalidation reported the tombstone with an untyped error, so the
 // refresh's errors.Is decline check missed the exact race it was written for —
@@ -1175,6 +1214,96 @@ func TestResetReleasedCarriesAValidGraph(t *testing.T) {
 		if !named {
 			t.Fatalf("the carried binding %q is named by no consumer in the reset manifest %+v", ownerID, fresh.Consumers)
 		}
+	}
+}
+
+// TestResetReleasedCarriesWrapperBindingsAndTheirConsumers pins round 24's
+// second Medium: the reset's carry narrowed to the lease-owning binding, so a
+// wrapper-only binding — a distinct consumer's identity for the same retained
+// directory — died with the tombstone together with its consumer role. That
+// consumer's next restore then found no current binding and minted fresh
+// scratch instead of borrowing the directory it still held. The reference must
+// travel with every binding whose slot names its directory, not only the lease
+// owner.
+func TestResetReleasedCarriesWrapperBindingsAndTheirConsumers(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	ownerBinding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	wrapperBinding := retentionBinding("E1", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: false}})
+	ownerConsumer := ScratchConsumerBinding{SessionID: "consumer-owner-24", CurrentBindingID: ownerBinding.BindingID}
+	wrapperConsumer := ScratchConsumerBinding{SessionID: "consumer-wrapper-24", CurrentBindingID: wrapperBinding.BindingID}
+	if err := PinScratchBinding(owner, ownerBinding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the lease-owning binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, ownerBinding, ownerConsumer); err != nil {
+		t.Fatalf("publish the owning consumer: %v", err)
+	}
+	if err := UpsertScratchBindingOnly(owner, wrapperBinding); err != nil {
+		t.Fatalf("publish the wrapper binding: %v", err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateScratchBindings(owner, manifest.Revision, nil, []ScratchConsumerBinding{wrapperConsumer}); err != nil {
+		t.Fatalf("publish the wrapper consumer: %v", err)
+	}
+	// The scratch's own lease stays held, so the terminal release leaves the
+	// pin behind and the reset must carry the reference with both identities.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over the held pin: %v", err)
+	}
+	var wrapperRow ScratchBinding
+	for _, binding := range fresh.Bindings {
+		if binding.BindingID == wrapperBinding.BindingID {
+			wrapperRow = binding
+		}
+	}
+	slot, hasSlot := wrapperRow.Slots[ScratchKindSandbox]
+	if !hasSlot {
+		t.Fatalf("the reset dropped the wrapper binding %q whose slot borrows the retained %q", wrapperBinding.BindingID, scratch.Dir)
+	}
+	if filepath.Clean(slot.Dir) != filepath.Clean(scratch.Dir) || slot.OwnsLease {
+		t.Fatalf("the carried wrapper slot is %+v; want the borrow of %q", slot, scratch.Dir)
+	}
+	var wrapperRole ScratchConsumerBinding
+	for _, consumer := range fresh.Consumers {
+		if consumer.SessionID == wrapperConsumer.SessionID {
+			wrapperRole = consumer
+		}
+	}
+	if wrapperRole.CurrentBindingID != wrapperBinding.BindingID {
+		t.Fatalf("the reset dropped the wrapper consumer's role: %+v; want it naming %q", wrapperRole, wrapperBinding.BindingID)
+	}
+	// The lease owner and its consumer carry exactly as before.
+	var ownerRow ScratchBinding
+	for _, binding := range fresh.Bindings {
+		if binding.BindingID == ownerBinding.BindingID {
+			ownerRow = binding
+		}
+	}
+	if _, ok := ownerRow.Slots[ScratchKindSandbox]; !ok {
+		t.Fatalf("the reset dropped the owning binding %q", ownerBinding.BindingID)
+	}
+	named := false
+	for _, consumer := range fresh.Consumers {
+		if consumer.SessionID == ownerConsumer.SessionID && consumer.CurrentBindingID == ownerBinding.BindingID {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("the reset dropped the owning consumer %q", ownerConsumer.SessionID)
 	}
 }
 

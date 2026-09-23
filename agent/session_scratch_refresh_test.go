@@ -640,6 +640,113 @@ func TestScratchRestoreAdoptionReportsNoTransferForABorrow(t *testing.T) {
 	}
 }
 
+// TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows pins round 24's
+// first Medium: the refresh declined on a released manifest without clearing
+// the pool, so the adoption seam reading the pool right below it served the
+// stale consumer and binding rows — it rebuilt the wrapper around the retained
+// directory, disposed the fresh mint, and transferred a handle the durable
+// manifest no longer authorizes. The decline must retire the stale rows so the
+// restore keeps its fresh scratch.
+func TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RELEASESTALE1"
+	const bindingID = "b-release-stale"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+	// The terminal release tombstones the manifest the pool's rows were derived
+	// from; the pool survives with the stale rows in place.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	adopted, err := s.adoptRestoredConsumerScratch(env, consumerID, true)
+	if err != nil {
+		t.Fatalf("restore adoption over the released manifest: %v", err)
+	}
+	if adopted {
+		t.Fatal("the restore adopted a retained allocation a released manifest no longer authorizes")
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(fresh) {
+		t.Fatalf("the restore left the fresh mint %q and now runs on %q", fresh, got)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the declined refresh detached the pool")
+	}
+	pool.mu.Lock()
+	_, staleRow := pool.consumers[consumerID]
+	pool.mu.Unlock()
+	if staleRow {
+		t.Fatal("the declined refresh left the stale consumer row servable")
+	}
+}
+
+// TestScratchRefreshDeclineDropsRowsTheManifestNoLongerHolds pins the
+// live-manifest branch of round 24's first Medium: a consumer row the manifest
+// no longer contains — here one the manifest never held, the same shape a
+// reset's row narrowing leaves after it drops a consumer whose binding did not
+// carry — must not survive the refresh's decline in the pool, where the
+// adoption seam would keep serving it as though the manifest authorized it.
+func TestScratchRefreshDeclineDropsRowsTheManifestNoLongerHolds(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01UNMAPPEDROWS1"
+	const bindingID = "b-unmapped-rows"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(slots[sandbox.ScratchKindSandbox].Dir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+	if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+		t.Fatalf("the decline must not fail the restore: %v", err)
+	}
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the declined refresh detached the pool")
+	}
+	pool.mu.Lock()
+	_, staleRow := pool.consumers[consumerID]
+	pool.mu.Unlock()
+	if staleRow {
+		t.Fatal("the declined refresh left the stale consumer row servable")
+	}
+}
+
 // TestRestoreAdoptionSurvivesPoolDetachBetweenLoads pins round 18's High: the
 // pool can detach between adoptConsumerScratch's row read and
 // adoptRetainedScratchFor's own pool load. The inner transfer silently no-ops

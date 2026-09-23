@@ -730,10 +730,41 @@ type retainedScratchPool struct {
 	// independent goroutines that can restore distinct children of one root,
 	// and the bindings/consumers/contended entries that a post-publish
 	// refreshRetainedScratchConsumer folds in. Readers of those maps take mu
-	// and copy the row out; a refresh only ever installs NEWER manifest rows,
+	// and copy the row out; a refresh only ever installs NEWER manifest rows —
+	// and removes, on its declines, rows the live manifest no longer backs —
 	// so a reader holding a pre-refresh copy sees exactly the world a restore
 	// before it would have, never a torn one.
 	mu sync.Mutex
+}
+
+// dropRetainedScratchConsumerRow removes sessionID's consumer row from the
+// pool. The refresh calls it on every decline that means the live manifest no
+// longer authorizes this consumer's adoption — the row is gone, or names a
+// binding the manifest no longer carries — so the adoption seam reading the
+// pool right after the decline can never serve stale handles. Pooled handles
+// stay: they hold the leases that keep their contended pins protected until
+// the pool teardown releases them.
+func (s *Session) dropRetainedScratchConsumerRow(sessionID string) {
+	if pool := s.retainedScratch.Load(); pool != nil {
+		pool.mu.Lock()
+		delete(pool.consumers, sessionID)
+		pool.mu.Unlock()
+	}
+}
+
+// clearRetainedScratchConsumerRows empties the pool's consumer rows after the
+// refresh read a released manifest. Every row the pool holds was derived from
+// the pre-tombstone manifest and writers refuse a released manifest, so no
+// later pass can revalidate them; clearing the rows makes each consumer's next
+// adoption decline to fresh scratch instead of serving handles the tombstone
+// no longer authorizes. A repaired manifest (a reset reinitializes it) lets
+// the next refresh re-seed the rows it revalidates.
+func (s *Session) clearRetainedScratchConsumerRows() {
+	if pool := s.retainedScratch.Load(); pool != nil {
+		pool.mu.Lock()
+		pool.consumers = make(map[string]sandbox.ScratchConsumerBinding)
+		pool.mu.Unlock()
+	}
 }
 
 // findScratchConsumer returns sessionID's consumer row from the manifest.
@@ -781,6 +812,12 @@ func findScratchConsumer(manifest sandbox.ScratchManifest, sessionID string) (sa
 // racing the restore it enables — is re-probed on every refresh: a reacquire
 // that now succeeds re-pools the handle and clears the record; one that still
 // finds the lease held proves the contention live and leaves it marked.
+// A decline is not a leave-alone: when the manifest is released, or no longer
+// contains the consumer or the binding its row names, the pool's rows are
+// stale and the adoption reading the pool right after the decline would serve
+// handles the durable state no longer authorizes. The decline clears them —
+// every consumer row for a released manifest, this consumer's row for the
+// live-manifest absences — so the restore falls to its fresh scratch.
 func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -799,14 +836,17 @@ func (s *Session) refreshRetainedScratchConsumer(sessionID string) error {
 			return fmt.Errorf("retained scratch refresh: %w", err)
 		}
 		if manifest.Released {
+			s.clearRetainedScratchConsumerRows()
 			return nil
 		}
 		consumer, ok := findScratchConsumer(manifest, sessionID)
 		if !ok || consumer.CurrentBindingID == "" {
+			s.dropRetainedScratchConsumerRow(sessionID)
 			return nil
 		}
 		binding, ok := findScratchBinding(manifest, consumer.CurrentBindingID)
 		if !ok {
+			s.dropRetainedScratchConsumerRow(sessionID)
 			return nil
 		}
 		owningSlots := make([]sandbox.ScratchReference, 0, len(binding.Slots))
