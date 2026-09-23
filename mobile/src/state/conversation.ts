@@ -2228,7 +2228,22 @@ export function createConversationStore() {
             };
             const retainedTurnsForMerge = currentConvForMerge.turns.map(
               (turn) => {
-                const afterTwins = turnCoveredBySnapshot(turn)
+                // A turn the snapshot does not cover keeps everything
+                // only when something owns its wholesale retention: the
+                // compact memory the remembered-alias folds read
+                // (pageOwnedCompactTurnIds/compactedTurnItems — the
+                // #1919 restoration world), or the live working set of
+                // the ACTIVE turn. Any other uncovered turn gets the
+                // same item-level retention as a covered one — its
+                // page-owned rows stay, its discarded live items do not
+                // ride the model back onto the screen beside them
+                // (RoboRev round 21).
+                const keepWholesale =
+                  !turnCoveredBySnapshot(turn) &&
+                  (turn.id === currentConvForMerge.activeTurnId ||
+                    compactedTurnItems.has(turn.id) ||
+                    pageOwnedCompactTurnIds.has(turn.id));
+                const afterTwins = !keepWholesale
                   ? turn.items.filter(
                       (item) =>
                         pageOwnedIds.has(item.transcriptKey ?? item.id) ||

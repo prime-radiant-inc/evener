@@ -16967,6 +16967,74 @@ describe("ConversationStore", () => {
       expect(rowById(store, "old-wire:attachments")).toBeUndefined();
     });
 
+    it("an uncovered mixed turn does not keep its discarded live item", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "tA", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "tA" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [{ kind: "user", id: "p-1", text: "paged" } as MobileTimelineItem],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      for (const item of [
+        { id: "p-1", turnId: "tA", type: "userMessage", text: "paged" } as ThreadItem,
+        { id: "live-1", turnId: "tA", type: "agentMessage", text: "stale live", status: "inProgress" } as ThreadItem,
+      ]) {
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: { threadId: "thread-1", ref: "ref-1", turnId: "tA", item },
+        } as AnyNotification);
+      }
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "tA", itemsView: "", status: "completed" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "live-1")).toBeDefined();
+
+      // The reread omits the mixed turn entirely: the page-owned row
+      // comes back as history, the discarded live item must not
+      // (RoboRev round 21).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t9", status: "completed", items: [userMessageItem("later", "fresh")] }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "live-1")).toBeUndefined();
+
+      // And no later row-changing frame projects it back.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "live-1")).toBeUndefined();
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
