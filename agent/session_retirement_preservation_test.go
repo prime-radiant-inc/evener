@@ -455,10 +455,11 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 // close commits the Released tombstone, so an aged required directory is
 // collected by the ordinary startup sweep, while an unreleased run is not.
 func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
-	// The startup sweep also visits every world-usable host temp base a session temp
-	// container may live in. This test asserts exact collection outcomes, so it must
-	// not reach the machine's real /tmp.
-	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+	// This test asserts exact collection outcomes, so its sweep must see only the
+	// scratch the test itself minted.
+	decoy := plantAmbientScratchDecoy(t)
+	confineSessionScratchSweep(t)
+	t.Cleanup(func() { requireAmbientScratchDecoyUntouched(t, decoy) })
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
@@ -530,6 +531,58 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	}
 	if _, err := os.Stat(unreleasedDir); err != nil {
 		t.Fatalf("unreleased sibling was collected by the same sweep: %v", err)
+	}
+}
+
+// confineSessionScratchSweep gives the test a session scratch namespace of its
+// own, so the startup sweep it drives can neither see nor delete another
+// process's scratch, and its verdict cannot depend on what else is on the host.
+// The sweep walks three kinds of base: the temp dir (TMPDIR, pointed at a
+// directory this test owns), the user cache dir (under the HOME and
+// XDG_CACHE_HOME that TestMain points at its own directory), and the
+// world-usable host temps a session temp container lives in (/tmp and /var/tmp,
+// which no environment variable moves, so they are dropped). Call it after
+// plantAmbientScratchDecoy when a test proves the confinement.
+func confineSessionScratchSweep(t *testing.T) {
+	t.Helper()
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+}
+
+// plantAmbientScratchDecoy stands in for the host's shared temp dir as another
+// process left it: it points TMPDIR at a directory this test owns and plants a
+// real session scratch there that some other session retained and abandoned a
+// day ago. That is exactly what the startup sweep is built to reclaim, so a
+// sweep that can see this directory will delete the decoy. The decoy's path is
+// returned for requireAmbientScratchDecoyUntouched.
+func plantAmbientScratchDecoy(t *testing.T) string {
+	t.Helper()
+	ambient := t.TempDir()
+	t.Setenv("TMPDIR", ambient)
+	other, err := sandbox.NewSessionScratch(ambient, t.TempDir())
+	if err != nil {
+		t.Fatalf("plant ambient scratch decoy: %v", err)
+	}
+	if err := other.Retain(); err != nil {
+		t.Fatalf("release ambient scratch decoy lease: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(other.Dir, "other-session.bin"), []byte("not yours"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(other.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	return other.Dir
+}
+
+// requireAmbientScratchDecoyUntouched fails when a sweep reached the decoy that
+// plantAmbientScratchDecoy left in the ambient temp dir.
+func requireAmbientScratchDecoyUntouched(t *testing.T, decoy string) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(decoy, "other-session.bin"))
+	if err != nil || string(got) != "not yours" {
+		t.Errorf("the sweep reached another session's scratch in the ambient temp dir %q: %q, %v", decoy, got, err)
 	}
 }
 
@@ -1370,10 +1423,11 @@ func sharedChildRealMintOnRestored(t *testing.T, env *execenv.LocalExecutionEnvi
 // reference, and R and C share E0/B again; then it retires, ages, sweeps and
 // restores once more. Sandbox and unsandboxed cases both run.
 func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
-	// Same confinement as TestScratchRetentionTerminalReleaseAllowsCollection: the
-	// startup sweep visits the world-usable container bases too, and this test
-	// asserts exact collection and restore outcomes.
-	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+	// Same confinement as TestScratchRetentionTerminalReleaseAllowsCollection: this
+	// test asserts exact collection and restore outcomes.
+	decoy := plantAmbientScratchDecoy(t)
+	confineSessionScratchSweep(t)
+	t.Cleanup(func() { requireAmbientScratchDecoyUntouched(t, decoy) })
 	for _, tc := range []struct {
 		name      string
 		sandboxed bool
