@@ -39,9 +39,12 @@ type hubHostCredentialsPusher struct {
 // evener/instance/list takes EmptyParams and has no provider parameter, so it is
 // called once with {} and the returned entries are joined against the store
 // keys by InstanceEntry.Name (an explicit instance) and
-// AvailableProviders[].ID (the implicit-provider fallback); the key is never
-// passed to instance/list. A key with no counterpart is skipped as "no matching
-// instance on the host" rather than pushed under a guessed provider.
+// AvailableProviders[].ID where that provider is Implicit (the implicit-provider
+// fallback, the same condition the host's own resolution requires); the key is
+// never passed to instance/list. A key with no counterpart is skipped as "no
+// matching instance on the host" rather than pushed under a guessed provider.
+// Every entry Names() returned gets exactly one result row, including one whose
+// value was cleared before it could be read (a skip, not a failure).
 //
 // Per matched entry the status read captures ActiveSource and ConfigRevision,
 // which are echoed into the conditional set's ExpectedSource/ExpectedRevision so
@@ -83,11 +86,34 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	if err := json.Unmarshal(listRaw, &listing); err != nil {
 		return appwire.HostPushCredentialsResponse{}, appwire.InternalError("decode the host's instance list: " + err.Error())
 	}
+	// The join is the spec's instance->provider rule, both halves of it: an
+	// explicit instance matches by its name, and the implicit-provider fallback
+	// matches by the provider ID - but only for a provider the host itself
+	// resolves that fallback for, which is `Provider.Implicit`
+	// (AvailableProviders[].Implicit / registry.BoolValue(p.Implicit),
+	// llm/registry/types.go:247). That is the same condition the host's own
+	// resolution gates the fallback on (hubAuthController.statusLocked,
+	// instanceAuthScheme and endpointInstanceFor all require Implicit before
+	// consulting registry.Provider). A provider ID that is not implicit is an
+	// authoring/curation target, not an instance the host can take a key for, so
+	// matching it would dispatch a local secret for a name the host answers
+	// "not a configured provider or instance" to - the local key must be skipped
+	// as "no matching instance on the host" instead.
+	//
+	// ProviderDescriptor.Setup is deliberately not the test: its own doc says it
+	// is "safe discovery metadata for an addressable implicit provider or
+	// existing instance" (appwire/types.go), so it is set for non-implicit
+	// provider IDs too (an instance addressing that ID), which the Instances
+	// name match already covers. Implicit is the fallback marker; addressability
+	// is the host's answer to resolve separately.
 	present := make(map[string]bool, len(listing.Instances)+len(listing.AvailableProviders))
 	for _, inst := range listing.Instances {
 		present[inst.Name] = true
 	}
 	for _, provider := range listing.AvailableProviders {
+		if !provider.Implicit {
+			continue
+		}
 		present[provider.ID] = true
 	}
 
@@ -95,7 +121,16 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	for _, name := range names {
 		value, ok := p.creds.Get(name)
 		if !ok {
-			// Cleared between the listing and the read: nothing to push.
+			// Names() listed it but the value is gone: the entry was cleared or
+			// blanked on the controller between the listing and this read. Nothing
+			// failed - there was simply no key to push - so it is a skip, and it
+			// still gets a row so the report accounts for every entry Names()
+			// returned.
+			response.Results = append(response.Results, appwire.HostCredentialPushResult{
+				Instance: name,
+				Action:   appwire.HostCredentialPushSkipped,
+				Reason:   "the local key was cleared before it could be pushed",
+			})
 			continue
 		}
 		if !present[name] {

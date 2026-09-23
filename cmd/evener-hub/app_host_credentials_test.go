@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -349,6 +350,85 @@ func TestHostPushCredentials_NoMatchingInstanceSkips(t *testing.T) {
 	}
 }
 
+// TestHostPushCredentials_NonImplicitProviderIsNotAMatch pins the implicit half
+// of the join: an AvailableProviders entry that is not implicit is an
+// authoring/curation target, not an instance the host resolves a key under, so
+// a local key naming it is skipped as "no matching instance on the host" and
+// never forwarded.
+func TestHostPushCredentials_NonImplicitProviderIsNotAMatch(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("openai-compatible", "sk-local"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			// The ID is listed as an available provider, but not as an implicit
+			// one: the host's own fallback requires Implicit.
+			return hostAdminReply{result: appwire.InstanceListResponse{
+				AvailableProviders: []appwire.ProviderDescriptor{{ID: "openai-compatible", Name: "OpenAI-compatible", Implicit: false}},
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	got := resultFor(t, resp, "openai-compatible")
+	if got.Action != appwire.HostCredentialPushSkipped || got.Reason != "no matching instance on the host" {
+		t.Fatalf("result = %+v, want a skip with the no-counterpart reason", got)
+	}
+	for _, method := range []string{appwire.MethodEvenerAuthStatus, appwire.MethodEvenerAuthApiKeyConditionalSet} {
+		if n := len(countedMethod(t, h.calls(), method)); n != 0 {
+			t.Fatalf("%s calls = %d, want none: a non-implicit provider is not a match", method, n)
+		}
+	}
+}
+
+// TestHostPushCredentials_BlankLocalEntryStillGetsARow pins the row contract:
+// every entry the store listed gets exactly one result, including one whose
+// value is gone by the time the push reads it. The store lists an entry with a
+// blank value (Names sees it, Get does not) - the shape a clear landing between
+// the listing and the read leaves.
+func TestHostPushCredentials_BlankLocalEntryStillGetsARow(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("gone", "  "); err != nil {
+		t.Fatalf("seed blank entry: %v", err)
+	}
+	if names := store.Names(); len(names) != 1 || names[0] != "gone" {
+		t.Fatalf("store.Names() = %v, want the blank entry listed", names)
+	}
+	if _, ok := store.Get("gone"); ok {
+		t.Fatal("the blank entry reads back a value; this fixture cannot exercise the vanished path")
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "gone"}}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("results = %+v, want one row for the one entry Names() listed", resp.Results)
+	}
+	got := resultFor(t, resp, "gone")
+	if got.Action != appwire.HostCredentialPushSkipped || got.Reason == "" {
+		t.Fatalf("result = %+v, want a skip with a reason", got)
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 0 {
+		t.Fatalf("conditionalSet calls = %d, want none for an entry with no value", n)
+	}
+}
+
 // TestHostPushCredentials_RefusesRemoteOriginatedBeforeAnyDial pins the shared
 // origin guard: a bridge-originated push is refused typed, reaches no remote
 // host, and never dials.
@@ -564,5 +644,90 @@ func TestHostPushCredentials_ReportNeverCarriesTheKeyValue(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), marker) {
 		t.Fatalf("the push response carries a key value:\n%s", encoded)
+	}
+}
+
+// broadcastInstancesToml declares two key-capable instances the conditional
+// set classifies differently: "addable" has no credential (a push is added),
+// and "headerful" resolves from authored credential headers (a push is
+// skipped).
+const broadcastInstancesToml = `[providers.addable]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+
+[providers.headerful]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+
+[providers.headerful.credential_headers]
+Authorization = "Bearer $HDR_KEY"
+`
+
+// TestAuthApiKeyConditionalSetBroadcastsOnlyOnALandedWrite pins the broadcast
+// branch in the evener/auth/apiKey/conditionalSet handler (app_rpc.go): a
+// landed write owes the same evener/auth/updated every other credential write
+// broadcasts, and a skipped classification - which wrote nothing - must not
+// make clients refetch. The push handler itself registers the pusher directly
+// and deliberately broadcasts nothing: it writes the HOST's store, so the
+// browser learns of it through the host-notification fan-out, not a
+// controller-side auth/updated.
+func TestAuthApiKeyConditionalSetBroadcastsOnlyOnALandedWrite(t *testing.T) {
+	stateDir := t.TempDir()
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, broadcastInstancesToml)
+	store := newTestCredentialsStore(t)
+	reg := newTestRegistry(t, stateDir, tomlPath, store, map[string]string{"HDR_KEY": "sk-hdr"})
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            reg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        stateDir,
+		CredsStore:          store,
+	})
+	defer hub.Close()
+	rpc := dialHubRPC(t, hub)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	// A landed write broadcasts evener/auth/updated naming the instance and the
+	// source it now resolves from.
+	var added appwire.ApiKeyConditionalSetResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerAuthApiKeyConditionalSet,
+		appwire.ApiKeyConditionalSetParams{Provider: "addable", Value: "sk-pushed"}, &added); err != nil {
+		t.Fatalf("evener/auth/apiKey/conditionalSet: %v", err)
+	}
+	if added.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("action = %q, want added", added.Action)
+	}
+	params := waitForAuthUpdated(t, rpc)
+	if params.Provider != "addable" || params.ActiveSource != "store" {
+		t.Fatalf("broadcast params = %+v, want the pushed instance addable resolving from store", params)
+	}
+
+	// A skipped classification writes nothing and broadcasts nothing.
+	var skipped appwire.ApiKeyConditionalSetResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerAuthApiKeyConditionalSet,
+		appwire.ApiKeyConditionalSetParams{Provider: "headerful", Value: "sk-pushed"}, &skipped); err != nil {
+		t.Fatalf("evener/auth/apiKey/conditionalSet (skip): %v", err)
+	}
+	if skipped.Action != appwire.ApiKeyConditionalSetActionSkipped {
+		t.Fatalf("action = %q, want skipped", skipped.Action)
+	}
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case note, ok := <-rpc.Notifications():
+			if !ok {
+				t.Fatal("notification channel closed before the negative window ended")
+			}
+			if note.Method == appwire.NotifyEvenerAuthUpdated {
+				t.Fatalf("a skipped conditional set broadcast %s; a skip writes nothing and must not make clients refetch", appwire.NotifyEvenerAuthUpdated)
+			}
+		case <-deadline:
+			return
+		}
 	}
 }

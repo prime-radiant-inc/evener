@@ -89,9 +89,16 @@ var remoteHostAdminMethods = map[string]struct{}{
 	appwire.MethodEvenerAuthLogout:        {},
 	appwire.MethodEvenerAuthApiKeySet:     {},
 	appwire.MethodEvenerAuthApiKeyClear:   {},
-	// 07c's credential push calls the conditional set (the atomic replacement
-	// for the racy status-then-set pair), so it is forwarded through this same
-	// list.
+	// evener/auth/apiKey/conditionalSet is allow-listed deliberately, per the
+	// spec's [07a] entry: it is the atomic replacement for the racy
+	// status-then-set pair, and a CLIENT may proxy it here like any other
+	// forwarded auth method. The controller's own credential push does NOT go
+	// through this list: hubHostCredentialsPusher calls the method directly on
+	// the shared per-host client seam (RemoteHubSource.AdminMutationCall) and
+	// never consults remoteHostAdminMethods. The row is named rather than left
+	// implied because, unlike apiKey/set, this method carries no
+	// ExpectedEndpointFingerprint check - its safety comes from the fence
+	// (ExpectedSource/ExpectedRevision) and the host's locked classification.
 	appwire.MethodEvenerAuthApiKeyConditionalSet: {},
 	appwire.MethodEvenerAuthCredentialJsonSet:    {},
 	appwire.MethodEvenerAuthDeviceStart:          {},

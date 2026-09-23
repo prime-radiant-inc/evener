@@ -4035,9 +4035,12 @@ type HostPushCredentialsParams struct {
 	Host string `json:"host"`
 }
 
-// HostPushCredentialsResponse is the per-instance report of one push: one
-// HostCredentialPushResult per local credentials-store entry, in the store's
-// sorted name order, plus the host the push targeted.
+// HostPushCredentialsResponse is the per-instance report of one push: exactly
+// one HostCredentialPushResult for every entry the local credentials store
+// listed, in the store's sorted name order, plus the host the push targeted. An
+// entry whose value was cleared before it could be read is still reported (a
+// skip), so the row count always matches the store's entry count — a report
+// that silently omitted an entry would read as "nothing was there to push".
 type HostPushCredentialsResponse struct {
 	Host    string                     `json:"host"`
 	Results []HostCredentialPushResult `json:"results"`
