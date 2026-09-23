@@ -212,8 +212,11 @@ func transcriptPath(bucketDir, sessionID string) string {
 // parentBucketAndID resolves a ref (or bare ID) to the bucket directory and
 // session ID of the parent session, without requiring the parent's transcript
 // to exist. This is used by execFindChildren: the parent's bucket and ID are
-// extracted from the ref alone so children can be found even when the parent
-// transcript has not yet been written (e.g. the current live session).
+// resolved from the ref when a proj: ref is given, or by statting candidate
+// buckets for a bare ID (mirroring resolveTranscript's read path). When the
+// parent transcript is not found in any bucket (never-flushed live session),
+// parentBucketAndID falls back to the current bucket so children can still be
+// found.
 //
 // Returns the resolved bucket dir, the parent session ID, the scope that
 // applies (current_project or all_projects), and any parse error.
@@ -249,14 +252,11 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 	if err := identifier.ValidateSessionID(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)
 	}
-	// Bare session ID: resolve cross-bucket, mirroring resolveTranscript.
-	// Search the current bucket first (a stat-free check is not possible here
-	// because the parent's transcript may not exist, so we scan for children
-	// in the resolved bucket — the bucket is determined by where the parent
-	// session lives, not by statting the parent transcript). When the
-	// session is not in the current bucket, search sibling buckets. This
-	// mirrors resolveTranscript's bare-ID semantics and prevents
-	// children_of from silently searching the wrong project.
+	// Bare session ID: resolve cross-bucket by statting candidate buckets,
+	// mirroring resolveTranscript's read path. The current bucket is checked
+	// first, then sibling buckets. When the parent transcript is not found in
+	// any bucket (never-flushed live session), fall back to the current
+	// bucket so children_of:"<bare-id>" still works.
 	sh := stateHomeFor(currentStateDir)
 	if sh == "" {
 		return currentStateDir, selector, scopeCurrentProject, nil

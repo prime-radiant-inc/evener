@@ -350,10 +350,11 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 
 	sortCandidatesNewestFirst(children, currentID)
 
-	// Resolving the parent opens no transcript (parentBucketAndID is stat-free), but
-	// every returned child must still be a read-able ref, so children are gated on
-	// the same transcriptExists (os.Stat, not a body open) as the catalog: a spawned
-	// child whose transcript was never flushed is not auditable and is excluded.
+	// parentBucketAndID may stat candidate buckets to locate the parent for a
+	// bare ID, but it opens no transcript. Every returned child must still be a
+	// read-able ref, so children are gated on the same transcriptExists (os.Stat,
+	// not a body open) as the catalog: a spawned child whose transcript was never
+	// flushed is not auditable and is excluded.
 	records := recordsUpTo(children, func(findCandidate) []snippet { return nil }, currentID, limit, deps.currentMeta)
 
 	return findSessionsEnvelope{
