@@ -1241,6 +1241,45 @@ func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
 	t.Fatal("the gw instance is missing from the listing")
 }
 
+// The listing's transport resolves the default model the way the child
+// does: a default matched by a glob row takes the glob row's overrides —
+// auth included — not the provider-level shape the exact-row lookup falls
+// back to. The resume gate judges this listing, so its credential verdict
+// must describe the default model's own resolution.
+func TestListingJudgesTheGlobResolvedDefaultModel(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-K\"\n" +
+		"credential_headers = { \"X-K\" = \"$MISSING\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-*\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Transport.Auth != "none" {
+		t.Fatalf("resolve auth = %q; the glob row's none override must apply to the child", res.Transport.Auth)
+	}
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.Auth != "none" {
+			t.Fatalf("listing auth = %q; the listing must judge the same glob-resolved shape the child resolves", inst.Auth)
+		}
+		if strings.Contains(strings.Join(inst.Warnings, ";"), "no credential") {
+			t.Fatalf("listing warnings = %v; the glob row's none scheme is quiet about the missing credential", inst.Warnings)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
 // The model-less resolve reports the shadowed variable against the same
 // transport it resolved the credential with — the provider-level one — not
 // the default row's merged shape, which may name a different header.

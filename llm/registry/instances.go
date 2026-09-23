@@ -508,21 +508,21 @@ func authHeaderName(t Transport) string {
 }
 
 // listingTransport is the transport a bare launch of the instance would
-// use: the canonical shape of the default model row — the provider's own
-// transport with the row's overrides and the cross-protocol rule applied —
-// or the provider's own when no default row exists. Rows are per model and
-// the listing is per instance, so this is the launch shape the spawn gate's
-// refusal judges.
+// use: the default model resolved exactly as the child resolves it — every
+// layer's glob rows, the top-level model globs, and same-provider alias
+// targets applied in the replay's order — or the provider's own when there
+// is no default model, the default names a glob, or it does not resolve (a
+// default that will not resolve is the child's refusal to give, not the
+// listing's to describe). Rows are per model and the listing is per
+// instance, so this is the launch shape the spawn gate's refusal judges.
 func (r *Registry) listingTransport(rec *record) Transport {
-	row, ok := rec.head.Models[rec.head.DefaultModel]
-	if !ok || isGlob(rec.head.DefaultModel) || row.Transport == nil {
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
 		return rec.head.Transport
 	}
-	proto := row.Protocol
-	if proto == "" {
-		proto = rec.head.Protocol
+	if res, err := r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil); err == nil {
+		return res.Transport
 	}
-	return r.transportShape(rec, row, proto)
+	return rec.head.Transport
 }
 
 // authHeaderKey resolves which credential-header key carries the named

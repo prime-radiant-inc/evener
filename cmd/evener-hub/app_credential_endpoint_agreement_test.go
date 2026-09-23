@@ -286,8 +286,13 @@ func TestCredentialAgreement_GateJudgesTheLaunchedModel(t *testing.T) {
 	defReg := newProbeRegistry(t, t.TempDir(), store, env, map[string]registry.Provider{"gw": credentialedDefault})
 
 	t.Run("a row override carries the credential the listing cannot see", func(t *testing.T) {
-		if err := validateProviderCredentials("gw", "house-model", gwReg); err != nil {
-			t.Fatalf("the gate refused a launch whose row override carries the credential: %v", err)
+		// The production call site passes the launch's model exactly as
+		// launchconfig materialized it: provider-qualified. Both forms must
+		// judge the row's own credential.
+		for _, model := range []string{"house-model", "gw/house-model"} {
+			if err := validateProviderCredentials("gw", model, gwReg); err != nil {
+				t.Fatalf("the gate refused %q, a launch whose row override carries the credential: %v", model, err)
+			}
 		}
 	})
 	t.Run("the instance view keeps the bare-name approximation", func(t *testing.T) {
@@ -301,8 +306,10 @@ func TestCredentialAgreement_GateJudgesTheLaunchedModel(t *testing.T) {
 		}
 	})
 	t.Run("the default model still passes", func(t *testing.T) {
-		if err := validateProviderCredentials("gw", "house-model", defReg); err != nil {
-			t.Fatalf("the gate refused the default model's own launch: %v", err)
+		for _, model := range []string{"house-model", "gw/house-model"} {
+			if err := validateProviderCredentials("gw", model, defReg); err != nil {
+				t.Fatalf("the gate refused %q, the default model's own launch: %v", model, err)
+			}
 		}
 	})
 }

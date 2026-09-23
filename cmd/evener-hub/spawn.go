@@ -862,6 +862,15 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 	}
 	r := reg.Get()
 	if model != "" {
+		// The launch's model arrives as launchconfig materialized it:
+		// provider-qualified (cmdutil.ModelRef.Qualified()). The gate
+		// judges instance/model, so this instance's own prefix comes off
+		// before the ref is built — a qualified name twice would resolve
+		// to a synthesized row judged at the provider level, silently
+		// skipping the row-aware judgment entirely.
+		if ref := registry.ParseRef(model); strings.EqualFold(ref.Instance, name) {
+			model = ref.Model
+		}
 		// The launch the child actually makes. A ref that does not resolve
 		// is not the credential gate's refusal to give — the launch contract
 		// below and the child's own resolution name it — so the gate keeps
