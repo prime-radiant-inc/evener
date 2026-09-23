@@ -22,7 +22,7 @@ export function createProviderParams(
   const credentialHeader = draft.credentialHeader.trim();
   if (credentialHeader && !credentialHeader.includes("$"))
     throw new Error(
-      "Credential header must reference a $VARIABLE, never a literal secret.",
+      "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
     );
   const entries = Object.keys(provider.vars ?? {})
     .map((key) => [key, draft.vars[key]?.trim() ?? ""] as const)

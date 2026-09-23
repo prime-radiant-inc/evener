@@ -610,16 +610,23 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 		_, _ = fmt.Fprintf(sum, "%s\x01", k)
 		hashSlot(h.CredentialHeaders[k])
 	}
-	for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01", k)
-		hashSlot(h.Headers[k])
-	}
 	if rec.head.DefaultModel != "" && !isGlob(rec.head.DefaultModel) {
-		if row, ok := rec.head.Models[rec.head.DefaultModel]; ok {
-			for _, k := range slices.Sorted(maps.Keys(row.Headers)) {
+		// The listing fetch resolves through the default row and sends
+		// the merged headers with the request — provider, exact row,
+		// and every matching glob row, which merge at resolve time and
+		// never appear on the folded head's own row. The fingerprint
+		// hashes what the request actually carries, resolved at facts
+		// depth so no credential stage ever runs.
+		if res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveFacts); err == nil {
+			for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
 				_, _ = fmt.Fprintf(sum, "row\x01%s\x01", k)
-				hashSlot(row.Headers[k])
+				hashSlot(res.Headers[k])
 			}
+		}
+	} else {
+		for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
+			_, _ = fmt.Fprintf(sum, "%s\x01", k)
+			hashSlot(h.Headers[k])
 		}
 	}
 	return hex.EncodeToString(sum.Sum(nil)), true

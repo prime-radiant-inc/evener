@@ -1581,6 +1581,33 @@ func TestAuthFingerprintRotatesListingRowHeaders(t *testing.T) {
 	}
 }
 
+// A matching glob row merges into the effective row at resolve time, so
+// the listing request carries its headers too: a glob-header rotation is
+// as much a change to what the cached live rows came through as an exact
+// row's is. The fingerprint hashes the merged request shape, not the
+// exact row alone.
+func TestAuthFingerprintRotatesGlobRowHeaders(t *testing.T) {
+	mk := func(t *testing.T, globHeaders string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"anthropic\"\n" +
+			"api_key_env = [\"WORK_KEY\"]\n" +
+			"default_model = \"claude-opus-4-5\"\n" +
+			"[providers.gw.models.\"*claude-opus*\"]\n" +
+			globHeaders +
+			"[providers.gw.models.\"claude-opus-4-5\"]\n"
+		return fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config).AuthFingerprint("gw")
+	}
+	plain, ok := mk(t, "[providers.gw.models.\"*claude-opus*\".headers]\n\"X-Beta\" = \"false\"\n")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "[providers.gw.models.\"*claude-opus*\".headers]\n\"X-Beta\" = \"true\"\n")
+	if plain == rotated {
+		t.Fatal("fingerprint unchanged across a glob-row header rotation; the listing request changed")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never

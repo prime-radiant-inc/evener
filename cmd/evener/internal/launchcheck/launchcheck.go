@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // launchCheckLoadClient is the injectable hook for tests. Production code
@@ -114,14 +115,20 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 }
 
 // validateLaunchCheckProfile checks that the model ref resolves on the
-// registry. It is NETWORK-FREE: profile resolution reads the registry alone,
-// so the probe needs no credentials and issues no live /models lookup.
+// registry — MINT-FREE: it resolves the row's facts, never the
+// credential (spec §10.1), because the check is a read the hub triggers
+// and the child's first request owns the mint. It stays network-free
+// the same way: no live /models lookup happens here.
 func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 	client, err := launchCheckLoadClient("")
 	if err != nil {
 		return err
 	}
-	_, err = cmdutil.ResolveProfile(client, ref.Qualified())
+	pr := registry.ParseRef(ref.Qualified())
+	if pr.Model == "" {
+		return fmt.Errorf("%q: empty model reference", ref.Qualified())
+	}
+	_, err = client.Registry().ResolveInstanceModelFacts(pr.Instance, pr.Model)
 	return err
 }
 
@@ -138,6 +145,30 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 	diagnostics := []appwire.ModelListDiagnostic{}
 	for _, inst := range client.Registry().Instances() {
 		if inst.Hidden {
+			continue
+		}
+		if client.Registry().LaunchMintsCredentialCommand(inst.Name) {
+			// The hub never executes a credential command (spec
+			// §10.1): a command-credentialed instance's live listing
+			// is the child's to make; the contract serves its
+			// registry rows, resolved at facts depth — every
+			// advertised fact, no credential materialized — under the
+			// same §5 visibility filter the child's own listing
+			// applies.
+			rows, err := client.Registry().InstanceModels(inst.Name)
+			if err != nil {
+				continue
+			}
+			for _, row := range rows {
+				if row.Disabled {
+					continue
+				}
+				res, err := client.Registry().ResolveInstanceModelFacts(inst.Name, row.ID)
+				if err != nil || res.Model.Hidden || llm.LiveSaysNoTools(res) {
+					continue
+				}
+				out = append(out, launchCheckModel{Provider: inst.Name, Model: row.ID, Warnings: append([]string(nil), res.Warnings...)})
+			}
 			continue
 		}
 		listCtx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)

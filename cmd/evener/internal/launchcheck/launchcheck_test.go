@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
 	"primeradiant.com/evener/llm/registry"
@@ -481,4 +482,76 @@ models_endpoint = "-"
 		return
 	}
 	t.Fatalf("models=%+v, want vtx/gemini-3.5-flash", out.Models)
+}
+
+// The launch check validates that a ref resolves — a read, not a launch:
+// a command-bearing credential is the child's first request to spend
+// (spec §10.1), and a preflight that minted would prompt the user's
+// password manager with no session launched.
+func TestLaunchCheckNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:    map[string]registry.Model{"house-model": {}},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	if err := validateLaunchCheckProfile(cmdutil.ModelRef{Provider: "gw", Model: "house-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("the launch check executed the credential command %d time(s); the child's first request owns the mint (spec §10.1)", runs)
+	}
+}
+
+// The launch contract's model list serves a command-credentialed
+// instance's registry rows — every advertised fact, no credential
+// materialized — and leaves its live listing to the child, mirroring the
+// hub picker (spec §10.1).
+func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:    map[string]registry.Model{"house-model": {}},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range models {
+		if m.Provider == "gw" && m.Model == "house-model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the launch contract's model list dropped the command-credentialed instance's registry rows: %+v", models)
+	}
+	if runs != 0 {
+		t.Fatalf("the model list executed the credential command %d time(s); skipping the live fetch must skip the mint", runs)
+	}
 }
