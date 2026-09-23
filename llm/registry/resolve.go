@@ -341,6 +341,24 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}, nil
 }
 
+// ResolveInstanceListing resolves the live listing's fetch the way the
+// hub describes the instance (spec §8.1): the launch a bare instance
+// name makes — the default model's row at full depth, exactly as the
+// child resolves it — so the fetch, the listing row, and the instance
+// identity all name one transport. A provider with no default model (or
+// a glob one) keeps ResolveInstance's model-less shape: no single row
+// names the launch, so the provider's own transport speaks for it.
+func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, r.unknownInstance(name)
+	}
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+		return r.ResolveInstance(name)
+	}
+	return r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil)
+}
+
 // webSearchExplicit reports whether prov attributes Caps.WebSearch to a
 // deliberate, individually considered choice in the record's own
 // providers.toml entry: an instance-wide setting (tag "config/provider")

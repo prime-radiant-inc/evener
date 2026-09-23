@@ -513,7 +513,7 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 		}
 		return rows, true, nil
 	}
-	res, err := r.ResolveInstance(instance)
+	res, err := r.ResolveInstanceListing(instance)
 	if err != nil {
 		return nil, false, &ConfigurationError{Message: err.Error()}
 	}

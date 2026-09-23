@@ -554,15 +554,24 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 			key := authHeaderKey(h.CredentialHeaders, authHeaderName(t))
 			_, _ = fmt.Fprintf(sum, "%s\x01", key)
 			hashSlot(h.CredentialHeaders[key])
-		case r.creds != nil:
-			if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
-				_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
-			}
 		default:
-			for _, envName := range r.envCandidates(rec) {
-				if v, ok := r.env(envName); ok && v != "" {
-					_, _ = fmt.Fprintf(sum, "env\x01%s\x01%s\x01", envName, v)
-					break
+			// The store is terminal only on a hit, mirroring the
+			// resolution order: the hub always wires one, so a miss that
+			// stayed terminal would hide every env-sourced credential
+			// from the fingerprint and let their rotations slide.
+			hashed := false
+			if r.creds != nil {
+				if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
+					_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
+					hashed = true
+				}
+			}
+			if !hashed {
+				for _, envName := range r.envCandidates(rec) {
+					if v, ok := r.env(envName); ok && v != "" {
+						_, _ = fmt.Fprintf(sum, "env\x01%s\x01%s\x01", envName, v)
+						break
+					}
 				}
 			}
 		}

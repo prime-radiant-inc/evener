@@ -1468,6 +1468,29 @@ func TestAliasResolutionSkipsTargetCommandCredentials(t *testing.T) {
 	}
 }
 
+// The hub always wires a credentials store, so the fingerprint's store arm
+// must be terminal only on a hit: a store that holds no entry for the
+// instance falls through to the environment candidates, whose rotation the
+// identity has to follow.
+func TestAuthFingerprintRotatesEnvValuesWithStoreWired(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"api_key_env = [\"ROT_KEY\"]\n"
+	mk := func(t *testing.T, key string) *Registry {
+		t.Helper()
+		return fixtureLoad(t, map[string]string{"ROT_KEY": key}, config, WithCredentials(fakeCreds{}))
+	}
+	first, ok := mk(t, "sk-aaaa").AuthFingerprint("gw")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	second, _ := mk(t, "sk-bbbb").AuthFingerprint("gw")
+	if first == second {
+		t.Fatal("fingerprint unchanged across an env rotation with the store wired; a store miss must reach the env candidates")
+	}
+}
+
 // Credential-header names are case-insensitive on the wire, so two that
 // differ only by case would collide into one header while resolution picks
 // a single entry for the credential: the load refuses the pair.

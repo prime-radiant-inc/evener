@@ -25,6 +25,16 @@ func hermeticLoader(extra ...registry.Option) (*registry.Registry, *credentials.
 	return cmdutil.LoadRegistry(append(extra, registry.WithOffline(true), registry.WithoutCache())...)
 }
 
+// fakeCredentialSource stands in for the credentials store the hub always
+// wires (cmdutil.LoadRegistry): present but empty by default, so a test
+// exercises the production paths where a store miss must fall through.
+type fakeCredentialSource map[string]string
+
+func (f fakeCredentialSource) Lookup(instance string) (string, bool) {
+	v, ok := f[instance]
+	return v, ok
+}
+
 // TestReloadCannotCommitAnOlderReadAfterANewerOne pins the ordering
 // contract for concurrent reloads. Loading runs outside the holder lock
 // (a slow read must not block readers of the current snapshot), so two
@@ -266,6 +276,7 @@ func TestInstanceIdentityChangesOnCredentialRotation(t *testing.T) {
 				}
 				return "", false
 			}),
+			registry.WithCredentials(fakeCredentialSource{}),
 			registry.WithStateRoot(t.TempDir()),
 			registry.WithOffline(true),
 			registry.WithoutCache(),
@@ -303,6 +314,7 @@ func TestInstanceIdentityChangesOnSameLengthRotation(t *testing.T) {
 				}
 				return "", false
 			}),
+			registry.WithCredentials(fakeCredentialSource{}),
 			registry.WithStateRoot(t.TempDir()),
 			registry.WithOffline(true),
 			registry.WithoutCache(),
