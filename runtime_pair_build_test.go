@@ -429,6 +429,7 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 	wantNodeCommands := map[string]bool{
 		"scripts/layoutguard/run.mjs":           false,
 		"scripts/overflowguard/run.mjs":         false,
+		"scripts/shellguard/run.mjs":            false,
 		"scripts/spawnguard/run.mjs":            false,
 		"scripts/transcriptscrollguard/run.mjs": false,
 	}
@@ -454,10 +455,27 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 			}
 		}
 	}
+	// Guards run side by side, and two Vite processes optimizing into one dep
+	// cache race (issue #1586): every Vite-backed guard gets its own.
 	viteCaches := map[string]string{}
+	assertOwnViteCache := func(tool, command string, fields []string) {
+		t.Helper()
+		if len(fields) != 9 {
+			t.Errorf("%s %s record has %d fields, want 9 (Vite cache dir last)", tool, command, len(fields))
+			return
+		}
+		cache := fields[8]
+		if !strings.HasPrefix(cache, fixture.root+string(os.PathSeparator)) {
+			t.Errorf("%s %s Vite cache dir = %q, want a guard-owned directory beneath %q", tool, command, cache, fixture.root)
+		} else if other, shared := viteCaches[cache]; shared {
+			t.Errorf("%s %s shares Vite cache dir %q with %s", tool, command, cache, other)
+		} else {
+			viteCaches[cache] = command
+		}
+	}
 	for line := range strings.SplitSeq(strings.TrimSuffix(string(logData), "\n"), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) != 8 && (fields[0] != "node-env" || len(fields) != 9) {
+		if len(fields) != 8 && len(fields) != 9 {
 			continue
 		}
 		command := fields[1]
@@ -466,20 +484,15 @@ func TestMakeWebCommandsContainNodeProcessState(t *testing.T) {
 			if _, expected := wantNPMCommands[command]; expected {
 				wantNPMCommands[command] = true
 				assertProcessState("npm", command, fields, strings.HasPrefix(command, "run ") && command != "run build")
+				if command == "run retirementguard" {
+					assertOwnViteCache("npm", command, fields)
+				}
 			}
 		case "node-env":
 			if _, expected := wantNodeCommands[command]; expected {
 				wantNodeCommands[command] = true
 				assertProcessState("node", command, fields, true)
-				// Guards run side by side, and two Vite processes optimizing
-				// into one dep cache race (issue #1586): each gets its own.
-				if len(fields) != 9 || !strings.HasPrefix(fields[8], fixture.root+string(os.PathSeparator)) {
-					t.Errorf("node %s Vite cache dir = %q, want a guard-owned directory beneath %q", command, fields[len(fields)-1], fixture.root)
-				} else if other, shared := viteCaches[fields[8]]; shared {
-					t.Errorf("node %s shares Vite cache dir %q with %s", command, fields[8], other)
-				} else {
-					viteCaches[fields[8]] = command
-				}
+				assertOwnViteCache("node", command, fields)
 			}
 		}
 	}
@@ -1107,7 +1120,7 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
 if [ -n "${EVENER_TEST_PROCESS_STATE_DIR:-}" ]; then
   record=$(mktemp "$EVENER_TEST_PROCESS_STATE_DIR/npm.XXXXXX")
-  printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" > "$record"
+  printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" "${BROWSER_GUARD_VITE_CACHE_DIR:-}" > "$record"
 else
   printf 'npm-env\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$*" "${NODE_DISABLE_COMPILE_CACHE:-}" "${HOME:-}" "${TMPDIR:-}" "${XDG_CONFIG_HOME:-}" "${XDG_CACHE_HOME:-}" "${XDG_STATE_HOME:-}" >> "$EVENER_TEST_GO_LOG"
   printf 'npm %s\n' "$*" >> "$EVENER_TEST_GO_LOG"
