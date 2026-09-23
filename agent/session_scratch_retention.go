@@ -192,10 +192,12 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		// and role-registration closures run (round 12).
 		published, err := env.ScratchRetentionBinding()
 		if err != nil {
-			// SetScratchRetentionBinding just recorded the binding, so an
-			// unreadable read-back is an unreachable defensive branch, not
-			// an install failure.
-			return nil //nolint:nilerr // binding already installed; nothing to register
+			// SetScratchRetentionBinding just recorded the binding, so this
+			// read-back failing is unexpected — and failing loudly is the
+			// contract: returning nil here reported a successful install
+			// while silently skipping the consumer row a later refresh
+			// re-probes (round 49).
+			return err
 		}
 		fresh, err := sandbox.LoadScratchRetention(owner)
 		if err != nil {
@@ -551,9 +553,10 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 	}
 	installed, err := env.ScratchRetentionBinding()
 	if err != nil {
-		// installScratchRetention already installed the binding above; the
-		// unreachable read-back failure leaves no consumer row to add.
-		return nil //nolint:nilerr // binding already installed; nothing to register
+		// installScratchRetention already installed the binding above; a
+		// read-back failure here is unexpected, and swallowing it reported
+		// success while skipping the consumer row entirely (round 49).
+		return err
 	}
 	manifest, err := sandbox.LoadScratchRetention(owner)
 	if err != nil {

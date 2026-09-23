@@ -518,6 +518,45 @@ it("a re-keyed remount refuses the previous hub's pairing on the render it lands
 	expect(deferred()).toBe(true);
 });
 
+// Round 49's undefined-hub Medium: useRenderClient seeds adoption.scope as
+// undefined, so a mount whose hubId is also undefined passed the ready-path
+// scope check on its very first render and served the live client prop with
+// no settling effect behind it — the mount-borne pairing the round-32 empty
+// seed exists to withhold, reopened at the undefined end of the hub-id
+// space (the store's selection can clear while the connection still reports
+// the last hub's ready client). The ready path must also require an adopted
+// client before it serves anything.
+it("useRenderClient withholds an undefined hub's ready pairing until the settle adopts it", () => {
+	const first = {} as AppwireClient;
+	let landedClient: AppwireClient | null = null;
+	let settledClient: AppwireClient | null = null;
+	let probed = false;
+	function Probe() {
+		useLayoutEffect(() => {
+			if (probed) {
+				return;
+			}
+			probed = true;
+			landedClient = settledClient;
+		});
+		return null;
+	}
+	function Owner() {
+		settledClient = useRenderClient(first, "ready", undefined);
+		return createElement(Probe);
+	}
+	render(createElement(Owner));
+	// The landing render serves nothing: the empty adoption seed withholds
+	// the mount-borne pairing even though adoption.scope === undefined ===
+	// hubId would pass the bare scope check.
+	expect(landedClient).toBeNull();
+	// After the settle the pairing is adopted under the undefined scope and
+	// the ready path serves the live client prop again — a replacement that
+	// arrives ready is never delayed a render behind the stores keyed on it
+	// (round 32).
+	expect(settledClient).toBe(first);
+});
+
 // Round 32's retention Medium: the effect that resets `everReady` on a hub
 // move re-armed it in the same run when the moved render still carried the
 // previous hub's ready state, so the new hub retained content it never

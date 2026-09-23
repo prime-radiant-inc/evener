@@ -306,7 +306,12 @@ export function useRenderClient(
 		}
 	}, [state, hubId, client, adoption.client]);
 	if (state === "ready") {
-		return adoption.scope === hubId ? client : null;
+		// The adopted client is required, not just the scope: the empty seed
+		// scopes to undefined, so a mount whose hubId is also undefined would
+		// pass the bare scope comparison on its very first render and serve
+		// the live client prop no settling effect has vouched for — the exact
+		// mount-borne pairing the seed exists to withhold (round 49).
+		return adoption.client !== null && adoption.scope === hubId ? client : null;
 	}
 	return adoption.scope === hubId ? adoption.client : null;
 }
