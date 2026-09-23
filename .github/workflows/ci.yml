@@ -151,6 +151,16 @@ jobs:
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
           restore-keys: ${{ steps.golangci-cache.outputs.prefix }}
 
+      - name: TEMP diagnose build cache reuse
+        run: |
+          find ~/.cache/go-build -type f | wc -l
+          ls -la --time-style=full-iso ~/.cache/go-build/00 | head -5
+          go build -v ./... > /tmp/built.txt 2>&1 || true
+          wc -l < /tmp/built.txt
+          grep -c '^primeradiant.com' /tmp/built.txt || true
+          head -40 /tmp/built.txt
+          go env
+
       - name: Install golangci-lint
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
