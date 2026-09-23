@@ -269,10 +269,9 @@ func TestHubRPCThreadShutdownForwardsToRemoteHost(t *testing.T) {
 				Source: "local",
 				Evener: appwire.EvenerThread{
 					Ref: "local:t1",
-					// A remote daemon's own claim, which the mask must preserve for
-					// the shutdown gate to pass. Send stays advertised remotely and
-					// must stay masked here: the controller does not forward it.
-					Capabilities: appwire.ThreadCapabilities{Send: true, Shutdown: true},
+					// The remote daemon's own claim, which the mask must preserve for
+					// the shutdown gate to pass.
+					Capabilities: appwire.ThreadCapabilities{Shutdown: true},
 				},
 			}}
 		default:
@@ -512,6 +511,7 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 		Queue:        true,
 		ForkFromTurn: true,
 		SkillInput:   true,
+		Shutdown:     true,
 	}
 	if err := push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     "t1",
@@ -544,8 +544,12 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 			if status.Capabilities == nil {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
-			if *status.Capabilities != (appwire.ThreadCapabilities{}) {
-				t.Fatalf("relayed status capabilities = %+v, want every unforwarded action masked like the read path", *status.Capabilities)
+			// The daemon claims Shutdown as well, so this pins both halves of the
+			// mask: the one forwarded action survives, every unforwarded one is
+			// dropped. An expectation of the empty set would only show that a claim
+			// containing no forwarded action stays empty.
+			if want := (appwire.ThreadCapabilities{Shutdown: true}); *status.Capabilities != want {
+				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return
 		case <-deadline:
