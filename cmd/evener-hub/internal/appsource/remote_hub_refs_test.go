@@ -68,8 +68,14 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 	}
 	// The mask is a filter over the remote's own claim, not a replacement for it:
 	// nothing outside the capability set may change.
-	if thread.Source != "host" || thread.Evener.Ref != "host:t1" || thread.Evener.InstanceID != "inst-1" {
-		t.Fatalf("masked thread = %+v, want refs and opaque fields untouched", thread.Evener)
+	if thread.Source != "host" {
+		t.Fatalf("masked thread source = %q, want host", thread.Source)
+	}
+	if thread.Evener.Ref != "host:t1" {
+		t.Fatalf("masked thread ref = %q, want host:t1", thread.Evener.Ref)
+	}
+	if thread.Evener.InstanceID != "inst-1" {
+		t.Fatalf("masked thread instance = %q, want inst-1", thread.Evener.InstanceID)
 	}
 }
 
