@@ -764,8 +764,19 @@ export function createConversationStore() {
     const seated: MobileTimelineItem[] = [...noticesBeforeEverything];
     for (const item of conversation.items) {
       seated.push(item);
-      const bucket = noticesByAnchor.get(timelineIdentity(item));
-      if (bucket !== undefined) seated.push(...bucket);
+      // RoboRev round 37: anchors resolve through the identities the row
+      // OWNS, not just its own top-level one — pagination can seat an older
+      // tool directly beside the one a notice anchored to, and the next
+      // projection then clusters the two under the older's identity: the
+      // anchored row stays visible as a member while its identity stops
+      // matching, which used to retire the notice with the prune. The
+      // size guard keeps the common no-notice publish at one check per
+      // row.
+      if (noticesByAnchor.size === 0) continue;
+      for (const identity of ownTimelineIdentities(item)) {
+        const bucket = noticesByAnchor.get(identity);
+        if (bucket !== undefined) seated.push(...bucket);
+      }
     }
     const items = capItems(seated).map((item) => truncateItem(item, bound));
     const retainedIdentities = new Set(items.map(timelineIdentity));
@@ -3745,13 +3756,24 @@ export function createConversationStore() {
         // publish path below so the row reaches the screen at once. A
         // warning WITH an active turn needs none of this — the reducer
         // folds it into the turn's items and the projection renders it.
-        const idleWarningNotice =
-          n.method === "warning" && !applied.activeTurnId
+        // RoboRev round 37: an active turn the LOADED WINDOW does not hold
+        // is the same drop — the wire can name one (a resumed old turn
+        // while the window holds only newer history), and the reducer's
+        // fold then finds no turn to attach the warning to (mapTurn hands
+        // back the same turns), while the gap reread the frame requests
+        // can never carry the warning back either, the wire not
+        // persisting warnings. The notice therefore goes to the transient
+        // surface whenever the reducer could not place the warning, not
+        // only when idle.
+        const unplacedWarningNotice =
+          n.method === "warning" &&
+          (!applied.activeTurnId ||
+            !applied.turns.some((turn) => turn.id === applied.activeTurnId))
             ? idleWarningRow(n.params)
             : null;
-        if (idleWarningNotice !== null) {
+        if (unplacedWarningNotice !== null) {
           transientWarnings.push({
-            row: idleWarningNotice,
+            row: unplacedWarningNotice,
             anchor: arrivalAnchor(
               state.conversation.items,
               new Set(
@@ -3763,7 +3785,7 @@ export function createConversationStore() {
         if (applied !== state.conversation) {
           if (
             changesRows(state.conversation, applied) ||
-            idleWarningNotice !== null
+            unplacedWarningNotice !== null
           ) {
             const projected = withPageHistory(
               state.conversation,

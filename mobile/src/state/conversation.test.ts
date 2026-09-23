@@ -4277,6 +4277,182 @@ describe("ConversationStore", () => {
       expect(after[after.length - 1]?.id).toBe("a502");
     });
 
+    // RoboRev round 37: the wire can name an active turn the loaded window
+    // does not hold — a resumed old turn, with the window showing only
+    // newer history. The reducer's fold then finds no turn to attach the
+    // warning to, the round-34 fallback required an ABSENT active id, and
+    // the gap reread the frame requests can never carry the warning back
+    // (the wire never persists warnings): the diagnostic vanished. It
+    // belongs on the transient surface like any warning the reducer could
+    // not place.
+    it("shows a warning whose active turn lies outside the loaded window, and keeps it through the gap reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                userMessageItem("u1", "first"),
+                agentMessageItem("a1", "second"),
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t-outside" }),
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.activeTurnId).toBe("t-outside");
+      const readsBefore = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      // Displayed at once, though the reducer could not place it: the
+      // notice seats after the last model row, from the transient surface.
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["user", "u1"],
+        ["assistant", "a1"],
+        ["failure", "warning:1"],
+      ]);
+      // The frame is still a gap — the loaded window misses the active
+      // turn it names — so the canonical read fires; the wire never
+      // persists warnings, so the read cannot carry the diagnostic, and
+      // the notice survives the reread's rebuild from the transient
+      // surface.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["user", "u1"],
+        ["assistant", "a1"],
+        ["failure", "warning:1"],
+      ]);
+      // The model itself keeps no trace of the warning — there was nowhere
+      // to fold one, and the read never carried it back.
+      expect(
+        store
+          .getState()
+          .conversation?.turns.flatMap((turn) => turn.items)
+          .filter((item) => item.type === "warning"),
+      ).toEqual([]);
+    });
+
+    // RoboRev round 37, second finding: anchors matched only top-level row
+    // identities, but pagination can seat an older tool directly beside the
+    // tool a notice anchored to, and the next projection then clusters the
+    // two under the OLDER tool's identity — the anchor row remains visible
+    // as a cluster member while its identity stops matching, so the prune
+    // deleted the notice outright. Anchors must resolve through the
+    // identities a row OWNS, members included.
+    it("reseats a warning through a cluster that absorbed its anchor row", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [commandExecItem("a-tool", "shell", "completed")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+      ]);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+      ]);
+      // An older page seats tool p-tool directly before a-tool in the
+      // window and the model: the page serves the projected row the
+      // window keeps (so the retained-turn bound sees the turn's content)
+      // and the wire turn the model merges.
+      store.setState({ olderCursor: "cursor-1" });
+      const olderThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t0",
+            items: [commandExecItem("p-tool", "shell", "completed")],
+          }),
+        ],
+      });
+      service.olderItems = {
+        items: makeReadProjectionResult(olderThread).conversation.items,
+        turnsPage: turnsPage([
+          wireTurnFragment("t0", [
+            commandExecItem("p-tool", "shell", "completed"),
+          ]),
+        ]),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(
+        store.getState().conversation?.turns.map((turn) => turn.id),
+      ).toEqual(["t0", "t1"]);
+      // The page's row sits before a-tool; the notice keeps its position
+      // beside a-tool through the row merge.
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "p-tool"],
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+      ]);
+      // A row-changing frame reprojects from the model: the two adjacent
+      // same-family tools cluster under p-tool's identity, with a-tool as
+      // a member — and the notice keeps its position beside the row that
+      // now carries its anchor.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: userMessageItem("u2", "newer"),
+        },
+      } as AnyNotification);
+      const after = rows(store);
+      expect(after.map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "p-tool"],
+        ["failure", "warning:1"],
+        ["user", "u2"],
+      ]);
+      const activities = after.filter(
+        (row): row is Extract<MobileTimelineItem, { kind: "activity" }> =>
+          row.kind === "activity",
+      );
+      expect(activities).toHaveLength(1);
+      expect(activities[0]?.members?.map((member) => member.id)).toEqual([
+        "p-tool",
+        "a-tool",
+      ]);
+    });
+
     it("preserves a command description through live item projection", async () => {
       const { store } = await openRunningTurn();
       store.getState().applyNotification({
