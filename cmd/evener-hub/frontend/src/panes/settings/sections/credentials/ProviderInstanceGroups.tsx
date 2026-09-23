@@ -8,6 +8,7 @@ import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { groupByProvider } from "@evener/appwire-client";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
+import { supportsHostDeviceSignIn } from "./oauthFlow";
 import styles from "./ProviderInstanceGroups.module.css";
 
 const CLASS = {
@@ -26,6 +27,11 @@ export interface ProviderInstanceGroupsProps {
   /** Called with the instance name when a row is selected. Required whenever
    * readOnly is not set. */
   onSelect?: (name: string) => void;
+  /** Remote scope only: begins a device-code sign-in ON the selected host for a
+   * Codex instance (component 07d's "Sign in on host"). Absent for the
+   * controller's own listing, and never offered on a provider whose sign-in
+   * needs a browser the remote host does not have. */
+  onHostSignIn?: (name: string) => void;
 }
 
 export function ProviderInstanceGroups({
@@ -33,6 +39,7 @@ export function ProviderInstanceGroups({
   availableProviders,
   readOnly = false,
   onSelect,
+  onHostSignIn,
 }: ProviderInstanceGroupsProps) {
   const groups = groupByProvider(instances);
   return (
@@ -47,7 +54,14 @@ export function ProviderInstanceGroups({
           <ul className={CLASS.list}>
             {group.instances.map((instance) =>
               readOnly ? (
-                <InstanceRow key={instance.name} instance={instance} readOnly />
+                <InstanceRow
+                  key={instance.name}
+                  instance={instance}
+                  readOnly
+                  onHostSignIn={
+                    onHostSignIn !== undefined && supportsHostDeviceSignIn(instance) ? onHostSignIn : undefined
+                  }
+                />
               ) : (
                 <InstanceRow key={instance.name} instance={instance} onSelect={() => onSelect?.(instance.name)} />
               ),

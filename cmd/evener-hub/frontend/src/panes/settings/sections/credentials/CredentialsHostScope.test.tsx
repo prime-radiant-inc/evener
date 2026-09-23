@@ -1,9 +1,9 @@
-import type { HostRow, InstanceEntry } from "@evener/appwire-client";
+import type { HostForwardedResult, HostRequestParams, HostRow, InstanceEntry } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -13,7 +13,7 @@ import {
 import { hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { resetSettingsHostForTests } from "../../../../stores/settingsHost";
-import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsHostScope } from "./CredentialsHostScope";
 
 // The credentials settings surface's host scope (component 07b's read path made
@@ -61,6 +61,57 @@ const REPLACED_HOST_LIST = {
   instances: [instance({ name: "on-beta-replaced", providerId: "anthropic", authModes: ["apiKey"] })],
   availableProviders: [],
 };
+
+// The selected remote host's own Codex instance: the one provider whose sign-in
+// is the OpenAI device-code flow ("Sign in on host", component 07d).
+const REMOTE_CODEX_ROW = instance({
+  name: "codex",
+  providerId: "openai-codex",
+  protocol: "openai-responses",
+  auth: "oauth-openai-codex",
+  authModes: ["oauth"],
+});
+const CODEX_HOST_LIST = { instances: [REMOTE_CODEX_ROW], availableProviders: [] };
+const REMOTE_DEVICE_START = {
+  provider: "codex",
+  flowId: "flow-remote",
+  userCode: "REMOTE-CODE",
+  verificationUrl: "https://verify.example/codex",
+  intervalSeconds: 1,
+};
+const REMOTE_DEVICE_FALLBACK = {
+  provider: "codex",
+  flowId: "",
+  userCode: "",
+  verificationUrl: "",
+  intervalSeconds: 0,
+  fallback: true,
+};
+const REMOTE_POLL_AUTHORIZED = { state: "authorized" };
+const REMOTE_POLL_PENDING = { state: "pending" };
+
+// hostForwardedCalls reads back the params of every evener/host/request the
+// browser issued, so a test can pin WHICH host and WHICH method each carried.
+function hostForwardedCalls(fake: FakeClient): HostRequestParams[] {
+  return fake.calls
+    .filter((call) => call.method === "evener/host/request")
+    .map((call) => call.params as HostRequestParams);
+}
+
+function forwardedMethodCalls(fake: FakeClient, method: string): HostRequestParams[] {
+  return hostForwardedCalls(fake).filter((call) => call.method === method);
+}
+
+// A host/request handler that answers this host's listing plus the device RPCs
+// the sign-in drives, and fails loudly on anything else.
+function codexHostRequest(poll: () => { state: string }): (params: HostRequestParams) => HostForwardedResult {
+  return (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return REMOTE_DEVICE_START;
+    if (params.method === "evener/auth/device/poll") return poll();
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  };
+}
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -380,6 +431,208 @@ test("an error without a successful read shows no loading skeleton", async () =>
 
   expect(await screen.findByText(/host "beta" is not attached/)).toBeTruthy();
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Component 07d: "Sign in on host" - a remote Codex instance's device-code
+// sign-in, driven on the SELECTED host through evener/host/request.
+// ---------------------------------------------------------------------------
+
+test("offers 'Sign in on host' for a remote host's Codex instance, and never for this hub", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on(
+    "evener/host/request",
+    codexHostRequest(() => REMOTE_POLL_PENDING),
+  );
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByText("controller-only");
+  // This hub's own listing never offers it.
+  expect(screen.queryByRole("button", { name: "Sign in on host" })).toBeNull();
+
+  await user.selectOptions(select, "beta");
+  expect(await screen.findByRole("button", { name: "Sign in on host" })).toBeTruthy();
+
+  // Only for a remote host: back on this hub the affordance is gone.
+  await user.selectOptions(select, "local");
+  expect(screen.queryByRole("button", { name: "Sign in on host" })).toBeNull();
+});
+
+test("'Sign in on host' drives device/start and device/poll through evener/host/request for the selected host, showing the code and the URL", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on(
+    "evener/host/request",
+    codexHostRequest(() => REMOTE_POLL_AUTHORIZED),
+  );
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  // The start is forwarded to the selected host...
+  await vi.waitFor(() => {
+    expect(forwardedMethodCalls(fake, "evener/auth/device/start")).toEqual([
+      { host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } },
+    ]);
+  });
+  // ...and the plain, controller-scoped call is never issued for a remote host.
+  expect(fake.calls.some((call) => call.method === "evener/auth/device/start")).toBe(false);
+
+  // The user code and the verification URL are both on screen, so the sign-in
+  // can be completed on another device.
+  expect(await screen.findByText("REMOTE-CODE")).toBeTruthy();
+  expect(screen.getByText("https://verify.example/codex")).toBeTruthy();
+
+  // The poll is the same host-addressed call, at the flow's own interval.
+  await vi.waitFor(
+    () => {
+      expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toContainEqual({
+        host: "beta",
+        method: "evener/auth/device/poll",
+        params: { provider: "codex", flowId: "flow-remote" },
+      });
+    },
+    { timeout: 3000 },
+  );
+  expect(fake.calls.some((call) => call.method === "evener/auth/device/poll")).toBe(false);
+});
+
+test("a remote device flow stops polling on success and reports it on the host", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on(
+    "evener/host/request",
+    codexHostRequest(() => REMOTE_POLL_AUTHORIZED),
+  );
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  // Success closes the dialog and names the host it signed in on.
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 3000 });
+  expect(getToasts().some((toast) => toast.text === "Signed in on beta")).toBe(true);
+
+  const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  });
+  expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toHaveLength(polls);
+});
+
+test("a remote device flow stops polling on a terminal error and says so", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return REMOTE_DEVICE_START;
+    if (params.method === "evener/auth/device/poll") throw new Error("device auth failed with status 400");
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  // The refused poll is a real, named failure with a retry, never a silent wait.
+  await vi.waitFor(() => expect(screen.getByText("device auth failed with status 400")).toBeTruthy(), {
+    timeout: 3000,
+  });
+  expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
+
+  const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  });
+  expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toHaveLength(polls);
+});
+
+test("unmounting during a remote device flow stops polling", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on(
+    "evener/host/request",
+    codexHostRequest(() => REMOTE_POLL_PENDING),
+  );
+
+  const { unmount } = render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  await vi.waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(0), {
+    timeout: 3000,
+  });
+  unmount();
+  const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  });
+  expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toHaveLength(polls);
+});
+
+test("a host that offers no device flow surfaces a named failure instead of a dead end", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return REMOTE_DEVICE_FALLBACK;
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a refused remote device/start surfaces the host's own failure, never a silent wait", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") {
+      throw new WireError('host "beta" is not attached', -32000);
+    }
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  expect((await screen.findByRole("alert")).textContent).toContain('host "beta" is not attached');
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 // Medium (roborev): the partition map is keyed by NAME alone, so a host removed
