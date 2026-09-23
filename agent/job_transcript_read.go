@@ -70,7 +70,11 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 			if entry.Name() == filepath.Base(currentStateDir) {
 				continue
 			}
-			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || identifier.ValidateProjectID(entry.Name()) != nil {
+			// Skip symlinks and non-directories, but do NOT filter by
+			// ValidateProjectID — legacy- and foreign-named buckets hold real
+			// jobs, mirroring enumerateBuckets (PR #2163's agent-side
+			// counterpart).
+			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 				continue
 			}
 			stateDir := filepath.Join(projectsPath, entry.Name())

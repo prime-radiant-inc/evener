@@ -87,7 +87,7 @@ func (c *snippetCollector) add(s snippet) bool {
 // session_id, model, profile_id, created_at, has_transcript, and default_read
 // are intentionally absent.
 type sessionRecord struct {
-	TranscriptRef string    `json:"transcript_ref"`
+	TranscriptRef string    `json:"transcript_ref,omitempty"`
 	Kind          string    `json:"kind"`
 	Title         string    `json:"title"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -141,7 +141,11 @@ func formatSessionFindings(env findSessionsEnvelope) string {
 	}
 	var b strings.Builder
 	for i, m := range env.Matches {
-		fmt.Fprintf(&b, "%d. %s — %s\n", i+1, m.TranscriptRef, m.Title)
+		if m.TranscriptRef != "" {
+			fmt.Fprintf(&b, "%d. %s — %s\n", i+1, m.TranscriptRef, m.Title)
+		} else {
+			fmt.Fprintf(&b, "%d. (no ref) — %s\n", i+1, m.Title)
+		}
 		meta := fmt.Sprintf("   %s · ~%d turns · updated %s", m.Kind, m.ApproxTurns, m.UpdatedAt.Format("2006-01-02 15:04"))
 		if m.Project != "" {
 			meta += " · project " + m.Project

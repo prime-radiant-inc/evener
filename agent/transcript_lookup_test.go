@@ -312,7 +312,16 @@ func TestResolveTranscript_FlatStateDirBareIDOnly(t *testing.T) {
 	}
 }
 
-func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
+// TestResolveTranscript_CleanBreakLegacyLocalStateUnchanged verifies that a
+// local: ref into a legacy-named bucket resolves to the transcript in that
+// bucket (the local: path is bucket-relative and does not depend on the
+// bucket name passing ValidateProjectID), and that a proj: ref to the
+// clean-break bucket still works. It also asserts the legacy transcript file
+// is not modified by the lookup. The earlier "local:01ARZ..." sid used here
+// is a ULID-style id (26 chars) that fails ValidateSessionID (which requires
+// exactly 22 base62 chars), so the local: ref for it returns an error — that
+// error is from the session-id validation, not from bucket-name rejection.
+func TestResolveTranscript_CleanBreakLegacyLocalStateUnchanged(t *testing.T) {
 	t.Parallel()
 	stateHome := t.TempDir()
 	legacyBucket := filepath.Join(stateHome, "evener", "projects", "0123456789abcdef")
@@ -336,7 +345,7 @@ func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
 	writeTranscript(t, newBucket, cleanBreakSessionID)
 
 	if _, _, err := resolveTranscript("local:01ARZ3NDEKTSV4RRFFQ69G5FAV", legacyBucket, cleanBreakSessionID); err == nil {
-		t.Fatal("legacy local session unexpectedly resolved")
+		t.Fatal("local ref with invalid (ULID-length) session id unexpectedly resolved")
 	}
 	path, ref, err := resolveTranscript("proj:"+cleanBreakProjectID+":"+cleanBreakSessionID, newBucket, "")
 	if err != nil {
@@ -545,5 +554,77 @@ func TestFind_LegacyBucketSessionInAllProjects(t *testing.T) {
 	}
 	if projectID != filepath.Base(normalSibling) {
 		t.Fatalf("normal ref project = %q, want %q", projectID, filepath.Base(normalSibling))
+	}
+}
+
+// --- roborev fix round 1: RED tests ---
+
+// TestFind_LegacyBucketOmitsEmptyTranscriptRef asserts that a find result for
+// a session in a legacy-named bucket (whose name fails ValidateProjectID, so
+// refFor returns "") never surfaces an empty transcript_ref. The JSON wire
+// format must omit the field entirely (omitempty) — a model copying an empty
+// transcript_ref would silently read the current session via resolveTranscript.
+func TestFind_LegacyBucketOmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	// "0123456789abcdef": no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it.
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+
+	now := time.Now().UTC().Truncate(time.Second)
+	writeFindSession(t, legacy, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "legacy bucket session",
+		updated: now,
+	}, "legacy content")
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	matches := matchesFromEnvelope(t, decodeEnvelope(t, marshalFind(t, deps,
+		map[string]any{"scope": scopeAllProjects})))
+
+	var legacyMatch map[string]any
+	for _, m := range matches {
+		if title, _ := m["title"].(string); title == "legacy bucket session" {
+			legacyMatch = m
+		}
+	}
+	if legacyMatch == nil {
+		t.Fatalf("legacy bucket session not found in all_projects results; got %d matches", len(matches))
+	}
+
+	// transcript_ref must be absent (not "") when refFor returns empty.
+	if ref, ok := legacyMatch["transcript_ref"]; ok && ref == "" {
+		t.Fatal("transcript_ref is present but empty; must be omitted (omitempty) for legacy-named buckets")
+	}
+}
+
+// TestResolveTranscript_AmbiguousBareIDTwoLegacyBuckets asserts that when a
+// bare session id is found in two legacy-named sibling buckets (both fail
+// ValidateProjectID, so refFor returns "" for both), the ambiguity error
+// message names both bucket directories — mirroring the doctor's
+// locateAcrossBuckets which prints bucket names. Currently the candidate list
+// is empty because refFor returns "" for grammar-incompatible names.
+func TestResolveTranscript_AmbiguousBareIDTwoLegacyBuckets(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	// Both names are pure hex with no '-' separator, so ValidateProjectID
+	// rejects them.
+	legacy1 := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	legacy2 := filepath.Join(sh, "evener", "projects", "fedcba9876543210")
+	writeTranscript(t, legacy1, "02wMz5Txv5aIxgf9yVdd0N")
+	writeTranscript(t, legacy2, "02wMz5Txv5aIxgf9yVdd0N")
+
+	_, _, err := resolveTranscript("02wMz5Txv5aIxgf9yVdd0N", current, "02wMz5TxvEMoJEDTDGOTil")
+	if err == nil {
+		t.Fatal("expected ambiguity error for session in two legacy buckets")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "0123456789abcdef") {
+		t.Errorf("ambiguity error does not name legacy bucket 0123456789abcdef: %q", msg)
+	}
+	if !strings.Contains(msg, "fedcba9876543210") {
+		t.Errorf("ambiguity error does not name legacy bucket fedcba9876543210: %q", msg)
 	}
 }

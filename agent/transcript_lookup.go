@@ -114,7 +114,10 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 	case totalMatches == 0:
 		return "", "", fmt.Errorf("unknown session %q", selector)
 	case totalMatches > 1:
-		// Build candidate ref list for the error message.
+		// Build candidate ref list for the error message. When refFor
+		// returns "" (grammar-incompatible bucket name), include the
+		// bucket directory name so the message names every match —
+		// mirroring the doctor's locateAcrossBuckets (doctor/locate.go).
 		var candidates []string
 		if currentFound {
 			candidates = append(candidates, encodeRef("", selector))
@@ -122,6 +125,8 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		for _, bucket := range otherMatches {
 			if r := refFor(filepath.Base(bucket), selector); r != "" {
 				candidates = append(candidates, r)
+			} else {
+				candidates = append(candidates, filepath.Base(bucket))
 			}
 		}
 		return "", "", fmt.Errorf("session %q is ambiguous; candidate refs: %s",

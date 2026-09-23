@@ -257,6 +257,32 @@ func TestLocateLocalJobDoesNotReadUnrelatedSessionStores(t *testing.T) {
 	}
 }
 
+// TestLocateLocalJob_LegacyNamedSiblingBucket asserts that a job seeded in a
+// legacy-named sibling bucket (whose name fails ValidateProjectID) is
+// findable by locateLocalJob. The sibling sweep must not filter by
+// ValidateProjectID, matching enumerateBuckets (PR #2163's agent-side
+// counterpart). Currently the sweep at line 73 skips dirs whose name
+// ValidateProjectID rejects.
+func TestLocateLocalJob_LegacyNamedSiblingBucket(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	// "0123456789abcdef": no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it.
+	legacy := localJobProjectBucket(t, stateHome, "0123456789abcdef")
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, legacy, owner, jobID, "", "legacy job output\n", true)
+
+	loc, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("job in legacy-named sibling bucket not found: %v", err)
+	}
+	if filepath.Base(loc.StateDir) != "0123456789abcdef" {
+		t.Fatalf("located job in %q, want legacy bucket 0123456789abcdef", filepath.Base(loc.StateDir))
+	}
+}
+
 func TestReadLocalJobSnapshotIgnoresPersistedAbsoluteOutputPath(t *testing.T) {
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
