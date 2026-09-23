@@ -1571,6 +1571,265 @@ func TestHubRPCTurnStartPreflightDeletionStampsCallerID(t *testing.T) {
 	}
 }
 
+// TestMutationResumeFailureError pins the rule that decides what a mutation
+// reports when the resume it needed failed: a target deletion keeps its own
+// outcome and is named for this caller (an ID-LESS one stamped, one named in the
+// daemon's normalized form rewritten to the caller's own), while every other
+// resume failure keeps the blocked-unknown envelope untouched.
+func TestMutationResumeFailureError(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	deletion := func(id string) error {
+		return appwire.WireError{
+			Code:    appwire.CodeUnavailable,
+			Message: "target has been deleted: local:th",
+			Data: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+				ClientMutationID: id,
+				MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			},
+		}
+	}
+
+	cases := []struct {
+		name            string
+		callerID        string
+		resumeErr       error
+		wantID          string
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+	}{
+		{
+			name:            "an id-less resume deletion is stamped with the caller's verbatim id",
+			callerID:        verbatim,
+			resumeErr:       deletion(""),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "a resume deletion naming the caller's normalized id adopts the verbatim id",
+			callerID:        verbatim,
+			resumeErr:       deletion(normalized),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "a resume deletion naming a different mutation stays blocked-unknown",
+			callerID:        verbatim,
+			resumeErr:       deletion("some-other-mutation"),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+		},
+		{
+			name:            "an ordinary resume failure stays blocked-unknown",
+			callerID:        verbatim,
+			resumeErr:       appwire.InternalError("resume failed for an unrelated reason"),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+		},
+		{
+			name:      "an empty caller id hands the resume failure back unchanged",
+			callerID:  "",
+			resumeErr: appwire.InternalError("resume failed for an unrelated reason"),
+			wantID:    "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mutationResumeFailureError(tc.callerID, tc.resumeErr)
+			if tc.callerID == "" {
+				if !errors.Is(got, tc.resumeErr) {
+					t.Fatalf("an empty caller id must return the failure unchanged, got %v", got)
+				}
+				return
+			}
+			var wire appwire.WireError
+			if !errors.As(got, &wire) {
+				t.Fatalf("resume failure error %T=%v, want a WireError", got, got)
+			}
+			data := relayedWireDataMap(t, wire.Data)
+			if gotID, _ := data["clientMutationId"].(string); gotID != tc.wantID {
+				t.Fatalf("error names clientMutationId %q, want %q (wire=%+v)", gotID, tc.wantID, wire)
+			}
+			if gotOutcome, _ := data["mutationOutcome"].(string); gotOutcome != string(tc.wantOutcome) {
+				t.Fatalf("mutationOutcome=%q, want %q (wire=%+v)", gotOutcome, tc.wantOutcome, wire)
+			}
+			if gotDisposition, _ := data["retryDisposition"].(string); gotDisposition != string(tc.wantDisposition) {
+				t.Fatalf("retryDisposition=%q, want %q (wire=%+v)", gotDisposition, tc.wantDisposition, wire)
+			}
+		})
+	}
+}
+
+// TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome drives BOTH of
+// turn/start's own resume-failure sites: the post-attempt resume (the source's
+// startTurn fails session-unavailable, so the handler resumes after the attempt)
+// and the pre-dispatch resume (source resolution fails, so the handler resumes
+// before any attempt reached a source). A resume that fails because the target
+// was deleted must come back as that deletion, named for this caller; an ordinary
+// resume failure keeps blocked-unknown, and so does a deletion naming a different
+// mutation.
+func TestHubRPCTurnStartResumeFailureKeepsDeletionOutcome(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	deletion := func(id string) error {
+		return appwire.WireError{
+			Code:    appwire.CodeUnavailable,
+			Message: "target has been deleted: local:th",
+			Data: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorActionUnavailable,
+				ClientMutationID: id,
+				MutationOutcome:  appwire.MutationOutcomeTargetDeleted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			},
+		}
+	}
+
+	cases := []struct {
+		name string
+		// resolveErr, when set, fails source resolution so the handler resumes
+		// from the pre-dispatch site; otherwise the source's startTurn fails
+		// session-unavailable and the handler resumes after the attempt.
+		resolveErr      error
+		resumeErr       error
+		wantID          string
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+		wantStartCalls  int
+	}{
+		{
+			name:            "post-attempt resume failing on an id-less deletion keeps the deletion",
+			resumeErr:       deletion(""),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+			wantStartCalls:  1,
+		},
+		{
+			name:            "pre-dispatch resume failing on an id-less deletion keeps the deletion",
+			resolveErr:      appwire.SessionUnavailable("session has exited"),
+			resumeErr:       deletion(""),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+			wantStartCalls:  0,
+		},
+		{
+			name:            "a resume deletion naming the caller's normalized id adopts the verbatim id",
+			resumeErr:       deletion(normalized),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+			wantStartCalls:  1,
+		},
+		{
+			name:            "a resume deletion naming a different mutation stays blocked-unknown",
+			resumeErr:       deletion("some-other-mutation"),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+			wantStartCalls:  1,
+		},
+		{
+			name:            "an ordinary resume failure stays blocked-unknown",
+			resumeErr:       appwire.InternalError("resume failed for an unrelated reason"),
+			wantID:          verbatim,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+			wantStartCalls:  1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+			t.Cleanup(func() {
+				resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+			})
+
+			// The ref must be one the hub knows, or the handler returns the first
+			// failure unchanged and never resumes at all.
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + sessionID
+
+			startCalls := 0
+			source := &scriptedAppSource{
+				id: "local",
+				thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+					},
+				},
+				startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					startCalls++
+					return appwire.TurnStartResponse{}, appwire.SessionUnavailable("session has exited")
+				},
+			}
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+				if tc.resolveErr != nil {
+					return nil, tc.resolveErr
+				}
+				return source, nil
+			}
+			resumeCalls := 0
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				resumeCalls++
+				return appwire.ThreadResumeResponse{}, tc.resumeErr
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				Ref:              ref,
+				ClientMutationID: verbatim,
+				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+			})
+			if err == nil {
+				t.Fatal("turn/start reported success although the resume failed")
+			}
+			if resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", resumeCalls)
+			}
+			if startCalls != tc.wantStartCalls {
+				t.Fatalf("start calls=%d, want %d", startCalls, tc.wantStartCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+			}
+			data := relayedWireDataMap(t, wire.Data)
+			if gotID, _ := data["clientMutationId"].(string); gotID != tc.wantID {
+				t.Fatalf("error names clientMutationId %q, want %q: the client cannot correlate it (wire=%+v)", gotID, tc.wantID, wire)
+			}
+			if gotOutcome, _ := data["mutationOutcome"].(string); gotOutcome != string(tc.wantOutcome) {
+				t.Fatalf("mutationOutcome=%q, want %q (wire=%+v)", gotOutcome, tc.wantOutcome, wire)
+			}
+			if gotDisposition, _ := data["retryDisposition"].(string); gotDisposition != string(tc.wantDisposition) {
+				t.Fatalf("retryDisposition=%q, want %q (wire=%+v)", gotDisposition, tc.wantDisposition, wire)
+			}
+		})
+	}
+}
+
 // TestHubRPCTurnStartDirectRefusalKeepsPaddedCallerID drives a DIRECT refusal
 // (no resume in play) through turn/start with a padded caller id: the source's
 // startTurn refuses naming the id the daemon normalized, and the caller must get

@@ -125,7 +125,10 @@ func withSessionResume[R any](
 	if _, resumeErr := hubThreadAutoResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: ref}); resumeErr != nil {
 		var zero R
 		if clientMutationID != "" {
-			return zero, blockedUnknownMutationError(clientMutationID, resumeErr)
+			// A resume that failed because the target was deleted keeps that
+			// deletion's outcome, named for this caller, rather than being hidden
+			// behind blocked-unknown; see mutationResumeFailureError.
+			return zero, mutationResumeFailureError(clientMutationID, resumeErr)
 		}
 		return zero, resumeErr
 	}

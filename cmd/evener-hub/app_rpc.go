@@ -371,6 +371,42 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	}
 }
 
+// mutationResumeFailureError reports a resume failure the way the mutation that
+// needed the resume must see it.
+//
+// A resume that failed because the target was deleted is not an unknown outcome:
+// the target the caller's mutation was addressed to is gone, and that deletion is
+// this caller's to reconcile. The deletion therefore keeps its own meaning
+// (MutationOutcomeTargetDeleted / RetryDispositionNone) and is named for this
+// caller -- an ID-LESS one stamped with the caller's id (nameTargetDeletedFailure;
+// the resume fences carry no caller id, see resumeThreadLockedLaunch, so this is
+// the common shape) and one already named in the daemon's normalized form
+// rewritten to the caller's own (adoptCallerMutationID). Without that, a mutation
+// whose target was deleted between the failed attempt and the auto-resume would
+// come back unknown/blocked and its record would be retained rather than
+// reconciled as orphaned.
+//
+// Every other resume failure keeps exactly the blocked-unknown envelope it gets
+// today: the resume says nothing about whether the caller's own mutation was
+// applied, and a deletion that names a DIFFERENT mutation is not this caller's to
+// settle -- naming it would let this caller's dispatcher settle that other
+// caller's record as orphaned. Only a target deletion gets this treatment; no
+// other error acquires an id here.
+func mutationResumeFailureError(clientMutationID string, resumeErr error) error {
+	if clientMutationID == "" {
+		return resumeErr
+	}
+	if isTargetDeletedError(resumeErr) {
+		if errorNamesClientMutation(resumeErr, clientMutationID) {
+			return adoptCallerMutationID(resumeErr, clientMutationID)
+		}
+		if named := nameTargetDeletedFailure(clientMutationID, resumeErr); named != nil {
+			return named
+		}
+	}
+	return blockedUnknownMutationError(clientMutationID, resumeErr)
+}
+
 // canonicalMutationID returns the form two clientMutationId values are compared
 // in.
 //
@@ -1468,7 +1504,7 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(params.ClientMutationID, resumeErr)
 			}
 			return retryAfterResume()
 		}
@@ -1489,7 +1525,7 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+			return appwire.TurnStartResponse{}, mutationResumeFailureError(params.ClientMutationID, resumeErr)
 		}
 		return retryAfterResume()
 	})

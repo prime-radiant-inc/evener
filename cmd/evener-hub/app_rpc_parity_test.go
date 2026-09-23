@@ -726,6 +726,87 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 	}
 }
 
+// TestSessionResumeResumeDeletionFailureKeepsDeletionOutcome pins what
+// withSessionResume reports when the auto-resume its own retry needed fails
+// because the target was deleted.
+//
+// The target can be deleted between the first attempt's session-unavailable
+// failure and the auto-resume that failure triggered; the resume then fails on
+// the deletion fence with an error that names NO mutation (the hub's resume
+// fences carry no caller id -- see resumeThreadLockedLaunch). That deletion is
+// this caller's to reconcile, so it must come back keeping its own outcome
+// (targetDeleted / none) and carrying the caller's own, verbatim id, rather than
+// hidden behind the blocked-unknown envelope: the caller's mutation hit a
+// deleted target, and its record is reconciled as orphaned instead of retained.
+func TestSessionResumeResumeDeletionFailureKeepsDeletionOutcome(t *testing.T) {
+	const verbatim = " mutation-padded "
+
+	var sessionID string
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: params.Ref},
+			}}, nil
+		})
+	})
+	sessionID = sid
+	server, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer server.Close()
+	ref := "local:" + sessionID
+
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The store is wired empty: the first attempt's own deletion fence must pass so
+	// the attempt runs. The target is deleted from inside that attempt -- after its
+	// fence check and before the auto-resume it triggers reads it -- which is the
+	// window the finding describes.
+	cfg.DeletionStore = store
+
+	attempts := 0
+	_, err = withSessionResume(context.Background(), cfg, web.sources, ref, verbatim, func() (appwire.EmptyResponse, error) {
+		attempts++
+		if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+			Ref:      ref,
+			ThreadID: sessionID,
+		}}); err != nil {
+			t.Fatalf("record the deletion: %v", err)
+		}
+		// The first attempt finds the exited session and triggers the resume.
+		return appwire.EmptyResponse{}, appwire.SessionUnavailable("session has exited")
+	})
+	if err == nil {
+		t.Fatal("withSessionResume reported success although the resume failed")
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want 1 (the retry must not run after a failed resume)", attempts)
+	}
+	if *resumeCalls != 0 {
+		t.Fatalf("spawner resume calls=%d, want 0 (the deletion fence refuses before any launch)", *resumeCalls)
+	}
+
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("withSessionResume error %T=%v, want a WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeTargetDeleted || data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("outcome=%q retryDisposition=%q, want targetDeleted/none: a deleted target is reconcilable, not an unknown outcome (wire=%+v)",
+			data.MutationOutcome, data.RetryDisposition, wire)
+	}
+	if data.ClientMutationID != verbatim {
+		t.Fatalf("the deletion names clientMutationId %q, want the caller's verbatim %q: an unnamed deletion must be stamped, not left uncorrelated (wire=%+v)",
+			data.ClientMutationID, verbatim, wire)
+	}
+}
+
 // TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins that a retry
 // which fails source resolution is NOT, by itself, accepted as proof that the
 // whole mutation was rejected. The pre-dispatch rule is decided by the CONCRETE
