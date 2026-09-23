@@ -3089,7 +3089,7 @@ type ApiKeyConditionalSetParams struct {
 	// InstanceEntry.ActiveSource). The host re-resolves the source under its
 	// credential write lock and refuses a non-empty value that no longer
 	// matches; empty asserts no source fence. The resolved source also decides
-	// the classification (see AuthApiKeyConditionalSetResponse.Action).
+	// the classification (see ApiKeyConditionalSetResponse.Action).
 	ExpectedSource string `json:"expectedSource,omitempty"`
 	// ExpectedRevision is the ConfigRevision the client observed for Provider.
 	// The host re-resolves it under the same lock and refuses a non-empty value
@@ -3117,7 +3117,7 @@ const (
 
 // ApiKeyConditionalSetResponse is the result of
 // evener/auth/apiKey/conditionalSet. Action is one of the
-// AuthApiKeyConditionalSet* values, Reason is a human-readable explanation
+// ApiKeyConditionalSetAction* values, Reason is a human-readable explanation
 // (chiefly for a skip), and Status is the instance's post-write
 // AuthStatusResponse — the state the host resolved under the same lock, which a
 // skip leaves unchanged.

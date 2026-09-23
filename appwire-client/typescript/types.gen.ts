@@ -34,7 +34,7 @@ export interface ApiKeyConditionalSetParams {
    * InstanceEntry.ActiveSource). The host re-resolves the source under its
    * credential write lock and refuses a non-empty value that no longer
    * matches; empty asserts no source fence. The resolved source also decides
-   * the classification (see AuthApiKeyConditionalSetResponse.Action).
+   * the classification (see ApiKeyConditionalSetResponse.Action).
    */
   expectedSource?: string;
   /**
