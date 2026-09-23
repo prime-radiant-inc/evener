@@ -69,9 +69,34 @@ func TestGateScratchRootFallsBackToTMPDIR(t *testing.T) {
 }
 
 func TestGateScratchRootDefaultsToSlashTmpWithoutTMPDIR(t *testing.T) {
+	// The fallback must itself be able to execute (a noexec /tmp is refused,
+	// see TestGateScratchRootRefusesWhenNothingCanExecute), so this case is
+	// only meaningful on a host whose /tmp can.
+	if !dirCanExecute(t, "/tmp") {
+		t.Skip("/tmp cannot execute on this host")
+	}
 	if got := gateScratchRoot(t, "", filepath.Join(t.TempDir(), "absent"), "1"); got != "/tmp" {
 		t.Fatalf("gate_scratch_root = %q, want /tmp", got)
 	}
+}
+
+// dirCanExecute reports whether a script written to dir can run.
+func dirCanExecute(t *testing.T, dir string) bool {
+	t.Helper()
+	f, err := os.CreateTemp(dir, "exec-probe-")
+	if err != nil {
+		return false
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	_, err = f.WriteString("#!/bin/sh\nexit 0\n")
+	if closeErr := f.Close(); err != nil || closeErr != nil {
+		return false
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return false
+	}
+	return exec.Command(path).Run() == nil
 }
 
 // TestGateScratchRootRefusesANoexecCandidate pins the check Docker's default

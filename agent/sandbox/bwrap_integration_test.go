@@ -288,3 +288,33 @@ func TestBwrapReadOnlyDevShmWorkspaceIsRealAndReadOnly(t *testing.T) {
 		t.Errorf("a read-only sandbox accepted a write to its /dev/shm workspace:\n%s", out)
 	}
 }
+
+// A secret under /dev/shm stays hidden when its directory is re-bound into the
+// sandbox: here the fake home is itself the read-only workspace under
+// /dev/shm, so the cwd re-bind after --dev exposes it, and ~/.ssh must still be
+// masked on top of it.
+func TestBwrapMasksSecretsInsideADevShmWorkspace(t *testing.T) {
+	facts := requireRealBwrap(t)
+	home := devShmMainCheckout(t)
+	facts.Home = home
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519"), []byte("SHM-SECRET-KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "visible"), []byte("SHM-VISIBLE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, home, t.TempDir(),
+		`cat visible; echo; cat .ssh/id_ed25519 2>/dev/null; echo END`)
+	if err != nil {
+		t.Fatalf("read-only /dev/shm sandbox failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "SHM-VISIBLE") {
+		t.Fatalf("the re-bound /dev/shm workspace is not visible, so the mask is untested:\n%s", out)
+	}
+	if strings.Contains(out, "SHM-SECRET-KEY") {
+		t.Errorf("a secret under a re-bound /dev/shm workspace was readable in the sandbox:\n%s", out)
+	}
+}

@@ -338,3 +338,24 @@ func TestBuildBwrapArgvReadOnlyRebindsDevShmCwd(t *testing.T) {
 		t.Fatalf("read-only cwd under /dev/shm must be re-bound read-only after --dev (dev idx %d, rebind idx %d): %v", devIdx, rebindIdx, args)
 	}
 }
+
+// maskHandledByNamespace skips explicit masks only where a namespace mount
+// already hides the path. /dev/shm is not such a path: a read root under it is
+// re-bound after --dev, so its secrets need their masks.
+func TestMaskHandledByNamespaceExemptsOnlyTrulyHiddenPaths(t *testing.T) {
+	for path, handled := range map[string]bool{
+		"/proc":              true,
+		"/dev":               true,
+		"/dev/mem":           true,
+		"/dev/fd":            true,
+		"/dev/shm":           false,
+		"/dev/shm/work/.ssh": false,
+		"/home/someone/.ssh": false,
+		"/dev/shmother/x":    true,
+		"/tmp/work/.ssh":     false,
+	} {
+		if got := maskHandledByNamespace(path); got != handled {
+			t.Errorf("maskHandledByNamespace(%q) = %v, want %v", path, got, handled)
+		}
+	}
+}

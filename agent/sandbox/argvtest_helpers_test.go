@@ -57,6 +57,11 @@ func devShmMainCheckout(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	root = resolveCleanPath(root)
+	if !pathUnder(root, "/dev/shm") {
+		// /dev/shm is a symlink here (to /run/shm, say): --dev does not
+		// shadow the resolved path, so there is no /dev/shm workspace to test.
+		t.Skipf("/dev/shm resolves to %q on this host; no /dev/shm-based workspace exists", root)
+	}
 	contractGitRunnerFor(t)(t, root, "init", "-q")
 	return root
 }
