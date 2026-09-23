@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -318,31 +319,43 @@ func instanceIdentity(r *registry.Registry, name string) string {
 }
 
 // CredentialConfigRevision returns name's effective credential-configuration
-// revision: a stable, non-reversible digest over the configuration a
-// conditional credential write is fenced against (design §07 "credential
-// push"). It is derived from the same registry snapshot a credential write
-// re-resolves under the credential lock, so a client that captured it from a
-// read-only evener/auth/status or evener/instance/list answer can echo it back
-// as ApiKeyConditionalSetParams.ExpectedRevision and have the host refuse the
+// revision: a stable, keyed MAC over the configuration a conditional credential
+// write is fenced against (design §07 "credential push"). It is derived from
+// the same registry snapshot a credential write re-resolves under the
+// credential lock, so a client that captured it from a read-only
+// evener/auth/status or evener/instance/list answer can echo it back as
+// ApiKeyConditionalSetParams.ExpectedRevision and have the host refuse the
 // write when anything it covers has changed since. It covers the instance's
 // structural identity (provider, protocol, surface), the endpoint it routes to
 // (base URL and models endpoint), the credential source that resolves, and the
-// credential-header names in force. It deliberately does NOT hash the secret
+// credential-header names in force. It deliberately does NOT cover the secret
 // value: it must not let a reader tell one stored key from another (design's
 // "Honest limitation"), and every source transition it needs to fence — none
 // to store, providers.toml, or the environment — is already a change to the
-// resolved source. Empty for a name the registry cannot resolve: there is
-// nothing to fence, and the empty value is what a client reads as "no revision
-// fence".
-func CredentialConfigRevision(r *registry.Registry, name string) string {
-	if r == nil || strings.TrimSpace(name) == "" {
+// resolved source.
+//
+// key is the hub-held secret the endpoint fingerprints are already keyed with
+// (fingerprintWithKey): the MAC is what keeps a reader who can see the revision
+// from recovering a secret the covered configuration carries. The destination
+// half covers the base URL's userinfo and query string, which a listing strips
+// because a short token or a password in either can be low-entropy, and an
+// unkeyed digest of a guessable secret is a guessable function of it. An empty
+// key (this hub could not resolve one) yields no revision, exactly as it yields
+// no fingerprint; the credential write that would fence on it then refuses
+// rather than reading the empty value as "no fence"
+// (hubAuthController.verifyConfigRevision). Empty for a name the registry
+// cannot resolve too: there is nothing to fence, and the empty value is what a
+// client reads as "no revision fence" where the hub has no state root to key
+// with at all.
+func CredentialConfigRevision(key []byte, r *registry.Registry, name string) string {
+	if len(key) == 0 || r == nil || strings.TrimSpace(name) == "" {
 		return ""
 	}
 	res, err := r.ResolveInstance(name)
 	if err != nil {
 		return ""
 	}
-	return CredentialConfigRevisionResolved(res)
+	return CredentialConfigRevisionResolved(key, res)
 }
 
 // DestinationIdentity is where a resolved instance's credential-bearing
@@ -357,9 +370,10 @@ func CredentialConfigRevision(r *registry.Registry, name string) string {
 //
 // It has two consumers, and they must not drift: the listing's endpoint
 // fingerprint digests a keyed MAC of it (the hub's own destinationFingerprint),
-// and CredentialConfigRevisionResolved hashes it into the revision the
-// credential push fences against. Sharing this one function is what keeps the
-// revision covering every field the fingerprint covers.
+// and CredentialConfigRevisionResolved MACs it, with the same hub-held key,
+// into the revision the credential push fences against. Sharing this one
+// function is what keeps the revision covering every field the fingerprint
+// covers.
 func DestinationIdentity(resolved registry.Resolved) string {
 	t := resolved.Transport
 	return strings.Join([]string{
@@ -377,10 +391,10 @@ func DestinationIdentity(resolved registry.Resolved) string {
 // field of the same row - the instances listing's endpoint fingerprint, say -
 // does not resolve the name a second time. It contributes exactly what the
 // resolving form contributes: the same fields, in the same order, with the same
-// separators, so the two agree byte for byte on the same resolution. An
-// unresolved Resolved (no instance name) has no revision, matching the empty
-// string CredentialConfigRevision returns for a name the registry cannot
-// resolve.
+// separators, and the same keyed MAC, so the two agree byte for byte on the
+// same resolution. An unresolved Resolved (no instance name) has no revision,
+// matching the empty string CredentialConfigRevision returns for a name the
+// registry cannot resolve or a hub key that is unavailable.
 //
 // The revision is the credential push's only no-clobber fence: the conditional
 // set it calls checks no endpoint fingerprint of its own, so everything that
@@ -389,28 +403,34 @@ func DestinationIdentity(resolved registry.Resolved) string {
 // digests) and AuthHeader the rest, because the header a scheme writes decides
 // both where the key goes and - when the instance authors that same header
 // through credential_headers - whether the scheme derives from it at all.
-func CredentialConfigRevisionResolved(res registry.Resolved) string {
-	if strings.TrimSpace(res.Instance) == "" {
+//
+// It is a keyed MAC, not a bare digest: a destination can carry a secret in a
+// part a listing strips (base_url's userinfo or query string), and a reader who
+// can see the revision could otherwise recover a low-entropy secret from it
+// offline. key is the same hub-held secret the endpoint fingerprints use
+// (fingerprintWithKey); an empty key yields no revision.
+func CredentialConfigRevisionResolved(key []byte, res registry.Resolved) string {
+	if len(key) == 0 || strings.TrimSpace(res.Instance) == "" {
 		return ""
 	}
-	sum := sha256.New()
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "instance", res.Instance)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "provider", res.ProviderID)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "protocol", res.Protocol)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "surface", res.Surface)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "auth", res.Transport.Auth)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "authHeader", res.Transport.AuthHeader)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "destination", DestinationIdentity(res))
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "source", res.Credential.Source)
+	mac := hmac.New(sha256.New, key)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "instance", res.Instance)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "provider", res.ProviderID)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "protocol", res.Protocol)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "surface", res.Surface)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "auth", res.Transport.Auth)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "authHeader", res.Transport.AuthHeader)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "destination", DestinationIdentity(res))
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "source", res.Credential.Source)
 	// The authored layer that resolved to nothing is part of the configuration
 	// even though it moves the source to "none": an instance that authors a
 	// credential whose variables are unset is not the same instance as one that
 	// authors nothing, and it is the difference between "a stored key would be
 	// sent" and "a stored key is dead". The value is the layer's name, never its
 	// variable or a secret.
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "authoredLayer", res.Credential.AuthoredLayer)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
-	return hex.EncodeToString(sum.Sum(nil))
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "authoredLayer", res.Credential.AuthoredLayer)
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // authFingerprint hashes the resolved authentication material

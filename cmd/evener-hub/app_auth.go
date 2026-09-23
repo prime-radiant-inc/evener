@@ -306,22 +306,30 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 // taking credMu here cannot recurse; the listing, which already holds the
 // shared side, calls statusLocked instead.
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	// The revision served with the status is keyed with the hub's endpoint
+	// fingerprint key, resolved before credMu is taken: resolving can repair the
+	// key file (an inter-process lock and a write), and a repair under the lock
+	// would stall every credential op behind it. A hub with no key serves no
+	// revision, and the write that would fence on it refuses (verifyConfigRevision).
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	c.credMu.RLock()
 	defer c.credMu.RUnlock()
-	return c.statusLocked(params)
+	return c.statusLocked(params, key)
 }
 
 // statusLocked is Status's body for a caller that already holds credMu's shared
 // side - the listing, whose one snapshot answers many statuses at once. It must
-// not take credMu itself.
-func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+// not take credMu itself. key is the fingerprint key the caller resolved before
+// taking the lock; it keys the revision this answer serves and must not be
+// resolved here, because a resolution can repair the key file under the lock.
+func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams, key []byte) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 	r := c.registry()
 	if r == nil {
 		return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil
 	}
 	if inst, ok := r.Instance(name); ok {
-		return c.instanceStatus(inst), nil
+		return c.instanceStatusKeyed(key, inst), nil
 	}
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
 		res, err := r.ResolveInstance(name)
@@ -329,7 +337,7 @@ func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams) (appwi
 			//nolint:nilerr // a provider the registry cannot resolve is reported as unsupported, which is the answer, not an RPC failure
 			return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil
 		}
-		return c.instanceStatus(registry.Instance{
+		return c.instanceStatusKeyed(key, registry.Instance{
 			Name:             name,
 			ProviderID:       name,
 			Protocol:         res.Protocol,
@@ -704,6 +712,11 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 	// HasStoredFile true. Everything below (statusLocked, instanceStatus, the
 	// registry snapshot) reads the credential store's own mutex and files,
 	// never credMu, so taking it here cannot recurse.
+	// The revision key is resolved once, before the lock, for the same reason
+	// the instances listing resolves one there: a resolution can repair the key
+	// file, and a repair under credMu would stall every credential writer. Every
+	// row of this listing is keyed the same way.
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	c.credMu.RLock()
 	defer c.credMu.RUnlock()
 	out := appwire.AuthListResponse{}
@@ -717,7 +730,7 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 		if !ok || !registry.BoolValue(p.Implicit) {
 			continue
 		}
-		status, err := c.statusLocked(appwire.AuthStatusParams{Provider: id})
+		status, err := c.statusLocked(appwire.AuthStatusParams{Provider: id}, key)
 		if err != nil {
 			return appwire.AuthListResponse{}, err
 		}
@@ -729,7 +742,7 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 			continue
 		}
 		listed[inst.Name] = true
-		out.Providers = append(out.Providers, c.instanceStatus(inst))
+		out.Providers = append(out.Providers, c.instanceStatusKeyed(key, inst))
 	}
 	return out, nil
 }
@@ -838,6 +851,13 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		return appwire.ApiKeyConditionalSetResponse{}, appwire.InvalidParams("value is required")
 	}
 	resp := appwire.ApiKeyConditionalSetResponse{}
+	// The revision fence is keyed with the same hub-held key the endpoint
+	// fingerprints use, resolved once here before the credential lock is taken:
+	// resolving can repair the key file (an inter-process lock and a write), and
+	// a repair while credMu is held would stall every listing and credential op.
+	// One key for the whole write, so the fence is checked against the key the
+	// caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	applied, err := c.credentialWriteConditional(func() (bool, error) {
 		// The registry that resolved inst travels with it: the revision fence
 		// and the classification both have to describe the same generation of
@@ -858,9 +878,9 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		// rows use, and CredentialConfigRevisionResolved contributes exactly
 		// what CredentialConfigRevision would for this resolution.
 		resolved, resolvedOK := resolvedRowInstance(r, inst)
-		current := hubcore.CredentialConfigRevisionResolved(resolved)
-		if params.ExpectedRevision != "" && params.ExpectedRevision != current {
-			return false, appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
+		current := c.credentialConfigRevisionForKey(key, inst.Name, resolved)
+		if err := c.verifyConfigRevision(name, params.ExpectedRevision, current, keyErr); err != nil {
+			return false, err
 		}
 		// The scheme is classified before the source fence, because that fence
 		// guards the credential layer the write would land in and a scheme that
@@ -1348,6 +1368,37 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 	return nil
 }
 
+// verifyConfigRevision refuses a conditional credential write whose client
+// captured a configuration revision the host no longer matches, and refuses to
+// fence at all while the hub cannot key a revision it has a state root for.
+//
+// An empty assertion is a client that was shown no revision. A hub with no state
+// root at all - a bare controller - has nothing to key with, so an empty
+// assertion is the only thing it can carry, and it is accepted. A state root
+// that exists but cannot be read or written is the state that serves empty
+// revisions to every client, and accepting the assertions that follow would let
+// the conditional set write with no fence at all: there the write fails closed
+// with a refusal the user can act on, exactly as verifyEndpointFingerprintWithKey
+// fails an empty endpoint assertion closed. current is the keyed revision
+// (credentialConfigRevisionForKey), empty when the hub has no key or the name
+// does not resolve; a non-empty assertion against either is refused too. keyErr
+// is the failed key resolution that the empty assertion is refused for.
+func (c *hubAuthController) verifyConfigRevision(name, asserted, current string, keyErr error) error {
+	if asserted == "" {
+		if keyErr != nil {
+			return appwire.Conflict(name + " cannot be checked against the configuration this credential was prepared for: the hub cannot key its credential-configuration revision right now, so its configuration cannot be verified; re-read the instance and start the push again")
+		}
+		return nil
+	}
+	if current == "" {
+		return appwire.Conflict(name + " cannot be checked against the configuration this credential was prepared for: the hub cannot resolve it now; re-read the instance and start the push again")
+	}
+	if current != asserted {
+		return appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
+	}
+	return nil
+}
+
 // verifyFlowEndpoint refuses a sign-in flow whose instance no longer resolves
 // to the endpoint the flow was started for. The flow's own exchange is a
 // browser round trip long, and an edit that re-points base_url keeps the auth
@@ -1483,8 +1534,16 @@ func (c *hubAuthController) requiresCodex(name string) error {
 // fingerprint) passes that resolution so the revision is not derived from a
 // second ResolveInstance of the same name.
 func (c *hubAuthController) instanceStatus(inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	return c.instanceStatusKeyed(key, inst, resolved...)
+}
+
+// instanceStatusKeyed is instanceStatus over a key the caller already resolved,
+// for a caller that holds credMu (Status, List, the listing's own rows) and must
+// not resolve - and possibly repair - the key file under it.
+func (c *hubAuthController) instanceStatusKeyed(key []byte, inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
 	if inst.Auth == registry.AuthOAuthOpenAICodex {
-		resp, _ := c.openAIInstanceStatus(inst.Name, resolved...)
+		resp, _ := c.openAIInstanceStatusKeyed(key, inst.Name, resolved...)
 		return resp
 	}
 	_, hasFile := c.storedKey(inst.Name)
@@ -1508,21 +1567,28 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance, resolved ...r
 		ShadowedEnvVar: inst.ShadowedEnvVar,
 		// The revision the credential push fences its conditional set against,
 		// resolved from the same snapshot instanceStatus answers the source from
-		// (see hubcore.CredentialConfigRevision), or from the caller's own
-		// resolution when it has one.
-		ConfigRevision: c.credentialConfigRevision(inst.Name, resolved...),
+		// (see hubcore.CredentialConfigRevision), keyed with the caller's key, or
+		// from the caller's own resolution when it has one.
+		ConfigRevision: c.credentialConfigRevisionForKey(key, inst.Name, resolved...),
 	}
 }
 
-// credentialConfigRevision is the effective credential-configuration revision
-// for name, over a resolution the caller already holds when it has one. With no
+// credentialConfigRevisionForKey is the effective credential-configuration
+// revision for name, over a key the caller already resolved and a resolution it
+// already holds when it has one. It is keyed with the same hub-held secret the
+// endpoint fingerprints use (fingerprintWithKey): the listing and the status
+// reads resolve one key before taking credMu - a resolution can repair the key
+// file, and a repair under the lock would stall every credential op - and
+// thread it down here. An empty key yields no revision
+// (hubcore.CredentialConfigRevisionResolved); the credential write fences on
+// that with verifyConfigRevision rather than reading it as no fence. With no
 // resolution it resolves the name itself, which is what the single-instance
-// callers (Status, a post-write status read) want.
-func (c *hubAuthController) credentialConfigRevision(name string, resolved ...registry.Resolved) string {
+// callers (a post-write status read) want.
+func (c *hubAuthController) credentialConfigRevisionForKey(key []byte, name string, resolved ...registry.Resolved) string {
 	if len(resolved) > 0 {
-		return hubcore.CredentialConfigRevisionResolved(resolved[0])
+		return hubcore.CredentialConfigRevisionResolved(key, resolved[0])
 	}
-	return hubcore.CredentialConfigRevision(c.registry(), name)
+	return hubcore.CredentialConfigRevision(key, c.registry(), name)
 }
 
 // openAIInstanceStatusByName is openAIInstanceStatus in statusAfterWrite's
@@ -1538,6 +1604,14 @@ func (c *hubAuthController) openAIInstanceStatusByName(name string) (appwire.Aut
 // resolved name passes that resolution so the revision is not recomputed from a
 // second resolution.
 func (c *hubAuthController) openAIInstanceStatus(name string, resolved ...registry.Resolved) (appwire.AuthStatusResponse, error) {
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	return c.openAIInstanceStatusKeyed(key, name, resolved...)
+}
+
+// openAIInstanceStatusKeyed is openAIInstanceStatus over a key the caller
+// already resolved, for the same credential-lock reason instanceStatusKeyed
+// exists.
+func (c *hubAuthController) openAIInstanceStatusKeyed(key []byte, name string, resolved ...registry.Resolved) (appwire.AuthStatusResponse, error) {
 	record, err := c.loadAuth(c.stateDir, name)
 	hasRecord := false
 	switch {
@@ -1583,9 +1657,10 @@ func (c *hubAuthController) openAIInstanceStatus(name string, resolved ...regist
 		NeedsLogin:    active.NeedsLogin,
 		HasStoredFile: hasFile,
 		// An OAuth record is this instance's credential configuration; the
-		// revision is resolved here as it is for every other scheme, reusing a
-		// resolution the caller already made when it has one.
-		ConfigRevision: c.credentialConfigRevision(name, resolved...),
+		// revision is resolved here as it is for every other scheme, keyed with
+		// the caller's key and reusing a resolution the caller already made when
+		// it has one.
+		ConfigRevision: c.credentialConfigRevisionForKey(key, name, resolved...),
 	}
 	if hasRecord {
 		status.HasStoredOAuth = true

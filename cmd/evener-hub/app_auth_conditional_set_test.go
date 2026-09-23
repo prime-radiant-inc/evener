@@ -439,6 +439,82 @@ func TestAuth_InstanceEntryExposesConfigRevision(t *testing.T) {
 	}
 }
 
+// TestAuth_ConfigRevisionIsKeyedWithTheHubKey pins the H1 fix: the revision the
+// credential push fences against is a keyed MAC over the configuration, not a
+// bare digest. The configuration's destination half can carry a secret in a
+// part a listing strips - a password in userinfo, a short query-string token in
+// base_url - and an unkeyed digest of a guessable secret is a guessable
+// function of it, so a reader who can see the revision could recover the secret
+// offline. The property that separates keyed from unkeyed: a bare digest of one
+// configuration is one value, while a keyed MAC follows the hub's key.
+func TestAuth_ConfigRevisionIsKeyedWithTheHubKey(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	// The revision is keyed with the same hub-held key the endpoint fingerprints
+	// use, resolved through the same seam, so a fixed key here is a fixed hub key.
+	prev := resolveEndpointFingerprintKey
+	t.Cleanup(func() { resolveEndpointFingerprintKey = prev })
+	revisionWithKey := func(key []byte) string {
+		resolveEndpointFingerprintKey = func(string) ([]byte, error) { return key, nil }
+		status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work-ant"})
+		if err != nil {
+			t.Fatalf("Status(work-ant): %v", err)
+		}
+		return status.ConfigRevision
+	}
+
+	first := revisionWithKey([]byte("hub-key-one"))
+	if first == "" {
+		t.Fatal("ConfigRevision is empty for a resolvable instance under a usable key")
+	}
+	if again := revisionWithKey([]byte("hub-key-one")); again != first {
+		t.Fatalf("ConfigRevision moved for one unchanged configuration under one key: %q then %q", first, again)
+	}
+	if other := revisionWithKey([]byte("hub-key-two")); other == first {
+		t.Fatalf("ConfigRevision is identical under two different hub keys (%q): it is not keyed, so a secret in the destination it covers is brute-forceable from the served value", first)
+	}
+}
+
+// TestAuth_ConditionalSetRefusesWhenTheRevisionKeyIsUnavailable pins the other
+// half of H1: an empty revision means "no revision fence" to a client, so a hub
+// that cannot key its revision must NOT answer that way and then accept the
+// writes that follow. With a state root that cannot yield its key the host
+// serves no revision (the same key powers the endpoint fingerprint, whose
+// absence the listing already diagnoses) and the conditional set refuses a
+// write - whether the client asserted a stale revision or nothing at all -
+// rather than landing the key in an unverifiable configuration.
+func TestAuth_ConditionalSetRefusesWhenTheRevisionKeyIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	unkeyableStateRoot(t, stateDir)
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work-ant"})
+	if err != nil {
+		t.Fatalf("Status(work-ant): %v", err)
+	}
+	if status.ConfigRevision != "" {
+		t.Fatalf("ConfigRevision = %q, want empty when the hub cannot key its revision", status.ConfigRevision)
+	}
+
+	for _, expected := range []string{"", "a-revision-from-an-older-read"} {
+		_, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+			Provider:         "work-ant",
+			Value:            "sk-must-not-land",
+			ExpectedRevision: expected,
+		})
+		if err == nil {
+			t.Fatalf("ApiKeyConditionalSet landed a key with no usable revision key (ExpectedRevision=%q)", expected)
+		}
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	if value, ok := loadStoredKey(t, dir, "work-ant"); ok {
+		t.Fatalf("stored key = %q, want nothing written while the revision cannot be keyed", value)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Requirement 1: the conditional set writes only when permitted, under the lock.
 // ─────────────────────────────────────────────────────────────────────────────

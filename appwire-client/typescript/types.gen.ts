@@ -286,14 +286,19 @@ export interface AuthStatusResponse {
   error?: string;
   /**
    * ConfigRevision is this instance's effective credential-configuration
-   * revision: a stable, non-reversible digest the host re-resolves from the
-   * same state a credential write lands in (cmd/evener-hub/app_auth.go +
-   * hubcore.CredentialConfigRevision). The remote credential push captures it
-   * from this read and echoes it as
+   * revision: a stable, keyed MAC the host re-resolves from the same state a
+   * credential write lands in (cmd/evener-hub/app_auth.go +
+   * hubcore.CredentialConfigRevision). It is keyed with the hub-held secret
+   * the endpoint fingerprints use, so a reader who can see it cannot recover a
+   * secret the covered destination carries - a base URL can hold one in its
+   * userinfo or query string, which this field must not expose. The remote
+   * credential push captures it from this read and echoes it as
    * ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
    * write prepared against a configuration that has since changed. It is
    * deliberately empty (JSON-omitted) when the host cannot resolve the
-   * instance: the zero value asserts no revision fence, and the source fence
+   * instance or cannot key a revision: the zero value asserts no revision
+   * fence to a client, but a host that cannot key one refuses the conditional
+   * set rather than reading that zero as permission, and the source fence
    * still applies.
    */
   configRevision?: string;

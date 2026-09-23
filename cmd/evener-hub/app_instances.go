@@ -260,7 +260,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 	// nil controller.
 	var status appwire.AuthStatusResponse
 	if c.auth != nil {
-		status = c.auth.instanceStatus(inst, resolved)
+		status = c.auth.instanceStatusKeyed(key, inst, resolved)
 	}
 	entry := appwire.InstanceEntry{
 		Name:                inst.Name,
