@@ -473,3 +473,96 @@ func TestHostPushCredentials_ServedOverHubRPC(t *testing.T) {
 		t.Fatalf("conditionalSet calls = %d, want 1", n)
 	}
 }
+
+// TestHostPushCredentials_ReportNeverCarriesTheKeyValue pins the invariant the
+// push's doc and spec criterion 7 (07-remote-admin.md: "No key value appears in
+// the push response, controller logs, or errors") state: no key value reaches
+// the response. It drives every non-success path the harness can produce with a
+// value in flight - a refused conditional set (the fence), an unreadable status,
+// a skipped entry - and marshals the WHOLE response, so a field added later is
+// covered by construction rather than by remembering to extend a field list.
+func TestHostPushCredentials_ReportNeverCarriesTheKeyValue(t *testing.T) {
+	// Distinctive on purpose: a value short or guessable could pass this by
+	// coincidence inside some unrelated field.
+	const marker = "vbt9Qm2Xr7Lp4Kd8Ns3Zf6Hw1Yc5Jt0Bg7Ru2Ea9Pi4Ol6Dd"
+
+	store := newTestCredentialsStore(t)
+	for _, name := range []string{"written", "refused", "unreadable", "orphan"} {
+		if err := store.Set(name, marker+"-"+name); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			// "orphan" is deliberately absent: no counterpart on the host.
+			return hostAdminReply{result: appwire.InstanceListResponse{
+				Instances: []appwire.InstanceEntry{{Name: "written"}, {Name: "refused"}, {Name: "unreadable"}},
+			}}
+		case appwire.MethodEvenerAuthStatus:
+			if providerOf(t, params) == "unreadable" {
+				wire := appwire.Unavailable("host could not read the instance status")
+				return hostAdminReply{wireErr: &wire}
+			}
+			return statusReply("store", "rev")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			var decoded appwire.ApiKeyConditionalSetParams
+			if err := json.Unmarshal(params, &decoded); err != nil {
+				t.Fatalf("decode conditionalSet params: %v", err)
+			}
+			if decoded.Provider == "refused" {
+				wire := appwire.Conflict("refused changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
+				return hostAdminReply{wireErr: &wire}
+			}
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{
+				Action: appwire.ApiKeyConditionalSetActionAdded,
+				Reason: "added",
+				Status: appwire.AuthStatusResponse{Provider: decoded.Provider, ActiveSource: "store"},
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	// Every path ran: added, two failures, one skip. A run that silently skipped
+	// everything would make the hygiene assertion below vacuous.
+	if got := resultFor(t, resp, "written").Action; got != appwire.HostCredentialPushAdded {
+		t.Fatalf("written = %q, want added", got)
+	}
+	if got := resultFor(t, resp, "refused").Action; got != appwire.HostCredentialPushFailed {
+		t.Fatalf("refused = %q, want failed", got)
+	}
+	if got := resultFor(t, resp, "unreadable").Action; got != appwire.HostCredentialPushFailed {
+		t.Fatalf("unreadable = %q, want failed", got)
+	}
+	if got := resultFor(t, resp, "orphan").Action; got != appwire.HostCredentialPushSkipped {
+		t.Fatalf("orphan = %q, want skipped", got)
+	}
+
+	// Positive control: the marker really did cross the wire, as the conditional
+	// set's Value, so its absence from the response is not "nothing was pushed".
+	var carried bool
+	for _, params := range countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet) {
+		if strings.Contains(string(params), marker) {
+			carried = true
+		}
+	}
+	if !carried {
+		t.Fatalf("the marker never reached the conditional set; the hygiene assertion would be vacuous")
+	}
+
+	// The whole report, as a client would receive it.
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(encoded), marker) {
+		t.Fatalf("the push response carries a key value:\n%s", encoded)
+	}
+}
