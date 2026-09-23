@@ -862,6 +862,63 @@ func TestScratchBorrowReportsDeclinedWhenRetirementSealsThePool(t *testing.T) {
 	}
 }
 
+// TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach pins round
+// 33's first Medium: the seal and the detach are separate pool-lock
+// acquisitions in every release path, so a wrapper borrow can interleave in
+// the window between them — the pool is sealed but still attached. The
+// declined borrow must report not-installed there too: an adoption that
+// proceeds on its pre-seal snapshot runs with the shared allocation silently
+// missing.
+func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01BORROWSEAL2"
+	const bindingID = "b-borrow-pre-detach"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	wrapperRow := bindingRow
+	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The borrow runs inside the seal-to-detach window: the pool is sealed
+	// but still attached, so a pointer-only liveness re-check reads it as live.
+	s.cfg.testOnly.scratchAdoptionBeforeBorrow = func() {
+		s.sealRetainedScratch()
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the wrapper binding over the sealed pool: %v", err)
+	}
+	if installed {
+		t.Fatalf("the adoption reported an install over the sealed-but-attached pool: the seal-to-detach window left the shared allocation silently missing")
+	}
+	// The pool is still attached — the decline must have come from the seal,
+	// not a vanished pointer.
+	if s.retainedScratch.Load() == nil {
+		t.Fatal("fixture: the pool detached before the borrow ran")
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) == filepath.Clean(retainedDir) {
+		t.Fatalf("the adoption borrowed the sealed %q", retainedDir)
+	}
+}
+
 // TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows pins round 24's
 // first Medium: the refresh declined on a released manifest without clearing
 // the pool, so the adoption seam reading the pool right below it served the

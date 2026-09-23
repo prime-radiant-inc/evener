@@ -542,6 +542,38 @@ it("useConnectionDisplay: a hub move while ready does not retain content the nex
 	expect(display.result.current).toBe("wall");
 });
 
+// Round 33's retention Medium: the hub move and the genuine transition into
+// ready can land in ONE committed render — the connection re-points and
+// reports ready together — and that is the new hub's own readiness, not the
+// stale re-key shape the move gate exists to refuse. The screen it shows must
+// retain through the next flap like any other genuinely-ready hub.
+it("useConnectionDisplay: a hub move that lands with a genuine ready transition retains the screen", () => {
+	let hubId = "hub-1";
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	// Mount-already-ready: the settle earns trust and retention for hub-1.
+	display.rerender();
+	expect(display.result.current).toBe("none");
+
+	// hub-1's connection drops, then re-points to hub-2 and becomes ready in
+	// one committed render: the moved render carries the transition itself.
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("banner");
+	hubId = "hub-2";
+	state = "ready";
+	display.rerender();
+	// The moved render walls on the not-yet-settled trust; the transition
+	// earns it and the settle shows.
+	expect(display.result.current).toBe("none");
+
+	// The reconnect: hub-2 genuinely showed its screen, so the flap retains
+	// it behind a banner instead of walling.
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("banner");
+});
+
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
 	const handler = vi.fn();
 	whenReady(() => false, handler)("a", 1);

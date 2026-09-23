@@ -1518,13 +1518,17 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				return false, nil, err
 			}
 			if !installed {
-				// The borrow declined. A pool that detached mid-window makes the
-				// whole adoption's report the detached-pool one so the caller
-				// reprovisions fresh scratch (round 18); any other decline —
-				// sealed, or a directory the collector may take — leaves this
-				// kind to fresh scratch and the row naming a directory a later
-				// refresh can re-probe (round 32).
-				if s.retainedScratch.Load() != pool {
+				// The borrow declined. A pool that sealed or detached
+				// mid-window is dying — the seal and the detach are separate
+				// pool-lock acquisitions in every release path, so the borrow
+				// can interleave between them — and the whole adoption's
+				// report becomes the not-installed one so the caller
+				// reprovisions fresh scratch instead of proceeding on the
+				// pre-seal snapshot with the allocation missing (rounds 18
+				// and 33). A directory the collector may take leaves this
+				// kind to fresh scratch with the row intact for a later
+				// refresh to re-probe.
+				if s.retainedScratchSealed.Load() || s.retainedScratch.Load() != pool {
 					return false, nil, nil
 				}
 			}
@@ -1565,7 +1569,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				return false, nil, err
 			}
 			if !installed {
-				if s.retainedScratch.Load() != pool {
+				if s.retainedScratchSealed.Load() || s.retainedScratch.Load() != pool {
 					return false, nil, nil
 				}
 			}
