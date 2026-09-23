@@ -455,6 +455,11 @@ same way it treats `/tmp`; sandbox tests therefore behave the same with
 alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
 their workspace under it.
 
+A test that drives the crashed-scratch sweep itself confines it to scratch it
+owns (its own `TMPDIR` and user cache dir, no container bases; see
+`confineSessionScratchSweep` in agent), because the sweep deletes any aged, unleased scratch it can see,
+including another process's.
+
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
 browser-specific gate in its web job.

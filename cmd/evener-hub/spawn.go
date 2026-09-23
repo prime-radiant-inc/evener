@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/orphanpipe"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -945,14 +946,11 @@ func launchCheckWaitError(ctx context.Context) error {
 // the wait for its output pipe with evenerLaunchCheckWaitDelay. When that bound
 // is what ended the wait but the check itself exited 0, the check answered: a
 // child it left behind merely held the pipe open after the complete response
-// was written, so exec's ErrWaitDelay is not a failure of the check.
+// was written, so it is not a failure of the check (see orphanpipe).
 func runLaunchCheck(cmd *exec.Cmd) ([]byte, error) {
 	cmd.WaitDelay = evenerLaunchCheckWaitDelay
 	out, err := cmd.CombinedOutput()
-	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
-		err = nil
-	}
-	return out, err
+	return out, orphanpipe.ChildErr(cmd, err)
 }
 
 // requiredLaunchFlag is the serve flag the hub passes on every spawn and
