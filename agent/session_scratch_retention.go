@@ -1545,7 +1545,15 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// not-installed so the caller reprovisions fresh scratch
 			// instead of proceeding on the pre-seal snapshot (rounds 18
 			// and 33), and the handle stays in the releasable map so the
-			// release path Retains what the adopter never took.
+			// release path Retains what the adopter never took. The
+			// binding row is already installed with its slot naming the
+			// retained directory, so the declined kind must also be marked
+			// pending: the reprovision's first mint publishes through the
+			// pending path — a bare protected reference — or its
+			// publication would claim the binding's slot and end the
+			// re-probe exactly like a contended slot's fallback (rounds 10
+			// and 37).
+			env.MarkRetainedSlotPending(kind)
 			return false, nil, nil
 		case already && prior == adopterID:
 			if contended {

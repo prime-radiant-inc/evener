@@ -987,6 +987,88 @@ func TestScratchClaimDeclinesWhileThePoolIsSealedBeforeDetach(t *testing.T) {
 	}
 }
 
+// TestScratchDyingClaimKeepsTheBindingRowAcrossMint pins round 37's second
+// High: the round-34 dying decline returns not-installed so the caller
+// reprovisions fresh scratch — but the binding row is already installed on
+// the environment with its slot naming the retained directory, and the
+// decline must also mark the kind pending. Without the mark, the
+// reprovision's first publication claims the binding's slot for the fresh
+// mint, and no later refresh ever re-probes the retained directory — the
+// same continuity loss a contended slot's fallback causes (round 10).
+func TestScratchDyingClaimKeepsTheBindingRowAcrossMint(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01DYINGMINT1"
+	const bindingID = "b-dying-mint"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+
+	// The claim declines over the sealed-but-attached pool (round 34) and the
+	// adoption reports not-installed, so the caller reprovisions.
+	s.sealRetainedScratch()
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the owning binding over the sealed pool: %v", err)
+	}
+	if installed {
+		t.Fatal("fixture: the adoption installed over the sealed pool")
+	}
+
+	// The caller's reprovision provisions fresh sandbox scratch, and the
+	// first publication pins it. The pending mark is what keeps that
+	// publication from claiming the binding's slot.
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the reprovisioned fresh sandbox scratch: %v", err)
+	}
+	freshSandbox := env.SessionScratchDir()
+	if freshSandbox == "" || filepath.Clean(freshSandbox) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", freshSandbox, retainedDir)
+	}
+	if err := env.PinOwnedScratch(); err != nil {
+		t.Fatalf("publish the reprovisioned allocation: %v", err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the reprovision's fallback displaced the binding row's slot over the dying pool: got %+v, want the retained %q — no later refresh will re-probe the original", slot, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(freshSandbox) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the fallback sandbox mint %q was left unpinned: a protected allocation must publish a reference", freshSandbox)
+	}
+}
+
 // TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows pins round 24's
 // first Medium: the refresh declined on a released manifest without clearing
 // the pool, so the adoption seam reading the pool right below it served the
