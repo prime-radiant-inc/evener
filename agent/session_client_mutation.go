@@ -425,6 +425,72 @@ func (s *Session) recoveredTurnRunning(snapshot *clientMutationSnapshot) bool {
 	return false
 }
 
+// claimableClientMutationStartIDs returns the mutation ids of the starts the
+// claim path may claim, in the order the user spoke them: the inherited
+// recovered turn first, then each follow-up in reserved turn sequence order.
+//
+// Turn ids are appwire.ClientMutationTurnID(sequence) ("turn_m<N>"), reserved
+// monotonically from snapshot.NextTurnSequence, so the numeric suffix orders
+// them exactly. That order is the order the user spoke: the lowest sequence is
+// the oldest prompt. The sort is the whole point -- PendingExecutions is a map,
+// and ranging it directly gives no order at all, so the serve loop could claim
+// and run a follow-up before the turn the user spoke first. Both the claim path
+// (which takes the head as the one start it claims) and the runnable predicate
+// (which must name that same head) call this, so the two can never disagree.
+func (s *Session) claimableClientMutationStartIDs(snapshot *clientMutationSnapshot) []string {
+	startIDs := make([]string, 0, len(snapshot.PendingExecutions))
+	for id, pending := range snapshot.PendingExecutions {
+		if pending.Method != clientMutationMethodStart ||
+			(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
+			continue
+		}
+		startIDs = append(startIDs, id)
+	}
+	slices.SortFunc(startIDs, func(a, b string) int {
+		aID := snapshot.PendingExecutions[a].TurnID
+		bID := snapshot.PendingExecutions[b].TurnID
+		// The inherited turn is the user's OLDER prompt -- it was already
+		// accepted, and spoken, when the process died -- so it runs before
+		// every follow-up admitted behind it, whatever the two ids look
+		// like. It cannot be ordered by a reserved sequence: the id a
+		// resume carries is a legacy "turn_11" spelling as often as it is
+		// "turn_m<N>", and a legacy id has no sequence to compare, which
+		// would sort it LAST and run the newest prompt first. Prioritising
+		// it here is what makes recovery order independent of the id
+		// spelling. The rest keep the sequence order below.
+		if inherited := s.recoveredTurnID; inherited != "" {
+			aInherited := aID == inherited
+			bInherited := bID == inherited
+			if aInherited != bInherited {
+				if aInherited {
+					return -1
+				}
+				return 1
+			}
+		}
+		aSeq, aOK := clientMutationStartSequence(aID)
+		bSeq, bOK := clientMutationStartSequence(bID)
+		switch {
+		case aOK && bOK:
+			if order := cmp.Compare(aSeq, bSeq); order != 0 {
+				return order
+			}
+		case aOK != bOK:
+			// An id that does not parse -- a hand-written or legacy name --
+			// has no sequence to order by, so it sorts last.
+			if aOK {
+				return -1
+			}
+			return 1
+		}
+		// Deterministic tie-break: equal sequences cannot happen (a
+		// sequence is reserved once) and two unparsed ids have no order of
+		// their own, so the mutation id decides rather than the map.
+		return strings.Compare(a, b)
+	})
+	return startIDs
+}
+
 // claimClientMutationStart returns the next user turn owned by the durable
 // start lifecycle. In addition to accepted starts, restore may expose a queued
 // turn that crashed after claim under the same stable turn identity.
@@ -463,67 +529,16 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 		// claimable once the Stop settles, and the interrupt path wakes it then.
 		// The queue branches below are unaffected; only start claims are refused.
 		if snapshot.InterruptFence == nil {
-			// Collect the claimable starts, then take the FIRST in reserved turn
-			// sequence order. Turn ids are appwire.ClientMutationTurnID(sequence)
-			// ("turn_m<N>"), reserved monotonically from snapshot.NextTurnSequence,
-			// so the numeric suffix orders them exactly. That order is the order
-			// the user spoke: the lowest sequence is the oldest prompt. Ranging
-			// the map directly gives no order at all, so the serve loop could
-			// claim and run a follow-up before the turn the user spoke first.
-			startIDs := make([]string, 0, len(snapshot.PendingExecutions))
-			for id, pending := range snapshot.PendingExecutions {
-				if pending.Method != clientMutationMethodStart ||
-					(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
-					continue
-				}
-				startIDs = append(startIDs, id)
-			}
-			slices.SortFunc(startIDs, func(a, b string) int {
-				aID := snapshot.PendingExecutions[a].TurnID
-				bID := snapshot.PendingExecutions[b].TurnID
-				// The inherited turn is the user's OLDER prompt -- it was already
-				// accepted, and spoken, when the process died -- so it runs before
-				// every follow-up admitted behind it, whatever the two ids look
-				// like. It cannot be ordered by a reserved sequence: the id a
-				// resume carries is a legacy "turn_11" spelling as often as it is
-				// "turn_m<N>", and a legacy id has no sequence to compare, which
-				// would sort it LAST and run the newest prompt first. Prioritising
-				// it here is what makes recovery order independent of the id
-				// spelling. The rest keep the sequence order below.
-				if inherited := s.recoveredTurnID; inherited != "" {
-					aInherited := aID == inherited
-					bInherited := bID == inherited
-					if aInherited != bInherited {
-						if aInherited {
-							return -1
-						}
-						return 1
-					}
-				}
-				aSeq, aOK := clientMutationStartSequence(aID)
-				bSeq, bOK := clientMutationStartSequence(bID)
-				switch {
-				case aOK && bOK:
-					if order := cmp.Compare(aSeq, bSeq); order != 0 {
-						return order
-					}
-				case aOK != bOK:
-					// An id that does not parse -- a hand-written or legacy name --
-					// has no sequence to order by, so it sorts last.
-					if aOK {
-						return -1
-					}
-					return 1
-				}
-				// Deterministic tie-break: equal sequences cannot happen (a
-				// sequence is reserved once) and two unparsed ids have no order of
-				// their own, so the mutation id decides rather than the map.
-				return strings.Compare(a, b)
-			})
+			// Take the FIRST of the claimable starts in the order the user spoke
+			// them. The selection and its ordering rationale live in
+			// claimableClientMutationStartIDs, shared with the runnable predicate
+			// so the turn this call claims is exactly the turn that predicate
+			// names.
+			startIDs := s.claimableClientMutationStartIDs(snapshot)
 			if len(startIDs) > 0 {
-				// Exactly one start is claimed per call, and the sort above already
-				// selected the oldest, so this takes the head explicitly rather than
-				// looping over a slice whose body always returns.
+				// Exactly one start is claimed per call, and the helper already
+				// selected the oldest, so this takes the head explicitly rather
+				// than looping over a slice whose body always returns.
 				id := startIDs[0]
 				pending := snapshot.PendingExecutions[id]
 				record, ok := snapshot.Journal[id]
@@ -1259,16 +1274,33 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 // fenced: they name a turn the fence did not stop. The post-fence wake
 // (wakeRunnableClientMutationStartAfterFence) delivers the held start once the
 // fence clears.
+//
+// The start branch also names exactly the turn the claim path will take: the
+// head of the same ordered selection (claimableClientMutationStartIDs), not
+// whichever start the map happens to yield first. The two must agree, because
+// the id named here is what cancellation is armed for and what the claim then
+// takes.
 func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	if s == nil || s.clientMutations == nil {
 		return "", false
 	}
 	snapshot := s.clientMutations.snapshot()
+	// Resolve the ordered head once, and only when no fence blocks the claim.
+	// startClaimable tracks claimability separately from the head's turn id so a
+	// start with an empty turn id still returns ("", false) exactly as before.
+	startTurnID := ""
+	startClaimable := false
+	if snapshot.InterruptFence == nil {
+		if startIDs := s.claimableClientMutationStartIDs(&snapshot); len(startIDs) > 0 {
+			startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
+			startClaimable = true
+		}
+	}
 	for _, pending := range snapshot.PendingExecutions {
-		if snapshot.InterruptFence == nil &&
+		if startClaimable &&
 			pending.Method == clientMutationMethodStart &&
 			(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated") {
-			return pending.TurnID, pending.TurnID != ""
+			return startTurnID, startTurnID != ""
 		}
 		if pending.Method == clientMutationMethodQueue &&
 			pending.ExecutionState == "incorporated" &&

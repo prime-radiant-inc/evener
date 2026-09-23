@@ -534,6 +534,49 @@ func TestInterruptFenceHoldsTheFollowUpOutOfTheRunnableCheck(t *testing.T) {
 	}
 }
 
+// TestRunnableStartNamesTheOldestReservedFollowUpLikeTheClaim pins the runnable
+// predicate to the claim path's order. Two follow-ups are admitted behind the
+// recovered turn, so PendingExecutions holds two claimable starts; ranging that
+// map gives no order, so a predicate that returned whichever start it reached
+// first could name a different turn than the claim path -- which deliberately
+// claims the oldest reserved turn -- and cancellation would be armed for the
+// wrong turn. The predicate must name exactly the turn the claim takes.
+func TestRunnableStartNamesTheOldestReservedFollowUpLikeTheClaim(t *testing.T) {
+	restored, _, _ := recoveredTurnSession(t)
+
+	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
+		t.Fatalf("claim the inherited turn: ok=%v err=%v", ok, err)
+	}
+	// The two follow-ups are admitted in this order, and each reserve is minted
+	// monotonically from snapshot.NextTurnSequence, so the first is the OLDER of
+	// the two -- the one the claim path must take.
+	oldest := acceptFollowUp(t, restored, "cm-follow-up-oldest", "the older follow-up")
+	newer := acceptFollowUp(t, restored, "cm-follow-up-newer", "the newer follow-up")
+	if oldest.Turn.ID == newer.Turn.ID {
+		t.Fatalf("the two follow-ups share a turn id %q", oldest.Turn.ID)
+	}
+
+	runnableID, runnable := restored.runnableClientMutationStartTurnID()
+	if !runnable {
+		t.Fatal("the admitted follow-ups are not runnable")
+	}
+	if runnableID != oldest.Turn.ID {
+		t.Fatalf("runnable start = %q, want the oldest reserved follow-up %q (the newer is %q)",
+			runnableID, oldest.Turn.ID, newer.Turn.ID)
+	}
+
+	claimed, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim the follow-up: claimed=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if claimed.StableTurnID != runnableID {
+		t.Fatalf("claim took %q but the runnable check named %q", claimed.StableTurnID, runnableID)
+	}
+	if claimed.StableTurnID != oldest.Turn.ID {
+		t.Fatalf("claim took %q, want the oldest reserved follow-up %q", claimed.StableTurnID, oldest.Turn.ID)
+	}
+}
+
 // TestAcceptBehindProcessLocalTurnStillRefused pins the other half of the rule:
 // a turn the session started in THIS process is not inherited work, so a
 // turn/start while it is active keeps today's refusal.

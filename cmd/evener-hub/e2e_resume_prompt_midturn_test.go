@@ -132,9 +132,9 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	// new prompt. The newest user message is the one that names what the round
 	// actually ran, so the recovered prompt must be it and the new prompt, which
 	// has not run yet, must not be.
-	waitCtx, cancelWait := context.WithTimeout(ctx, 60*time.Second)
-	defer cancelWait()
-	recovered, recoveredErr := provider.Next(waitCtx.Done())
+	recoveredWaitCtx, cancelRecoveredWait := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelRecoveredWait()
+	recovered, recoveredErr := provider.Next(recoveredWaitCtx.Done())
 	if recoveredErr != nil {
 		t.Fatalf("the recovered turn never reached the model (turn/start err=%v): %v", startErr, recoveredErr)
 	}
@@ -152,8 +152,12 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	// already the next active turn and is sitting at its own model request, so
 	// waiting for an idle thread would wait for a request this test is the one
 	// that must answer. Its newest user message must be the new prompt, with no
-	// dead prompt trailing it.
-	next, nextErr := provider.Next(waitCtx.Done())
+	// dead prompt trailing it. This wait gets a FRESH budget: sharing one
+	// deadline with the recovered turn's wait would let time spent there eat
+	// this one's and flake the test on a slow host.
+	nextWaitCtx, cancelNextWait := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelNextWait()
+	next, nextErr := provider.Next(nextWaitCtx.Done())
 	if nextErr != nil {
 		t.Fatalf("the new prompt never reached the model after the recovered turn (turn/start err=%v): %v", startErr, nextErr)
 	}
