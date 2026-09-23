@@ -56,7 +56,7 @@ func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string
 	}
 	var stdout, stderr bytes.Buffer
 	return shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
 		count:    2,
 		parallel: 1,
 		cacheDir: filepath.Join(t.TempDir(), "cache"),
@@ -579,11 +579,12 @@ func peakLiveShards(t *testing.T, dir string) int {
 
 func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	cfg, _, stderr, _ := e2eConfig(t)
-	cfg.agentDir = filepath.Join(t.TempDir(), "no-such-module")
+	cfg.pkgDir = filepath.Join(t.TempDir(), "no-such-module")
 	if rc := runShards(cfg); rc != 2 {
 		t.Fatalf("missing agent dir rc = %d, want 2", rc)
 	}
-	if !strings.Contains(stderr.String(), "agent-shards: no agent dir") {
+	// The refusal names the directory it looked for, not the runner's label.
+	if !strings.Contains(stderr.String(), "agent-shards: no "+cfg.pkgDir+" dir") {
 		t.Fatalf("missing agent dir not explained:\n%s", stderr)
 	}
 }
@@ -646,5 +647,128 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		if !strings.Contains(string(out), tc.name) {
 			t.Fatalf("%s=%s not named in error:\n%s", tc.name, tc.value, out)
 		}
+	}
+}
+
+// hubFixtureRoot lays the shard fixture out the way the repository holds
+// cmd/evener-hub: a module root with the package in cmd/evener-hub, which is
+// where hub-shards builds from and runs in.
+func hubFixtureRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	pkg := filepath.Join(root, "cmd", "evener-hub")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixtureModule(t)
+	for src, dst := range map[string]string{
+		"go.mod":          filepath.Join(root, "go.mod"),
+		"fixture_test.go": filepath.Join(pkg, "fixture_test.go"),
+		"tagged_on.go":    filepath.Join(pkg, "tagged_on.go"),
+		"tagged_off.go":   filepath.Join(pkg, "tagged_off.go"),
+	} {
+		data, err := os.ReadFile(filepath.Join(fixture, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// hubFixtureToolchainEnv is the child environment a hub-shards run over
+// hubFixtureRoot needs, appended after the ambient one so it wins: a private
+// TMPDIR and survey cache, and a toolchain that resolves the fixture's own
+// go.mod rather than an ambient GOWORK, GOENV or GOFLAGS.
+func hubFixtureToolchainEnv(t *testing.T) []string {
+	t.Helper()
+	return []string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir(), "GOWORK=off", "GOENV=off", "GOFLAGS="}
+}
+
+// TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
+// it shards cmd/evener-hub under the repository root, reads HUB_SHARD_* rather
+// than the agent's variables, and names itself "hub" in its verdicts, so a gate
+// running both shard sets side by side can tell their lines apart.
+func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureRoot(t)
+	runArgs := func(args []string, env ...string) (string, error) {
+		cmd := exec.Command(bin, append([]string{"dev", "hub-shards"}, args...)...)
+		cmd.Dir = workRoot
+		cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), env...)...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	run := func(env ...string) (string, error) { return runArgs(nil, env...) }
+
+	for _, tc := range []struct{ name, value string }{
+		{"HUB_SHARD_COUNT", "banana"},
+		{"HUB_SHARD_PARALLEL", "-3"},
+		{"HUB_SHARD_CONCURRENCY", "-1"},
+	} {
+		out, err := run(tc.name + "=" + tc.value)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("%s=%s exit = %v, want 1", tc.name, tc.value, err)
+		}
+		if !strings.Contains(out, "hub-shards: ") || !strings.Contains(out, tc.name) {
+			t.Fatalf("%s=%s not refused by hub-shards by name:\n%s", tc.name, tc.value, out)
+		}
+	}
+
+	// Run outside a checkout, the refusal names the package directory it
+	// looked for.
+	missing := exec.Command(bin, "dev", "hub-shards")
+	missing.Dir = t.TempDir()
+	missing.Env = append(os.Environ(), hubFixtureToolchainEnv(t)...)
+	if out, err := missing.CombinedOutput(); err == nil || !strings.Contains(string(out), "hub-shards: no "+filepath.Join("cmd", "evener-hub")+" dir") {
+		t.Fatalf("hub-shards outside a checkout = %v, want a refusal naming cmd/evener-hub:\n%s", err, out)
+	}
+
+	// A refused flag points at the hub's own variable, never the agent's.
+	out, err := runArgs([]string{"-skip", "^TestFixtureBeta$"})
+	if err == nil || !strings.Contains(out, "HUB_SHARD_SKIP") || strings.Contains(out, "AGENT_") {
+		t.Fatalf("hub-shards -skip = %v, want a refusal naming HUB_SHARD_SKIP and no AGENT_ variable:\n%s", err, out)
+	}
+
+	// The fixture's beta test fails on demand; HUB_SHARD_SKIP must keep it out.
+	out, err = run("HUB_SHARD_COUNT=2", "SHARD_FIXTURE_FAIL=beta", "HUB_SHARD_SKIP=^TestFixtureBeta$", "AGENT_SHARD_COUNT=banana")
+	if err != nil {
+		t.Fatalf("green hub-shards run failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"PASS  hub:0", "PASS  hub:1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot pins where hub-shards
+// builds: cmd/evener-hub is a package of the root module, and the gate's root
+// `go test` resolves path-valued build flags (-overlay, -modfile, -pgo) from
+// the repository root, so hub-shards must too. The fixture is laid out like
+// the repository, and a relative -overlay adds a test that fails with a marker
+// only when the overlay reached the build.
+func TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureRoot(t)
+	pkg := filepath.Join(workRoot, "cmd", "evener-hub")
+	overlaid := filepath.Join(workRoot, "overlaid_test.go.src")
+	if err := os.WriteFile(overlaid, []byte("package shardfixture\n\nimport \"testing\"\n\nfunc TestOverlayReachedTheBuild(t *testing.T) { t.Fatal(\"OVERLAY-REACHED-THE-BUILD\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overlay := fmt.Sprintf(`{"Replace":{%q:%q}}`, filepath.Join(pkg, "overlaid_test.go"), overlaid)
+	if err := os.WriteFile(filepath.Join(workRoot, "overlay.json"), []byte(overlay), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "dev", "hub-shards", "-overlay=overlay.json")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "HUB_SHARD_COUNT=2")...)
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "OVERLAY-REACHED-THE-BUILD") {
+		t.Fatalf("a repository-relative -overlay did not reach the hub build:\n%s", out)
 	}
 }

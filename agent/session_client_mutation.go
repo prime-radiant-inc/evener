@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -148,12 +150,22 @@ type clientMutationSnapshot struct {
 	// preconditions, and it names the turn that is RUNNING — not merely one a
 	// client mutation reserved. Queue and steering transitions only compare it.
 	//
-	// Three runtime sites SET it, each while holding this store's serializer:
-	// AcceptClientMutationStart and popQueueHead for turns a client asked for,
-	// and mintRunningTurnID (session_active_turn.go) for the turns
-	// the agent starts for itself — a goal continuation and a notification wake
-	// — which have no mutation to name them and would otherwise publish an id
-	// these preconditions reject.
+	// Five runtime sites SET it, each while holding this store's serializer:
+	// AcceptClientMutationStart and claimClientMutationStart for turns a client
+	// asked for, popQueueHead for one claimed off the input queue,
+	// claimSteeringCarrierInput (session_client_mutation_queue.go) for the turn
+	// a steer is handed to, and mintRunningTurnID (session_active_turn.go) for
+	// the turns the agent starts for itself — a goal continuation and a
+	// notification wake — which have no mutation to name them and would
+	// otherwise publish an id these preconditions reject. The accept side names it only when the slot is FREE:
+	// a running turn keeps its name, so a follow-up accepted behind the turn a
+	// dead process left running cannot steal the slot — which would aim a Stop
+	// at the wrong turn — nor clear the guard it was admitted through. The claim
+	// side names it UNCONDITIONALLY, and is the authority: a claim happens at a
+	// turn boundary and deterministically takes the oldest pending start, so the
+	// turn it names is the one about to run, while naming only a free slot would
+	// let a follow-up accepted into the slot a settling turn just released keep
+	// the name while the older claimed turn ran unfenced.
 	//
 	// Four runtime sites CLEAR it, also serialized, and the list matters more
 	// than it looks, because
@@ -280,7 +292,22 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 			rejectClientMutation(record, appwire.InvalidParams("input is required"))
 			return nil
 		}
-		if snapshot.ActiveTurnID != "" {
+		// A non-empty slot refuses a new start, with one exception: the turn this
+		// session inherited from a dead process, and only once it is actually
+		// RUNNING again (see recoveredTurnRunning). That inherited turn is the
+		// session's own recovered work, so the caller's prompt belongs behind it
+		// and the send settles with an applied receipt instead of being returned
+		// as an unaccepted mutation. While it is still merely accepted -- restore
+		// resets a claimed start to accepted so the runner can reclaim it -- the
+		// refusal stays: admitting a follow-up in that window makes two starts
+		// simultaneously claimable, which is what produced the review's
+		// ownership, ordering and Stop-targeting findings. A turn this process
+		// started keeps the refusal too, because the web composer's routing
+		// contract reads "turn is already active" as the answer to a turn/start
+		// while a turn is active. The serve loop runs one turn at a time and
+		// processes a wake only after the current turn returns, so this accepted
+		// start is claimed after the recovered turn finishes.
+		if snapshot.ActiveTurnID != "" && !s.recoveredTurnRunning(snapshot) {
 			rejectClientMutation(record, appwire.Conflict("turn is already active"))
 			return nil
 		}
@@ -317,7 +344,15 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 		if marshalErr != nil {
 			return marshalErr
 		}
-		snapshot.ActiveTurnID = record.StableTurnID
+		// Name the new turn ONLY when the slot is free. The slot names the turn
+		// that is RUNNING, and a running turn keeps its name: an accepted
+		// follow-up admitted behind the recovered turn has not run yet, so
+		// repointing the slot at it would aim a Stop at the wrong turn and clear
+		// the guard the follow-up was admitted through. claimClientMutationStart
+		// names the follow-up when it is claimed, and there it is authoritative.
+		if snapshot.ActiveTurnID == "" {
+			snapshot.ActiveTurnID = record.StableTurnID
+		}
 		snapshot.PendingExecutions[record.ClientMutationID] = appwire.PendingMutation{
 			ClientMutationID: record.ClientMutationID,
 			Method:           record.Method,
@@ -348,9 +383,136 @@ func (s *Session) AcceptClientMutationStart(params appwire.TurnStartParams) (app
 	return response, nil
 }
 
+// recoveredStartTurnID returns the durable ActiveTurnID when a client
+// turn/start owns it, and "" otherwise. restoreDurableClientMutationQueues
+// captures this into Session.recoveredTurnID, so the recovered turn it names is
+// a recovered USER turn only: a queue-origin turn leaves it empty, and no
+// follow-up start is admitted behind a turn the claim path would never take.
+func (s *Session) recoveredStartTurnID() string {
+	snapshot := s.clientMutations.snapshot()
+	if snapshot.ActiveTurnID == "" {
+		return ""
+	}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.Method == clientMutationMethodStart && pending.TurnID == snapshot.ActiveTurnID {
+			return snapshot.ActiveTurnID
+		}
+	}
+	return ""
+}
+
+// recoveredTurnRunning reports whether the slot names the inherited recovered
+// turn AND that turn has actually started running again. It is the second half
+// of the admission precondition in AcceptClientMutationStart.
+//
+// "Running again" is ExecutionState "claimed" or "incorporated", and both are
+// needed. Restore rewinds a claimed start to "accepted" so the runner can
+// reclaim it, so a reclaimed start is "claimed" -- and an inherited turn whose
+// user transcript entry had already landed before the crash is "incorporated"
+// instead: restore only rewinds "claimed", and the runner's reclaim of an
+// incorporated start leaves the mark as it found it. Either way the inherited
+// turn runs again; only "accepted" is the pre-reclaim window in which a
+// follow-up must stay refused.
+func (s *Session) recoveredTurnRunning(snapshot *clientMutationSnapshot) bool {
+	if s.recoveredTurnID == "" || snapshot.ActiveTurnID != s.recoveredTurnID {
+		return false
+	}
+	for _, pending := range snapshot.PendingExecutions {
+		if pending.Method != clientMutationMethodStart || pending.TurnID != snapshot.ActiveTurnID {
+			continue
+		}
+		return pending.ExecutionState == "claimed" || pending.ExecutionState == "incorporated"
+	}
+	return false
+}
+
+// claimableClientMutationStartIDs returns the mutation ids of the starts the
+// claim path may claim, in the order the user spoke them: the inherited
+// recovered turn first, then each follow-up in reserved turn sequence order.
+//
+// Turn ids are appwire.ClientMutationTurnID(sequence) ("turn_m<N>"), reserved
+// monotonically from snapshot.NextTurnSequence, so the numeric suffix orders
+// them exactly. That order is the order the user spoke: the lowest sequence is
+// the oldest prompt. The sort is the whole point -- PendingExecutions is a map,
+// and ranging it directly gives no order at all, so the serve loop could claim
+// and run a follow-up before the turn the user spoke first. Both the claim path
+// (which takes the head as the one start it claims) and the runnable predicate
+// (which must name that same head) call this, so the two can never disagree.
+func (s *Session) claimableClientMutationStartIDs(snapshot *clientMutationSnapshot) []string {
+	startIDs := make([]string, 0, len(snapshot.PendingExecutions))
+	for id, pending := range snapshot.PendingExecutions {
+		if pending.Method != clientMutationMethodStart ||
+			(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
+			continue
+		}
+		startIDs = append(startIDs, id)
+	}
+	slices.SortFunc(startIDs, func(a, b string) int {
+		aID := snapshot.PendingExecutions[a].TurnID
+		bID := snapshot.PendingExecutions[b].TurnID
+		// The inherited turn is the user's OLDER prompt -- it was already
+		// accepted, and spoken, when the process died -- so it runs before
+		// every follow-up admitted behind it, whatever the two ids look
+		// like. It cannot be ordered by a reserved sequence: the id a
+		// resume carries is a legacy "turn_11" spelling as often as it is
+		// "turn_m<N>", and a legacy id has no sequence to compare, which
+		// would sort it LAST and run the newest prompt first. Prioritising
+		// it here is what makes recovery order independent of the id
+		// spelling. The rest keep the sequence order below.
+		// Prioritise the inherited turn ONLY when its id carries no reserved
+		// sequence to compare -- the legacy "turn_11" spelling this exists for.
+		// When it parses as turn_m<N> the sequence comparison below already
+		// orders it: a genuinely inherited running turn was reserved before any
+		// follow-up admitted behind it, so sequence order puts it first anyway.
+		// Prioritising it unconditionally would reorder prompts after a crash:
+		// once the recovered turn completes, the accept side may name a NEWER
+		// follow-up in the freed slot (accept names the slot only when free), and
+		// a process that dies before the claim re-names it restores that NEWER
+		// turn as the inherited one -- which must not outrank the older follow-up
+		// still pending accepted.
+		if inherited := s.recoveredTurnID; inherited != "" {
+			if _, inheritedParses := clientMutationStartSequence(inherited); !inheritedParses {
+				aInherited := aID == inherited
+				bInherited := bID == inherited
+				if aInherited != bInherited {
+					if aInherited {
+						return -1
+					}
+					return 1
+				}
+			}
+		}
+		aSeq, aOK := clientMutationStartSequence(aID)
+		bSeq, bOK := clientMutationStartSequence(bID)
+		switch {
+		case aOK && bOK:
+			if order := cmp.Compare(aSeq, bSeq); order != 0 {
+				return order
+			}
+		case aOK != bOK:
+			// An id that does not parse -- a hand-written or legacy name --
+			// has no sequence to order by, so it sorts last.
+			if aOK {
+				return -1
+			}
+			return 1
+		}
+		// Deterministic tie-break: equal sequences cannot happen (a
+		// sequence is reserved once) and two unparsed ids have no order of
+		// their own, so the mutation id decides rather than the map.
+		return strings.Compare(a, b)
+	})
+	return startIDs
+}
+
 // claimClientMutationStart returns the next user turn owned by the durable
 // start lifecycle. In addition to accepted starts, restore may expose a queued
 // turn that crashed after claim under the same stable turn identity.
+//
+// No start is claimed while an interrupt fence exists (see the guard below), and
+// runnableClientMutationStartTurnID reports the same rule: the start path must
+// not arm for, or wake on, a claim this call would refuse. The queue branches
+// are not fenced.
 func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
@@ -370,48 +532,78 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	var claimed queuedInput
 	claimedQueue := false
 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		for id, pending := range snapshot.PendingExecutions {
-			if pending.Method != clientMutationMethodStart ||
-				(pending.ExecutionState != "accepted" && pending.ExecutionState != "incorporated") {
-				continue
+		// No start is claimed while an interrupt fence exists. The fence names
+		// the turn a Stop is ending and stays set until that Stop finalizes, and
+		// finalization retires the fenced turn ALONE. A start claimed behind the
+		// fenced turn in that window is stranded: the Stop's cancellation unwinds
+		// the fenced turn, finalization never reaches the follow-up, and the
+		// claimed start is left with no runner to run it and no interrupt to
+		// release it. Leaving every start pending until the fence is cleared --
+		// the fence lives only while a Stop is in flight -- keeps the follow-up
+		// claimable once the Stop settles, and the interrupt path wakes it then.
+		// The queue branches below are unaffected; only start claims are refused.
+		if snapshot.InterruptFence == nil {
+			// Take the FIRST of the claimable starts in the order the user spoke
+			// them. The selection and its ordering rationale live in
+			// claimableClientMutationStartIDs, shared with the runnable predicate
+			// so the turn this call claims is exactly the turn that predicate
+			// names.
+			startIDs := s.claimableClientMutationStartIDs(snapshot)
+			if len(startIDs) > 0 {
+				// Exactly one start is claimed per call, and the helper already
+				// selected the oldest, so this takes the head explicitly rather
+				// than looping over a slice whose body always returns.
+				id := startIDs[0]
+				pending := snapshot.PendingExecutions[id]
+				record, ok := snapshot.Journal[id]
+				if !ok {
+					return fmt.Errorf("accepted client start %q has no journal record", id)
+				}
+				// The refusal is decided where a candidate is selected and a claimed
+				// input is about to be returned -- never before claimability is
+				// known, so a store with nothing to claim stays quiet. It covers an
+				// incorporated recovery entry as well as a fresh claim: both are
+				// announced as a running turn, and one announced on a poisoned
+				// transcript is refused by the turn gate behind a phantom running
+				// notification.
+				if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+					return refusal
+				}
+				if pending.ExecutionState == "accepted" {
+					record.ExecutionState = "claimed"
+					pending.ExecutionState = "claimed"
+					delete(snapshot.BudgetReservations, id)
+					snapshot.AcceptedTurns++
+					// No transcript item exists for this claim yet, so it must
+					// report pending, not reflected. When ExecutionState was
+					// already "incorporated" (a crash-recovery reclaim of a start
+					// whose transcript append already landed), this branch is
+					// skipped and the reflected state markClaimedUserTranscriptIncorporated
+					// set earlier is left untouched.
+					record.ProjectionState = acceptedClientMutationProjection(record.Method)
+					pending.ProjectionState = acceptedClientMutationProjection(record.Method)
+				}
+				// The claim is the AUTHORITY on the slot, so it names this turn
+				// UNCONDITIONALLY. The accept-side rule names a turn only when the
+				// slot is free, because an accepted-but-unrun follow-up must not
+				// steal the running turn's name; that rule alone is not enough.
+				// After a running turn releases the slot, a later follow-up can be
+				// accepted into the now-free slot before the serve loop claims the
+				// OLDEST pending start, so the slot would name that follow-up. A
+				// claim happens at a turn boundary and the sort above
+				// deterministically selects the oldest pending start, so the turn
+				// being named here is the one about to run -- never a concurrently
+				// running turn -- and leaving the slot pointed at the follow-up
+				// would aim a Stop at the wrong turn while the claimed turn ran
+				// unfenced. A Stop fences the claimed turn.
+				snapshot.ActiveTurnID = pending.TurnID
+				snapshot.Journal[id] = record
+				snapshot.PendingExecutions[id] = pending
+				claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
+				claimed.ClientMutationID = id
+				claimed.StableTurnID = pending.TurnID
+				return nil
 			}
-			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
-				continue
-			}
-			record, ok := snapshot.Journal[id]
-			if !ok {
-				return fmt.Errorf("accepted client start %q has no journal record", id)
-			}
-			// The refusal is decided where a candidate is selected and a claimed
-			// input is about to be returned -- never before claimability is
-			// known, so a store with nothing to claim stays quiet. It covers an
-			// incorporated recovery entry as well as a fresh claim: both are
-			// announced as a running turn, and one announced on a poisoned
-			// transcript is refused by the turn gate behind a phantom running
-			// notification.
-			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
-				return refusal
-			}
-			if pending.ExecutionState == "accepted" {
-				record.ExecutionState = "claimed"
-				pending.ExecutionState = "claimed"
-				delete(snapshot.BudgetReservations, id)
-				snapshot.AcceptedTurns++
-				// No transcript item exists for this claim yet, so it must
-				// report pending, not reflected. When ExecutionState was
-				// already "incorporated" (a crash-recovery reclaim of a start
-				// whose transcript append already landed), this branch is
-				// skipped and the reflected state markClaimedUserTranscriptIncorporated
-				// set earlier is left untouched.
-				record.ProjectionState = acceptedClientMutationProjection(record.Method)
-				pending.ProjectionState = acceptedClientMutationProjection(record.Method)
-			}
-			snapshot.Journal[id] = record
-			snapshot.PendingExecutions[id] = pending
-			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
-			claimed.ClientMutationID = id
-			claimed.StableTurnID = pending.TurnID
-			return nil
 		}
 		for id, pending := range snapshot.PendingExecutions {
 			if pending.Method != clientMutationMethodQueue ||
@@ -476,6 +668,22 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 		s.reflectDurableInputQueue()
 	}
 	return claimed, claimed.ClientMutationID != "", nil
+}
+
+// clientMutationStartSequence parses the reserved turn sequence out of
+// appwire.ClientMutationTurnID's "turn_m<N>" spelling, so accepted starts can
+// be claimed in the order they were reserved. It reports false for any id that
+// is not one of these, which callers order last rather than treat as sequence 0.
+func clientMutationStartSequence(turnID string) (uint64, bool) {
+	digits, ok := strings.CutPrefix(turnID, "turn_m")
+	if !ok || digits == "" {
+		return 0, false
+	}
+	sequence, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return sequence, true
 }
 
 // ClientMutationStartPhase says which side of the durable claim a
@@ -571,6 +779,54 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	if transcriptRefusedClaim(err) {
 		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
 			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
+		}
+	}
+	// A run that failed before this turn's prompt was recorded leaves the claim
+	// with nothing to finish it in this process: only the transcript's own
+	// refusals are given back above, so any other such failure keeps the start
+	// claimed and the serve loop carries on to the next input. For the turn this
+	// session INHERITED from a dead process that is not survivable: the claim
+	// selection offers only accepted/incorporated starts, so the recovered turn
+	// is skipped, the follow-up admitted behind it is claimed next, and naming
+	// the slot unconditionally moves ActiveTurnID off the recovered turn -- which
+	// restart recovery then replays AFTER the newer prompt, out of order. Hand
+	// the recovered turn's claim back instead, so it returns to accepted and the
+	// recovered-first ordering in claimableClientMutationStartIDs re-claims it
+	// before the follow-up.
+	//
+	// Keyed on the RECOVERED turn and on its prompt not being recorded -- never
+	// on the error's type. The recorded test is clientMutationTranscriptHolds,
+	// not the store's incorporation mark: the user-input turn is durably appended
+	// BEFORE that mark is written, so a mark write that fails leaves a pending the
+	// store still calls "claimed" whose turn is already on disk. Handing that one
+	// back would re-claim it, append the same user turn again and run the prompt's
+	// model round twice -- exactly what the transcript-refusal give-back above is
+	// safe from because it fires only when the append itself was refused.
+	//
+	// Three things hold the branch shut: the transcript does not already hold the
+	// turn (the fact above); an ordinary turn this process started is not the
+	// recovered turn, so its claim is left exactly as it was; and the give-back is
+	// bounded to ONCE per recovered turn (recoveredTurnClaimReturned), because the
+	// wake it sends drives an immediate retry. One in-process retry is for a
+	// failure that may be transient; a second consecutive failure of the same turn
+	// is deferred to restart recovery instead of spinning on it.
+	//
+	// A give-back that did NOT commit does not spend it: the claim is still
+	// exactly where it was, so the retry is still owed. Nothing can spin on the
+	// unspent flag either -- returnClaimedClientMutationStart wakes the runner
+	// only when its own write succeeded, so a failed return sends no wake.
+	//
+	// A transcript refusal is excluded outright: the give-back above already
+	// returned that claim, so this branch would be a no-op that still spent the
+	// retry on nothing. That case belongs to the transcript-refusal branch alone.
+	if err != nil && claimed.StableTurnID == s.recoveredTurnID &&
+		!transcriptRefusedClaim(err) &&
+		!s.recoveredTurnClaimReturned &&
+		!s.clientMutationTranscriptHolds(claimed.ClientMutationID, claimed.StableTurnID) {
+		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
+			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
+		} else {
+			s.recoveredTurnClaimReturned = true
 		}
 	}
 	return result, true, err
@@ -778,6 +1034,13 @@ func (s *Session) InterruptClientMutation(
 	// claimable. The steering wake stays; a Stop with pending steering still
 	// restarts, and that is kata 1k3m, not this one.
 	s.wakeForPendingSteering()
+	// A start may be waiting on the fence this Stop just cleared. The claim
+	// path refuses every start while an interrupt fence exists, so a follow-up
+	// admitted behind the recovered turn waits for finalization -- and nothing
+	// else wakes the start path: the queue is parked above, and the steering
+	// wake above serves only steering. Without this the follow-up is accepted,
+	// durably present, and never runs.
+	s.wakeRunnableClientMutationStartAfterFence()
 	return interruptResponseFromRecord(
 		s.clientMutations.snapshot().Journal[params.ClientMutationID],
 		appwire.MutationDispositionApplied,
@@ -931,6 +1194,8 @@ func (s *Session) recoverClientMutationInterrupt() error {
 			s.reflectDurableInputQueue()
 			s.wakeForPendingQueuedInput()
 		}
+		// The fence is cleared now, so a start that was waiting on it can run.
+		s.wakeRunnableClientMutationStartAfterFence()
 	}
 	return err
 }
@@ -1040,24 +1305,67 @@ func (s *Session) wakeClientMutationStart() {
 	}
 }
 
+// wakeRunnableClientMutationStartAfterFence wakes the start path when an
+// interrupt fence that has just been cleared leaves a start claimable.
+//
+// The claim path refuses every start while a fence exists, so a follow-up
+// admitted behind the recovered turn waits for the Stop to finalize. Nothing
+// else wakes the start path -- the Stop parks the input queue, and
+// wakeForPendingSteering serves only steering -- so without this the accepted
+// follow-up is durably present and never runs, the stranding the fence guard
+// trades for.
+func (s *Session) wakeRunnableClientMutationStartAfterFence() {
+	if s.hasRunnableClientMutationStart() {
+		s.wakeClientMutationStart()
+	}
+}
+
 func (s *Session) hasRunnableClientMutationStart() bool {
 	_, runnable := s.runnableClientMutationStartTurnID()
 	return runnable
 }
 
+// runnableClientMutationStartTurnID reports the next turn the start path can run
+// and whether it is runnable right now. Its start branch mirrors
+// claimClientMutationStart's fence guard exactly: NO start is reported runnable
+// while an interrupt fence exists, because none can be claimed then. Reporting
+// one would make ProcessClientMutationStart arm cancellation for a claim that
+// immediately refuses -- a spurious arm/clear on every wake -- and would tell
+// sessionWorkPending, and so WireState, that the session has work to resume
+// while the fence blocks its only pending start. The queue branches are not
+// fenced: they name a turn the fence did not stop. The post-fence wake
+// (wakeRunnableClientMutationStartAfterFence) delivers the held start once the
+// fence clears.
+//
+// The start branch also names exactly the turn the claim path will take: the
+// head of the same ordered selection (claimableClientMutationStartIDs), not
+// whichever start the map happens to yield first. The two must agree, because
+// the id named here is what cancellation is armed for and what the claim then
+// takes.
 func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	if s == nil || s.clientMutations == nil {
 		return "", false
 	}
 	snapshot := s.clientMutations.snapshot()
-	for _, pending := range snapshot.PendingExecutions {
-		if pending.Method == clientMutationMethodStart &&
-			(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated") {
-			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
-				continue
-			}
-			return pending.TurnID, pending.TurnID != ""
+	// Resolve the ordered head once, and only when no fence blocks the claim.
+	// startClaimable tracks claimability separately from the head's turn id so a
+	// start with an empty turn id still returns ("", false) exactly as before.
+	startTurnID := ""
+	startClaimable := false
+	if snapshot.InterruptFence == nil {
+		if startIDs := s.claimableClientMutationStartIDs(&snapshot); len(startIDs) > 0 {
+			startTurnID = snapshot.PendingExecutions[startIDs[0]].TurnID
+			startClaimable = true
 		}
+	}
+	// The start branch is settled BEFORE the queue branches, because the claim
+	// path claims the ordered start head whenever a start is claimable, fence
+	// aside. Answering from the map's order instead could name a claimable queue
+	// entry while the claim takes a start, arming cancellation for the wrong turn.
+	if startClaimable {
+		return startTurnID, startTurnID != ""
+	}
+	for _, pending := range snapshot.PendingExecutions {
 		if pending.Method == clientMutationMethodQueue &&
 			pending.ExecutionState == "incorporated" &&
 			pending.TurnID != "" &&

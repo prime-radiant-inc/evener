@@ -412,6 +412,16 @@ explicitly set. The CI web job runs make test-web, make build-web, and
 make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
 test so frontend tests are not duplicated.
 
+Two packages run as cost-balanced shards: the agent module through
+`evener dev agent-shards` and cmd/evener-hub, beside the rest of the root
+module, through `evener dev hub-shards` (cmd/evener-dev/agentshards.go). Each
+is one binary of thousands of mostly serial tests, so splitting it across
+processes is what bounds its wall time (hub: ~80s serial, ~13s as eight
+shards). A shard's `-test.run` arrives through `EVENER_SHARD_RUN_FILE`, which
+the package's TestMain applies with `shardrun.ConfigureRunFile` and then
+unsets, so a test that re-execs its own binary as a helper keeps its explicit
+`-test.run`. `AGENT_SHARDS=0` and `HUB_SHARDS=0` fall back to one `go test`.
+
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
 For Go streams, the runner copies ambient GOENV settings into that owned root
@@ -425,6 +435,23 @@ failed or interrupted run instead retains the directory and prints its path so
 the evidence that produced the failure remains available. Standard reusable
 caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
+
+That per-run directory lives in RAM when the host offers it: the runner mints
+it under `/dev/shm` when that is a writable directory with at least
+`GATE_SCRATCH_MIN_KB` (default 2GiB) free, and under the ambient `TMPDIR`
+otherwise (scripts/lib/gate-scratch-root.sh). On a disk every `t.TempDir`,
+SQLite fixture and atomic write pays real fsync latency; measured on a busy
+host, tmpfs took the gate from 558s to 221s and evener-doctor alone from 52s to
+0.5s. macOS has no `/dev/shm` and stays on disk. Two consequences for test
+authors: a failed run's retained logs occupy RAM until you delete them or
+reboot, and a test must not assume `TMPDIR` is under `/tmp`: a fixture that
+needs a `/tmp` path creates one explicitly (`tmpMainCheckout` in
+agent/sandbox). The agent sandbox's minimal `--dev` replaces `/dev`, so it
+re-binds read roots under `/dev/shm` afterwards and masks secrets there, the
+same way it treats `/tmp`; sandbox tests therefore behave the same with
+`TMPDIR` on disk or on `/dev/shm`. `XDG_RUNTIME_DIR` is not a usable
+alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
+their workspace under it.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
@@ -443,7 +470,11 @@ The frontend unit gate sizes Vitest from the machine's spare capacity through
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
 count) minus the 1-minute load average rounded up, clamped to at least one and
 at most four. A checkout where the helper cannot be read falls back to a flat
-four, which is what the gate used before the helper existed.
+four, which is what the gate used before the helper existed. On top of that,
+`vitest_run_args` (scripts/lib/gate-budgets.sh) and vite.config.ts's default
+never hand Vitest fewer than two workers. That floor is a correctness bound,
+not a tuning one, and it lives there rather than in the shared helper: see the
+vmThreads note below.
 The four is a ceiling, not a fixed pool. Vitest's own default pool is
 `os.availableParallelism()`, which oversubscribed a 10-core host under the
 combined load of `make test`'s sibling Go streams and starved otherwise causal
@@ -456,6 +487,28 @@ widens a timeout or replaces an awaitable completion with polling.
 Vitest file isolation prevents worker-count or file assignment from sharing
 module stores, panes, or mocks; per-file teardown is still required for timers,
 clients, and listeners.
+
+The suite runs on Vitest's `vmThreads` pool (vite.config.ts): each file gets
+its own VM context, module registry and jsdom window, but workers are reused,
+so jsdom (~450ms to load) loads once per worker rather than once per file.
+That took the suite from 164s to 75s at four workers. Three consequences for
+test authors, because the global object is now the jsdom window itself:
+
+- `localStorage` is a getter-only window property, so install a storage stub
+  with `installLocalStorage` (src/storageTestUtils.ts) rather than assigning
+  `globalThis.localStorage`.
+- `window.location` is non-configurable and cannot be stubbed; UI code reloads
+  through `reloadPage()` (src/shell/pageReload.ts), which a test spies on.
+- `instanceof` fails for objects built in the runner's realm, such as
+  `vi.mock`'s wrapper errors; check the brand
+  (`Object.prototype.toString.call(e) === "[object Error]"`) instead.
+
+With a single worker, Vitest batches every file of a VM pool into one shared
+context and isolation is gone, so the gate never sizes Vitest below two
+workers, and src/testSetup.ts fails the second file that lands in a used
+context. Running one file with `--maxWorkers=1` is fine.
+Workers are recycled at `vmMemoryLimit` (512MB); VM contexts otherwise grow a
+worker's memory file after file, and the unbounded suite peaked at 8.3GB.
 
 ### Whole-system residue audit
 
@@ -1211,7 +1264,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
-| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. | Any race report, test failure, or setup failure is nonzero. |
+| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, HUB_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A bless writes every package it measured and preserves the rest of the file, so a narrowed run refreshes part of the file instead of deleting the entries it did not measure. Under CHECK=1 in a CI-shaped environment a package over 1.5x its budget or any per-test ceiling breach is nonzero too; a missing or empty budget file always exits zero. |
 

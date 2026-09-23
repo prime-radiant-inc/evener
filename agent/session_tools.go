@@ -89,6 +89,7 @@ type stableDelegateCreateResult struct {
 	ChildSessionID string                      `json:"child_session_id"`
 	Type           string                      `json:"type"`
 	Status         string                      `json:"status"`
+	Name           string                      `json:"name,omitempty"`
 	AgentType      string                      `json:"agent_type,omitempty"`
 	Tools          []string                    `json:"tools,omitempty"`
 	Reason         string                      `json:"reason,omitempty"`
@@ -193,6 +194,7 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 		ChildSessionID: result.ChildSessionID,
 		Type:           result.Type,
 		Status:         string(result.Status),
+		Name:           result.Name,
 		AgentType:      result.AgentType,
 		Tools:          append([]string(nil), result.Tools...),
 		Reason:         result.Reason,

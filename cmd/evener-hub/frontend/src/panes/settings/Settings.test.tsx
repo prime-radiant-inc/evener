@@ -4,34 +4,14 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import Settings from "./Settings";
 
-// Node 26 shadows jsdom's real window.localStorage with its own
-// (non-functional under vitest) global - the same MemoryStorage stand-in
-// stores/prefs.test.ts's own comment documents, needed here because the
-// last-visited-section memory persists through localStorage.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 // jsdom does not implement window.matchMedia at all - useIsMobile.test.ts's

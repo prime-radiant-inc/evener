@@ -6,25 +6,10 @@
 import type { TranscriptDraftCheckpoint } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { MemoryStorage } from "../../storageTestUtils";
 import { browserDraftStorage } from "./draftStorage";
 
 const DRAFT_KEY = "evener.prefs.transcriptDisplay.draft";
-
-class MemoryStorage {
-  private values = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-  clear(): void {
-    this.values.clear();
-  }
-}
 
 const storage = new MemoryStorage();
 

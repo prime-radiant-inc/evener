@@ -1661,6 +1661,8 @@ describe("store and service agree on tone for every wire status", () => {
     "failed",
     "error",
     "errored",
+    "command_exited_nonzero",
+    "command_killed",
     "cancelled",
     "canceled",
     "exhausted",

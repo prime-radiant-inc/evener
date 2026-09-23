@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // These are integration tests for the manage_worktree create arm (spec §3),
@@ -167,13 +167,11 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	// When evener dev agent-shards launches this binary as a shard, the
-	// -test.run regex is handed via EVENER_SHARD_RUN_FILE (a file path) to
-	// stay under the OS argument-list limit. flag.Parse must run before
-	// flag.Set so the command-line value (absent here) does not clobber
-	// the file contents after m.Run calls flag.Parse internally.
+	// When evener dev agent-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). flag.Parse must
+	// run first so the command line's (absent) -test.run cannot clobber it.
 	flag.Parse()
-	if err := configureShardRunFile(); err != nil {
+	if err := shardrun.ConfigureRunFile(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
 		os.Exit(2)
 	}
@@ -217,28 +215,6 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(intgMCPServerDir)
 	}
 	os.Exit(code)
-}
-
-func configureShardRunFile() error {
-	runFile, supplied := os.LookupEnv("EVENER_SHARD_RUN_FILE")
-	if !supplied {
-		return nil
-	}
-	data, err := os.ReadFile(runFile)
-	if err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: read failed: %w", runFile, err)
-	}
-	pattern := strings.TrimSpace(string(data))
-	if pattern == "" {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: run regex is empty", runFile)
-	}
-	if _, err := regexp.Compile(pattern); err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: invalid run regex: %w", runFile, err)
-	}
-	if err := flag.Set("test.run", pattern); err != nil {
-		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: setting test.run failed: %w", runFile, err)
-	}
-	return nil
 }
 
 func packageFixtureTempDir(t *testing.T, pattern string) string {

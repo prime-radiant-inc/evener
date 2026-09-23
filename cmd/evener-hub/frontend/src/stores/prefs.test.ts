@@ -1,6 +1,7 @@
 import { decodeLocalConfig, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import {
   clampSidebarWidth,
   dualWriteTranscriptDisplayLegacy,
@@ -19,29 +20,8 @@ import {
   writeLegacyBooleanPreference,
 } from "./prefs";
 
-// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
-// real window.localStorage with its own (non-functional under vitest)
-// global, so every test file that touches localStorage needs this same
-// small in-memory stand-in. Scoped to this file only.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 // Every key this store reads/writes lives under this prefix - the plan's own

@@ -76,6 +76,14 @@ gate_init_budgets() {
 	# starting every shard at once (unchanged) while a smaller or busier one
 	# starts fewer.
 	export AGENT_SHARD_CONCURRENCY=${AGENT_SHARD_CONCURRENCY-$(gate_budget 8 8)}
+	# cmd/evener-hub's shards (evener dev hub-shards), which run beside the rest
+	# of the root module. Eight balance its ~2100 mostly-serial tests to ~9s
+	# each; per-shard width, survey width and concurrency are budgeted exactly
+	# like the agent's, so a loaded or one-CPU host shrinks both runners.
+	export HUB_SHARD_COUNT=${HUB_SHARD_COUNT-8}
+	export HUB_SHARD_PARALLEL=${HUB_SHARD_PARALLEL-$(gate_budget 3 3)}
+	export HUB_SHARD_SURVEY_PARALLEL=${HUB_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}
+	export HUB_SHARD_CONCURRENCY=${HUB_SHARD_CONCURRENCY-$(gate_budget 8 8)}
 }
 
 # gate_module_flags MODULE — the -p/-parallel flags run-module-tests.sh hands
@@ -98,8 +106,13 @@ gate_module_flags() {
 
 # vitest_run_args — the flags the frontend gate hands `vitest run`: the worker
 # count sized to spare capacity, four on an idle machine, fewer as the load
-# average rises, and four again when the helper is unavailable. The caller
-# expands this unquoted, so it must stay free of glob characters.
+# average rises, and four again when the helper is unavailable. Never fewer
+# than two: the suite runs on vitest's vmThreads pool, and with one worker
+# vitest batches every file into a single shared VM context, so module
+# singletons, jsdom windows and prototype stubs leak from file to file. The
+# caller expands this unquoted, so it must stay free of glob characters.
 vitest_run_args() {
-	printf '%s' "--maxWorkers=$(gate_budget 4 4)"
+	_vra_workers=$(gate_budget 4 4)
+	[ "$_vra_workers" -ge 2 ] || _vra_workers=2
+	printf '%s' "--maxWorkers=$_vra_workers"
 }

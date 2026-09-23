@@ -165,8 +165,10 @@ record). You never read raw events for answers — you read the **folds**:
 ### Jobs
 
 A `JobRecord` is the folded state of one job: `Status` (running / completed /
-failed / cancelled / stopped / exhausted), the `Reason` that produced it (e.g.
-`run_timeout`), `ExitCode`, `OutputBytes`, `StartedAt` / `EndedAt`, the
+failed / cancelled / stopped / exhausted / command_exited_nonzero /
+command_killed), the `Reason` that produced it (e.g. `run_timeout`; the
+command-outcome statuses carry `exit_nonzero` or `killed_by_signal`, the
+latter with the reaper's signal name appended), `ExitCode`, `OutputBytes`, `StartedAt` / `EndedAt`, the
 `NotifyState` (`terminal_notification_state` on disk — a terminal job still
 `pending` never told its caller; `delivered` was rendered into the caller's own
 notification turn, and `consumed` means the caller read the terminal

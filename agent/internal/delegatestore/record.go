@@ -94,6 +94,13 @@ type Descriptor struct {
 	ExplicitToolGrants  []string                    `json:"explicit_tool_grants,omitempty"`
 	DelegationAllowance int                         `json:"delegation_allowance,omitempty"`
 	Isolation           string                      `json:"isolation,omitempty"`
+	// Name is the caller-supplied label, set once at creation and immutable.
+	// With isolation:"worktree" it also names the lane's branch (mirrored in
+	// WorktreeBranch); otherwise it is display-only. Absent on legacy
+	// descriptors and unnamed delegates, where the zero value renders as
+	// absent. Addressing never uses it — every surface stays keyed to the
+	// delegate id.
+	Name string `json:"name,omitempty"`
 	// WorktreeBranch is the mnemonic git branch of a worktree-isolated
 	// delegate's lane; empty means the branch is the delegate id. The lane
 	// directory, sidecar, and all addressing stay id-keyed either way.

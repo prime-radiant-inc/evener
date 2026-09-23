@@ -5,8 +5,10 @@ import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
+import { StubResizeObserver } from "./resizeObserverTestUtils";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
+import { installLocalStorage, MemoryStorage } from "./storageTestUtils";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
 import { resetThreadsStoreForTests } from "./stores/threads";
@@ -72,32 +74,6 @@ const escapedFetches = vi.hoisted(() => {
   });
   return calls;
 });
-
-// The default route mounts AppShell -> DockHost -> real dockview-react, which
-// needs a ResizeObserver (jsdom has none) and localStorage (Node 26's own
-// global `localStorage` accessor shadows jsdom's real one without
-// --localstorage-file) - both verified via a live probe; see
-// shell/DockHost.test.tsx's own comments for the full detail on each.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 const EMPTY_NAV_RESPONSE = {
   generation_id: "test-generation",
@@ -179,11 +155,11 @@ async function warmRoute(path: string, text: string | RegExp): Promise<void> {
 beforeAll(async () => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
+  // The default route mounts AppShell -> DockHost -> real dockview-react, which
+  // needs a ResizeObserver (jsdom has none, verified via a live probe) and
+  // localStorage (storageTestUtils' MemoryStorage).
   globalThis.ResizeObserver = StubResizeObserver;
-  // @ts-expect-error MemoryStorage deliberately implements only the Storage
-  // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
-  // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   // connectionStore has no resetXForTests helper (see this file's other
   // stores) - every other file that touches it resets it inline in its own
   // beforeEach/beforeAll instead. This warm-up render is this file's first

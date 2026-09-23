@@ -15,34 +15,14 @@ import { parseKeybinding } from "tinykeys";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { KeybindingsSection } from "./keybindings";
 
-// Node 26 shadows jsdom's real window.localStorage with its own
-// (non-functional under vitest) global, so every test file that touches
-// localStorage (the prefs store does) needs this same small in-memory
-// stand-in - see stores/prefs.test.ts's own comment.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function resetRegistryToDefaults(): void {

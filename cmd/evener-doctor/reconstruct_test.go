@@ -1039,3 +1039,23 @@ func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
 		})
 	}
 }
+
+// TestValidArchivedResultStatusCommandOutcomes covers the command-outcome
+// statuses in the job_status/delegate arm: an AgentsView archive can record a
+// job whose supervised command exited nonzero or died on a signal, and
+// reconstruction must not abort on it.
+func TestValidArchivedResultStatusCommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if !validArchivedResultStatus("job_status", status) {
+			t.Errorf("validArchivedResultStatus(job_status, %q) = false, want true", status)
+		}
+		// The command-outcome statuses are shell-job statuses: a delegate's
+		// own lifecycle never carries one, so an archived delegate tool
+		// result with one is invalid, not reconstructed.
+		for _, tool := range []string{"delegate", "delegate_send"} {
+			if validArchivedResultStatus(tool, status) {
+				t.Errorf("validArchivedResultStatus(%q, %q) = true, want false", tool, status)
+			}
+		}
+	}
+}

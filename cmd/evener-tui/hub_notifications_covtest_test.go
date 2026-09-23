@@ -329,7 +329,7 @@ func TestCovChildActivityFromItem(t *testing.T) {
 
 // TestCovRunStillRunning exercises the running check.
 func TestCovRunStillRunning(t *testing.T) {
-	for _, status := range []string{"completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted"} {
+	for _, status := range []string{"completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted", "command_exited_nonzero", "command_killed"} {
 		if runStillRunning(status) {
 			t.Fatalf("runStillRunning(%q) = true, want false", status)
 		}

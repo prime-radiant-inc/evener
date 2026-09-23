@@ -55,6 +55,8 @@ const ACME: MarketplaceEntry = {
   lastUpdated: 1,
 };
 
+const NO_FENCES: ReadonlySet<string> = new Set();
+
 beforeEach(() => {
   alertRequests.length = 0;
 });
@@ -68,9 +70,14 @@ beforeEach(() => {
 function GuardedBrowser({
   client,
   canUseConnection = () => true,
+  fenced = NO_FENCES,
 }: {
   client: ConversationClientLike;
   canUseConnection?: () => boolean;
+  /** Names the screen has fenced since the last render: the browser's
+   * appliedRemovalNames prop can change while a confirmation dialog is open,
+   * the way the production screen's guard can. */
+  fenced?: ReadonlySet<string>;
 }) {
   const [guard, setGuard] = useState<ReadonlyMap<string, number>>(
     () => new Map(),
@@ -82,7 +89,10 @@ function GuardedBrowser({
   // tests hold a ready connection throughout.
   const lastAddMarketplaces = useRef<readonly MarketplaceEntry[] | null>(null);
   const marketplaces = useMemo(() => createMarketplacesStore(client), [client]);
-  const names = useMemo(() => new Set(guard.keys()), [guard]);
+  const names = useMemo(
+    () => new Set([...guard.keys(), ...fenced]),
+    [guard, fenced],
+  );
   return (
     <>
       <ErrorMessage message={warning} />
@@ -387,4 +397,50 @@ it("keeps the fence while the outcome's reconciliation read is on the wire", asy
     accessibilityLabel: "Remove marketplace",
   })[0];
   expect(again?.props.disabled).toBe(false);
+});
+
+it("does not confirm a removal the guard fenced while the dialog was open", async () => {
+  const fake = new FakeClient("ready");
+  let removals = 0;
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
+  fake.on("evener/marketplace/remove", () => {
+    removals += 1;
+    throw new Error("the removal should not have been issued");
+  });
+  const client = fake as unknown as ConversationClientLike;
+  const tree = render(<GuardedBrowser client={client} />);
+  await act(async () => {});
+  const row = tree.root.findAllByProps({ accessibilityLabel: "Browse acme" })[0];
+  if (!row) throw new Error("no acme row");
+  await act(async () => {
+    row.props.onPress();
+  });
+  const remove = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  const removePress = remove?.props.onPress;
+  if (!removePress) throw new Error("no Remove marketplace action");
+  act(() => removePress());
+
+  // The screen fences the name while the confirmation is open, the way a
+  // guard that outlives this view can: the confirm has to answer to the
+  // fence the screen holds at the press, not the one it held when the
+  // dialog opened.
+  await act(async () => {
+    tree.update(
+      <GuardedBrowser client={client} fenced={new Set(["acme"])} />,
+    );
+  });
+  const request = alertRequests.at(-1);
+  const confirmPress = request?.buttons?.find(
+    (button) => button.text === "Remove",
+  )?.onPress;
+  if (!confirmPress) throw new Error("no Remove confirm button");
+  await act(async () => {
+    confirmPress();
+  });
+  await act(async () => {});
+  expect(removals).toBe(0);
+  expect(renderedText(tree)).not.toContain("Could not confirm the change");
 });

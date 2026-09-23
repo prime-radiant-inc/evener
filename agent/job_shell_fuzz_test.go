@@ -157,8 +157,10 @@ var errFuzzShellWait = shfzShellError("wait failed")
 //     fake output, TotalBytes is its length, and (because output stays below the
 //     retention cap) it is not truncated and drops nothing;
 //   - exit-code contract: Wait error -> failed/wait_failed; else exit 0 ->
-//     completed/exit_zero; else a negative exit -> failed/killed_by_signal and
-//     other non-zero exits -> failed/exit_nonzero; ExitCode echoes the fake;
+//     completed/exit_zero; else a negative exit -> command_killed/
+//     killed_by_signal and other non-zero exits -> command_exited_nonzero/
+//     exit_nonzero (the command's outcome, not a job failure); ExitCode
+//     echoes the fake;
 //   - deterministic: replaying the same inputs on a fresh manager yields an
 //     identical result summary.
 //
@@ -219,19 +221,21 @@ func shfz_wantForegroundStatus(in shfz_foregroundInputs) (status, reason string)
 	case in.exitCode == 0:
 		return string(jobstore.StatusCompleted), "exit_zero"
 	case in.exitCode < 0:
-		return string(jobstore.StatusFailed), "killed_by_signal"
+		return string(jobstore.StatusCommandKilled), "killed_by_signal"
 	default:
-		return string(jobstore.StatusFailed), "exit_nonzero"
+		return string(jobstore.StatusCommandExitedNonzero), "exit_nonzero"
 	}
 }
 
 // shfz_knownStatuses is the closed set of statuses a shellResult may carry.
 var shfz_knownStatuses = map[string]bool{
-	string(jobstore.StatusRunning):   true,
-	string(jobstore.StatusCompleted): true,
-	string(jobstore.StatusFailed):    true,
-	string(jobstore.StatusStopped):   true,
-	string(jobstore.StatusCancelled): true,
+	string(jobstore.StatusRunning):              true,
+	string(jobstore.StatusCompleted):            true,
+	string(jobstore.StatusFailed):               true,
+	string(jobstore.StatusCommandExitedNonzero): true,
+	string(jobstore.StatusCommandKilled):        true,
+	string(jobstore.StatusStopped):              true,
+	string(jobstore.StatusCancelled):            true,
 }
 
 // shfz_modeInputs is the decoded fuzz program for the mode/fault sweep.

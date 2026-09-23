@@ -383,9 +383,12 @@ to move it to the new build.
 
 ### Deploying to remote hosts
 
-A host that runs a build other than the hub's is upgraded on attach: the hub
-installs its own build over the host's `evener`, restarts the host's hub, and
-attaches only after the running build matches. Two startup flags give it a
+A host that runs a build other than the hub's is upgraded on attach **when the
+hub has a build to install**: it installs its own build over the host's
+`evener`, restarts the host's hub, and attaches only after the running build
+matches. With no build to install the host keeps its own build and attaches
+anyway, because the appwire protocol — not the build label — decides
+compatibility, and the hub logs the difference. Two startup flags give it a
 build to push:
 
 - `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
@@ -416,15 +419,19 @@ attach, and the hub never serves a host on a build it did not stamp.
 With neither flag the push path is unavailable. A release or snapshot
 controller still installs through `install.sh` on the host (the installer
 fallback); where that is refused — a dev or dirty controller, or a release
-build with no stamped tag — a host whose build differs is refused rather than
-silently left on a different build. The fallback is also refused for a snapshot
+build with no stamped tag — nothing is installed, so the host keeps its own
+build and attaches, and the hub logs which build it kept. The fallback is also
+refused for a snapshot
 controller once the mutable `snapshot` tag has moved past this controller's
 commit. For a snapshot controller the fallback writes the binary before its
 commit is proven, so prefer `-deploy-binary` or `-build-source`; the push path
 is the one the refusal names.
 
 When a deploy fails, the refusal lands in that host's attach error — its row in
-Settings — naming the flag to set.
+Settings — naming the flag to set. A host that attached on its own build raises
+no error; the hub's log line is where its build is recorded. Set one of the two
+flags when you want such a host moved onto the hub's build: that is what makes
+the hub converge it.
 
 ### Trace browser AppWire traffic
 

@@ -1,6 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import {
+	createMutationProjectionFence,
+	type MutationAttachmentRef,
+	type MutationPersistencePort,
+	type MutationPersistenceSnapshot,
+} from "@evener/appwire-client/state/mutation";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -99,6 +105,239 @@ test("a target stays gated until a matching authoritative read opens it", async 
 	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
 
 	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	await runtime.stop();
+});
+
+test("read and storage subscriptions expose a scoped rejection without changing origin identity", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+		getOwnClientId: () => "origin-a",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", (params) => {
+		const { clientMutationId } = params as { clientMutationId: string };
+		throw new WireError("turn is not active", -32000, {
+			clientMutationId,
+			mutationOutcome: "notAccepted",
+		});
+	});
+	runtime.registerTarget("hub-a", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-a", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => {
+		changes.push([...targetRefs]);
+	});
+
+	await runtime.submit({ ...request("send"), hubId: "hub-a" });
+	expect(changes).toEqual([[targetKey]]);
+	const lease = runtime.beginAuthoritativeRead("hub-a", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getRecovery("mutation-1")).toMatchObject({
+			targetRef: targetKey,
+			originClientId: "origin-a",
+			recoveryKind: "rejected",
+		});
+	});
+
+	const snapshot = await runtime.read(targetKey);
+	expect(snapshot.outbox).toEqual([]);
+	expect(snapshot.optimistic).toEqual([]);
+	expect(snapshot.recovery).toMatchObject([{ clientMutationId: "mutation-1", targetRef: targetKey }]);
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+
+	const changeCount = changes.length;
+	unsubscribe();
+	await runtime.submit({ ...request("send"), hubId: "hub-a" });
+	expect(changes).toHaveLength(changeCount);
+	await runtime.stop();
+});
+
+test("discardRecovery notifies storage listeners after the durable deletion completes", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+		getOwnClientId: () => "origin-a",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", (params) => {
+		const { clientMutationId } = params as { clientMutationId: string };
+		throw new WireError("turn is not active", -32000, {
+			clientMutationId,
+			mutationOutcome: "notAccepted",
+		});
+	});
+	runtime.registerTarget("hub-a", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-a", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+
+	await runtime.submit({ ...request("send"), hubId: "hub-a" });
+	const lease = runtime.beginAuthoritativeRead("hub-a", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getRecovery("mutation-1")).toMatchObject({
+			targetRef: targetKey,
+			recoveryKind: "rejected",
+		});
+	});
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+	// A second listener probes the durable state at notify time, so the
+	// test can pin that it ran after the storage write: a notify that
+	// raced ahead of the DELETE would still observe the row here.
+	let readAtNotify: ReturnType<typeof runtime.read> | undefined;
+	const unsubscribeProbe = runtime.subscribeStorage(() => {
+		readAtNotify = runtime.read(targetKey);
+	});
+
+	const discarded = await runtime.discardRecovery("mutation-1", targetKey);
+	expect(discarded).toBe(true);
+	expect(changes).toEqual([[targetKey], [targetKey], [targetKey]]);
+	expect(await runtime.storage.getRecovery("mutation-1")).toBeUndefined();
+	expect(readAtNotify).toBeDefined();
+	expect((await readAtNotify)?.recovery).toEqual([]);
+	unsubscribe();
+	unsubscribeProbe();
+	await runtime.stop();
+});
+
+test("a discard that removes nothing still notifies the storage projection", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const targetKey = nativeMutationTargetKey("hub-a", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+
+	// The zero-included rule (docs/design/stop-cancellation-outbox.md §4):
+	// the notify follows the write's completion, not its rows-affected
+	// count, so a discard whose DELETE commits over zero rows - the row was
+	// already removed, or belongs to another target - still refreshes the
+	// projection instead of waiting for an unrelated mutation event.
+	const discarded = await runtime.discardRecovery("mutation-404", targetKey);
+	expect(discarded).toBe(false);
+	expect(changes).toEqual([[targetKey]]);
+	unsubscribe();
+});
+
+test("a failed discard write stays silent and reports the failure", async () => {
+	const database = openDatabase();
+	const originalRunSync = database.runSync;
+	database.runSync = (sql, ...params) => {
+		if (sql.includes("DELETE FROM mutation_recovery")) throw new Error("journal unavailable");
+		return originalRunSync(sql, ...params);
+	};
+	const runtime = new NativeMutationRuntime(database, {
+		createMutationId: () => "mutation-1",
+	});
+	const targetKey = nativeMutationTargetKey("hub-a", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+
+	// The other half of the zero-included rule: the notify follows a
+	// completed write, so a failed one stays silent (§6: a failed discard
+	// leaves the rows for the next attempt) and the error propagates.
+	await expect(runtime.discardRecovery("mutation-1", targetKey)).rejects.toThrow("journal unavailable");
+	expect(changes).toEqual([]);
+	unsubscribe();
+});
+
+test("the runtime feeds the shared projection fence through its scoped read contract", async () => {
+	let nextId = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => `mutation-${++nextId}`,
+	});
+	await runtime.submit(request("queue"));
+
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	// Compile-level conformance with no adapter: the scoped read returns
+	// the package's own MutationPersistenceSnapshot, so a field added to
+	// the shared snapshot breaks here instead of silently diverging in a
+	// parallel native copy - and a read that takes the target key as
+	// required still satisfies the fence's MutationPersistencePort
+	// parameter structurally, because a required-arg method widens to the
+	// port's optional-arg method shape.
+	const fence = createMutationProjectionFence<MutationAttachmentRef>();
+	const refresh = await fence.refresh(runtime, targetKey);
+	if (!refresh) throw new Error("the scoped refresh must produce a snapshot");
+	expect([...refresh.apply()]).toEqual([targetKey]);
+	expect(refresh.snapshot.outbox).toMatchObject([
+		{ clientMutationId: "mutation-1", targetRef: targetKey },
+	]);
+	expect(refresh.snapshot.optimistic).toEqual([]);
+	expect(refresh.snapshot.recovery).toEqual([]);
+
+	// The contract's own compile-level pin: the native read takes the
+	// composite target key as REQUIRED, so the all-targets form the shared
+	// port permits is not callable on the runtime's own type. The binding
+	// is type-level only and never executes.
+	// @ts-expect-error the native read contract requires the composite target key
+	const readWithoutTarget: () => Promise<MutationPersistenceSnapshot<MutationAttachmentRef>> = runtime.read;
+	expect(readWithoutTarget).toBe(runtime.read);
+
+	// The one route that remains to the all-targets form is the structural
+	// widening the port's method shape permits. The native recovery
+	// projection is scoped (the storage's listRecovery requires the exact
+	// composite key), so that form has no native backing: the widened
+	// reference fails loudly rather than returning a snapshot that
+	// silently drops recovery rows, and the fence degrades the rejected
+	// read to a no-op refresh.
+	const widened: MutationPersistencePort<MutationAttachmentRef> = runtime;
+	await expect(widened.read()).rejects.toThrow(/targetRef is required/);
+	expect(await fence.refresh(widened)).toBe(false);
+});
+
+test("an attempted non-authoritative read notifies the storage projection after blocking a record", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+	await runtime.submit(request("send"));
+	await runtime.storage.markAttempted("mutation-1");
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+
+	await expect(runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }))).resolves.toBe(
+		"reconciled",
+	);
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	unsubscribe();
+	await runtime.stop();
+});
+
+test("a stale lease still notifies after its non-authoritative blocking write commits", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	const replacement = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+	await runtime.submit(request("send"));
+	await runtime.storage.markAttempted("mutation-1");
+	const markUnknown = runtime.storage.markUnknown.bind(runtime.storage);
+	runtime.storage.markUnknown = async (clientMutationId, state, options) => {
+		const changed = await markUnknown(clientMutationId, state, options);
+		runtime.registerTarget("hub-1", "ref-1", replacement);
+		return changed;
+	};
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+
+	await expect(runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1", { authoritative: false }))).resolves.toBe("stale");
+	expect(changes).toEqual([[targetKey], [targetKey]]);
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	unsubscribe();
 	await runtime.stop();
 });
 

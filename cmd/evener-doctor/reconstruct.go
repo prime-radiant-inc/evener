@@ -572,6 +572,12 @@ func validArchivedResultStatus(toolName, status string) bool {
 		// AgentsView uses delegate lifecycle as the status of successful calls
 		// to these tools. A failed delegate is not a failed status query.
 		return toolName == "delegate" || toolName == "delegate_send" || toolName == "job_status"
+	case "command_exited_nonzero", "command_killed":
+		// The command-outcome statuses are shell-job statuses: a job_status
+		// result may carry one (the supervised command exited nonzero or was
+		// signalled, still a successful query about a finished job), but a
+		// delegate's own lifecycle never does.
+		return toolName == "job_status"
 	default:
 		return false
 	}

@@ -64,11 +64,18 @@ func equalWeights(listOutput string) []testCost {
 	return costs
 }
 
+// minTestCost is the least a test is charged when packing. `go test -v`
+// reports durations in 10ms steps, so most tests survey as 0.00s; charged at
+// zero they never raise the least-loaded shard's load, and greedy packing
+// piles every one of them into that shard. Half a step is what a "0.00s"
+// test costs on average.
+const minTestCost = 0.005
+
 // packShards partitions costs into n cost-balanced bins, longest processing
 // time first, and proves the partition is a bijection over the test set
 // before anything runs: a filter bug that dropped tests would otherwise
 // present as a faster, still-green suite.
-func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err error) {
+func packShards(costs []testCost, n int, envPrefix string) (bins [][]string, loads []float64, err error) {
 	if len(costs) == 0 {
 		return nil, nil, errors.New("found no tests to shard")
 	}
@@ -86,7 +93,7 @@ func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err 
 			}
 		}
 		bins[at] = append(bins[at], tc.name)
-		loads[at] += tc.cost
+		loads[at] += max(tc.cost, minTestCost)
 	}
 
 	placed := 0
@@ -114,7 +121,7 @@ func packShards(costs []testCost, n int) (bins [][]string, loads []float64, err 
 		}
 	}
 	if nonEmpty != n {
-		return nil, nil, fmt.Errorf("asked for %d shards but only %d are non-empty; lower AGENT_SHARD_COUNT", n, nonEmpty)
+		return nil, nil, fmt.Errorf("asked for %d shards but only %d are non-empty; lower %s_SHARD_COUNT", n, nonEmpty, envPrefix)
 	}
 	return bins, loads, nil
 }
@@ -251,11 +258,12 @@ var testRefusedBareFlags = map[string]bool{
 }
 
 // refusalReason is the sentence that goes with the flag's name, for the few
-// where the runner has a direct answer to "then how do I do this?".
+// where the runner has a direct answer to "then how do I do this?". {PREFIX}
+// is the runner's environment prefix (AGENT, HUB).
 var refusalReason = map[string]string{
 	"-run":      "this runner selects each shard's tests from the survey",
-	"-skip":     "use AGENT_SHARD_SKIP, which the survey and the shards both read",
-	"-parallel": "use AGENT_SHARD_PARALLEL; the runner sets -test.parallel per shard",
+	"-skip":     "use {PREFIX}_SHARD_SKIP, which the survey and the shards both read",
+	"-parallel": "use {PREFIX}_SHARD_PARALLEL; the runner sets -test.parallel per shard",
 	"-args":     "the shards are launched by this runner with the flags it needs, so there is no argument list to append to",
 	"-c":        "this runner already compiles the binary itself",
 	"-o":        "this runner names the binary it compiles",
@@ -336,7 +344,7 @@ func walkFlags(flags []string, visit func(flagToken) error) error {
 	return nil
 }
 
-func parseFlags(flags []string) (parsedFlags, error) {
+func parseFlags(flags []string, envPrefix string) (parsedFlags, error) {
 	var out parsedFlags
 	err := walkFlags(flags, func(tok flagToken) error {
 		f, name, inline, value, hasValue := tok.whole, tok.name, tok.value, tok.value, tok.hasValue
@@ -375,7 +383,7 @@ func parseFlags(flags []string) (parsedFlags, error) {
 				out.test = append(out.test, "-test."+strings.TrimPrefix(name, "-")+"="+value)
 			}
 		case testRefusedValueFlags[name] || testRefusedBareFlags[name]:
-			return refusalFor(name)
+			return refusalFor(name, envPrefix)
 		case buildValueFlags[name]:
 			if hasInline {
 				out.build = append(out.build, f)
@@ -408,11 +416,11 @@ func errUnsupportedC() error {
 // refusalFor is the one refusal a flag this runner cannot honour gets, on
 // whichever route it arrived by: its own reason where there is one to give,
 // and otherwise the shape of the runner that makes it meaningless here.
-func refusalFor(name string) error {
+func refusalFor(name, envPrefix string) error {
 	if reason, ok := refusalReason[name]; ok {
-		return fmt.Errorf("%s is not supported by agent-shards: %s", name, reason)
+		return fmt.Errorf("%s is not supported by this shard runner: %s", name, strings.ReplaceAll(reason, "{PREFIX}", envPrefix))
 	}
-	return fmt.Errorf("%s is not supported by agent-shards: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
+	return fmt.Errorf("%s is not supported by this shard runner: it builds one binary, runs it as several shards, and writes its own logs, so this flag cannot mean here what it means to `go test`", name)
 }
 
 // boolFlagValue reads a boolean flag's inline value the way go's flag package
@@ -428,7 +436,7 @@ func boolFlagValue(name, inline string, hasInline bool) (bool, error) {
 		// reads "--- PASS:" lines to weigh each test, and test2json turns them
 		// into JSON objects, so the costs it packs shards from would all be
 		// zero.
-		return false, errors.New("-v=test2json is not supported by agent-shards: the survey reads the test binary's plain output to weigh each test, and cannot read JSON")
+		return false, errors.New("-v=test2json is not supported by this shard runner: the survey reads the test binary's plain output to weigh each test, and cannot read JSON")
 	}
 	parsed, err := strconv.ParseBool(inline)
 	if err != nil {
@@ -526,7 +534,7 @@ func isGoflagsSpace(c byte) bool {
 // GOFLAGS reaches neither the build nor the shards and silently does nothing.
 // Build-side entries are another matter: those do reach the compile, and pass
 // through untouched.
-func checkGoflags(goflags string) error {
+func checkGoflags(goflags, envPrefix string) error {
 	return walkFlags(goflagsEntries(goflags), func(tok flagToken) error {
 		if tok.name == "-C" {
 			return errUnsupportedC()
@@ -542,7 +550,7 @@ func checkGoflags(goflags string) error {
 		if testRefusedValueFlags[tok.name] || testRefusedBareFlags[tok.name] {
 			// The same answer it gets on the command line: this runner cannot
 			// honour it at all, so where it was written changes nothing.
-			return fmt.Errorf("GOFLAGS carries %w", refusalFor(tok.name))
+			return fmt.Errorf("GOFLAGS carries %w", refusalFor(tok.name, envPrefix))
 		}
 		return nil
 	})

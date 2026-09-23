@@ -41,6 +41,7 @@
 import {
   canReadSharedNotes,
   humanizeState,
+  isActivityFailure,
   watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
@@ -48,6 +49,7 @@ import {
   watchTitle,
 } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
+import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
@@ -886,12 +888,13 @@ function jobTitle(job: JobRailNode["job"], status: string): string {
 function JobRow({ node }: { node: JobRailNode }) {
   const active = node.active;
   const status = node.job.status.trim() || (active ? "running" : "completed");
+  const displayStatus = jobStatusDisplay(status, node.job.reason);
   return (
     <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
-          <span className={CLASS.label} title={jobTitle(node.job, status)}>
+          <Signal wireState={active ? "active" : isActivityFailure(undefined, status) ? "errored" : "ended"} />
+          <span className={CLASS.label} title={jobTitle(node.job, displayStatus)}>
             {jobLabel(node.job)}
           </span>
         </span>
@@ -899,7 +902,7 @@ function JobRow({ node }: { node: JobRailNode }) {
           data-testid="rail-row-job-status"
           className={active ? `${CLASS.activity} ${CLASS.activityAlive}` : CLASS.activity}
         >
-          {status}
+          {displayStatus}
         </span>
       </span>
     </span>

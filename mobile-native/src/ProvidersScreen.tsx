@@ -33,19 +33,19 @@ import {
   staleListingHeld,
 } from "@evener/appwire-client/state/credentials";
 import { appliedInstanceWrite } from "./appliedInstanceWrite";
-import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import {
-  isReady,
-  useConnectionDisplay,
-  useLiveReadiness,
-  whenReady,
-} from "./connectionDisplay";
+import { isReady, whenReady } from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { useProviderSurface } from "./providerSurface";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { ProviderSignIn } from "./providerSignIn";
+import {
+  ConnectionWall,
+  HUB_NO_LONGER_SELECTED,
+  ModalConnectionStatus,
+  useRetainedScreenConnection,
+} from "./retainedScreen";
 import type { Routes } from "./screens";
 import {
   Action,
@@ -83,10 +83,8 @@ const FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE =
 // A mounted screen re-keyed to another hub is a fresh screen: the
 // reconnect-retention state below - the banner's everReady, the sign-in
 // flow, the credential store with its last listing - belongs to the hub it
-// was built for, and none of it may survive a hub the route now names.
-// React Navigation can update a mounted instance's params (setParams on a
-// focused screen is this app's own idiom - see KeybindingPreferencesScreen),
-// so the body is keyed to the hub id and a re-key remounts it whole.
+// was built for, and a re-key remounts the body whole (the keyed wrapper's
+// own rationale: useRetainedScreenConnection's doc).
 export function ProvidersScreen(
   props: NativeStackScreenProps<Routes, "Providers">,
 ) {
@@ -96,10 +94,9 @@ export function ProvidersScreen(
 function ProvidersScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Providers">) {
-  const { activeProfile, client, state, fatal, retry } = useConnection();
-  const display = useConnectionDisplay(activeProfile?.id, state, fatal);
+  const { activeProfile, client, state, retry, display, canUseConnection } =
+    useRetainedScreenConnection(route.params.hubId);
   const ready = isReady(state);
-  const canUseConnection = useLiveReadiness(route.params.hubId, client, state);
   const [signIn, setSignIn] = useState<{
     hubId: string;
     name: string;
@@ -108,8 +105,8 @@ function ProvidersScreenBody({
   const [revision, setRevision] = useState(0);
   // useCredentialStore already survives a flap on its own (connectionChanged
   // rebinds it - credentialStore.ts), so unlike Plugins/HubSettings this
-  // screen needs no "last known client" fallback: <Providers> below takes
-  // only `store`, never `client` directly.
+  // screen reads no retained client: <Providers> below takes only `store`,
+  // never `client` directly, and the wall below waits on the display alone.
   const store = useCredentialStore();
   // The write gate the credential core holds over a replaced connection's
   // rows, subscribed so the resume below can wait for it: a manual retry
@@ -144,15 +141,14 @@ function ProvidersScreenBody({
       void signIn.flow.start();
   }, [signIn, activeProfile?.id, client, state, ready, writesRefused]);
   if (activeProfile?.id !== route.params.hubId)
-    return (
-      <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
-    );
+    return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
   if (display === "wall")
     return (
-      <View style={{ padding: 20 }}>
-        <Copy>Connect to {activeProfile.name} to manage providers.</Copy>
-        <Action onPress={retry}>Reconnect</Action>
-      </View>
+      <ConnectionWall
+        hubName={activeProfile.name}
+        purpose="manage providers"
+        onReconnect={retry}
+      />
     );
   return (
     <>
@@ -537,11 +533,11 @@ function Providers({
             </View>
             <Action onPress={close}>Done</Action>
           </View>
-          {/* The native modal covers the screen's banner, so while this
-           * editor is open the status and the manual reconnect live here
-           * instead - and the draft stays in reach of neither a dismissal
-           * nor a missed recovery. */}
-          {connectionState !== "ready" ? <ConnectionStatus /> : null}
+          {/* The status lives in the modal because the native modal covers
+           * the screen's banner (ModalConnectionStatus's own doc) - and the
+           * draft stays in reach of neither a dismissal nor a missed
+           * recovery. */}
+          <ModalConnectionStatus connectionState={connectionState} />
           <View style={styles.fill}>
             <ScrollView
               automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}

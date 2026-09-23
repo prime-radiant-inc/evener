@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"sort"
@@ -368,6 +369,476 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 			Cause:            "persistenceUnavailable",
 		},
 	}
+}
+
+// mutationResumeFailureError reports a resume failure the way the mutation that
+// needed the resume must see it.
+//
+// A resume that failed because the CALLER'S TARGET was deleted is not an unknown
+// outcome: that target is gone, and the deletion is this caller's to reconcile,
+// so the refusal keeps its own meaning (MutationOutcomeTargetDeleted /
+// RetryDispositionNone) and is named for this caller. Without that, a mutation
+// whose target was deleted between the failed attempt and the auto-resume would
+// come back unknown/blocked and its record would be retained rather than
+// reconciled as orphaned.
+//
+// A resume fences TWO sets, however, and only the first is this caller's target.
+// resumeThreadLockedLaunch fences the requested target alone and then every alias
+// of its ownership group (deletionFenceErrorForGroup), and it reports the first
+// alias it finds deleted. Since the requested target's own fence runs first, a
+// group-fence failure the mutation sees is by construction about a SIBLING alias
+// -- another name of the session, not the target the caller addressed (see
+// deletionFenceErrorForGroup's doc and the force-stop path's identical
+// sibling-alias fence). Settling the caller's record as orphaned on a sibling's
+// deletion would discard a mutation addressed to a target that may still exist.
+//
+// The decision therefore asks the fence every admission path already asks --
+// deletionFenceError, the single-target fence, which answers for the requested
+// target and names the caller's own id -- instead of trusting whichever alias the
+// resume reported. When it answers, that refusal is returned (the deletion, named
+// for this caller, with its own outcome); when it does not, the failure keeps
+// exactly the blocked-unknown envelope it gets today, as does every non-deletion
+// resume failure. Nothing here touches the id the daemon stored.
+func mutationResumeFailureError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string, resumeErr error) error {
+	if clientMutationID == "" {
+		return resumeErr
+	}
+	if isTargetDeletedError(resumeErr) {
+		if own := deletionFenceError(cfg, ref, threadID, clientMutationID); own != nil {
+			return own
+		}
+		// A stable alias can resolve to a different CURRENT target, and the resume
+		// fences that resolved ownership too (resumeThread resolves it and hands the
+		// resolved target to the locked launch's fence), so a deletion of the target
+		// this caller's alias resolves to is the caller's own even though the alias
+		// itself is not the deleted record. The resume discards the resolved target
+		// when it fails, so re-resolve it with the same resolver instead of
+		// guessing. Only these two ends of the caller's own request are claimed, so a
+		// SIBLING alias's deletion stays out of this caller's record.
+		if resolved := resolvedOwnershipTarget(cfg, ref, threadID); resolved != "" {
+			if own := deletionFenceError(cfg, "", resolved, clientMutationID); own != nil {
+				return own
+			}
+		}
+	}
+	return blockedUnknownMutationError(clientMutationID, resumeErr)
+}
+
+// resolvedOwnershipTarget returns the current target a mutation's ref resolves
+// to, computed with the same resolver the resume used (resumeOwnership), or ""
+// when it cannot be resolved: the hub holds no resume authority to resolve with,
+// the ref is not a local one, the request names no id, or the ownership chain
+// refuses to resolve (a pending recovery obligation, a cycle).
+//
+// It mirrors resumeThread's own derivation of the requested identity, so the
+// chain walked here is the chain that resume walked; a resolution that has moved
+// on since the resume failed simply yields a target the fence does not recognize,
+// which keeps the caller's record retained rather than misattributed.
+func resolvedOwnershipTarget(cfg hubcore.WebConfig, ref, threadID string) string {
+	if cfg.ResumeLocks == nil {
+		return ""
+	}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID != "local" {
+		return ""
+	}
+	requestedID := strings.TrimSpace(threadID)
+	if requestedID == "" {
+		requestedID = parsed.ThreadID
+	}
+	if requestedID == "" {
+		return ""
+	}
+	target, _, err := resumeOwnership(cfg, requestedID, parsed.ThreadID)
+	if err != nil {
+		return ""
+	}
+	return target
+}
+
+// canonicalMutationID returns the form two clientMutationId values are compared
+// in.
+//
+// The hub does not trim the caller's id: it echoes exactly what the caller sent,
+// because every client correlates its outbox record by that id. The daemon does
+// trim it, at its own handler boundary, before a receipt or a refusal ever names
+// it (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear set
+// params.ClientMutationID = strings.TrimSpace(params.ClientMutationID), and
+// agent/session_notes_rpc.go does the same). A byte-exact hub comparison would
+// therefore fail to see a padded caller id (" mut-1 ") in the normalized id the
+// daemon named ("mut-1"), and treat a known rejection or deletion as if it
+// belonged to someone else.
+func canonicalMutationID(id string) string { return strings.TrimSpace(id) }
+
+// mutationIDsMatch reports whether a caller's clientMutationId and the id a
+// hub-visible error names refer to the same mutation, compared canonically (see
+// canonicalMutationID). Only a non-empty error id can match: an error that names
+// no mutation never names the caller's.
+func mutationIDsMatch(callerID, errorID string) bool {
+	canonical := canonicalMutationID(errorID)
+	return canonical != "" && canonical == canonicalMutationID(callerID)
+}
+
+// errorNamesClientMutation reports whether err already carries clientMutationID,
+// the id of the mutation the caller submitted.
+//
+// Every client judges a failed mutation by that id alone: the web outbox's
+// dispatcher refuses to correlate a failure that names none and a different id
+// (appwire-client/typescript/state/mutation/dispatcher.ts), so the record stays
+// "submitting" -- the prompt is neither delivered nor surfaced as failed, and
+// the user has to retype it. A refusal the daemon minted for the caller's own
+// mutation (rejectClientMutation sets the id) needs no help; a refusal that
+// names a different mutation is no more correlatable for this caller than one
+// that names none, and one that names none has to be wrapped before it leaves
+// the hub.
+//
+// The comparison is canonical, not byte-exact (see mutationIDsMatch): the hub
+// does not trim the caller's id, but the daemon names the id it trimmed, so a
+// padded caller id would otherwise fail to recognize its own rejection. This is
+// a comparison-time canonicalization only -- an id the hub echoes back stays
+// exactly what the caller sent (see adoptCallerMutationID), because the client
+// correlates byte-for-byte.
+//
+// The wire client decodes ErrorData as a map on some paths and as the typed
+// struct on others, so both shapes are read -- the same convention
+// app_retirement_resume.go's isLifecycleRetiringError follows.
+func errorNamesClientMutation(err error, clientMutationID string) bool {
+	if clientMutationID == "" {
+		return false
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		return false
+	}
+	return mutationIDsMatch(clientMutationID, clientMutationIDFromData(wire.Data))
+}
+
+// adoptCallerMutationID hands err back with its clientMutationId rewritten to
+// the caller's own id when the error names the same mutation in canonical form
+// but not byte-for-byte -- the daemon trims the id before naming it, the caller
+// submitted it padded.
+//
+// The rewrite is what keeps the response echoable: every client correlates its
+// outbox record byte-for-byte against the id it submitted
+// (appwire-client/typescript/state/mutation/dispatcher.ts compares
+// data.clientMutationId !== record.clientMutationId), so a response carrying the
+// daemon's normalized id would never settle a record that submitted a padded
+// one. The id is never rewritten to a trimmed form -- the caller's own id is
+// always the one echoed.
+//
+// err is returned unchanged when there is nothing to rewrite: it is not a
+// WireError, it names no id, it already names the caller's id, or it names a
+// mutation that is not the caller's. The rewrite handles both decoded shapes
+// (typed ErrorData and map[string]any), the convention nameTargetDeletedFailure
+// follows.
+func adoptCallerMutationID(err error, clientMutationID string) error {
+	if clientMutationID == "" {
+		return err
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return err
+	}
+	named := clientMutationIDFromData(wire.Data)
+	if named == clientMutationID || !mutationIDsMatch(clientMutationID, named) {
+		return err
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = clientMutationID
+		wire.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		wire.Data = updated
+	default:
+		return err
+	}
+	return wire
+}
+
+// adoptCallerMutationReceipt returns receipt with its ClientMutationID rewritten
+// to the caller's own id when the receipt names the same mutation in canonical
+// form but not byte-for-byte -- the daemon trims the id before it mints the
+// receipt, while the caller submitted it padded.
+//
+// A successful mutation's receipt is what settles the caller's outbox record,
+// and every client correlates that record byte-for-byte against the id it
+// submitted (appwire-client/typescript/state/mutation/dispatcher.ts compares
+// receipt.clientMutationId !== record.clientMutationId). A receipt naming the
+// daemon's normalized id would therefore leave a padded record submitting even
+// though the mutation applied: the success-path twin of the failure-path
+// rewrite adoptCallerMutationID performs. Only the id changes -- disposition,
+// thread/instance/turn ids, queue entry ids and projection state are untouched
+// -- and the id is never rewritten to a trimmed form.
+func adoptCallerMutationReceipt(receipt appwire.MutationReceipt, clientMutationID string) appwire.MutationReceipt {
+	if clientMutationID == "" || receipt.ClientMutationID == clientMutationID {
+		return receipt
+	}
+	if !mutationIDsMatch(clientMutationID, receipt.ClientMutationID) {
+		return receipt
+	}
+	receipt.ClientMutationID = clientMutationID
+	return receipt
+}
+
+// adoptFailureClientMutationID adopts the caller's own id onto a failure a
+// direct mutation path returned: first nameTargetDeletedFailure's stamp for an
+// ID-LESS target deletion, then adoptCallerMutationID's canonical rewrite.
+//
+// A target deletion is the one failure the hub can always attribute to the
+// caller whose mutation hit it, even when the error says nothing about which
+// mutation that was: a preflight thread/read deletion relayed from a remote hub
+// reaches the hub with no clientMutationId at all (app_relay.go's startTurn
+// hands it back untouched when the hub holds no deletion record of its own), and
+// the deleting client's record is the caller's. Stamping the caller's id keeps
+// the deletion's own outcome (targetDeleted / none) so the client reconciles the
+// record as orphaned instead of leaving it submitting. nameTargetDeletedFailure
+// is reused exactly as the retry path uses it -- it already refuses to touch a
+// deletion that names a different mutation.
+//
+// Nothing else acquires an id here. An error that already names a DIFFERENT
+// mutation is not this caller's to own (adoptCallerMutationID leaves it, and
+// nameTargetDeletedFailure declines it), and an ID-LESS error that is not a
+// deletion could belong to any caller, so it is left exactly as it is rather
+// than claimed for this one.
+func adoptFailureClientMutationID(err error, clientMutationID string) error {
+	if err == nil || clientMutationID == "" {
+		return err
+	}
+	if isTargetDeletedError(err) {
+		if enriched := nameTargetDeletedFailure(clientMutationID, err); enriched != nil {
+			return enriched
+		}
+	}
+	return adoptCallerMutationID(err, clientMutationID)
+}
+
+// adoptResponseClientMutationID adopts the caller's own clientMutationId onto
+// BOTH halves of a hub mutation result: the error with
+// adoptFailureClientMutationID (which also stamps an id-less target deletion, see
+// there) and the response's mutation receipt with adoptCallerMutationReceipt.
+// Everything else passes through untouched.
+//
+// Both halves need it for the same reason. The daemon trims the caller's id at
+// its own boundary before it mints a receipt OR a refusal
+// (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear,
+// agent/session_notes_rpc.go), while the hub holds and echoes the caller's
+// verbatim id, and every client correlates its outbox record byte-for-byte
+// (appwire-client/typescript/state/mutation/dispatcher.ts). A failure named with
+// the daemon's normalized id would leave the record submitting exactly as a
+// mismatched receipt would. adoptCallerMutationID is not widened for this: it
+// already returns unchanged anything that is not a WireError, names no id, or
+// names a different mutation canonically, and it never rewrites an id to a
+// trimmed form.
+//
+// It is the single place that knows which responses carry the receipt field,
+// wired where each caller-id-bearing mutation path returns: turn/start's first
+// attempt and its post-resume retry (both through attemptStart), the direct turn
+// mutations (steer, interrupt, queue, drainAsSteer, promoteQueuedAsSteer,
+// cancelQueued), the resume relays (thread/clear, notes/human/set), and
+// urls/remove -- which has no receipt to adopt but can still return a
+// daemon-minted refusal naming the id. Goal-set and the EmptyResponse paths
+// carry no caller id in their response and no id-naming error of their own, so
+// they are not wired. Nothing here touches the id the daemon stored, only the id
+// this caller's result carries back.
+func adoptResponseClientMutationID[R any](resp R, err error, clientMutationID string) (R, error) {
+	if clientMutationID == "" {
+		return resp, err
+	}
+	if err != nil {
+		return resp, adoptFailureClientMutationID(err, clientMutationID)
+	}
+	adopt := func(receipt appwire.MutationReceipt) appwire.MutationReceipt {
+		return adoptCallerMutationReceipt(receipt, clientMutationID)
+	}
+	switch typed := any(resp).(type) {
+	case appwire.TurnStartResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnSteerResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnInterruptResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnQueueResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnDrainAsSteerResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnPromoteQueuedAsSteerResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.TurnCancelQueuedResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.ThreadClearResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	case appwire.NotesHumanSetResponse:
+		typed.Receipt = adopt(typed.Receipt)
+		return any(typed).(R), nil
+	}
+	return resp, nil
+}
+
+// isShapeRefusal reports whether err refuses the request's shape: appwire's
+// invalid-params and invalid-request codes carrying the invalidParams
+// discriminant, decided before anything executes.
+//
+// The code alone is not enough. CodeInvalidParams is shared with
+// resourceNotFound, transcriptItemCursorStale, and invalidHostField, which mean
+// something entirely different to the caller; matching the code alone would let
+// any of them masquerade as a deterministic shape refusal. Requiring the
+// discriminant is what separates a true shape refusal -- resending the identical
+// payload can never answer differently, and the web outbox already recovers from
+// an uncorrelated one, so wrapping it as an unknown mutation outcome would tell
+// the caller less than the refusal itself does -- from those other refusals.
+func isShapeRefusal(err error) bool {
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return false
+	}
+	if wire.Code != appwire.CodeInvalidParams && wire.Code != appwire.CodeInvalidRequest {
+		return false
+	}
+	return evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorInvalidParams)
+}
+
+// shapeRefusalNamesOtherMutation reports whether a shape refusal names a
+// clientMutationId that belongs to a caller other than this one: a non-empty id
+// that is not the caller's. The client dispatcher correlates by that id alone,
+// so such a refusal is unrelated to this caller's record and must not be
+// returned as the shape refusal it is.
+//
+// The comparison is canonical, like errorNamesClientMutation's: the daemon names
+// the trimmed id while the hub holds the caller's verbatim one, so a padded
+// caller id must still recognize its own shape refusal rather than have it
+// treated as another caller's.
+func shapeRefusalNamesOtherMutation(err error, clientMutationID string) bool {
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return false
+	}
+	id := clientMutationIDFromData(wire.Data)
+	canonical := canonicalMutationID(id)
+	return canonical != "" && canonical != canonicalMutationID(clientMutationID)
+}
+
+// correlateRetryFailure decides what a retry that an earlier failure's resume
+// made possible must report when it fails in turn.
+//
+// Several failures keep their own meaning and are returned unchanged: the
+// caller's own cancellation (context.Canceled / context.DeadlineExceeded, which
+// is not a mutation outcome at all), a refusal that already names this caller's
+// mutation, and a true shape refusal (see isShapeRefusal) that is this caller's
+// to own -- one that names NO mutation id or names the caller's own. A shape
+// refusal that names a DIFFERENT mutation belongs to that other caller: it is
+// not passed through, because the client would treat it as unrelated to its
+// record and skip the no-id recovery path it applies to invalid-params, leaving
+// this caller's mutation stuck submitting. The one exemption whose meaning is
+// kept but whose id is added is a target deletion that names no mutation
+// (below). Everything else is a failure no client's mutation dispatcher can
+// classify -- one that names no clientMutationId, or names a different mutation
+// (the web outbox correlates by that id alone) -- and is wrapped in the
+// blocked-unknown envelope so the mutation is retained for a retry rather than
+// left submitting forever (see blockedUnknownMutationError).
+//
+// The one exemption that is enriched rather than returned unchanged is a target
+// deletion that names no mutation: it is handed back with this caller's
+// clientMutationId stamped on it (keeping MutationOutcomeTargetDeleted) so the
+// dispatcher can settle it as orphaned rather than be left unable to classify
+// it. A deletion that names a DIFFERENT mutation is not this caller's to settle,
+// so it is blocked-unknown instead. See nameTargetDeletedFailure.
+//
+// A nil return means err keeps its own meaning; callers return err unchanged.
+// Shared by turn/start's retryAfterResume and withSessionResume's post-resume
+// retry so every resume-once-then-retry mutation correlates its retry failure
+// the same way.
+func correlateRetryFailure(clientMutationID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	if errorNamesClientMutation(err, clientMutationID) {
+		return nil
+	}
+	// A shape refusal is preserved only when it is this caller's to own: one that
+	// names no mutation, or names the caller's own (returned above). A refusal
+	// naming a DIFFERENT mutation is not this caller's to act on, and passing it
+	// through unchanged would leave this caller's record submitting, so it falls
+	// through to the blocked-unknown default below.
+	if isShapeRefusal(err) && !shapeRefusalNamesOtherMutation(err, clientMutationID) {
+		return nil
+	}
+	if isTargetDeletedError(err) {
+		// A target deletion is the caller's to settle only when it names this
+		// caller's mutation (returned unchanged above) or names none at all. A
+		// deletion that names none -- e.g. a preflight thread/read deletion
+		// relayed from a remote hub -- leaves the dispatcher unable to
+		// correlate the record, so it is stamped with this caller's id rather
+		// than hidden behind a generic outage. A deletion naming a DIFFERENT
+		// mutation is not this caller's to settle: restamping it would make
+		// that other caller's record settle as orphaned, so it falls through to
+		// the blocked-unknown default below, retaining this caller's record.
+		if clientMutationID == "" {
+			return nil
+		}
+		if enriched := nameTargetDeletedFailure(clientMutationID, err); enriched != nil {
+			return enriched
+		}
+	}
+	return blockedUnknownMutationError(clientMutationID, err)
+}
+
+// nameTargetDeletedFailure enriches a target-deletion refusal with the caller's
+// mutation id when it names NO mutation at all, keeping the deletion's own
+// outcome (MutationOutcomeTargetDeleted / RetryDispositionNone). A deletion
+// that already names the caller's own mutation needs no help; a deletion that
+// names a DIFFERENT mutation is not this caller's to restamp -- doing so would
+// let this caller's dispatcher settle the other mutation as orphaned -- so it
+// is left to correlateRetryFailure's blocked-unknown default.
+//
+// A nil return means the refusal already names this caller's mutation (or
+// names a different one, or carries no WireError to enrich), so the caller
+// returns it unchanged (or falls through to blocked-unknown). A non-nil return
+// is the refusal with clientMutationId set, which the caller returns in its
+// place.
+func nameTargetDeletedFailure(clientMutationID string, err error) error {
+	if clientMutationID == "" || errorNamesClientMutation(err, clientMutationID) {
+		return nil
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok {
+		return nil
+	}
+	// Only a deletion that names NO mutation is enriched. One that names a
+	// different mutation belongs to that other caller and must not be restamped
+	// as this caller's, or this caller's dispatcher would settle the other
+	// mutation as orphaned.
+	if clientMutationIDFromData(wire.Data) != "" {
+		return nil
+	}
+	// The wire client decodes Data as the typed appwire.ErrorData on some paths
+	// and as map[string]any on others; both are stamped the same way
+	// blockedAdmissionMutationError stamps its own, without disturbing the
+	// deletion outcome the refusal already carries.
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = clientMutationID
+		wire.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		wire.Data = updated
+	default:
+		return nil
+	}
+	return wire
 }
 
 // allowsPastFallbackAfterLiveReadFailure preserves atomic rejoin once a live
@@ -1004,6 +1475,12 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		resolved := false
+		// initialPreDispatch records whether the ORIGINAL attempt is proven to
+		// have failed before anything was dispatched: it stayed true only when the
+		// first attempt never resolved a source. Any other first-attempt failure
+		// resolved the source first, so it may have dispatched; see
+		// retryAfterResume's not-accepted rule.
+		initialPreDispatch := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
 			source, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
 				return resolveTurnStartSource(sources, params.Ref, params.ThreadID)
@@ -1012,12 +1489,62 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			resolved = true
-			return relays.startTurn(ctx, source, params)
+			resp, err := relays.startTurn(ctx, source, params)
+			return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
+		}
+		// retryAfterResume runs the attempt a resume this request performed made
+		// possible. A failure there that gives the caller no way to judge its own
+		// mutation is wrapped in the resume path's own blocked-unknown envelope
+		// (see blockedUnknownMutationError), so the prompt is retained for a
+		// retry rather than left submitting forever.
+		//
+		// correlateRetryFailure's exemptions are consulted first, so a refusal
+		// that already carries its own meaning is never rewritten: a refusal
+		// naming this caller's mutation (recovery admission, daemon-restart-
+		// required, a shape refusal) and a target deletion keep their own
+		// outcome. Only a genuinely uncorrelated failure is left. It is reported
+		// not-accepted only when the WHOLE operation is proven pre-dispatch --
+		// both the retry and the original attempt failed before reaching a
+		// source -- because a retry that fails source resolution proves nothing
+		// about an earlier attempt that already reached a source and may have
+		// applied the mutation before its response was lost. The caller's
+		// cancellation is handled before either, since it is not a mutation
+		// outcome at all.
+		retryAfterResume := func() (appwire.TurnStartResponse, error) {
+			resolved = false
+			resp, err := attemptStart()
+			if err == nil {
+				return resp, nil
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return resp, err
+			}
+			// The resumed daemon names the id it trimmed; rewrite it back to the
+			// caller's own id before anything compares or returns it, so a
+			// canonical match is recognized and the response still carries exactly
+			// the id the caller submitted.
+			err = adoptCallerMutationID(err, params.ClientMutationID)
+			if wrapped := correlateRetryFailure(params.ClientMutationID, err); wrapped != nil {
+				// A target deletion keeps its own outcome even pre-dispatch: a
+				// deleted target never accepts the mutation, but the caller must
+				// still be told the target is gone rather than re-offered it as
+				// not-accepted. correlateRetryFailure hands it back enriched.
+				if !resolved && initialPreDispatch && !isTargetDeletedError(err) {
+					// Source resolution failed before the retry reached a source,
+					// and the original attempt never reached one either, so nothing
+					// was dispatched and the mutation's outcome is known -- not
+					// accepted -- rather than unknown.
+					return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, err.Error())
+				}
+				return appwire.TurnStartResponse{}, wrapped
+			}
+			return resp, err
 		}
 		resp, err := attemptStart()
 		if err == nil {
 			return resp, nil
 		}
+		initialPreDispatch = !resolved
 		if !resolved {
 			if wire, ok := errors.AsType[appwire.WireError](err); ok && wire.Code == appwire.CodeInvalidParams {
 				return appwire.TurnStartResponse{}, err
@@ -1026,10 +1553,9 @@ func registerThreadHandlers(
 				return appwire.TurnStartResponse{}, err
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 			}
-			resolved = false
-			return attemptStart()
+			return retryAfterResume()
 		}
 		if isLifecycleRetiringError(err) {
 			// The owning daemon refused the mutation because it is retiring and
@@ -1037,10 +1563,17 @@ func registerThreadHandlers(
 			// authority — admission fences, ownership alias locks, confirmed exit,
 			// one resume — then retry the original request verbatim.
 			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
-				return appwire.TurnStartResponse{}, resumeErr
+				// This path fails with refusals that name no mutation at all -- the
+				// retirement/lifecycle "retiring" refusal, an ownership or roster
+				// error, an admission fence -- and its ownership-group fence can
+				// name a sibling alias, so hand it the same treatment as every
+				// other resume failure (see mutationResumeFailureError): the
+				// deletion outcome only when it is this caller's own target's, and
+				// otherwise the blocked-unknown envelope carrying the caller's id,
+				// rather than an unnamed error the client can never correlate.
+				return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 			}
-			resolved = false
-			return attemptStart()
+			return retryAfterResume()
 		}
 		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
@@ -1049,10 +1582,9 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, err
 		}
 		if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
-			return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+			return appwire.TurnStartResponse{}, mutationResumeFailureError(cfg, params.Ref, params.ThreadID, params.ClientMutationID, resumeErr)
 		}
-		resolved = false
-		return attemptStart()
+		return retryAfterResume()
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -1061,7 +1593,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnSteerResponse{}, err
@@ -1071,18 +1603,20 @@ func registerThreadHandlers(
 			}
 			return source.SteerTurn(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnInterruptResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appwire.TurnInterruptResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnInterruptResponse{}, err
 			}
 			return source.InterruptTurn(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(ctx context.Context, params appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
 		return withSessionActionOwnership(ctx, cfg, params.Ref, params.ThreadID, func() (appwire.EmptyResponse, error) {
@@ -1103,16 +1637,28 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnQueueResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
+		// A queued message is a session mutation a past thread advertises, so it
+		// carries the same exited == never-exited contract as turn/start: the hub
+		// resumes the session and retries the write (withSessionResume). Without
+		// it a queue write against a thread whose daemon has exited was refused
+		// outright, which is exactly the route the web composer chooses for a
+		// message sent while it already has a send in flight against a finished
+		// session (appwire-client/typescript/sendQueueAvailability.ts) — so the
+		// message was dropped instead of being queued behind the resume that send
+		// had started.
+		resp, err := withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
-				return appwire.TurnQueueResponse{}, err
+				// Resolution failed before anything reached a source, so a resume
+				// retry that fails the same way proves nothing was dispatched.
+				return appwire.TurnQueueResponse{}, preDispatchRefusalError{err}
 			}
 			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 				return appwire.TurnQueueResponse{}, err
 			}
 			return source.QueueTurn(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 		if err := validateAppWireInputItems(params.Input); err != nil {
@@ -1121,7 +1667,7 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ClientMutationID) == "" {
 			return appwire.TurnDrainAsSteerResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnDrainAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnDrainAsSteerResponse{}, err
@@ -1131,6 +1677,7 @@ func registerThreadHandlers(
 			}
 			return source.DrainAsSteer(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 		if params.Index < 0 {
@@ -1142,13 +1689,14 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnPromoteQueuedAsSteerResponse{}, err
 			}
 			return source.PromoteQueuedAsSteer(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 		if params.Index < 0 {
@@ -1160,13 +1708,14 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedEntryID) == "" {
 			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("expectedEntryId is required")
 		}
-		return withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
+		resp, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", params.ClientMutationID, func() (appwire.TurnCancelQueuedResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
 				return appwire.TurnCancelQueuedResponse{}, err
 			}
 			return source.CancelQueued(ctx, params)
 		})
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		if strings.TrimSpace(params.ClientMutationID) == "" {
@@ -1175,7 +1724,8 @@ func registerThreadHandlers(
 		if strings.TrimSpace(params.ExpectedInstanceID) == "" {
 			return appwire.ThreadClearResponse{}, appwire.InvalidParams("expectedInstanceId is required")
 		}
-		return clearThreadWithResume(ctx, cfg, sources, params)
+		resp, err := clearThreadWithResume(ctx, cfg, sources, params)
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
@@ -1211,10 +1761,12 @@ func registerThreadHandlers(
 		return setGoalWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodNotesHumanSet, func(ctx context.Context, params appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-		return setNotesHumanWithResume(ctx, cfg, sources, params)
+		resp, err := setNotesHumanWithResume(ctx, cfg, sources, params)
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-		return removeURLWithResume(ctx, cfg, sources, params)
+		resp, err := removeURLWithResume(ctx, cfg, sources, params)
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 }
 

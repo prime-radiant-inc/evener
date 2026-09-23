@@ -10,28 +10,13 @@ import {
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import {
   initTranscriptDisplay,
   resetTranscriptDisplayStoreForTests,
   transcriptDisplayStore,
 } from "./transcriptDisplay";
-
-class MemoryStorage {
-  private values = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.values.get(key) ?? null;
-  }
-  setItem(key: string, value: string): void {
-    this.values.set(key, value);
-  }
-  removeItem(key: string): void {
-    this.values.delete(key);
-  }
-  clear(): void {
-    this.values.clear();
-  }
-}
 
 const storage = new MemoryStorage();
 
@@ -41,8 +26,7 @@ function preset(level: "chat" | "intent" | "tools" | "activity" | "full"): Trans
 
 beforeEach(() => {
   storage.clear();
-  // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
-  globalThis.localStorage = storage;
+  installLocalStorage(storage);
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetTranscriptDisplayStoreForTests();
   initTranscriptDisplay();

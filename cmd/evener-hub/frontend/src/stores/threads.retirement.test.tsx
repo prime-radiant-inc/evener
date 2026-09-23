@@ -38,6 +38,7 @@ import {
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
@@ -49,24 +50,6 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 // state in this file is awaited inside act(), and no waitFor() (which flips the
 // flag back off, RTL's asyncWrapper) is used.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-// MemoryStorage: Node 26 shadows jsdom's working window.localStorage with its
-// own non-functional global (same workaround as Composer.integration.test.tsx).
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Scripted in-process WebSocket transport
@@ -487,8 +470,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
 // ---------------------------------------------------------------------------
 
 beforeEach(() => {
-  // @ts-expect-error — Node 26 localStorage workaround (same as integration test)
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();

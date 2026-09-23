@@ -556,9 +556,9 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
-		// Isolation is normalized here so every downstream consumer — the
-		// name pairing guard below, create, describe — sees one shape; a
-		// padded value must not refuse at exactly one of them.
+		// Isolation is normalized here so every downstream consumer —
+		// create, describe — sees one shape; a padded value must not
+		// behave differently at exactly one of them.
 		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
 		Sandbox:   stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
@@ -598,17 +598,15 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
 	}
-	// name: the mnemonic git branch of a worktree-isolated delegate's lane, so
-	// `git branch` and merges read clearly. Only meaningful with isolation
-	// "worktree" (the lane directory and every addressing surface stay keyed to
-	// the delegate id), so refuse it otherwise. Validated here with the same
-	// alphabet manage_worktree names use, before any capacity is reserved; the
-	// create core re-checks with git's own ref rules and refuses a branch that
-	// already exists.
+	// name: a short mnemonic the caller gives the delegate. With isolation
+	// "worktree" it names the lane's git branch, so `git branch` and merges
+	// read clearly; without isolation it is a display-only label. Either way
+	// the lane directory and every addressing surface stay keyed to the
+	// delegate id. Validated here with the same alphabet manage_worktree names
+	// use — a branch-safe alphabet is also a good label alphabet — before any
+	// capacity is reserved; the worktree create core re-checks with git's own
+	// ref rules and refuses a branch that already exists.
 	if name := stringArg(args, "name"); name != "" {
-		if a.Isolation != "worktree" {
-			return delegateArgs{}, errors.New(`invalid_request: name is only valid with isolation:"worktree"`)
-		}
 		if verr := worktree.ValidateName(name); verr != nil {
 			return delegateArgs{}, fmt.Errorf("invalid_request: name: %w", verr)
 		}
@@ -965,6 +963,7 @@ func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleR
 		Kind:                 "delegate",
 		Type:                 "delegate",
 		Status:               status.Status,
+		Name:                 snapshot.descriptor.Name,
 		Description:          snapshot.descriptor.Description,
 		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
 		VisibleToSessionID:   snapshot.descriptor.VisibleSessionID,
@@ -1049,8 +1048,15 @@ func formatJobList(out jobListResult) string {
 		if label == "" && j.Command != nil {
 			label = *j.Command
 		}
+		parts := make([]string, 0, 2)
+		if j.Name != "" {
+			parts = append(parts, j.Name)
+		}
 		if label != "" {
-			fmt.Fprintf(&b, "  %s", label)
+			parts = append(parts, label)
+		}
+		if len(parts) != 0 {
+			fmt.Fprintf(&b, "  %s", strings.Join(parts, " — "))
 		}
 		var detail []string
 		if started := shortTimestamp(j.StartedAt); started != "" {
@@ -1310,6 +1316,7 @@ type stableDelegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
+	Name               string                 `json:"name,omitempty"`
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
 	AgentType          string                 `json:"agent_type"`
@@ -1338,6 +1345,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),
+		Name:               descriptor.Name,
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
@@ -1443,13 +1451,16 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	ID               string   `json:"id"`
-	JobID            string   `json:"job_id,omitempty"`
-	Kind             string   `json:"kind"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	Phase            string   `json:"phase,omitempty"`
-	Reason           *string  `json:"reason,omitempty"`
+	ID     string  `json:"id"`
+	JobID  string  `json:"job_id,omitempty"`
+	Kind   string  `json:"kind"`
+	Type   string  `json:"type"`
+	Status string  `json:"status"`
+	Phase  string  `json:"phase,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+	// Name is the delegate's display label (the `name` create argument);
+	// empty for shells and unnamed delegates, which render as absent.
+	Name             string   `json:"name,omitempty"`
 	Description      string   `json:"description"`
 	Task             string   `json:"task,omitempty"`
 	AgentType        string   `json:"agent_type,omitempty"`
@@ -1668,6 +1679,7 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type jobWatchToolEventFilter struct {
@@ -1841,6 +1853,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+		Reason:             res.Reason,
 	}
 	if res.OneShot {
 		out.AfterSeconds = res.TimerSeconds
@@ -2138,7 +2151,8 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
-			jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
+			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)

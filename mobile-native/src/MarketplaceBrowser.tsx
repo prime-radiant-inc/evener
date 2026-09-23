@@ -24,7 +24,6 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ConnectionStatus } from "./ConnectionStatus";
 import { whenReady, type LiveReadiness } from "./connectionDisplay";
 import {
   PLUGIN_MUTATION_BUSY,
@@ -38,6 +37,7 @@ import {
   catalogToBrowse,
   refetchAfterRemoval,
 } from "./marketplaceBrowserModel";
+import { ModalConnectionStatus } from "./retainedScreen";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -159,6 +159,16 @@ export function MarketplaceBrowser({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
+  // The removal confirmation is native and outlives the renders around it:
+  // the screen's guard can fence or retire a name while its dialog is open,
+  // and the callback the confirm fires holds only the set it captured when
+  // the dialog opened. The ref keeps the latest set reachable from that
+  // callback - assigned in an effect, never during render (the PluginsScreen
+  // currentClient pattern).
+  const appliedRemovalNamesRef = useRef(appliedRemovalNames);
+  useEffect(() => {
+    appliedRemovalNamesRef.current = appliedRemovalNames;
+  }, [appliedRemovalNames]);
   useEffect(() => {
     if (state.marketplaces !== null)
       onAuthoritativeMarketplaces(
@@ -248,10 +258,21 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
+          // The dialog can stay open across another client's removal, which
+          // a trusted read lands without the name, and across the screen
+          // fencing it: re-read both the guard the screen holds now and the
+          // store's own state, never the captured ones, because a removal
+          // that already stood must not be issued again. A failed read
+          // cannot vouch either way, so its retained rows never stop the
+          // write - the hub's own applied answer is what speaks then.
+          const current = marketplaces.getState();
           if (
             revision.current !== version ||
             !canUseConnection() ||
-            appliedRemovalNames.has(name)
+            appliedRemovalNamesRef.current.has(name) ||
+            (current.marketplacesError === null &&
+              current.marketplaces !== null &&
+              !current.marketplaces.some((item) => item.name === name))
           )
             return;
           // Classify, record, and reconcile BEFORE the revision fence: the
@@ -481,7 +502,11 @@ export function MarketplaceBrowser({
         <FlatList
           // A failed read keeps the last list in the store; rows a failed
           // read cannot vouch for stay hidden until a fresh read lands, and
-          // the error copy and Retry above speak instead.
+          // the error copy and Retry above speak instead. The empty-state
+          // copy below claims only what the retained list itself says: a
+          // non-empty list a failed read hides must not also read as "no
+          // marketplaces" beside that error, while a list the last trusted
+          // read left genuinely empty may still say so.
           data={state.marketplacesError === null ? state.marketplaces ?? [] : []}
           keyExtractor={(item) => item.name}
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
@@ -493,7 +518,7 @@ export function MarketplaceBrowser({
           ListEmptyComponent={
             state.marketplacesLoading ? (
               <ActivityIndicator accessibilityLabel="Loading marketplaces" />
-            ) : state.marketplaces ? (
+            ) : state.marketplaces?.length === 0 ? (
               <Copy muted>No marketplaces on this hub.</Copy>
             ) : null
           }
@@ -656,10 +681,7 @@ export function AddMarketplace({
           </View>
           <Action onPress={onClose}>Cancel</Action>
         </View>
-        {/* The native modal covers the banner the browser shows behind it,
-         * so the status and the manual reconnect live here while this form
-         * is open. */}
-        {connectionState !== "ready" ? <ConnectionStatus /> : null}
+        <ModalConnectionStatus connectionState={connectionState} />
         <KeyboardAvoidingView
           style={styles.fill}
           enabled={Platform.OS === "android"}

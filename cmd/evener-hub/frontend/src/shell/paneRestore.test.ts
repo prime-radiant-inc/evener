@@ -34,9 +34,7 @@ import "./AppShell"; // side effect: the boot-time pane-type registrations under
 
 // A minimal DockviewApi double covering only what workspace.ts touches
 // (fromJSON/panels/activePanel/removePanel/clear) - the same unit-test seam
-// as workspace.test.ts, duplicated here per this project's no-shared-test-
-// utils convention (see AppShell.test.tsx's own MemoryStorage note on why
-// helpers are duplicated rather than shared).
+// as workspace.test.ts, duplicated here.
 class FakeDockviewApi {
   panels: Array<{ id: string; params: unknown }> = [];
   activePanel: { id: string } | undefined = undefined;

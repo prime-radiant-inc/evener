@@ -9,6 +9,7 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
@@ -20,30 +21,8 @@ import styles from "./usermessageitem.module.css";
 
 afterEach(cleanup);
 
-// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
-// real window.localStorage with its own (non-functional under vitest) global,
-// so the fork-affordance tests below - which read the seeded composer draft
-// through draft.ts - need this same small in-memory stand-in. Scoped to this
-// file.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };

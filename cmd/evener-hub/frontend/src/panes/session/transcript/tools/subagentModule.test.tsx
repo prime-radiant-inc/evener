@@ -70,7 +70,10 @@ async function openRecentActivity(user: ReturnType<typeof userEvent.setup>, row:
 // --- classifyJobStatus / resolveRowKey (pure, unit-level) -----------------
 
 test("classifyJobStatus: failed family", () => {
-  for (const s of ["failed", "errored", "error", "exhausted"]) expect(classifyJobStatus(s)).toBe("failed");
+  // The command-outcome statuses are failures too: the run's supervised
+  // command broke, so the row must read as failed, never unknown.
+  for (const s of ["failed", "errored", "error", "exhausted", "command_exited_nonzero", "command_killed"])
+    expect(classifyJobStatus(s)).toBe("failed");
 });
 
 test("classifyJobStatus: done family (a clean completion, not a stop/cancel)", () => {

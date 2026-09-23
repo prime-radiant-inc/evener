@@ -5,6 +5,8 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { StubResizeObserver } from "../resizeObserverTestUtils";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -12,50 +14,6 @@ import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane, registerPaneForTests } from "./paneRegistry";
 import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-
-// jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
-// auto-resizing - see this task's report for the live probe that found
-// this); a real ResizeObserver isn't needed to prove any of this file's
-// behavior (nothing here asserts on actual pixel geometry), so a no-op stub
-// is the one mock this file needs beyond the real dockview library itself.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-// Node 26 defines its own global `localStorage` accessor (Node's Web
-// Storage API, https://nodejs.org/api/globals.html#localstorage) that
-// returns undefined - and prints "ExperimentalWarning: localStorage is not
-// available because --localstorage-file was not provided" - unless the
-// process is started with --localstorage-file, which this project's test
-// script isn't. Verified directly (not assumed): a bare `new JSDOM(...)`
-// constructed with the exact same options vitest's own jsdom
-// environment uses DOES have a working window.localStorage; only inside
-// vitest's test context does plain `localStorage`/`window.localStorage`
-// come back undefined, and `node -e 'console.log(typeof localStorage)'`
-// against this repo's Node reproduces the identical warning standalone -
-// so this is Node's own global shadowing jsdom's real implementation, not
-// a jsdom gap or anything about DockHost.tsx itself (which uses the
-// standard localStorage API exactly as a real browser provides it). A
-// minimal in-memory Storage stub, scoped to this test file only, is the
-// workaround - a real fix belongs in vite.config.ts (test.environmentOptions
-// or setupFiles), which is on this task's forbidden-files list.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
@@ -87,8 +45,7 @@ let restoreSettingsPane: (() => void) | undefined;
 
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 
   restoreDocPane = registerPaneForTests({
     id: "doc",

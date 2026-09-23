@@ -656,12 +656,14 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 
 // pastThreadCapabilities is what the hub can carry out for a thread with no
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
-// change model, shutdown) plus the always-available ones (send, fork, goal,
-// rename), all of them landing once qp94's auto-resume runs. Steer, Interrupt
-// and Queue stay false because the hub cannot carry them out for a thread with
-// no daemon: it resumes on send alone, so a cold set that advertised them would
-// promise a turn action nothing is there to take (kata xr4x trues this up to
-// qp94's wiring).
+// change model, shutdown, and the two the user speaks through — send and
+// queue) plus the always-available ones (fork, goal, rename), all of them
+// landing once qp94's auto-resume runs. Steer and Interrupt stay false because
+// the hub cannot carry them out for a thread with no daemon: they need a turn
+// that is already running, and a cold session has none, so a cold set that
+// advertised them would promise a turn action nothing is there to take (kata
+// xr4x trues this up to qp94's wiring). Queue is advertised because the hub now
+// resumes behind it the same way it does for send.
 //
 // It is the hub's answer to "what can still be done with this thread", which is
 // why the relay hands the same set to a client at the moment a session closes
@@ -671,6 +673,7 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 func pastThreadCapabilities() appwire.ThreadCapabilities {
 	caps := appwire.ThreadCapabilities{
 		Send:         true,
+		Queue:        true,
 		ForkFromTurn: true,
 		Compact:      true,
 		Clear:        true,
@@ -1303,7 +1306,7 @@ func delegateJobIDFromRaw(raw json.RawMessage) string {
 
 func isTerminalHistoricalJobStatus(status string) bool {
 	switch status {
-	case "completed", "failed", "cancelled", "stopped", "exhausted":
+	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
 		return true
 	default:
 		return false

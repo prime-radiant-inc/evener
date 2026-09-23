@@ -87,29 +87,39 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 }
 
 // remoteForwardedThreadCapabilities lists the thread actions this source can
-// actually forward to the remote hub. It is the controller-side half of the
+// forward to the remote hub today. It is the controller-side half of the
 // capability answer: maskRemoteThreadCapabilities intersects it with the remote
-// hub's own claim, so an action is re-enabled by adding it here once its method
-// stops returning notImplemented (remote_hub_source.go):
+// hub's own claim, so an action is re-enabled only by naming its method here once
+// that method stops returning notImplemented (remote_hub_source.go and
+// remote_hub_mutations.go):
 //
-//   - Send (StartTurn, ResumeThread), Steer (SteerTurn), Interrupt
-//     (InterruptTurn), Queue (QueueTurn, DrainAsSteer, PromoteQueuedAsSteer,
-//     CancelQueued), Compact (CompactThread), Clear (ClearThread), ForkFromTurn
-//     (ForkThread), Shutdown (ShutdownThread), ChangeModel (SetThreadModel,
-//     SetThreadReasoningEffort), ChangeVisionModel (SetThreadVisionModel),
-//     Goal (GoalSet), SharedNotes (NotesHumanSet, UrlsRemove), and Rename
-//     (SetThreadName) are the turn mutations and lifecycle verbs component 05c
-//     implements in remote_hub_mutations.go.
+//   - Shutdown (ShutdownThread) is on. The controller forwards thread/shutdown on
+//     the owning host's client, and the remote hub serves it against its own local
+//     daemon, so a controller can stop a session it did not host. The intersection
+//     keeps the remote daemon's own claim in charge: a remote that does not
+//     advertise Shutdown stays refused, and nothing here depends on component
+//     05d's host capability probe, which answers what the remote HOST's evener
+//     installation supports (launch config, models, plugins) rather than whether
+//     the remote HUB serves a lifecycle verb.
+//   - The turn mutations and the remaining lifecycle verbs (Send: StartTurn/
+//     ResumeThread, Steer: SteerTurn, Interrupt: InterruptTurn, Queue:
+//     QueueTurn/DrainAsSteer/PromoteQueuedAsSteer/CancelQueued, Compact:
+//     CompactThread, Clear: ClearThread, ForkFromTurn: ForkThread, ChangeModel:
+//     SetThreadModel/SetThreadReasoningEffort, ChangeVisionModel:
+//     SetThreadVisionModel, Goal: GoalSet, SharedNotes: NotesHumanSet/UrlsRemove,
+//     Rename: SetThreadName) are implemented in remote_hub_mutations.go but stay
+//     masked until 05d's host capability probe can say the host supports them.
 //   - SkillInput rides on the input-bearing turn mutations
-//     (appwire.ValidateSkillInputSupport).
+//     (appwire.ValidateSkillInputSupport) and is masked with them.
 //
-// The answer stays empty until component 05d supplies the host's own capability
-// probe: the remote hub's claim describes the REMOTE daemon, so forwarding it
-// verbatim would advertise actions this controller cannot verify the host
-// supports. 05d replaces this constant with that probe, intersected with the
-// remote hub's claim.
+// A capability that is not named here stays masked, so a field added to
+// appwire.ThreadCapabilities later starts masked until a component names the
+// method that answers for it.
 func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
-	return appwire.ThreadCapabilities{}
+	// Shutdown is the one lifecycle verb that is both forwarded today and does not
+	// wait on the host probe; it is the action the hub's shutdown gate
+	// (ensureThreadActionAvailable, app_compact.go) consults before forwarding.
+	return appwire.ThreadCapabilities{Shutdown: true}
 }
 
 // maskRemoteThreadCapabilities intersects the capability set a remote hub reported
@@ -120,8 +130,8 @@ func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
 // the remote's set verbatim would advertise an action this controller cannot carry:
 // it would fail with an internal error the moment a client used one (the hub gates
 // each of them on exactly these fields — cmd/evener-hub's threadActionAvailable).
-// Component 05c implements the mutations but forwards nothing here; the flags turn
-// on with 05d's host capability probe.
+// Component 05c implements the mutations but forwards only Shutdown here; the
+// other flags turn on with 05d's host capability probe.
 //
 // Fields are listed one by one rather than copied wholesale so a capability added
 // to appwire.ThreadCapabilities later starts masked until a component names the

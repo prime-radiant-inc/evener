@@ -520,6 +520,34 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// recoveredTurnID is the ActiveTurnID the durable client-mutation snapshot
+	// named when this process restored the session, and only when the pending
+	// execution that owns it is a client turn/start. That start is the user
+	// turn a dead process left mid-flight, which restore reclaims and re-runs;
+	// a follow-up turn/start behind it is the user speaking again, so
+	// AcceptClientMutationStart admits it once the inherited turn is actually
+	// running (see recoveredTurnRunning).
+	//
+	// A queue-origin turn (a queued message that was mid-run at the crash)
+	// deliberately leaves this empty even though it also leaves ActiveTurnID
+	// set: no follow-up is admitted behind it. The claim path prefers starts,
+	// so a follow-up start admitted behind an inherited queue turn would wait
+	// for a claim that can never come. It stays refused, which is the pre-fix
+	// behaviour.
+	//
+	// It is a per-process fact and is deliberately never persisted. A turn id
+	// is never reused, so the field needs no clearing: once the inherited turn
+	// ends, no later active turn can equal it again.
+	recoveredTurnID string
+	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
+	// in-process retry. The first failure of the inherited turn before its prompt
+	// is recorded hands its claim back, and the runner wake drives the immediate
+	// retry; a SECOND consecutive failure of the same turn leaves the claim
+	// claimed, so restart recovery owns it rather than the process spinning on a
+	// failure that is plainly not transient. Like recoveredTurnID it is a
+	// per-process fact and is deliberately never persisted -- the turn id it
+	// guards is never reused, so it needs no clearing.
+	recoveredTurnClaimReturned bool
 	// clientMutationAppendedTurn flags that a restore-time client-mutation
 	// recovery appended turns to the transcript file. Restore consults it
 	// after the recovery pass to decide whether the retained transcript
@@ -2310,7 +2338,10 @@ func (s *Session) sclock() clock.Clock {
 }
 
 // assistantHistoryMessage makes malformed tool arguments replayable in semantic
-// history without changing the provider response used for tool validation.
+// history without changing the provider response used for tool validation: the
+// raw bytes are kept in RawArguments so the durable record still shows what
+// the model actually sent, while Arguments carries the {} form every provider
+// round-trip needs.
 func assistantHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
@@ -2321,6 +2352,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
+		call.RawArguments = string(call.Arguments)
 		call.Arguments = json.RawMessage(`{}`)
 		content[i].ToolCall = &call
 	}

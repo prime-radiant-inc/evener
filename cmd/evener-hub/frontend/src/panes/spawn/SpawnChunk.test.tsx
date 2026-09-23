@@ -2,8 +2,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
+import * as pageReload from "../../shell/pageReload";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -44,31 +46,6 @@ function StubConnectDialog({ onClose }: { onClose(): void; onConnected(): void }
       </button>
     </div>
   );
-}
-
-// Node 26 shadows jsdom's real localStorage with a non-functional global
-// under vitest; Spawn reads spawn-defaults through it on mount - the same
-// in-memory stand-in every spawn test uses.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  get length(): number {
-    return this.store.size;
-  }
-  key(index: number): string | null {
-    return Array.from(this.store.keys())[index] ?? null;
-  }
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
 }
 
 // A ready FakeClient with no configured provider, so the spawn pane offers
@@ -117,7 +94,7 @@ function captureExpectedError(expectedError: Error) {
 }
 
 beforeAll(() => {
-  globalThis.localStorage = new MemoryStorage() as unknown as Storage;
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {
@@ -196,8 +173,8 @@ test("a retry that fails again offers a page reload instead of stranding the pro
   const chunkError = new Error(CHUNK_ERROR);
   const onCaughtError = captureExpectedError(chunkError);
   vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
-  const reload = vi.fn();
-  vi.stubGlobal("location", { ...window.location, reload });
+  const reload = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
+  onTestFinished(() => reload.mockRestore());
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);
