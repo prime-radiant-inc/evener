@@ -51,6 +51,12 @@ func DefaultConfigRoot() string {
 // structural layout, not a bucket-naming assumption: any directory under
 // <stateHome>/evener/projects is a bucket whatever its name looks like.
 func StateHomeForBucketDir(stateDir string) string {
+	// Clean first: a trailing separator defeats a Dir-based walk (Dir of
+	// "…/b/" is "…/b", so Base would read the bucket's own name where the
+	// walk expects "projects"). Cleaning here keeps every caller honest —
+	// both the agent's and the doctor's sweeps spell the state dir, and
+	// "--state-dir $DIR/" is a trivial spelling to hit.
+	stateDir = filepath.Clean(stateDir)
 	projects := filepath.Dir(stateDir)
 	if filepath.Base(projects) != "projects" {
 		return ""

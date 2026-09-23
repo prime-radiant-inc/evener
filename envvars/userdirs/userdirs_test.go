@@ -79,6 +79,8 @@ func TestStateHomeForBucketDir(t *testing.T) {
 		{name: "projects dir, not a bucket", dir: "/xdg/evener/projects", want: ""},
 		{name: "override root under projects-named parent", dir: "/tmp/projects/root", want: ""},
 		{name: "flat scratch root", dir: "/tmp/scratch", want: ""},
+		{name: "trailing separator", dir: "/xdg/evener/projects/home-jesse-fSbf9SeZqM/", want: "/xdg"},
+		{name: "doubled separators", dir: "/xdg/evener//projects//b", want: "/xdg"},
 	}
 
 	for _, tc := range tests {

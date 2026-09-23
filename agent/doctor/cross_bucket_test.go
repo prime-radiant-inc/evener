@@ -230,3 +230,24 @@ func TestListSessions_BucketDirBase_BucketFilterAddressesSibling(t *testing.T) {
 		t.Errorf("row Bucket = %q, want %q", res.Sessions[0].Bucket, hash2)
 	}
 }
+
+// TestLocate_TrailingSlashStateDirStillSweepsSiblings proves a trailing
+// separator on a project-bucket state dir — the spelling `--state-dir
+// "$DIR/"` produces — does not defeat the up-walk to the state home and
+// resurface the silent single-bucket miss.
+func TestLocate_TrailingSlashStateDirStillSweepsSiblings(t *testing.T) {
+	_, bucketA, bucketB := newTwoBucketState(t)
+	writeSession(t, bucketA, sidA)
+	writeSession(t, bucketB, sidB)
+
+	got, err := Locate(bucketB+string(filepath.Separator), sidA)
+	if err != nil {
+		t.Fatalf("Locate from trailing-slash bucket dir: %v", err)
+	}
+	if want := filepath.Join(bucketA, "sessions", sidA+".transcript.jsonl"); got.TranscriptPath != want {
+		t.Errorf("TranscriptPath = %q, want sibling-bucket path %q", got.TranscriptPath, want)
+	}
+	if got.ProjectID != hash1 {
+		t.Errorf("ProjectID = %q, want %q", got.ProjectID, hash1)
+	}
+}
