@@ -391,6 +391,247 @@ describe("ConversationStore", () => {
     });
   });
 
+  describe("D23d: the model owns the older page", () => {
+    // D23d: loadOlder merges the page into the model with the package's
+    // mergeOlderItemPage and the rows re-project from that model; the
+    // service no longer projects display rows from the page
+    // (projectOlderTurns and its fake Thread are gone), so the page's own
+    // wire turns are the whole input.
+    it("renders an older page's rows from the merged model", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "m1",
+                turnId: "t0",
+                type: "userMessage",
+                text: "page text",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      const result = await store.getState().loadOlder(service);
+      expect(result.status).toBe("loaded");
+      if (result.status !== "loaded") return;
+      expect(result.itemKeys).toContain("m1");
+      // The page's row projects from the merged model the moment the page
+      // lands...
+      expect(
+        rows(store).some(
+          (row) => row.kind === "user" && row.id === "m1" && row.text === "page text",
+        ),
+      ).toBe(true);
+      // ...the model carries the page's turn ahead of the live one...
+      expect(store.getState().conversation?.turns.map((turn) => turn.id)).toEqual([
+        "t0",
+        "t1",
+      ]);
+      // ...and the wire cursor is the model's own field, not a row-side copy.
+      expect(store.getState().conversation?.olderCursor).toBe("c2");
+      expect(store.getState().olderCursor).toBe("c2");
+    });
+
+    it("a page fragment's images supplement the live item the window holds sparse", async () => {
+      // The window holds the item without its images; the older page
+      // re-serves the same item carrying them. The package merge's fragment
+      // rule (newer field ?? older field) folds the page's images in — the
+      // web's rule (decision 2), now that rows project from the model and
+      // no row filter or model-side strip runs ahead of the merge.
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "user",
+                  turnId: "t1",
+                  type: "userMessage",
+                  text: "look",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              {
+                id: "user",
+                transcriptKey: "user",
+                turnId: "t0",
+                type: "userMessage",
+                text: "look",
+                status: "completed",
+                images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).find((row) => row.kind === "attachments")).toMatchObject({
+        id: "user:attachments",
+        items: [{ src: "data:image/png;base64,AQID" }],
+      });
+    });
+
+    it("renders a settled page ask as a tool row while a live ask stays the only question", async () => {
+      // I3, measured: liveAskQuestions gates its whole scan on askPending
+      // and excludes every ask before the newest resolution item (a user
+      // message settles the whole pending set at once), so a page's
+      // settled ask cannot project as an actionable question row once
+      // pages merge into the model — the derivation is the filter, and the
+      // service-side projection filter died with projectOlderTurns.
+      const askArgs =
+        '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+            askPending: true,
+          },
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [askUserItem("ask-live", askArgs)],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t0", [
+              askUserItem("ask-old", askArgs),
+              userMessageItem("reply", "the answer"),
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      // The page's settled ask is history: a tool row, never a question row.
+      expect(
+        rows(store).some((row) => row.kind === "question" && row.id === "ask-old"),
+      ).toBe(false);
+      expect(
+        rows(store).some((row) => row.kind === "activity" && row.id === "ask-old"),
+      ).toBe(true);
+      // The live ask keeps its answerable card.
+      expect(
+        rows(store).some((row) => row.kind === "question" && row.id === "ask-live"),
+      ).toBe(true);
+    });
+
+    it("projects a failed page turn's failure row from the model and keeps it against a clean covering reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [userMessageItem("m1", "page text")],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "failure:t0"),
+      ).toBe(true);
+      expect(store.getState().conversation?.olderCursor).toBe("c9");
+
+      // The reread covers the turn and carries NO error: the page owns the
+      // failure content, so the model keeps the error and the projected
+      // failure row survives.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              status: "completed",
+              items: [userMessageItem("m1", "page text")],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+        }),
+      );
+      const readsBefore = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      for (
+        let i = 0;
+        i < 40 && service.readProjectionCalls.length < readsBefore + 1;
+        i++
+      ) {
+        await Promise.resolve();
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.turns.find((turn) => turn.id === "t0")?.error,
+      ).toEqual({ message: "page boom" });
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.id === "failure:t0"),
+      ).toBe(true);
+      expect(store.getState().conversation?.olderCursor).toBe("c9");
+    });
+  });
+
   describe("setDraft", () => {
     it("sets draft text", () => {
       const store = createConversationStore();
