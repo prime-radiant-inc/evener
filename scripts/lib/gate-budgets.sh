@@ -80,7 +80,10 @@ gate_init_budgets() {
 	# hub-shards / cli-shards): cmd/evener-hub's ~2100 and cmd/evener's ~340
 	# mostly-serial tests. Their per-shard width, survey width and concurrency
 	# are budgeted exactly like the agent's, so a loaded or one-CPU host shrinks
-	# every runner.
+	# every runner. Each runner's concurrency is its own budget, not a share of
+	# one: the two overlap only while the CLI's shards run (about 12s at the
+	# head of the root wave), and the gate already lets its streams contend
+	# rather than coordinating one CPU budget across them.
 	gate_init_shard_budgets HUB 8
 	gate_init_shard_budgets CLI 6
 }

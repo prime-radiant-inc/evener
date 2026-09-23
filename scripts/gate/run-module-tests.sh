@@ -127,17 +127,19 @@ done
 # slower and CPU-bound, so two shards just oversubscribe each other.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
 # Root-module packages run as cost-balanced shards beside the root go test,
-# one "label package-dir" entry each: evener dev <label>-shards runs them, and
-# <LABEL>_SHARD_* configure them. <LABEL>_SHARDS=0 (HUB_SHARDS, CLI_SHARDS)
-# tests that package inside the root module's single go test instead; the
-# -race gate sets both for the same oversubscription reason as AGENT_SHARDS=0.
-ROOT_SHARDED=("hub cmd/evener-hub" "cli cmd/evener")
+# one "label PREFIX package-dir" entry each: evener dev <label>-shards runs
+# them, and <PREFIX>_SHARD_* configure them. The prefix is spelled out rather
+# than derived with ${label^^}, which macOS's stock bash 3.2 cannot parse.
+# <PREFIX>_SHARDS=0 (HUB_SHARDS, CLI_SHARDS) tests that package inside the
+# root module's single go test instead; the -race gate sets both for the same
+# oversubscription reason as AGENT_SHARDS=0.
+ROOT_SHARDED=("hub HUB cmd/evener-hub" "cli CLI cmd/evener")
 HUB_SHARDS=${HUB_SHARDS:-1}
 CLI_SHARDS=${CLI_SHARDS:-1}
 
-# root_shard_enabled LABEL — whether <LABEL>_SHARDS leaves that package sharded.
+# root_shard_enabled PREFIX — whether <PREFIX>_SHARDS leaves that package sharded.
 root_shard_enabled() {
-	local toggle="${1^^}_SHARDS"
+	local toggle="${1}_SHARDS"
 	[ "${!toggle:-1}" -ne 0 ]
 }
 # The agent module's test count has grown past the point where 4 shards
@@ -394,9 +396,10 @@ run_module() {
 		derive_list_flags "$m" || return $?
 		run_enumeration "$m" "$package_list" || return $?
 		local -a sharded=()
-		local entry
+		local entry label prefix dir
 		for entry in "${ROOT_SHARDED[@]}"; do
-			root_shard_enabled "${entry%% *}" && sharded+=("primeradiant.com/evener/${entry#* }")
+			read -r label prefix dir <<<"$entry"
+			root_shard_enabled "$prefix" && sharded+=("primeradiant.com/evener/$dir")
 		done
 		while IFS= read -r pkg; do
 			case "$pkg" in
@@ -421,11 +424,11 @@ run_module() {
 		# like the go test below, so the module's reported wall time (the last
 		# "real" line) covers whichever stream finished last.
 		local -a shard_pids=()
-		local label skip_var status=0 root_status=0
+		local skip_var status=0 root_status=0
 		for entry in "${ROOT_SHARDED[@]}"; do
-			label="${entry%% *}"
-			root_shard_enabled "$label" || continue
-			skip_var="${label^^}_SHARD_SKIP"
+			read -r label prefix dir <<<"$entry"
+			root_shard_enabled "$prefix" || continue
+			skip_var="${prefix}_SHARD_SKIP"
 			env "$skip_var=$(gate_shard_skip "$root_skip" "${!skip_var:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev "$label-shards" ${test_flags[@]+"${test_flags[@]}"} &
 			shard_pids+=("$!")
 		done

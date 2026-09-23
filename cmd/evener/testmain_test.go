@@ -92,3 +92,9 @@ func TestMain(m *testing.M) {
 	os.RemoveAll(envRoot)
 	os.Exit(code)
 }
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// cli-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
+}
