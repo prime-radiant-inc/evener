@@ -21051,6 +21051,89 @@ describe("ConversationStore", () => {
       expect(store.getState().olderCursor).toBeNull();
     });
 
+    // RoboRev round 2 (panel Medium 2): the honest stop must recognize a
+    // page's contribution by the merged OUTPUT identities it landed on, not
+    // only by the raw page input identities. A call-result fold moves the
+    // page's result onto the retained call's identity — the discarded
+    // output row then names an identity no raw page item carries, and the
+    // raw-identity check would keep offering a cursor whose every further
+    // page discards its own contribution the same way.
+    it("ends paging when the cap discards the merged row a page's result folded into", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t-call",
+              status: "completed",
+              items: [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "call-1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "inProgress",
+                } as ThreadItem,
+                userMessageItem("keep-1", "anchor row"),
+              ],
+            }),
+            { ...fillerTurn(499), itemsView: "default" },
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // The entry window is full and its cap already discarded the call's
+      // own row — the anchor row keeps the turn (and its payloads) alive.
+      expect(rows(store)).toHaveLength(500);
+      expect(rows(store).some((row) => row.id === "item_tool_1")).toBe(false);
+      store.setState({ olderCursor: "cursor-1" });
+      // The page carries only a call result: the callId fold moves it onto
+      // the retained call, whose row the entry cap already discarded.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            {
+              ...wireTurnFragment(
+                "tp",
+                [
+                  {
+                    id: "item_tool_result_1",
+                    turnId: "tp",
+                    type: "commandExecution",
+                    callId: "call-1",
+                    output: "page result",
+                    status: "completed",
+                    position: { entry: 1, item: 0 },
+                  } as ThreadItem,
+                ],
+                { inputTokens: 5, outputTokens: 5 },
+              ),
+            },
+          ],
+          "more",
+        ),
+        nextCursor: "more",
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The fold happened: the retained call carries the page's result.
+      const mergedCall = store
+        .getState()
+        .conversation?.turns.flatMap((turn) => turn.items)
+        .find((item) => item.id === "item_tool_1");
+      expect(mergedCall?.output).toBe("page result");
+      // F8: the merged projection re-projects the call's row (an in-window
+      // turn keeps payloads beyond its own rows), the cap discards it as the
+      // overflow, and the page's contribution went to exactly that row —
+      // paging ends honestly instead of discarding every further page's
+      // contribution the same way.
+      expect(store.getState().olderCursor).toBeNull();
+      expect(store.getState().hasEarlierItems).toBe(false);
+    });
+
     // RoboRev review round 5, progress reporting: itemKeys must name
     // every identity this page contributed that the window retains —
     // including a failed turn's failure row, which no page item backs.

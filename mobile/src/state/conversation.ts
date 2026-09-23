@@ -3276,6 +3276,18 @@ export function createConversationStore() {
               for (const claim of pageFailureClaims) {
                 pageRowIdentities.add(claim);
               }
+              // RoboRev round 2 (panel Medium 2): identity/call-result
+              // folds can move a page's contribution onto a SURVIVING
+              // item's identity — the discarded output row then names an
+              // identity no raw page item carries, and the raw-identity
+              // check alone would keep offering a cursor whose every
+              // further page discards its own contribution the same way.
+              // pageKeys is the merge's own provenance view of exactly
+              // those: the merged output identities THIS page contributed
+              // to, post-fold (the failure claims above ride along in it).
+              for (const key of pageKeys) {
+                pageRowIdentities.add(key);
+              }
               const entryRowIdentities = new Set<string>();
               for (const row of currentConv.items) {
                 for (const id of timelineIdentities(row)) entryRowIdentities.add(id);
