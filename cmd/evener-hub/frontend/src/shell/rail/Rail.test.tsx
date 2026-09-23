@@ -25,6 +25,7 @@ import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
@@ -2293,3 +2294,163 @@ describe("resource-backed Rail", () => {
 });
 
 // Legacy mode tests removed — legacy tree store retired per R50.
+
+// The rail's organize-by host grouping: the whole feature gates on a settled
+// manifest listing at least one non-local source (the spawn picker's own
+// gate), the pref picks the shape, and Live groups under host subheaders
+// whenever its rows span more than one host. Pinned sections and the
+// archived tier keep the user's own arrangement whatever the mode.
+describe("host grouping (organize by)", () => {
+  const remoteManifest = (): NavigationManifest =>
+    manifest({
+      sources: [
+        { id: "local", label: "this host", kind: "local", online: true },
+        { id: "devbox", label: "devbox", kind: "appwire", online: true },
+      ],
+      sections: { live: { count: 2 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    });
+  const hostGroupedResources = (): ResourceState[] => [
+    sectionResource("live", [
+      summary({ ref: "local:l1", title: "Local live run" }),
+      summary({ ref: "devbox:d1", title: "Devbox live run", host_id: "devbox" }),
+    ]),
+    catalogResource([
+      { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
+    ]),
+    projectResource("p", [summary({ ref: "devbox:p1", title: "Devbox project run", host_id: "devbox" })]),
+  ];
+
+  beforeEach(() => {
+    resetPrefsStoreForTests();
+  });
+
+  test("stays flat with no organize control while the manifest lists no remote source, whatever the pref says", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState([
+      sectionResource("live", [summary({ ref: "local:l1", title: "Local live run" })]),
+      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
+      projectResource("p", [summary({ ref: "local:p1", title: "Project run" })]),
+    ]);
+    render(<Rail />);
+    expect(screen.queryByRole("button", { name: "Organize by" })).toBeNull();
+    expect(screen.queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeTruthy();
+    expect(screen.getByText("Local live run")).toBeTruthy();
+  });
+
+  test("offers the organize control once a remote source is listed; project-first keeps the Projects title and branches rows by host", () => {
+    installState(hostGroupedResources(), remoteManifest());
+    render(<Rail />);
+    expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
+    // Live spans two hosts, so it groups under subheaders in host order -
+    // this hub first - and both stay expanded by default.
+    const live = sectionRoot("Live");
+    expect(
+      within(live)
+        .getAllByTestId("rail-row-host-group")
+        .map((row) => row.textContent),
+    ).toEqual(["This host", "devbox"]);
+    expect(within(live).getByText("Devbox live run")).toBeTruthy();
+    // The default mode keeps the Projects title and its project rows; inside
+    // a project only a host with loaded rows earns a branch, and it starts
+    // collapsed like any project branch.
+    const projects = sectionRoot("Projects");
+    expect(
+      within(projects)
+        .getAllByTestId("rail-row-host-group")
+        .map((row) => row.textContent),
+    ).toEqual(["devbox"]);
+    expect(within(projects).queryByText("Devbox project run")).toBeNull();
+    // The branch is a disclosure: activating it reveals the host's rows.
+    fireEvent.click(within(projects).getByText("devbox"));
+    expect(within(projects).getByText("Devbox project run")).toBeTruthy();
+  });
+
+  test("choosing Host, then project re-titles the section, regroups, and persists the choice", () => {
+    installState(hostGroupedResources(), remoteManifest());
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: "Organize by" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Host, then project" }));
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+    expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Projects" })).toBeNull();
+    // Hosts are the top groups now, in the same host order Live uses.
+    expect(
+      within(sectionRoot("Hosts"))
+        .getAllByTestId("rail-row-host-group")
+        .map((row) => row.textContent),
+    ).toEqual(["This host", "devbox"]);
+  });
+
+  test("a single-host Live stays flat even in host-first mode", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState([sectionResource("live", [summary({ ref: "local:l1", title: "Only local" })])], remoteManifest());
+    render(<Rail />);
+    expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
+    expect(within(sectionRoot("Live")).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(sectionRoot("Live")).getByText("Only local")).toBeTruthy();
+  });
+
+  test("pinned and archived sections keep their own rows under host-first grouping", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        sectionResource("live", [
+          summary({ ref: "local:l1", title: "Local live run" }),
+          summary({ ref: "devbox:d1", title: "Devbox live run", host_id: "devbox" }),
+        ]),
+        resource(
+          { kind: "pin_catalog", offset: 0, limit: 100 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            pin_sections: [{ id: "notes", name: "Research", count: 2 }],
+            remaining: 0,
+          },
+        ),
+        resource(
+          { kind: "pin_section", sectionId: "notes", offset: 0, limit: 50 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            sessions: [
+              summary({ ref: "local:pinned", title: "Pinned local run" }),
+              summary({ ref: "devbox:pinned", title: "Pinned remote run", host_id: "devbox" }),
+            ],
+            remaining: 0,
+          },
+        ),
+        resource(
+          { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+          {
+            projects: [{ key: "old", name: "Old project", session_count: 1, sources: ["local", "devbox"] }],
+            remaining: 0,
+          },
+        ),
+        projectResource("old", [summary({ ref: "devbox:old1", title: "Archived remote run", host_id: "devbox" })]),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    // Pinned rows stay flat: pinning is the user's own arrangement, and host
+    // grouping never rewrites it.
+    const pins = sectionRoot("Research");
+    expect(within(pins).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(pins).getByText("Pinned local run")).toBeTruthy();
+    expect(within(pins).getByText("Pinned remote run")).toBeTruthy();
+    // The archived tier keeps its project-group shape too. It starts
+    // collapsed (the only section that does), so open it first.
+    fireEvent.click(sectionDisclosure(/Archived sessions/));
+    const archived = sectionRoot(/Archived sessions/);
+    expect(within(archived).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(archived).getByText("Old project")).toBeTruthy();
+  });
+
+  test("the organize row sits hard right, chrome like the headings around it", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    expect(css).toMatch(/\.organizeRow\s*\{[^}]*justify-content:\s*flex-end;/);
+  });
+});

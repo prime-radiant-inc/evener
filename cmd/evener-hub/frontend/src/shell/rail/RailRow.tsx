@@ -51,6 +51,7 @@ import {
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
+import { LOCAL_HOST } from "../../stores/hostRouting";
 import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
@@ -68,6 +69,7 @@ import {
   activeWorkSummary,
   type CompletedJobsFoldRailNode,
   displayState,
+  type HostRailNode,
   type InactiveFoldRailNode,
   type JobRailNode,
   needsYouDescendantCount,
@@ -103,6 +105,7 @@ const CLASS = {
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
   hostOffline: requireClass(styles.hostOffline, "RailRow.module.css", "hostOffline"),
+  hostGlyph: requireClass(styles.hostGlyph, "RailRow.module.css", "hostGlyph"),
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
@@ -835,6 +838,47 @@ function ProjectRow({
   );
 }
 
+// The rail's organize-by host group row - a configured host as a synthetic
+// branch, in whichever shape the grouping puts it in ("Host, then project"
+// top group, "Project, then host" branch inside a project, or a Live-section
+// subheader). Anatomy is the project row's: a leading glyph instead of a
+// signal dot (a host is infrastructure, not triage), the label, a trailing
+// chevron. Offline follows the session rows' own host-label convention:
+// italic, dimmed, "(offline)" in the caption ink. No rollup Badge and no
+// actions: the manifest carries no per-host attention count, and the rows
+// under the group keep their own signals and menus.
+function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
+  const { host } = node;
+  // The node carries ids, not display names: this hub's own id reads as
+  // "This host" everywhere else a host is named (the spawn picker's first
+  // entry), so the group row does the same instead of a bare "local".
+  const label = host.id === LOCAL_HOST ? "This host" : host.id;
+  return (
+    <span
+      className={CLASS.railRow}
+      data-testid="rail-row-host-group"
+      title={host.online ? `Host ${host.id}` : `Host ${host.id} is offline`}
+    >
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <HostGlyph className={CLASS.hostGlyph} testId="rail-row-host-glyph" />
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          <span className={host.online ? CLASS.label : `${CLASS.label} ${CLASS.hostOffline}`} onClick={info.activate}>
+            {label}
+          </span>
+          {!host.online && (
+            <span data-testid="rail-row-host-group-offline" className={CLASS.host}>
+              {" (offline)"}
+            </span>
+          )}
+          <TrailingChevron info={info} />
+        </span>
+      </span>
+    </span>
+  );
+}
+
 // The "Inactive subagents (N)" disclosure (parity-m3-sidebar-tree.md §3).
 // No signal slot at all, matching Signal's own render-only-when-dotted
 // contract (a group of finished sessions has no state to report). No actions
@@ -923,6 +967,21 @@ export function WatchGlyph({ className, testId }: { className: string; testId: s
     <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
       <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// The host glyph a host group row leads with: DRAWN on the rail's 16x16 icon
+// grammar (railIcons.tsx) and sized/inked like the watch row's clock above -
+// two stacked units and their drive dots, so the row reads as "a machine"
+// rather than a text glyph falling back to a system font. aria-hidden like
+// WatchGlyph: the label beside it is the row's accessible name.
+function HostGlyph({ className, testId }: { className: string; testId: string }) {
+  return (
+    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
     </svg>
   );
 }
@@ -1052,6 +1111,8 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
           retry={retry ?? node.retry}
         />
       );
+    case "host":
+      return <HostRow node={node} info={info} />;
     case "session":
       return <SessionRow node={node} info={info} actions={actions} />;
   }

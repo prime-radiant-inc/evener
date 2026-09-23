@@ -38,6 +38,7 @@ import {
 import railStyles from "./RailRow.module.css";
 import type {
   CompletedJobsFoldRailNode,
+  HostRailNode,
   InactiveFoldRailNode,
   JobRailNode,
   LoadingRailNode,
@@ -260,6 +261,17 @@ function overflowRailNode(count: number): OverflowRailNode {
 
 function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
   return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
+}
+
+function hostGroupNode(overrides: Partial<HostRailNode> = {}): HostRailNode {
+  return {
+    id: "host:devbox",
+    kind: "host",
+    host: { id: "devbox", online: true },
+    expanded: true,
+    children: [],
+    ...overrides,
+  };
 }
 
 function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
@@ -2792,4 +2804,84 @@ test("an offline host's badge survives a manifest revalidation", () => {
   // longer names is the unchanged "unknown host" case and reads as online.
   act(() => seedSources([{ id: "local", label: "Local", kind: "local", online: true }]));
   expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+// The rail's organize-by host group row (a "Host, then project" top group, a
+// "Project, then host" branch inside a project, or a Live-section
+// subheader): a synthetic branch row with the project row's anatomy, a drawn
+// host glyph where the signal dot would sit, and the session rows' own
+// offline convention.
+describe("host group row", () => {
+  test("leads with the drawn host glyph and names the host by its id", () => {
+    render(<RailRow node={hostGroupNode()} info={info({ hasChildren: true })} actions={actions()} />);
+    const glyph = screen.getByTestId("rail-row-host-glyph");
+    expect(glyph.tagName.toLowerCase()).toBe("svg");
+    expect(glyph.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("devbox")).toBeTruthy();
+  });
+
+  test("names this hub 'This host' rather than its local id", () => {
+    render(
+      <RailRow
+        node={hostGroupNode({ id: "host:local", host: { id: "local", online: true } })}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("This host")).toBeTruthy();
+  });
+
+  test("an online host reads plain and its tooltip names just the host", () => {
+    render(<RailRow node={hostGroupNode()} info={info({ hasChildren: true })} actions={actions()} />);
+    const label = screen.getByText("devbox");
+    expect(label.className).not.toContain(railStyles.hostOffline as string);
+    expect(screen.queryByTestId("rail-row-host-group-offline")).toBeNull();
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host devbox");
+  });
+
+  test("an offline host reads italic-dimmed with an '(offline)' suffix and says so in its tooltip", () => {
+    render(
+      <RailRow
+        node={hostGroupNode({ id: "host:ci-runner", host: { id: "ci-runner", online: false } })}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    const label = screen.getByText("ci-runner");
+    expect(label.className).toContain(railStyles.hostOffline as string);
+    expect(screen.getByTestId("rail-row-host-group-offline").textContent).toBe(" (offline)");
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host ci-runner is offline");
+  });
+
+  test("activates on label click, like its sibling rows", async () => {
+    const rowInfo = info({ hasChildren: true });
+    render(<RailRow node={hostGroupNode()} info={rowInfo} actions={actions()} />);
+    await userEvent.setup().click(screen.getByText("devbox"));
+    expect(rowInfo.activate).toHaveBeenCalledTimes(1);
+  });
+
+  test("carries a trailing chevron that toggles", async () => {
+    const rowInfo = info({ hasChildren: true, expanded: false });
+    render(<RailRow node={hostGroupNode()} info={rowInfo} actions={actions()} />);
+    await userEvent.setup().click(screen.getByTestId("rail-chevron"));
+    expect(rowInfo.toggle).toHaveBeenCalledTimes(1);
+  });
+
+  // A host is infrastructure, not triage: no state dot, no rollup badge (the
+  // manifest carries no per-host attention count), and nothing to act on -
+  // the rows under the group keep their own signals and menus.
+  test("carries no signal dot, no badge, and nothing to click but itself", () => {
+    render(<RailRow node={hostGroupNode()} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByTestId("rail-row-host-group").textContent).toBe("devbox");
+  });
+
+  // Same leading box as the watch glyph: the host glyph must not shift the
+  // label off the title x of its sibling rows.
+  test("the host glyph occupies the watch glyph's 13px leading box", () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(/\.hostGlyph\s*\{[^}]*width:\s*13px;/);
+  });
 });

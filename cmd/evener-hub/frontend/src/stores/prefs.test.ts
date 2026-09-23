@@ -418,6 +418,34 @@ describe("stale sidebarMode key", () => {
 // real bounds, and a value outside them would render an unusable (or
 // unrecoverable) sidebar - so the clamp is asserted on BOTH the read and the
 // write path, not just once.
+// sidebarGrouping: how the rail's session tree groups - "host-project"
+// (hosts are the top groups) or "project-host" (today's shape, hosts nested
+// inside projects). Default "project-host" so nothing changes for anyone
+// until the rail's organize-by control is used.
+describe("sidebarGrouping", () => {
+  test("defaults to project-host with nothing persisted", () => {
+    expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
+  });
+
+  test("setSidebarGrouping persists the raw value and updates state", () => {
+    prefsStore.getState().setSidebarGrouping("host-project");
+    expect(localStorage.getItem(KEY("sidebarGrouping"))).toBe("host-project");
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+  });
+
+  test("round-trips a persisted grouping across a fresh load", () => {
+    prefsStore.getState().setSidebarGrouping("host-project");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+  });
+
+  test("an unrecognized stored value falls back to project-host", () => {
+    localStorage.setItem(KEY("sidebarGrouping"), "by-vibe");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
+  });
+});
+
 describe("sidebarWidth", () => {
   test("defaults to SIDEBAR_WIDTH_DEFAULT with nothing persisted", () => {
     expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);

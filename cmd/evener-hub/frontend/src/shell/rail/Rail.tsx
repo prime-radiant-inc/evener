@@ -30,14 +30,18 @@ import {
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { useConnectionStore } from "../../stores/connection";
+import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
   selectAttentionSummary,
+  selectDisplaySources,
   selectPinSectionSummaries,
   selectPinSections,
   selectRailModel,
+  selectSources,
 } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import {
@@ -48,6 +52,8 @@ import {
   EmptyState,
   IconButton,
   Input,
+  Popover,
+  RadioGroup,
   Skeleton,
   Tooltip,
   useToasts,
@@ -79,12 +85,14 @@ import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
 import { loadExpansion, saveExpansion } from "./railExpansion";
-import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
+import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
   catalogOverflowNode,
+  hostProjectNodes,
+  liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
@@ -92,6 +100,7 @@ import {
   pinSectionOverflowNode,
   projectNodeIdForSessionRef,
   projectNodes,
+  projectNodesWithHostBranches,
   type RailNode,
   type RailPinSection,
   type RailProject,
@@ -117,6 +126,8 @@ const CLASS = {
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
+  organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
+  organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
   dialogField: requireClass(dialogStyles.dialogField, "railDialog.module.css", "dialogField"),
   dialogActions: requireClass(dialogStyles.dialogActions, "railDialog.module.css", "dialogActions"),
   pickerError: requireClass(dialogStyles.pickerError, "railDialog.module.css", "pickerError"),
@@ -182,6 +193,52 @@ function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: Sect
       </h3>
       {action !== undefined && <div className={CLASS.sectionHeadingAction}>{action}</div>}
     </div>
+  );
+}
+
+// The rail's organize-by switcher: an icon-only quiet trigger opening the
+// RadioGroup popover. The Tooltip carries the name the icon drops, and the
+// popover's checked option plus the re-titled section below state the
+// current mode, so nothing else on the row needs to. Rendered hard right in
+// its own row between the Live section and the Hosts/Projects section it
+// controls, so it reads as a toolbar for the section below and never as a
+// Live affordance.
+function OrganizeByControl({
+  mode,
+  onChange,
+}: {
+  mode: SidebarGroupingPref;
+  onChange: (mode: SidebarGroupingPref) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onClose={() => setOpen(false)}
+      trigger={
+        <Tooltip label="Organize by">
+          <IconButton
+            label="Organize by"
+            icon={<TuneIcon />}
+            variant="quiet"
+            size="sm"
+            onClick={() => setOpen((current) => !current)}
+          />
+        </Tooltip>
+      }
+    >
+      <div className={CLASS.organizePanel}>
+        <RadioGroup
+          label="Organize by"
+          value={mode}
+          onChange={(value) => onChange(value as SidebarGroupingPref)}
+          options={[
+            { value: "host-project", label: "Host, then project" },
+            { value: "project-host", label: "Project, then host" },
+          ]}
+        />
+      </div>
+    </Popover>
   );
 }
 interface NavigationRailRowProps {
@@ -885,6 +942,19 @@ function NavigationRail({
   const resourcesState = useNavigationStore((state) => state.resources);
   const expanded = useNavigationStore((state) => state.expanded);
   const attention = useNavigationStore((state) => selectAttentionSummary(state));
+  // The rail's organize-by setting. Host grouping gates on the same evidence
+  // the spawn picker uses: a SETTLED manifest naming at least one non-local
+  // source (selectSources, not the display view, so an in-flight
+  // revalidation cannot blink the layout) - a hub with no configured hosts
+  // keeps today's rail exactly. The builders below read the DISPLAY view
+  // instead: a host group's online flag is a display fact, and a
+  // revalidation must not flip groups offline for the length of the refresh
+  // (the same sticky contract the session rows' host chips read).
+  const grouping = usePrefsStore((state) => state.sidebarGrouping);
+  const setGrouping = usePrefsStore((state) => state.setSidebarGrouping);
+  const groupingSources = useNavigationStore(selectSources);
+  const displaySources = useNavigationStore(selectDisplaySources);
+  const hostGrouping = groupingSources.some((source) => source.id !== LOCAL_HOST);
   const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
@@ -1569,22 +1639,51 @@ function NavigationRail({
       ...catalogOverflowNode("catalog:archived_projects", "archived_projects", ov.remaining, ov.offset, ov.limit),
     );
   }
+  // The catalogs' "+N more projects" row, appended to whatever the section's
+  // own nodes are - flat project rows today, host groups under the
+  // organize-by setting.
+  const withCatalogOverflow = (
+    nodes: RailNode[],
+    overflow?: { remaining: number; offset: number; limit: number },
+    overflowId?: string,
+    overflowCatalog?: "projects" | "archived_projects" | "test_runs",
+  ): RailNode[] => {
+    if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
+      return [
+        ...nodes,
+        ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
+      ];
+    }
+    return nodes;
+  };
   const projectRailNodes = (
     projects: readonly RailProject[],
     overflow?: { remaining: number; offset: number; limit: number },
     overflowId?: string,
     overflowCatalog?: "projects" | "archived_projects" | "test_runs",
-  ): RailNode[] => {
-    const nodes: RailNode[] = projectNodes(projects, isExpanded);
-    if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
-      nodes.push(
-        ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
-      );
-    }
-    return nodes;
-  };
+  ): RailNode[] => withCatalogOverflow(projectNodes(projects, isExpanded), overflow, overflowId, overflowCatalog);
+  // The Projects section's nodes under the organize-by setting: host groups
+  // as the top rows ("Host, then project") or project rows with per-host
+  // branches ("Project, then host"). Test runs keep the flat shape - that
+  // tier is a catalog, not the work surface the setting addresses.
+  const projectsSectionNodes = hostGrouping
+    ? withCatalogOverflow(
+        grouping === "host-project"
+          ? hostProjectNodes(resources.projects, displaySources, isExpanded)
+          : projectNodesWithHostBranches(resources.projects, displaySources, isExpanded),
+        resources.catalogOverflow?.projects,
+        "catalog:projects",
+        "projects",
+      )
+    : projectRailNodes(resources.projects, resources.catalogOverflow?.projects, "catalog:projects", "projects");
+  const projectsSectionTitle = hostGrouping && grouping === "host-project" ? "Hosts" : "Projects";
   const liveNodes = [
-    ...sessionNodes(resources.live, isExpanded),
+    // Live answers "which machine" the same way in either mode: rows group
+    // under host subheaders exactly while they span more than one host
+    // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
+    ...(hostGrouping
+      ? liveNodesGroupedByHost(sessionNodes(resources.live, isExpanded), displaySources, isExpanded)
+      : sessionNodes(resources.live, isExpanded)),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -1701,14 +1800,14 @@ function NavigationRail({
                   projectRetryCallback={projectRetryCallback}
                 />
               ))}
+              {hostGrouping && (
+                <div className={CLASS.organizeRow}>
+                  <OrganizeByControl mode={grouping} onChange={setGrouping} />
+                </div>
+              )}
               <RailSection
-                title="Projects"
-                nodes={projectRailNodes(
-                  resources.projects,
-                  resources.catalogOverflow?.projects,
-                  "catalog:projects",
-                  "projects",
-                )}
+                title={projectsSectionTitle}
+                nodes={projectsSectionNodes}
                 open={isExpanded(PROJECTS_SECTION_KEY, true)}
                 onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
                 onToggle={handleToggle}

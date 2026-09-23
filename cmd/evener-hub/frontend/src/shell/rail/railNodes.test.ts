@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { NavigationWatchSummary, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import type { OverflowRailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
 import {
@@ -9,11 +9,14 @@ import {
   archivedProjectNodes,
   archivedSessionGroups,
   displayState,
+  hostProjectNodes,
+  liveNodesGroupedByHost,
   needsYouDescendantCount,
   overrideLookup,
   pinSectionDisclosureID,
   projectNodeIdForSessionRef,
   projectNodes,
+  projectNodesWithHostBranches,
   sessionNodes,
   topLevelAncestorRef,
   watchCountLabel,
@@ -471,5 +474,162 @@ describe("resource projection semantics", () => {
     expect(projectNodeIdForSessionRef([p], "child")).toBe("projectnode:p1");
     expect(topLevelAncestorRef([p], "child")).toBe("top");
     expect(topLevelAncestorRef([p], "missing")).toBeNull();
+  });
+});
+
+// Host grouping (the rail's organize-by setting): the pure reshaping of the
+// same project/session nodes over the manifest's sources. Host-first makes
+// hosts the top groups; project-first inserts host branches inside each
+// project; the Live section groups under host subheaders whenever its rows
+// span more than one host. No wire data beyond session host_id and each
+// project's sources.
+describe("host grouping (organize by)", () => {
+  const sources: Source[] = [
+    { id: "local", label: "this host", kind: "local", online: true },
+    { id: "devbox", label: "devbox", kind: "appwire", online: true },
+    { id: "render-farm", label: "render-farm", kind: "appwire", online: true },
+    { id: "ci-runner", label: "ci-runner", kind: "appwire", online: false },
+  ];
+  const on = (host: string, ref: string, overrides: Partial<RailSession> = {}) =>
+    session({
+      row_id: `navigation:${host}:${ref}`,
+      ref: `${host}:${ref}`,
+      session_id: ref,
+      host_id: host,
+      ...overrides,
+    });
+
+  test("hostProjectNodes orders hosts this host first, then online alphabetically, offline last, and hides empty hosts", () => {
+    const render = project({ key: "render", sources: ["render-farm"], sessions: [on("render-farm", "r1")] });
+    const ci = project({ key: "ci", sources: ["ci-runner"], sessions: [on("ci-runner", "c1")] });
+    const dev = project({ key: "dev", sources: ["devbox"], sessions: [on("devbox", "d1")] });
+    const home = project({ key: "home", sources: ["local"], sessions: [on("local", "h1")] });
+    const nodes = hostProjectNodes([render, ci, dev, home], sources, closed);
+    expect(nodes.map((node) => node.id)).toEqual(["host:local", "host:devbox", "host:render-farm", "host:ci-runner"]);
+  });
+
+  test("hostProjectNodes nests a copy of each project under every owning host, holding only that host's sessions", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1"), on("devbox", "d2", { state: "awaiting" })],
+    });
+    const nodes = hostProjectNodes([evener], sources, closed);
+    const local = nodes.find((node) => node.id === "host:local");
+    const devbox = nodes.find((node) => node.id === "host:devbox");
+    expect(local?.kind).toBe("host");
+    expect(local?.children.map((child) => child.id)).toEqual(["projectnode:evener@local"]);
+    const localCopy = local?.children[0];
+    expect(localCopy).toMatchObject({ kind: "project", project: { key: "evener" } });
+    expect(localCopy?.kind === "project" ? localCopy.children.map((row) => row.id) : []).toEqual([
+      "navigation:local:l1",
+    ]);
+    // The needs-you-first sort survives the per-host filter.
+    expect(devbox?.children.map((child) => child.id)).toEqual(["projectnode:evener@devbox"]);
+    const devboxCopy = devbox?.children[0];
+    expect(devboxCopy?.kind === "project" ? devboxCopy.children.map((row) => row.id) : []).toEqual([
+      "navigation:devbox:d2",
+      "navigation:devbox:d1",
+    ]);
+  });
+
+  test("hostProjectNodes re-ids each copy's overflow so two copies of one project never share a node id", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+      more_current: 7,
+    });
+    const nodes = hostProjectNodes([evener], sources, closed);
+    const localCopy = nodes.find((node) => node.id === "host:local")?.children[0];
+    const devboxCopy = nodes.find((node) => node.id === "host:devbox")?.children[0];
+    const localOverflow = localCopy?.kind === "project" ? localCopy.children.at(-1) : undefined;
+    const devboxOverflow = devboxCopy?.kind === "project" ? devboxCopy.children.at(-1) : undefined;
+    expect(localOverflow).toMatchObject({ id: "projectnode:evener@local:overflow", kind: "overflow", count: 7 });
+    expect(devboxOverflow).toMatchObject({ id: "projectnode:evener@devbox:overflow", kind: "overflow", count: 7 });
+    // Both copies page the same project resource, so their page descriptors match.
+    expect(devboxOverflow && "pages" in devboxOverflow ? devboxOverflow.pages : []).toEqual(
+      localOverflow && "pages" in localOverflow ? localOverflow.pages : [],
+    );
+  });
+
+  test("hostProjectNodes keeps the loading placeholder on an unloaded project's copies and places projects missing sources by their sessions", () => {
+    const unloaded = project({ key: "unloaded", sources: ["local", "devbox"], session_count: 2 });
+    const noSources = project({ key: "bare", sessions: [on("devbox", "d1")] });
+    const nodes = hostProjectNodes([unloaded, noSources], sources, closed);
+    const local = nodes.find((node) => node.id === "host:local");
+    const devbox = nodes.find((node) => node.id === "host:devbox");
+    const unloadedUnderLocal = local?.children.find((child) => child.id === "projectnode:unloaded@local");
+    expect(unloadedUnderLocal?.kind === "project" ? unloadedUnderLocal.children : []).toEqual([
+      { id: "projectnode:unloaded@local:loading", kind: "loading" },
+    ]);
+    const unloadedUnderDevbox = devbox?.children.find((child) => child.id === "projectnode:unloaded@devbox");
+    expect(unloadedUnderDevbox?.kind === "project" ? unloadedUnderDevbox.children : []).toEqual([
+      { id: "projectnode:unloaded@devbox:loading", kind: "loading" },
+    ]);
+    // No sources field: placement falls back to the hosts its own rows name.
+    expect(local?.children.some((child) => child.id === "projectnode:bare@local")).toBe(false);
+    expect(devbox?.children.map((child) => child.id)).toContain("projectnode:bare@devbox");
+  });
+
+  test("projectNodesWithHostBranches inserts host branches inside a loaded project, overflow stays at the project level", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+      more_current: 7,
+    });
+    const [node] = projectNodesWithHostBranches([evener], sources, closed);
+    expect(node?.children.map((child) => child.id)).toEqual([
+      "projectnode:evener@host:local",
+      "projectnode:evener@host:devbox",
+      "projectnode:evener:overflow",
+    ]);
+    const localBranch = node?.children[0];
+    expect(localBranch).toMatchObject({ kind: "host", host: { id: "local" } });
+    expect(localBranch?.kind === "host" ? localBranch.children.map((row) => row.id) : []).toEqual([
+      "navigation:local:l1",
+    ]);
+  });
+
+  test("projectNodesWithHostBranches leaves an unloaded project's loading placeholder alone", () => {
+    const [node] = projectNodesWithHostBranches([project({ key: "p1", session_count: 2 })], sources, closed);
+    expect(node?.children).toEqual([{ id: "projectnode:p1:loading", kind: "loading" }]);
+  });
+
+  test("projectNodesWithHostBranches hides a host branch with no loaded rows, while host-first keeps the copy for its overflow", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1")],
+      more_current: 7,
+    });
+    // Project-first: the devbox branch would hold nothing, so it does not
+    // render; the project-level overflow still does.
+    const [branchNode] = projectNodesWithHostBranches([evener], sources, closed);
+    expect(branchNode?.children.map((child) => child.id)).toEqual([
+      "projectnode:evener@host:local",
+      "projectnode:evener:overflow",
+    ]);
+    // Host-first: the devbox copy stays (its rows may be beyond the loaded
+    // window) and carries the overflow that can reveal them.
+    const hosts = hostProjectNodes([evener], sources, closed);
+    const devboxCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
+    expect(devboxCopy?.kind === "project" ? devboxCopy.children.map((row) => row.id) : []).toEqual([
+      "projectnode:evener@devbox:overflow",
+    ]);
+  });
+
+  test("liveNodesGroupedByHost groups rows under hosts only while more than one host is in play", () => {
+    const rows = sessionNodes([on("local", "l1"), on("devbox", "d1")], closed);
+    const grouped = liveNodesGroupedByHost(rows, sources, overrideLookup(new Map()));
+    expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
+    const local = grouped[0];
+    expect(local).toMatchObject({ kind: "host", host: { id: "local", online: true }, expanded: true });
+    expect(local?.kind === "host" ? local.children.map((row) => row.id) : []).toEqual(["navigation:local:l1"]);
+    // A single host (or none) keeps today's flat list, byte for byte.
+    const single = sessionNodes([on("local", "l1"), on("local", "l2")], closed);
+    expect(liveNodesGroupedByHost(single, sources, closed)).toBe(single);
+    expect(liveNodesGroupedByHost([], sources, closed)).toEqual([]);
   });
 });
