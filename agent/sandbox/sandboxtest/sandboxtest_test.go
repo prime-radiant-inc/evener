@@ -3,6 +3,7 @@ package sandboxtest
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,15 +32,33 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	}
 	t.Setenv(envvars.EVENERHostTempBases.Name, outerHostTemp)
 
+	t.Setenv("GOCACHE", "")
+	os.Unsetenv("GOCACHE") //nolint:errcheck // t.Setenv above restores it
+	outerUserCache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	redirect, err := RedirectHostTemp("evener-sandboxtest-")
 	if err != nil {
 		t.Fatalf("RedirectHostTemp: %v", err)
 	}
 	t.Cleanup(func() { _ = redirect.Discard() })
 	root := redirect.Root()
+	// Moving the user cache dir must not move Go's build cache with it.
+	if got, want := os.Getenv("GOCACHE"), filepath.Join(outerUserCache, "go-build"); got != want {
+		t.Fatalf("GOCACHE under the redirect = %q, want it pinned to %q", got, want)
+	}
 	// The user cache dir Windows resolves (os.UserCacheDir reads LocalAppData
 	// there) must be a real directory: the bundled-skills cache refuses a base
 	// it cannot resolve.
+	// The crashed-scratch sweep also walks os.UserCacheDir, so wherever a
+	// variable decides it (not macOS, where it follows HOME) it must land in the
+	// root too.
+	if runtime.GOOS != "darwin" {
+		if cache, err := os.UserCacheDir(); err != nil || !within(root, cache) {
+			t.Fatalf("os.UserCacheDir() = %q, %v; want it under the redirect root %q", cache, err, root)
+		}
+	}
 	if cache := os.Getenv("LocalAppData"); !within(root, cache) {
 		t.Fatalf("LocalAppData = %q, want it under the redirect root %q", cache, root)
 	} else if info, err := os.Stat(cache); err != nil || !info.IsDir() {

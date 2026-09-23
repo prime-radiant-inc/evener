@@ -48,7 +48,7 @@ type HostTemp struct {
 }
 
 // RedirectHostTemp points the temp dir (TMPDIR; TMP and TEMP on Windows), the
-// Windows user cache dir and the session temp container bases
+// user cache dir (except on macOS) and the session temp container bases
 // (EVENER_HOST_TEMP_BASES) into a root: the one RootVar names when an enclosing
 // test process made it, or else a new one under the current temp dir, named
 // with prefix. Child processes inherit the variables and RootVar. Call Discard
@@ -67,15 +67,25 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 		}
 		h.root = root
 	}
-	// TMP and TEMP are what os.TempDir reads on Windows, and LocalAppData
-	// (AppData as a fallback) what os.UserCacheDir reads there: the bundled
-	// skills cache lives in the temp dir on Unix but in the user cache dir on
-	// Windows.
+	// TMP and TEMP are what os.TempDir reads on Windows. The user cache dir
+	// comes from XDG_CACHE_HOME on Linux and LocalAppData (AppData as a
+	// fallback) on Windows: the crashed-scratch sweep walks it, and on Windows
+	// it holds the bundled-skills cache. macOS derives it from HOME, which is
+	// not moved here: a process-wide HOME moves every config home with it.
 	temp := filepath.Join(h.root, "tmp")
 	cache := filepath.Join(temp, "cache")
+	// Go's build cache defaults to a directory under the user cache dir. Pin it
+	// where it is now, or every go build a test runs would start cold.
+	if _, set := os.LookupEnv("GOCACHE"); !set {
+		if userCache, err := os.UserCacheDir(); err == nil {
+			if err := h.setenv("GOCACHE", filepath.Join(userCache, "go-build")); err != nil {
+				return nil, errors.Join(err, h.Discard())
+			}
+		}
+	}
 	for name, value := range map[string]string{
 		"TMPDIR": temp, "TMP": temp, "TEMP": temp,
-		"LocalAppData": cache, "AppData": cache,
+		"XDG_CACHE_HOME": cache, "LocalAppData": cache, "AppData": cache,
 		RootVar:                          h.root,
 		envvars.EVENERHostTempBases.Name: hostTempBase(h.root),
 	} {
@@ -86,8 +96,8 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 	return h, nil
 }
 
-// newHostTempRoot creates a root holding the TMPDIR, the Windows user cache
-// dir and the host temp base.
+// newHostTempRoot creates a root holding the TMPDIR, the user cache dir and the
+// host temp base.
 func newHostTempRoot(prefix string) (string, error) {
 	root, err := os.MkdirTemp("", prefix+"*")
 	if err != nil {
@@ -103,7 +113,7 @@ func newHostTempRoot(prefix string) (string, error) {
 	}
 	temp := filepath.Join(root, "tmp")
 	hostTemp := hostTempBase(root)
-	// cache inside tmp is the Windows user cache dir RedirectHostTemp names.
+	// cache inside tmp is the user cache dir RedirectHostTemp names.
 	for _, dir := range []string{temp, filepath.Join(temp, "cache"), hostTemp} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			return "", errors.Join(fmt.Errorf("sandboxtest: create %s: %w", dir, err), os.RemoveAll(root))
