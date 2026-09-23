@@ -675,8 +675,13 @@ func TestSession_PreToolUseHookCanDenyOrUpdateValidSchemaInvalidArgumentsIssue83
 			if len(prompts) != 1 || prompts[0] == "input=null" || !strings.Contains(prompts[0], `"end_turn":"not-a-bool"`) {
 				t.Fatalf("valid schema-invalid input did not reach hook: %q", boundedStringForIssue831(prompts))
 			}
-			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"end_turn":true`)) {
-				t.Fatalf("updated raw-valid call end = %+v, want hook update applied", end)
+			// The end event carries the model's original argument bytes (before
+			// hook updates) so live display matches reload, which uses
+			// SentArguments() = the original valid-JSON bytes. The hook update
+			// is applied to the call for dispatch but does not override the
+			// event's ArgumentsJSON.
+			if tc.wantUpdated && (end == nil || !strings.Contains(end.ArgumentsJSON, `"end_turn":"not-a-bool"`)) {
+				t.Fatalf("updated raw-valid call end = %+v, want original model args (not hook-updated form)", end)
 			}
 		})
 	}
