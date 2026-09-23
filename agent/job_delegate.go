@@ -117,6 +117,7 @@ type sendMessageResult struct {
 	LatestActivityAt         string
 	CumulativeUsage          *schema.CumulativeUsage
 	WaitIgnoredReason        string
+	Name                     string
 	Err                      error
 }
 

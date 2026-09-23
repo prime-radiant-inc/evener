@@ -541,6 +541,20 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 	return inspect.Watching || inspect.Source != "" || inspect.EndReason != ""
 }
 
+// validateDelegateLabel validates a delegate name with the same alphabet
+// manage_worktree names use (worktree.ValidateName), wrapped in the
+// invalid_request convention both the create path and describe share.
+// A blank name is valid (absent label).
+func validateDelegateLabel(name string) error {
+	if name == "" {
+		return nil
+	}
+	if verr := worktree.ValidateName(name); verr != nil {
+		return fmt.Errorf("invalid_request: name: %w", verr)
+	}
+	return nil
+}
+
 // decodeDelegateArgs decodes the delegate tool's raw params into delegateArgs,
 // returning an invalid_request error for a malformed wait/allowance value. It is
 // pure over the args map (no session state), so the decode — including the
@@ -607,8 +621,8 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	// capacity is reserved; the worktree create core re-checks with git's own
 	// ref rules and refuses a branch that already exists.
 	if name := stringArg(args, "name"); name != "" {
-		if verr := worktree.ValidateName(name); verr != nil {
-			return delegateArgs{}, fmt.Errorf("invalid_request: name: %w", verr)
+		if err := validateDelegateLabel(name); err != nil {
+			return delegateArgs{}, err
 		}
 		a.Name = name
 	}
@@ -1649,6 +1663,7 @@ type delegateSendResult struct {
 	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
 	ResolvedModel          string                  `json:"resolved_model,omitempty"`
 	ReasoningEffort        string                  `json:"reasoning_effort,omitempty"`
+	Name                   string                  `json:"name,omitempty"`
 	RunStartedAt           string                  `json:"run_started_at,omitempty"`
 	RunEndedAt             string                  `json:"run_ended_at,omitempty"`
 	LatestActivityAt       string                  `json:"latest_activity_at,omitempty"`
@@ -1771,6 +1786,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
+		Name:                res.Name,
 		ReasoningEffort:     res.ReasoningEffort,
 		RunStartedAt:        res.RunStartedAt,
 		RunEndedAt:          res.RunEndedAt,
