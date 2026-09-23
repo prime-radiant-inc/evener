@@ -53,8 +53,10 @@ const liveShardTimeout = 5 * time.Second
 // when the scheduler happened to run each process. Processes that reach the
 // expected count rendezvous on ready.<pid> before any of them exits, so a peer
 // cannot remove its live marker before a slower peer has sampled it. A process
-// that never sees its peers writes a timeout.<pid> marker, so the caller can
-// tell a real low-concurrency observation from a probe that could not measure.
+// that sees SHARD_FIXTURE_RUNNER_WAITING first writes capped.<pid> instead:
+// the runner's cap engaged, so the full count will not arrive. Only a process
+// that sees neither its peers nor that signal writes a timeout.<pid> marker, so
+// the caller can tell a real observation from a probe that could not measure.
 //
 // The observed population goes to seen.<pid> and the marker is removed on exit,
 // so a finished process does not count as live. Inert unless the test asks for
