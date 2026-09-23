@@ -2955,6 +2955,36 @@ export function createConversationStore() {
             const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
+              // RoboRev round 38 (panel Medium 1): a clustered activity row
+              // IS its members, and one member the live conversation already
+              // holds (a cluster split at the pagination boundary) makes only
+              // that member a duplicate. Dropping the whole row would delete
+              // the genuinely older members nobody else holds; judge each
+              // member on its own identity and rebuild the cluster from the
+              // survivors, exactly as retainedPageRow does on the rehydrate
+              // side. Every incoming member is a page row here, so there is
+              // no ownership filter to apply — the survivors are recorded
+              // page-owned below with the rest of the page.
+              if (item.kind === "activity" && item.members !== undefined) {
+                const all = item.members;
+                const members = all.filter(
+                  (member) => !existingIds.has(activityIdentity(member)),
+                );
+                if (members.length === all.length) {
+                  // No member duplicates; the row keeps its whole-row checks
+                  // (own identity, attachment source) like any other row.
+                  if (supersededBy(item, existingIds, currentIds)) continue;
+                  for (const id of timelineIdentities(item)) existingIds.add(id);
+                  deduped.push(item);
+                  continue;
+                }
+                // Every member already held: nothing older survives the row.
+                if (members.length === 0) continue;
+                const rebuilt = rebuildOwnedCluster(item, members);
+                for (const id of timelineIdentities(rebuilt)) existingIds.add(id);
+                deduped.push(rebuilt);
+                continue;
+              }
               if (supersededBy(item, existingIds, currentIds)) continue;
               // I3: Defense-in-depth — filter question rows at the state merge
               // boundary too, not only in the service's projectOlderTurns. A

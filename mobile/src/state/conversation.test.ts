@@ -4803,6 +4803,73 @@ describe("ConversationStore", () => {
       expect(ids).toContain("wire-C:attachments");
     });
 
+    // RoboRev round 38 (panel Medium 1): a pagination boundary can split a
+    // cluster — the older page replays a clustered activity row ONE of whose
+    // members the live conversation already holds, while its other members
+    // are genuinely older history nobody else has. Dropping the whole row
+    // on the single member match deletes that history; the members must
+    // dedupe individually and the cluster rebuild from the survivors,
+    // exactly as retainedPageRow does on the rehydrate side ("keeps the
+    // paged cluster's other members when the snapshot holds one of them").
+    it("loadOlder rebuilds a paged cluster from members the live conversation does not hold", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // The live window already holds the boundary member m2.
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "m2",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "m2 live" },
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // An older page whose one row is a cluster of three shell calls with
+      // the boundary member in the middle.
+      const member = (id: string) => ({
+        id,
+        label: "shell",
+        family: "tool" as const,
+        state: "completed" as const,
+        detail: { output: `${id} output` },
+      });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "m1",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "m1 output" },
+            members: [member("m1"), member("m2"), member("m3")],
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      const conv = store.getState().conversation;
+      // The cluster row survives, rebuilt without the member the live
+      // conversation already holds.
+      const paged = conv?.items.find(
+        (item): item is Extract<MobileTimelineItem, { kind: "activity" }> =>
+          item.kind === "activity" && item.id === "m1",
+      );
+      expect(paged).toBeDefined();
+      expect(paged?.members?.map((m) => m.id)).toEqual(["m1", "m3"]);
+      // The live boundary row stays, exactly once.
+      expect(
+        conv?.items.filter((item) => item.kind === "activity" && item.id === "m2"),
+      ).toHaveLength(1);
+    });
+
     it("loadOlder retains newest 500 and disables further paging at cap", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
@@ -22267,7 +22334,7 @@ describe("ConversationStore", () => {
       return store;
     }
 
-    it("skips an incoming cluster whose member identity is already present under a new top-level id", async () => {
+    it("rebuilds an incoming cluster whose member identity is already present under a new top-level id", async () => {
       const store = await pagedStore(
         [cluster("wire-X", "key-X", [member("wire-X", "key-X"), member("wire-A", "key-A")])],
         [
@@ -22280,7 +22347,13 @@ describe("ConversationStore", () => {
       );
 
       const items = store.getState().conversation?.items ?? [];
-      expect(items.map((i) => i.id)).not.toContain("wire-old");
+      // Panel round 38 (Medium 1), superseding the whole-row skip this test
+      // originally pinned: the member the live conversation already holds
+      // dedupes per member, and the row's genuinely older first member
+      // survives the merge rebuilt around the members nobody else holds —
+      // a single survivor renders as the plain row, as retainedPageRow's
+      // rebuild does on the rehydrate side.
+      expect(items.map((i) => i.id)).toContain("wire-old");
       // The member is not duplicated across rows.
       expect(memberIdentities(items).filter((id) => id === "key-A")).toEqual([
         "key-A",
