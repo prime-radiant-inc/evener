@@ -700,6 +700,94 @@ func TestMakeTestWebBrowserSuccessIsConciseAndRemovesEvidence(t *testing.T) {
 	}
 }
 
+// TestMakeTestWebBrowserRunsTheGuardsAtOnce pins that the browser gate runs
+// guards side by side when it has the slots: with the first guard held and a
+// slot for every guard, every later Node guard must still start. A gate that
+// ran them one at a time would start none of them until the first was
+// released.
+func TestMakeTestWebBrowserRunsTheGuardsAtOnce(t *testing.T) {
+	const tripwire = 30 * time.Second
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
+	processStateDir := filepath.Join(fixture.root, "process-state-records")
+	if err := os.Mkdir(processStateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	releasePath := filepath.Join(fixture.root, "held-node.release")
+
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		// Every guard gets a slot, whatever the host's load says.
+		"BROWSER_GUARD_CONCURRENCY=7",
+		"EVENER_TEST_PROCESS_STATE_DIR="+processStateDir,
+		"EVENER_TEST_NODE_HOLD_COMMAND=scripts/layoutguard/run.mjs",
+		"EVENER_TEST_NODE_READY="+filepath.Join(fixture.root, "held-node.ready"),
+		"EVENER_TEST_NODE_PID="+filepath.Join(fixture.root, "held-node.pid"),
+		"EVENER_TEST_NODE_TERM="+filepath.Join(fixture.root, "held-node.term"),
+		"EVENER_TEST_NODE_RELEASE="+releasePath,
+	)
+	var output syncBuffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start make test-web-browser: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = os.WriteFile(releasePath, nil, 0o644)
+		}
+	}
+	t.Cleanup(func() {
+		release()
+		select {
+		case <-waitDone:
+		case <-time.After(tripwire): // TRIPWIRE: the released stub exits at once; this only bounds a hang.
+			_ = command.Process.Kill()
+		}
+	})
+
+	later := []string{"scripts/overflowguard/run.mjs", "scripts/shellguard/run.mjs", "scripts/spawnguard/run.mjs", "scripts/transcriptscrollguard/run.mjs"}
+	started := func() []string {
+		entries, _ := os.ReadDir(processStateDir)
+		var seen []string
+		for _, entry := range entries {
+			data, err := os.ReadFile(filepath.Join(processStateDir, entry.Name()))
+			if err != nil {
+				continue
+			}
+			for _, guard := range later {
+				if strings.Contains(string(data), "\t"+guard+"\t") {
+					seen = append(seen, guard)
+				}
+			}
+		}
+		return seen
+	}
+	// TRIPWIRE: the stubs start in milliseconds; the poll only bounds a gate
+	// that never starts them while the first guard is held.
+	deadline := time.Now().Add(tripwire)
+	for len(started()) < len(later) {
+		select {
+		case err := <-waitDone:
+			t.Fatalf("make test-web-browser returned while the first guard was held: %v; output = %s", err, output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("with layoutguard held, only %q of the later guards started; want all of %q", started(), later)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	release()
+}
+
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
@@ -910,6 +998,7 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/ops/build-runtime-pair.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/private-go-home.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/scratch-lib.sh", 0o644)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/load-aware-workers.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/web-preflight.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web-browser.sh", 0o755)

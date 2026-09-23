@@ -8,18 +8,32 @@ set -u
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$script_dir/../lib/scratch-lib.sh"
+. "$script_dir/../lib/load-aware-workers.sh"
 
 cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
 
 dir=""
-guard_pid=""; status=0; complete=0
+# Parallel arrays (bash 3.2 has no associative arrays): the guards in verdict
+# order, and the pid each one runs as while it is live.
+guards=(layoutguard overflowguard shellguard spawnguard transcriptscrollguard retirementguard skillguard)
+guard_pids=()
+status=0; complete=0
 
-stop_guard() {
-	[ -z "$guard_pid" ] || { kill -TERM "$guard_pid" 2>/dev/null || :; wait "$guard_pid" 2>/dev/null || :; guard_pid=""; }
+# stop_guards TERMs every guard still running and waits for each, so an
+# interruption waits for the cleanup each guard owns.
+stop_guards() {
+	local pid
+	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do
+		[ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || :
+	done
+	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do
+		[ -z "$pid" ] || wait "$pid" 2>/dev/null || :
+	done
+	guard_pids=()
 }
 
 finish_browser() {
-	finish_status=$?; stop_guard
+	finish_status=$?; stop_guards
 	if [ "$complete" -eq 1 ] && [ "$status" -eq 0 ] && [ "$finish_status" -eq 0 ]; then
 		scratch_rm || { finish_status=1; [ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2; }
 	else
@@ -28,7 +42,7 @@ finish_browser() {
 	trap - 0; exit "$finish_status"
 }
 
-interrupted_browser() { stop_guard; exit "$1"; }
+interrupted_browser() { stop_guards; exit "$1"; }
 
 # The trap is armed before any scratch exists: a crash between mint and arming
 # would leak the directory (the trap-before-mkdir ordering the audit enforces).
@@ -37,48 +51,13 @@ trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interr
 
 scratch_dir dir evener-test-web-browser
 
-for guard in layoutguard overflowguard shellguard spawnguard transcriptscrollguard retirementguard; do
-	guard_dir="$dir/$guard"
-	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" || exit 1
-	if [ "$guard" = retirementguard ]; then
-		# retirementguard's contract is `npm run retirementguard`: it invokes the
-		# isolated Go fixture (TestRetirementBrowser), which starts the fixture Hub
-		# and drives scripts/retirementguard/run.mjs against it. That runner only
-		# talks to the supplied fixture; it never starts another Go test.
-		#
-		# Because it runs go test, its private HOME must PRESERVE the user's Go
-		# module/build caches (scripts/lib/private-go-home.sh): a bare private HOME
-		# makes Go build a private module cache of hundreds of MB whose read-only
-		# files then defeat this gate's scratch cleanup. `exec` keeps the
-		# backgrounded pid on the real command so stop_guard can terminate it.
-		(
-			. "$script_dir/../lib/private-go-home.sh"
-			evener_prepare_private_go_home "$guard_dir" || exit 1
-			TMPDIR="$guard_dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 exec npm run retirementguard
-		) >"$dir/$guard.log" 2>&1 &
-	else
-		HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
-	fi
-	guard_pid=$!
-	if wait "$guard_pid"; then
-		guard_pid=""
-		printf 'PASS  web-%s\n' "$guard"
-	else
-		guard_status=$?
-		guard_pid=""
-		printf 'FAIL  web-%s (exit %s)\n' "$guard" "$guard_status" >&2
-		cat "$dir/$guard.log"
-		[ "$status" -ne 0 ] || status="$guard_status"
-	fi
-done
-
 # web-skillguard is the full-stack browser guard: cmd/evener-hub's
 # TestSkillComposerBrowser (browserguard build tag) drives the PRODUCTION web
 # app in real Chrome through a real hub (roster, past index, auth) against two
 # real `evener serve` helper daemons, with only the external LLM provider
-# scripted. Unlike the pure-frontend guards above it needs the Go toolchain
-# and the BUILT frontend (the hub serves the embedded dist), so it runs last
-# with its own prerequisites: a missing dist is built here, not skipped.
+# scripted. Unlike the pure-frontend guards it needs the Go toolchain and the
+# BUILT frontend (the hub serves the embedded dist), so a missing dist is built
+# before any guard starts, not skipped.
 repo_root="$(cd "$script_dir/../.." && pwd -P)"
 if [ ! -f dist/index.html ]; then
 	printf 'building the production frontend for web-skillguard…\n'
@@ -91,17 +70,79 @@ if [ ! -f dist/index.html ]; then
 		exit "$build_status"
 	fi
 fi
-# The TestSkillGuard* unit tests ride along: they cover the failure reporting
-# this guard leans on, they need no browser, and the browserguard tag is the
-# only build that compiles them.
-if (cd "$repo_root" && go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuard' -count=1 >"$dir/skillguard.log" 2>&1); then
-	printf 'PASS  web-skillguard\n'
-else
-	guard_status=$?
-	printf 'FAIL  web-skillguard (exit %s)\n' "$guard_status" >&2
-	cat "$dir/skillguard.log"
-	[ "$status" -ne 0 ] || status="$guard_status"
-fi
+
+# start_guard GUARD — start one guard in the background, its output in
+# $dir/GUARD.log, and record its pid.
+start_guard() {
+	local guard=$1 guard_dir="$dir/$1"
+	mkdir -p "$guard_dir/home" "$guard_dir/tmp" "$guard_dir/xdg-config" "$guard_dir/xdg-cache" "$guard_dir/xdg-state" || exit 1
+	case "$guard" in
+	retirementguard)
+		# retirementguard's contract is `npm run retirementguard`: it invokes the
+		# isolated Go fixture (TestRetirementBrowser), which starts the fixture Hub
+		# and drives scripts/retirementguard/run.mjs against it. That runner only
+		# talks to the supplied fixture; it never starts another Go test.
+		#
+		# Because it runs go test, its private HOME must PRESERVE the user's Go
+		# module/build caches (scripts/lib/private-go-home.sh): a bare private HOME
+		# makes Go build a private module cache of hundreds of MB whose read-only
+		# files then defeat this gate's scratch cleanup. `exec` keeps the
+		# backgrounded pid on the real command so stop_guards can terminate it.
+		(
+			. "$script_dir/../lib/private-go-home.sh"
+			evener_prepare_private_go_home "$guard_dir" || exit 1
+			TMPDIR="$guard_dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 exec npm run retirementguard
+		) >"$dir/$guard.log" 2>&1 &
+		;;
+	skillguard)
+		# The TestSkillGuard* unit tests ride along: they cover the failure
+		# reporting this guard leans on, they need no browser, and the
+		# browserguard tag is the only build that compiles them.
+		(cd "$repo_root" && exec go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuard' -count=1) >"$dir/$guard.log" 2>&1 &
+		;;
+	*)
+		HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
+		;;
+	esac
+	guard_pids+=("$!")
+}
+
+# The guards are independent (each has its own Chrome profile, ephemeral
+# ports and private roots), so up to $slots of them run at once and the gate
+# takes about as long as its slowest slot instead of the sum. Each guard is a
+# real browser (and most a Vite dev server) whose tripwires assume it gets
+# CPU, so the slots are the machine's spare cores: all at once on an idle CI
+# runner, one at a time on a saturated one. BROWSER_GUARD_CONCURRENCY
+# overrides that. Verdicts still print in the fixed order above, and every
+# guard runs to its verdict so one failure does not hide another; the exit
+# status is the first nonzero one in that order.
+slots=${BROWSER_GUARD_CONCURRENCY:-$(load_aware_workers 0)}
+case "$slots" in
+''|*[!0-9]*|0) slots=1 ;;
+esac
+started=0
+while [ "$started" -lt "$slots" ] && [ "$started" -lt "${#guards[@]}" ]; do
+	start_guard "${guards[$started]}"
+	started=$((started + 1))
+done
+i=0
+for guard in "${guards[@]}"; do
+	if wait "${guard_pids[$i]}"; then
+		printf 'PASS  web-%s\n' "$guard"
+	else
+		guard_status=$?
+		printf 'FAIL  web-%s (exit %s)\n' "$guard" "$guard_status" >&2
+		cat "$dir/$guard.log"
+		[ "$status" -ne 0 ] || status="$guard_status"
+	fi
+	guard_pids[$i]=""
+	i=$((i + 1))
+	# A slot is free: start the next guard in order.
+	if [ "$started" -lt "${#guards[@]}" ]; then
+		start_guard "${guards[$started]}"
+		started=$((started + 1))
+	fi
+done
 
 complete=1
 exit "$status"
