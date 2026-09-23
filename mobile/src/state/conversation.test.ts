@@ -15407,6 +15407,178 @@ describe("ConversationStore", () => {
       ).toHaveLength(1);
     });
 
+    it("a rehydrating read does not re-append live delta chunks the snapshot already settled", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello", "inProgress")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // An older page loads: the rehydrate merge is active from here on.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // Deltas stream in ahead of the response: the reducer holds them
+      // as pending chunks beside the item's settled text.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: " world",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Hello world",
+      });
+
+      // An authoritative reread lands mid-stream: the snapshot's settled
+      // text already contains the chunks the deltas added.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello world", "inProgress")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // (RoboRev round 5: the merge used to keep the retained item's
+      // pending chunks beside the snapshot text that already settled them,
+      // and every publish re-appended them.)
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Hello world",
+      });
+
+      // And the stream continues on the settled base — not a doubled one.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: "!",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Hello world!",
+      });
+    });
+
+    it("a rehydrating read keeps the delta chunks that were still ahead of the snapshot's cut", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello", "inProgress")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: " world",
+        },
+      } as AnyNotification);
+
+      // The reread's cut predates the chunk: the snapshot's settled text
+      // does not contain it, so the chunk is still live and must survive
+      // the merge (the strip may only take what the text ends with).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello", "inProgress")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      // The committed rows after the read are the snapshot's own ("Hello",
+      // the wire's settled text at the cut); the live chunk the cut
+      // predates survives in the MERGED MODEL, where the next
+      // row-changing frame reads it from.
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "item-a")?.pendingText,
+      ).toEqual([" world"]);
+
+      // The stream continues from exactly where it was.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: "!",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Hello world!",
+      });
+    });
+
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

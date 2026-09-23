@@ -32,6 +32,7 @@ import {
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
+  pendingTextJoined,
   sessionControls,
   WireError,
 } from "@evener/appwire-client";
@@ -2013,6 +2014,47 @@ export function createConversationStore() {
             // other page row (the round-31 coverage rule reads exactly
             // that), so only the non-page warnings drop.
             const freshTurnIds = new Set(conversation.turns.map((turn) => turn.id));
+            // Rule 3 — a retained item's pending delta chunks are the
+            // response streaming ahead of the transcript: the snapshot's
+            // settled text folds every chunk the wire received before its
+            // cut, so those chunks are stale on the retained side — the
+            // item merge spreads hydrated items over retained ones
+            // ({ ...older, ...newer }) and a hydrated item omits
+            // pendingText entirely, which kept the stale chunks riding
+            // beside the text that already contains them, re-appended by
+            // every later publish (RoboRev round 5). Only the leading run
+            // of chunks the snapshot's text provably ends with strips:
+            // a chunk the text does not end with is still ahead of the
+            // response (the read was cut before the wire folded it), and
+            // stays live for the stream to continue on.
+            const freshTextByKey = new Map<string, string>();
+            const freshTextById = new Map<string, string>();
+            for (const turn of conversation.turns) {
+              for (const item of turn.items) {
+                freshTextByKey.set(item.transcriptKey ?? item.id, item.text);
+                freshTextById.set(item.id, item.text);
+              }
+            }
+            const stripSettledChunks = (item: ItemModel): ItemModel => {
+              const pending = item.pendingText;
+              if (pending === undefined || pending.length === 0) return item;
+              const freshText =
+                freshTextByKey.get(item.transcriptKey ?? item.id) ??
+                freshTextById.get(item.id);
+              if (freshText === undefined) return item;
+              let settled = 0;
+              while (
+                settled < pending.length &&
+                freshText.endsWith(pendingTextJoined(pending.slice(0, settled + 1)))
+              ) {
+                settled += 1;
+              }
+              if (settled === 0) return item;
+              const live = pending.slice(settled);
+              return live.length === 0
+                ? { ...item, pendingText: undefined }
+                : { ...item, pendingText: live };
+            };
             const retainedTurnsForMerge = currentConvForMerge.turns.map(
               (turn) => {
                 const afterTwins = freshTurnIds.has(turn.id)
@@ -2028,9 +2070,11 @@ export function createConversationStore() {
                     item.type !== "warning" ||
                     pageOwnedIds.has(item.transcriptKey ?? item.id),
                 );
-                return kept.length === turn.items.length
+                const stripped = kept.map(stripSettledChunks);
+                return kept.length === turn.items.length &&
+                  stripped.every((item, index) => item === kept[index])
                   ? turn
-                  : { ...turn, items: kept };
+                  : { ...turn, items: stripped };
               },
             );
             const injectedFresh = injectCompactedSkeletons(
