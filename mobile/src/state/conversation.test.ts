@@ -16014,6 +16014,112 @@ describe("ConversationStore", () => {
       ).toHaveLength(1);
     });
 
+    it("a stripped sparse item keeps its omitted-text marker for a later page to fill", async () => {
+      const service = new FakeConversationService();
+      // Sparse: an image-only user message — no text of its own.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "msg-1",
+                  turnId: "t1",
+                  type: "userMessage",
+                  images: [{ url: "https://hub.test/image" }],
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "msg-1:attachments")).toBeDefined();
+
+      // The reread withdraws the image and still omits the text: the
+      // snapshot-authority strip clones the retained item, and the clone
+      // must keep the reducer's omitted-text marker (RoboRev round 9).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "msg-1",
+                  turnId: "t1",
+                  type: "userMessage",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rowById(store, "msg-1:attachments")).toBeUndefined();
+
+      // A later older page carries the item's actual text: the empty
+      // settle must stay adoptable, not read as authoritative.
+      store.setState({ olderCursor: "cursor-2" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "msg-1",
+                turnId: "t1",
+                type: "userMessage",
+                text: "check this",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      // The model adopts the page's text (the stripped item kept its
+      // omitted-text marker, so the page's provided text wins the fold)...
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "msg-1")?.text,
+      ).toBe("check this");
+
+      // ...and the next row-changing frame projects it.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "msg-1")).toMatchObject({
+        kind: "user",
+        text: "check this",
+      });
+    });
+
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

@@ -333,6 +333,7 @@ export type {
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  copyItemTextPresence,
   foldWarningParams,
   hasWarningText,
   hydrateThread,

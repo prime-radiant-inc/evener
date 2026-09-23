@@ -205,7 +205,12 @@ function setItemTextPresence(item: ItemModel, presence: ItemTextPresence): ItemM
   return item;
 }
 
-function copyItemTextPresence(source: ItemModel, target: ItemModel): ItemModel {
+// Exported (through index.ts) for the mobile store's rehydrate prep: its
+// clone sites spread items to patch fields, and the presence marker below is
+// non-enumerable, so every clone must re-apply it or a stripped sparse item
+// reads as an authoritative empty settle and blocks the page that later
+// brings its real text (RoboRev round 9).
+export function copyItemTextPresence(source: ItemModel, target: ItemModel): ItemModel {
   const presence = (source as InternalItemModel)[ITEM_TEXT_PRESENCE];
   return presence === undefined ? target : setItemTextPresence(target, presence);
 }

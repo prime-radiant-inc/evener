@@ -22,6 +22,7 @@
 import { create } from "zustand";
 import {
   applyNotification,
+  copyItemTextPresence,
   isStaleCursorError,
   isToolCallItemId,
   isToolResultItemId,
@@ -2086,8 +2087,13 @@ export function createConversationStore() {
               if (settled === 0) return item;
               const live = pending.slice(settled);
               return live.length === 0
-                ? { ...item, pendingText: undefined }
-                : { ...item, pendingText: live };
+                ? // The spread drops the reducer's non-enumerable
+                  // omitted-text marker; a stripped sparse item would
+                  // read as an authoritative empty settle and block the
+                  // page that later brings its real text (RoboRev
+                  // round 9).
+                  copyItemTextPresence(item, { ...item, pendingText: undefined })
+                : copyItemTextPresence(item, { ...item, pendingText: live });
             };
             // Rule 4 — the wire's copy of a matched non-page item is
             // authoritative for the content payloads it carries: the item
@@ -2137,7 +2143,9 @@ export function createConversationStore() {
                 const retained = (item as unknown as Record<string, unknown>)[field];
                 const settledOnFresh = (fresh as unknown as Record<string, unknown>)[field];
                 if (retained === undefined || settledOnFresh !== undefined) continue;
-                stripped ??= { ...item };
+                // Same marker rule as the chunk strip above: the clone
+                // keeps the item's omitted-text presence.
+                stripped ??= copyItemTextPresence(item, { ...item });
                 (stripped as unknown as Record<string, unknown>)[field] = undefined;
               }
               return stripped ?? item;
