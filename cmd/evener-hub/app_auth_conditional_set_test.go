@@ -102,6 +102,15 @@ auth = "bearer"
 AUTHORIZATION = "Bearer hdr-token"
 `
 
+// gatewayBearerInstanceToml is authNoneInstanceToml's instance re-authored onto
+// a key-capable scheme under the same name, which is what makes a client's
+// earlier view of it stale rather than merely changed.
+const gatewayBearerInstanceToml = `[providers.gateway]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+`
+
 // headerWithoutAuthoredHeaderInstanceToml is the control: the same header
 // scheme with no authored credential_headers entry at all, so the instance
 // really does read a stored key and the push must still add it.
@@ -606,6 +615,74 @@ func TestAuth_ApiKeyConditionalSet_SkipsACorruptCodexRecordInsteadOfConflicting(
 	}
 	if _, has := loadStoredKey(t, dir, "work"); has {
 		t.Fatal("a key was stored for a Codex instance")
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_RefusesAStaleViewOfANonKeyCapableScheme proves
+// that classifying a non-key-capable scheme before the source fence did not drop
+// the no-clobber fence for the case that fence exists for: a client that
+// observed such an instance and then pushed at one re-authored onto a
+// key-capable scheme. The revision fence still refuses it, which is why it is
+// checked first - the revision hashes the resolved scheme and source, so the
+// re-authoring moves it. (This is a guard, not a behavior change: it holds both
+// before and after that reordering.)
+func TestAuth_ApiKeyConditionalSet_RefusesAStaleViewOfANonKeyCapableScheme(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, authNoneInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, tomlPath)
+	before, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("Status(gateway): %v", err)
+	}
+	if before.ActiveSource != "none" || before.ConfigRevision == "" {
+		t.Fatalf("status = %+v, want an auth-none instance with a revision to fence on", before)
+	}
+
+	// The same name, now key-capable: the client's view of it is stale from here.
+	writeProvidersToml(t, dir, gatewayBearerInstanceToml)
+	if err := ctrl.reg.Reload(); err != nil {
+		t.Fatalf("reload after re-authoring gateway: %v", err)
+	}
+
+	if _, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider:         "gateway",
+		Value:            "sk-pushed",
+		ExpectedSource:   before.ActiveSource,
+		ExpectedRevision: before.ConfigRevision,
+	}); err == nil {
+		t.Fatal("ApiKeyConditionalSet applied a write carrying the stale revision of a scheme that has since become key-capable")
+	} else {
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	if _, has := loadStoredKey(t, dir, "gateway"); has {
+		t.Fatal("a key was stored for an instance whose observed configuration no longer matched")
+	}
+
+	// Positive control: the same call on a freshly read view of that same
+	// re-authored instance lands, so the Conflict above is the stale revision
+	// refusing it and not some other refusal the reordering introduced.
+	fresh, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("Status(gateway) after the re-authoring: %v", err)
+	}
+	if fresh.ConfigRevision == before.ConfigRevision {
+		t.Fatalf("the revision did not move when the scheme changed: %q", fresh.ConfigRevision)
+	}
+	resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider:         "gateway",
+		Value:            "sk-pushed",
+		ExpectedSource:   fresh.ActiveSource,
+		ExpectedRevision: fresh.ConfigRevision,
+	})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(gateway) with the fresh view: %v", err)
+	}
+	if resp.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("Action = %q, want added for a key-capable instance with no credential (reason %q)", resp.Action, resp.Reason)
+	}
+	if value, has := loadStoredKey(t, dir, "gateway"); !has || value != "sk-pushed" {
+		t.Fatalf("stored key = %q present=%v, want the pushed value", value, has)
 	}
 }
 
