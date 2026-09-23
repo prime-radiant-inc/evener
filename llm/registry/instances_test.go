@@ -1649,6 +1649,45 @@ func TestLaunchMintsCoversLiveRowAuthOverride(t *testing.T) {
 	}
 }
 
+// A live listing can return an id the registry has never seen, and a
+// glob — top-level or provider-scoped — can pin that unseen row onto a
+// scheme that sends api_key. The predicate cannot name ids it has not
+// seen, so an auth-bearing glob means it cannot vouch for the listing's
+// rows: the command key must count as mintable.
+func TestLaunchMintsTreatsAuthBearingGlobsAsReachable(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[models.\"*future*\"]\n" +
+		"auth = \"bearer\"\n"
+	r := fixtureLoad(t, nil, config)
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate vouched for rows it cannot name: a glob can pin an unseen live id onto a scheme that sends the api_key command")
+	}
+}
+
+// The conservative glob rule reads the auth field alone: a glob that
+// pins transport fields but no auth — or only caps — cannot flip a
+// scheme, so the none-scheme command key stays safe to skip.
+func TestLaunchMintsIgnoresAuthlessGlobs(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"[models.\"*caps*\"]\n" +
+		"base_url = \"http://127.0.0.1:10/v1\"\n"
+	r := fixtureLoad(t, nil, config)
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate refused a none-scheme command key over a glob that cannot change any row's scheme")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never

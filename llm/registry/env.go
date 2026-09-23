@@ -139,7 +139,12 @@ func CheckCredentialHeaderValue(value string) error {
 			// demanding whitespace the value already has.
 			schemeGlued, schemeControl = false, false
 			for i := range len(p.Lit) {
-				if p.Lit[i] != ' ' && p.Lit[i] != '\t' && p.Lit[i] < 0x20 {
+				// DEL travels with the C0 controls in a header value:
+				// httpguts.isCTL rejects it too. The literal-token rules
+				// above refuse every reachable DEL first, so this scan is
+				// the depth guard that keeps the byte out even if those
+				// rules ever loosen.
+				if p.Lit[i] != ' ' && p.Lit[i] != '\t' && (p.Lit[i] < 0x20 || p.Lit[i] == 0x7f) {
 					schemeControl = true
 				}
 			}

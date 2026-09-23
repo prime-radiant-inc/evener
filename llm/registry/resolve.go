@@ -425,9 +425,38 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 				return true
 			}
 		}
+		// The scan names the ids the registry knows; a live listing can
+		// return one it has never seen, and a glob can pin that unseen
+		// row onto a scheme the api_key travels with. An auth-bearing
+		// glob means the predicate cannot vouch for the listing's rows,
+		// so the command key counts as mintable.
+		if r.recordGlobPinsAuth(rec) {
+			return true
+		}
 		return false
 	}
 	return true
+}
+
+// recordGlobPinsAuth reports whether any glob this record can replay —
+// top-level or provider-scoped — sets a transport auth: the ids a scan
+// can name are the ones the registry already holds, but a live listing
+// may return an id no layer has ever seen, and that row resolves
+// through the globs too.
+func (r *Registry) recordGlobPinsAuth(rec *record) bool {
+	for _, rows := range r.topGlobs {
+		for pattern, m := range rows {
+			if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
+				return true
+			}
+		}
+	}
+	for pattern, m := range rec.head.Models {
+		if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // LaunchMintsCredentialCommand is the hub's judgment of whether resolving

@@ -899,10 +899,22 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		// The judgment is the launch's own — the default row's merged
+		// transport, the same presence resolution the status pane shows —
+		// not the provider's model-less shape: a row override that flips
+		// the scheme flips the remedy with it, or the gate points at a
+		// credential the launch never reads. No none/optional-bearer case
+		// appears here: a provider whose launch needs no credential
+		// derives an instance of its own and takes the instance branch
+		// above, so this branch only speaks for schemes that demand one.
+		scheme := p.Transport.Auth
+		if pres, perr := r.ResolveInstancePresence(name); perr == nil {
+			scheme = pres.Transport.Auth
+		}
 		// The Codex transport reads no key at all (spec §5.1), so its
 		// api_key_env list is empty and the key advice below would name
 		// nothing. Point at the flow that does configure it.
-		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
+		if scheme == registry.AuthOAuthOpenAICodex {
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
 		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
@@ -910,7 +922,7 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// registry says which variables this environment still owes it and
 		// what is wrong with the ones it has. Otherwise the URL resolves and
 		// it is the credential that did not.
-		if p.Transport.Auth == registry.AuthGCPADC {
+		if scheme == registry.AuthGCPADC {
 			if p.Hidden {
 				unset, problems := r.UnresolvedBaseURL(name)
 				reasons := append([]string(nil), problems...)

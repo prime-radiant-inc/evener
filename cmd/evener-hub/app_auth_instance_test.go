@@ -614,6 +614,41 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 	})
 }
 
+// The spawn gate's advice must follow the launch's own scheme — the
+// default row's merged transport — not the provider's model-less shape:
+// a row override that flips the scheme flips the remedy with it, or the
+// gate sends the user to configure a credential the launch never reads.
+func TestAuth_ImplicitProviderRemediationFollowsRowScheme(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"gcp-adc\"\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1", "HOME": t.TempDir()})
+	err := validateProviderCredentials("amazon-bedrock", "", ctrl.reg)
+	if err == nil {
+		t.Fatal("the spawn gate accepted an unconfigured bedrock whose default row needs ADC")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "application-default credentials") {
+		t.Fatalf("err = %q, want the ADC remedy the default row's scheme asks for", msg)
+	}
+	if strings.Contains(msg, "apiKey/set") {
+		t.Fatalf("err = %q, must not offer the api-key flow a gcp-adc row cannot read", msg)
+	}
+}
+
+// The row's scheme decides the gate itself, not just the message: a
+// default row pinned to none launches with no credential at all — the
+// same judgment the instance path's gate makes.
+func TestAuth_ImplicitProviderRowSchemeNeedsNoCredential(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"none\"\n")
+	oaitest.IsolateOpenAIAuth(t)
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath, map[string]string{"AWS_REGION": "us-east-1"})
+	if err := validateProviderCredentials("amazon-bedrock", "", ctrl.reg); err != nil {
+		t.Fatalf("the spawn gate demanded a credential for a launch whose default row scheme is none: %v", err)
+	}
+}
+
 // The status fallback for an implicit provider (env unset, so no
 // credential and no instance of its own) resolves at presence depth and
 // still answers with the full resolve's shape.

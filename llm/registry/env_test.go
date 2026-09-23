@@ -338,6 +338,9 @@ func TestCheckCredentialHeaderValueNeverPassesControlBytes(t *testing.T) {
 			controls = append(controls, byte(i))
 		}
 	}
+	// DEL travels with the C0 controls wherever a header value goes:
+	// httpguts.isCTL rejects it too, so the sweep includes it.
+	controls = append(controls, 0x7f)
 	schemes := []string{"Bearer", "Basic"}
 	escapes := []string{"$$", "$$$", "$$ ", ""}
 	materials := []string{"$A", "$${A}", "${A:-Basic}", "$(cmd)", "$$$(cmd)", "$A$B"}
