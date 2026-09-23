@@ -65,7 +65,7 @@ func transcriptTools(deps *toolDeps) []tool.RegisteredTool {
 // readMarkdownEnvelope is the wire shape returned for a markdown read. Field
 // order follows spec §"Default Response Shape".
 type readMarkdownEnvelope struct {
-	TranscriptRef string                      `json:"transcript_ref"`
+	TranscriptRef string                      `json:"transcript_ref,omitempty"`
 	Format        string                      `json:"format"`
 	ContentType   string                      `json:"content_type"`
 	Content       string                      `json:"content"`
@@ -131,7 +131,7 @@ type apiLogTranscriptReadHandle struct {
 }
 
 type apiLogTranscriptResultIdentity struct {
-	TranscriptRef string `json:"transcript_ref"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
 	Source        string `json:"source"`
 	Attempt       struct {
 		AttemptID string `json:"attempt_id"`
@@ -1471,7 +1471,7 @@ var readRawLinesForRange = rawLinesForRange
 
 // readRawEnvelope is the wire shape for bounded semantic transcript-v2 NDJSON.
 type readRawEnvelope struct {
-	TranscriptRef string      `json:"transcript_ref"`
+	TranscriptRef string      `json:"transcript_ref,omitempty"`
 	Format        string      `json:"format"`
 	ContentType   string      `json:"content_type"`
 	Content       string      `json:"content"`
