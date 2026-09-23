@@ -4631,6 +4631,96 @@ describe("ConversationStore", () => {
       expect(after).toHaveLength(499);
     });
 
+    // RoboRev round 2 of the panel follow-up: a clustered activity can
+    // carry attachments from MORE THAN ONE member — [cluster(A, B),
+    // A:attachments, B:attachments] — and a notice anchored through a
+    // member's source identity seats after the cluster's WHOLE attachments
+    // run, never between the cluster and the run. Seating it right after
+    // the cluster (stopping the scan at A's attachment, whose source is
+    // the other member) moved the notice off its arrival position and made
+    // it the first retained row at a cap cut that fell just past the
+    // cluster, so BOTH attachments survived orphaned — their lingering
+    // source identities then make loadOlder's F10 admission rule refuse
+    // genuine older page copies of those sources, forever.
+    it("seats a warning anchored to a later cluster member after the cluster's whole attachments run", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "call-a",
+                  toolName: "shell",
+                  status: "completed",
+                  outputImages: [{ source: "a", url: "https://hub.test/a" }],
+                },
+                {
+                  type: "commandExecution",
+                  id: "call-b",
+                  toolName: "shell",
+                  status: "completed",
+                  outputImages: [{ source: "b", url: "https://hub.test/b" }],
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "call-a"],
+        ["attachments", "call-a:attachments"],
+        ["attachments", "call-b:attachments"],
+      ]);
+      // An idle warning lands while B's attachments row is the nearest
+      // model row: it anchors through B's stable source identity and
+      // seats after the whole run, at the position it arrived at.
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "call-a"],
+        ["attachments", "call-a:attachments"],
+        ["attachments", "call-b:attachments"],
+        ["failure", "warning:1"],
+      ]);
+      // Grow the transcript past the retained cap so the cut lands right
+      // after the cluster: [cluster, A:att, B:att, notice, a1..a497] is
+      // 501 rows and the cap keeps the newest 500.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      for (let i = 1; i <= 497; i++) {
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: agentMessageItem(`a${i}`, `message ${i}`),
+          },
+        } as AnyNotification);
+      }
+      const after = rows(store);
+      // The cluster fell off the cut; the orphan scan reached its
+      // attachments through the notice and dropped them with it.
+      expect(after.some((row) => row.id === "call-a")).toBe(false);
+      expect(after.some((row) => row.kind === "attachments")).toBe(false);
+      expect(after.filter((row) => row.kind === "failure")).toHaveLength(1);
+      expect(after).toHaveLength(498);
+    });
+
     it("preserves a command description through live item projection", async () => {
       const { store } = await openRunningTurn();
       store.getState().applyNotification({

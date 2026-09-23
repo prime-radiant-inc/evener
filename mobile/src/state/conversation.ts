@@ -784,26 +784,30 @@ export function createConversationStore() {
       // size guard keeps the common no-notice publish at one check per
       // row.
       if (noticesByAnchor.size === 0) continue;
-      for (const identity of ownTimelineIdentities(item)) {
+      const identities = ownTimelineIdentities(item);
+      for (const identity of identities) {
         const bucket = noticesByAnchor.get(identity);
         if (bucket === undefined) continue;
         // A notice anchored through an attachment row's source identity
-        // seats after the attachments that follow the source, never
-        // between the pair: capItems' cap cut drops a leading attachment
+        // seats after the attachments that follow the anchored row, never
+        // between them: capItems' cap cut drops a leading attachment
         // whose source fell off the cut and only scans a LEADING RUN of
-        // attachments, so a notice seated between the pair would become
-        // the first retained row at the cut and the orphan behind it
-        // would survive — its lingering source identity then makes
-        // loadOlder's F10 admission rule refuse a genuine older page copy
-        // of that source, forever. This is also the position the notice
-        // arrived at: the attachments row was the nearest row when it
-        // landed (RoboRev panel round 2).
-        while (
-          index + 1 < conversation.items.length &&
-          attachmentSourceIdentity(conversation.items[index + 1]) === identity
-        ) {
+        // attachments, so a notice seated inside that run would become
+        // the first retained row at the cut and the orphans behind it
+        // would survive — their lingering source identities then make
+        // loadOlder's F10 admission rule refuse genuine older page copies
+        // of those sources, forever. The run spans every attachment the
+        // anchored row OWNS the source of — a clustered activity carries
+        // the attachments of all its members, so a notice anchored to one
+        // member seats after them all. This is also the position the
+        // notice arrived at: the attachments row was the nearest row when
+        // it landed (RoboRev panel round 2).
+        while (index + 1 < conversation.items.length) {
+          const next = conversation.items[index + 1];
+          const source = attachmentSourceIdentity(next);
+          if (source === null || !identities.has(source)) break;
           index += 1;
-          seated.push(conversation.items[index]);
+          seated.push(next);
         }
         seated.push(...bucket);
       }
