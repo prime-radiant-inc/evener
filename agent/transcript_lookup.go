@@ -22,9 +22,6 @@ var transcriptBucketGlob = filepath.Glob
 //   - bare session ID  → search current bucket first, then sibling buckets;
 //     ambiguous (found in >1 bucket) → error with candidate refs
 func resolveTranscript(selector, currentStateDir, currentSessionID string) (path, ref string, err error) {
-	if !validLocalBucketDir(currentStateDir) {
-		return "", "", fmt.Errorf("invalid local project bucket %q", filepath.Base(currentStateDir))
-	}
 	// Empty or "current" → current session.
 	// Intentionally no os.Stat: the current session's transcript file may not
 	// yet exist (writing is in-progress). Callers must handle a missing file
@@ -167,18 +164,6 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 	return dirs, nil
 }
 
-func validLocalBucketDir(stateDir string) bool {
-	// A flat dir (not under evener/projects/) is a valid scratch/override
-	// bucket. A dir under evener/projects/ is a valid bucket regardless of
-	// its directory name — legacy- and foreign-named buckets hold real
-	// sessions, and the doctor sweep already enumerates them without name
-	// filtering (PR #2163). This predicate gates sweep-vs-single-bucket
-	// behavior (findBucketsWithEnumerate, collectCandidates) and the
-	// current-bucket entry guard (resolveTranscript, parentBucketAndID);
-	// a dir under projects/ is sweepable regardless of name.
-	return true
-}
-
 // refFor builds a transcript ref only when the bucket name is consumable by
 // the shared agent ref grammar (identifier.ValidateProjectID). A bucket whose
 // directory name the grammar rejects gets no ref — mirroring the doctor's
@@ -220,9 +205,6 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 	if selector == "" || selector == "current" {
 		if err := identifier.ValidateSessionID(currentSessionID); err != nil {
 			return "", "", "", fmt.Errorf("invalid current session ID: %w", err)
-		}
-		if !validLocalBucketDir(currentStateDir) {
-			return "", "", "", fmt.Errorf("invalid local project bucket %q", filepath.Base(currentStateDir))
 		}
 		return currentStateDir, currentSessionID, scopeCurrentProject, nil
 	}

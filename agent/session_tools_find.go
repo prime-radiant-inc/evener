@@ -356,9 +356,6 @@ func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied 
 }
 
 func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string) {
-	if !validLocalBucketDir(currentStateDir) {
-		return nil, scopeCurrentProject
-	}
 	if scope != scopeAllProjects {
 		return []string{currentStateDir}, scopeCurrentProject
 	}
@@ -391,9 +388,6 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 	currentAbs, _ := filepath.Abs(currentStateDir)
 	var out []findCandidate
 	for _, bucket := range buckets {
-		if !validLocalBucketDir(bucket) {
-			continue
-		}
 		metas, err := schema.ListSessionMetas(bucket)
 		if err != nil {
 			continue

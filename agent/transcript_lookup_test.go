@@ -363,7 +363,7 @@ func TestResolveTranscript_CleanBreakSkipsLegacyLocalState(t *testing.T) {
 // legacy pure-hash bucket — the agent-side counterpart to PR #2163's doctor
 // sweep, which stopped filtering by ValidateProjectID. Sessions in
 // legacy-named buckets must be findable by bare session id.
-func TestEnumerateBuckets_CleanBreakSkipsLegacyProjectBucket(t *testing.T) {
+func TestEnumerateBuckets_CleanBreakIncludesLegacyProjectBucket(t *testing.T) {
 	t.Parallel()
 	stateHome := t.TempDir()
 	for _, projectID := range []string{"0123456789abcdef", cleanBreakProjectID} {
@@ -424,7 +424,9 @@ func TestEnumerateBuckets_IncludesLegacyNamedBucket(t *testing.T) {
 }
 
 // TestResolveTranscript_BareIDInLegacyBucket verifies that resolveTranscript
-// finds a session in a legacy-named sibling bucket by bare session id (the
+// finds a session in a legacy-named sibling bucket by bare session id. The
+// bucket name fails ValidateProjectID, so the returned ref must be absent or
+// grammar-consumable (round-trip through decodeRef).
 func TestResolveTranscript_BareIDInLegacyBucket(t *testing.T) {
 	t.Parallel()
 	sh := newStateHome(t)

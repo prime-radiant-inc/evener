@@ -31,34 +31,11 @@ func TestStateHomeFor(t *testing.T) {
 	}
 }
 
-// TestValidLocalBucketDir covers the function (lines 163-168).
-func TestValidLocalBucketDir(t *testing.T) {
-	// Flat layout (no stateHome) — valid.
-	if !validLocalBucketDir("/some/random/path") {
-		t.Fatal("expected true for flat layout")
-	}
-
-	// Under evener/projects with a valid project ID.
-	dir := filepath.Join(t.TempDir(), "evener", "projects", "myproject-0123456789")
-	if !validLocalBucketDir(dir) {
-		t.Fatal("expected true for valid bucket dir")
-	}
-
-	// Under evener/projects with a legacy/foreign-named dir (has a space).
-	// After FU3, a dir under projects/ is a valid bucket regardless of its
-	// name — legacy- and foreign-named buckets hold real sessions, mirroring
-	// the doctor's globBuckets (#2163).
-	dir = filepath.Join(t.TempDir(), "evener", "projects", "bad project")
-	if !validLocalBucketDir(dir) {
-		t.Fatal("expected true for legacy/foreign-named bucket dir")
-	}
-}
-
 // TestResolveTranscript_LegacyNamedBucketNoMatch covers a bare-id lookup in a
 // legacy-named bucket dir whose session does not exist. After FU3 the bucket
-// is no longer rejected by validLocalBucketDir (it always returns true); the
-// lookup proceeds and returns "unknown session" because the transcript is
-// absent, not because the bucket name was invalid.
+// is no longer filtered by name; the lookup proceeds and returns "unknown
+// session" because the transcript is absent, not because the bucket name was
+// invalid.
 func TestResolveTranscript_InvalidBucket(t *testing.T) {
 	// A legacy-named dir under evener/projects (no matching session).
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "bad project")
@@ -230,8 +207,8 @@ func TestParentBucketAndID_CurrentInvalidSessionID(t *testing.T) {
 }
 
 // TestParentBucketAndID_LegacyNamedBucket covers the current-session path with
-// a legacy-named bucket dir. After FU3, validLocalBucketDir accepts any dir
-// under evener/projects regardless of name, so parentBucketAndID succeeds.
+// a legacy-named bucket dir. After FU3, buckets under evener/projects are no
+// longer filtered by name, so parentBucketAndID succeeds.
 func TestParentBucketAndID_LegacyNamedBucket(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "evener", "projects", "bad project")
 	bucket, id, scope, err := parentBucketAndID("", dir, "02wMz5Txv2enqVTitaig6F")

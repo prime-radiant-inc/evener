@@ -38,10 +38,6 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	if err != nil {
 		return localJobLocation{}, fmt.Errorf("invalid job identifier %q: %w", jobID, err)
 	}
-	if !validLocalBucketDir(currentStateDir) {
-		return localJobLocation{}, fmt.Errorf("invalid local project bucket %q", filepath.Base(currentStateDir))
-	}
-
 	current, found, err := findLocalJobInProject(currentStateDir, ownerSessionID, jobID)
 	if err != nil {
 		return localJobLocation{}, err
