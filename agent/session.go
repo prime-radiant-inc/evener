@@ -2365,11 +2365,8 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 }
 
 // rawArgumentsBase64Prefix marks a RawArguments value whose original bytes were
-// not valid UTF-8 and so were base64-encoded to survive JSON serialization
-// losslessly. json.Marshal coerces invalid-UTF-8 string bytes to U+FFFD, which
-// would silently mangle the diagnostic; the prefix lets a reader see that the
-// value is an encoding rather than the raw text. The diagnostic is display-only,
-// so no read-side decoder is required.
+// not valid UTF-8 and were base64-encoded; see encodeRawArguments for the
+// full rationale.
 const rawArgumentsBase64Prefix = "base64:"
 
 // encodeRawArguments returns the raw tool-call argument bytes in a form that
@@ -2377,7 +2374,17 @@ const rawArgumentsBase64Prefix = "base64:"
 // plain string — the human-readable primary case, unchanged from the prior
 // behavior — so the common malformed-but-ASCII case (e.g. a bareword value)
 // stays readable. Invalid-UTF-8 bytes are returned base64-encoded with
-// rawArgumentsBase64Prefix so json.Marshal cannot coerce them to U+FFFD.
+// rawArgumentsBase64Prefix so json.Marshal cannot coerce them to U+FFFD; the
+// prefix is self-describing and the field is display-only, so no read-side
+// decoder is required.
+//
+// This is the same lossless-when-needed problem solved by
+// transcriptTurnExpansion's Encoding field ("utf8"/"base64") and its decoder
+// decodeTranscriptExpansion in session_tools_transcript.go. That struct
+// carries the encoding as a sibling field with a decoder that resolves it to
+// bytes; this site uses the prefix shape instead because RawArguments is a
+// display-only diagnostic string — no decoder, no schema change to the
+// llm.ToolCallData wire type.
 func encodeRawArguments(arguments []byte) string {
 	if utf8.Valid(arguments) {
 		return string(arguments)

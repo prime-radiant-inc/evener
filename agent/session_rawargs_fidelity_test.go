@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/base64"
 	"encoding/json"
-	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -20,52 +19,56 @@ import (
 // FU6: when the raw bytes are not valid UTF-8, the recording site stores them
 // base64-encoded with the "base64:" prefix so json.Marshal cannot mangle them;
 // when they are valid UTF-8, it stores the plain string unchanged (no marker),
-// preserving the human-readable primary case.
+// preserving the human-readable primary case. SentArguments() returns the
+// stored value verbatim — the read side the doctor displays.
 func TestAssistantHistoryMessage_RawArgumentsPreservesInvalidUTF8(t *testing.T) {
-	// Raw argument bytes containing an invalid UTF-8 byte (0xff). The model
-	// sent these; the durable record must preserve them losslessly. The
-	// payload is malformed JSON (a bareword value), so it is not valid JSON
-	// and the assistantHistoryMessage recording branch fires, just as it does
-	// for the ASCII malformed-args case in session_openai_malformed_tool_call_test.
-	invalidArgs := json.RawMessage(`{"value": broken` + "\xff")
-	if utf8.Valid(invalidArgs) {
-		t.Fatalf("test fixture must contain invalid UTF-8")
+	cases := []struct {
+		name      string
+		args      json.RawMessage
+		wantRaw   string // expected raw_arguments after JSON round-trip
+		validUTF8 bool
+	}{
+		{
+			name:      "invalid_utf8_base64_prefixed",
+			args:      json.RawMessage(`{"value": broken` + "\xff"),
+			wantRaw:   rawArgumentsBase64Prefix + base64.StdEncoding.EncodeToString([]byte(`{"value": broken`+"\xff")),
+			validUTF8: false,
+		},
+		{
+			name:      "valid_utf8_plain_string",
+			args:      json.RawMessage(`{"value": broken`),
+			wantRaw:   `{"value": broken`,
+			validUTF8: true,
+		},
 	}
-	if json.Valid(invalidArgs) {
-		t.Fatalf("test fixture must not be valid JSON so the recording branch fires")
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if utf8.Valid(tc.args) != tc.validUTF8 {
+				t.Fatalf("fixture UTF-8 validity = %v, want %v", !tc.validUTF8, tc.validUTF8)
+			}
+			if json.Valid(tc.args) {
+				t.Fatalf("fixture must not be valid JSON so the recording branch fires")
+			}
 
-	invalidRaw := recordAndRoundTrip(t, invalidArgs)
-	if want := rawArgumentsBase64Prefix + base64.StdEncoding.EncodeToString(invalidArgs); invalidRaw != want {
-		t.Fatalf("invalid-UTF-8 round-tripped raw_arguments = %q, want base64-prefixed %q", invalidRaw, want)
-	}
-	if !strings.HasPrefix(invalidRaw, rawArgumentsBase64Prefix) {
-		t.Fatalf("invalid-UTF-8 raw_arguments = %q, want the %q marker", invalidRaw, rawArgumentsBase64Prefix)
-	}
-
-	// Valid-UTF-8 malformed args (the existing primary case: a bareword value)
-	// must store the plain string unchanged — no marker — so the diagnostic
-	// stays human-readable.
-	validArgs := json.RawMessage(`{"value": broken`)
-	if !utf8.Valid(validArgs) {
-		t.Fatalf("valid-UTF-8 fixture must be valid UTF-8")
-	}
-	if json.Valid(validArgs) {
-		t.Fatalf("valid-UTF-8 fixture must not be valid JSON so the recording branch fires")
-	}
-	validRaw := recordAndRoundTrip(t, validArgs)
-	if want := string(validArgs); validRaw != want {
-		t.Fatalf("valid-UTF-8 round-tripped raw_arguments = %q, want the plain bytes verbatim %q (no marker)", validRaw, want)
-	}
-	if strings.HasPrefix(validRaw, rawArgumentsBase64Prefix) {
-		t.Fatalf("valid-UTF-8 raw_arguments = %q, must not carry the base64 marker", validRaw)
+			decodedCall := recordAndRoundTrip(t, tc.args)
+			if got := decodedCall.RawArguments; got != tc.wantRaw {
+				t.Fatalf("round-tripped raw_arguments = %q, want %q", got, tc.wantRaw)
+			}
+			// SentArguments() returns the stored raw_arguments verbatim — the
+			// read-side value the doctor transcript render displays. For the
+			// base64 case that is the "base64:"-prefixed encoding, not the
+			// original bytes (no read-side decoder).
+			if got, want := decodedCall.SentArguments(), tc.wantRaw; got != want {
+				t.Fatalf("SentArguments() = %q, want the stored raw_arguments verbatim %q", got, want)
+			}
+		})
 	}
 }
 
 // recordAndRoundTrip runs the recording path on a single tool-call message and
-// returns the raw_arguments value as it survives a JSON marshal/unmarshal of
+// returns the decoded ToolCallData as it survives a JSON marshal/unmarshal of
 // the stored turn — the same serialization the transcript writer performs.
-func recordAndRoundTrip(t *testing.T, arguments json.RawMessage) string {
+func recordAndRoundTrip(t *testing.T, arguments json.RawMessage) *llm.ToolCallData {
 	t.Helper()
 
 	msg := llm.Message{
@@ -94,7 +97,7 @@ func recordAndRoundTrip(t *testing.T, arguments json.RawMessage) string {
 
 	// The durable transcript serializes the turn as JSON via json.NewEncoder.
 	// Round-trip the recorded turn through json.Marshal/Unmarshal the same way
-	// the transcript writer does, then read raw_arguments from the stored record.
+	// the transcript writer does, then read the tool call from the stored record.
 	turn := schema.NewTurn(schema.TurnAssistant, recorded)
 	encoded, err := json.Marshal(turn)
 	if err != nil {
@@ -108,5 +111,5 @@ func recordAndRoundTrip(t *testing.T, arguments json.RawMessage) string {
 	if decodedCall == nil {
 		t.Fatalf("missing tool call after round-trip")
 	}
-	return decodedCall.RawArguments
+	return decodedCall
 }
