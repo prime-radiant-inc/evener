@@ -455,10 +455,22 @@ same way it treats `/tmp`; sandbox tests therefore behave the same with
 alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
 their workspace under it.
 
+Tests clean up after themselves without the runner, too: a direct `go test`
+must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
+that harder than it looks. A closing session retains its scratch directory and
+its world-usable temp container for the crashed-scratch sweep's 24h reclaim
+(`sandbox.SweepCrashedSessionScratch`), which a test binary never runs, and
+the container lives in `/tmp` or `/var/tmp`, which no `TMPDIR` moves. So a
+package whose tests run sessions routes its TestMain through
+`agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
+TestMain that does more, point `TMPDIR` and the container bases into one root
+and remove it when the run ends. Self-exec helper children inherit that
+`TMPDIR`, so what they leave when they are killed on purpose goes with it.
+
 A test that drives the crashed-scratch sweep itself confines it to scratch it
 owns (its own `TMPDIR` and user cache dir, no container bases; see
-`confineSessionScratchSweep` in agent), because the sweep deletes any aged, unleased scratch it can see,
-including another process's.
+`confineSessionScratchSweep` in agent), because the sweep deletes any aged,
+unleased scratch it can see, including another process's.
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
