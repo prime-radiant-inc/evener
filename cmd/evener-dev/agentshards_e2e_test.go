@@ -510,7 +510,7 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 // its peers' markers rather than sleeping a fixed time. Uncapped, both shards
 // reach each other. Capped, the runner itself says when it holds the second
 // shard back: its slotWait seam writes a marker the moment a shard has to wait
-// for a free slot, and a live shard that sees it records a held observation
+// for a free slot, and a live shard that sees it records a capped observation
 // instead of waiting for a peer that must not come. No time window decides
 // either case: a runner that ignored the cap would never wait for a slot, so
 // both shards would run and the peak would read 2. A timeout marker means the
@@ -520,7 +520,7 @@ func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 		name        string
 		concurrency int
 		wantPeak    int
-		wantHeld    bool
+		wantCapped  bool
 	}{
 		{"uncapped runs every shard at once", 0, 2, false},
 		{"capped serializes the shards", 1, 1, true},
@@ -544,8 +544,8 @@ func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
 			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); timeouts > 0 {
 				t.Fatalf("timeout markers = %d; the probe could not measure\nstdout:\n%s", timeouts, stdout)
 			}
-			if held := len(globMarkers(t, liveDir, "held.*")); (held > 0) != tc.wantHeld {
-				t.Fatalf("held markers = %d, wantHeld %v\nstdout:\n%s", held, tc.wantHeld, stdout)
+			if capped := len(globMarkers(t, liveDir, "capped.*")); (capped > 0) != tc.wantCapped {
+				t.Fatalf("capped markers = %d, wantCapped %v\nstdout:\n%s", capped, tc.wantCapped, stdout)
 			}
 		})
 	}
@@ -598,20 +598,22 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	}
 }
 
-// buildEvenerDev compiles the real evener-dev binary (whose `dev` subcommand
-// runs agent-shards) for signal-delivery scenarios.
 // buildEvenerDev returns the evener-dev binary, compiled once per package run
 // into TestMain's directory: the tests that exec it only need the same binary,
 // and linking it again for each cost seconds apiece. The build gets the
-// isolated toolchain env explicitly; each caller still isolates its own env for
-// the commands it runs next.
+// isolated toolchain env explicitly and always builds in the repo workspace:
+// whichever test builds first must not pass on its own GOWORK (a fixture
+// test's GOWORK=off cannot resolve the workspace's sibling modules). Each
+// caller still isolates its own env for the commands it runs next.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
 	isolateToolchainEnv(t)
 	evenerDevBuild.once.Do(func() {
 		bin := filepath.Join(evenerDevBinDir, "evener-dev")
 		cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
-		cmd.Env = append(os.Environ(), "GOENV=off", "GOFLAGS=")
+		cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			return strings.HasPrefix(kv, "GOWORK=")
+		}), "GOENV=off", "GOFLAGS=")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			evenerDevBuild.err = fmt.Errorf("building evener-dev: %w\n%s", err, out)
 			return

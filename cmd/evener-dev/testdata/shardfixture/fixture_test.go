@@ -80,14 +80,17 @@ func announceLiveShard() func() {
 		return nil
 	}
 	// SHARD_FIXTURE_RUNNER_WAITING names the file the caller writes when the
-	// runner blocks for a free slot. Its presence while this process is alive
-	// proves the runner is holding a peer back rather than running it, so a
-	// capped run stops waiting there instead of timing out.
+	// runner first blocks for a free slot, and it stays for the rest of the
+	// run. It says the cap engaged in this run, not that this particular shard
+	// is the one being waited on: once the runner has held a shard back, no
+	// shard of the run can count on every peer being live at once, so each one
+	// alive then stops waiting and records a capped marker instead of timing
+	// out. The caller's peak count is what shows how many actually overlapped.
 	runnerWaiting := os.Getenv("SHARD_FIXTURE_RUNNER_WAITING")
 	observed := 1 // this process is live
 	deadline := time.Now().Add(liveShardTimeout)
 	reached := false
-	held := false
+	capped := false
 	for time.Now().Before(deadline) {
 		if n := countMarkers(dir, "live.*"); n > observed {
 			observed = n
@@ -98,14 +101,14 @@ func announceLiveShard() func() {
 		}
 		if runnerWaiting != "" {
 			if _, err := os.Stat(runnerWaiting); err == nil {
-				held = true
+				capped = true
 				break
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if held {
-		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("held.%d", pid)), []byte("held\n"), 0o644)
+	if capped {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("capped.%d", pid)), []byte("capped\n"), 0o644)
 		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("seen.%d", pid)),
 			[]byte(strconv.Itoa(observed)+"\n"), 0o644)
 		return func() { _ = os.Remove(live) }
