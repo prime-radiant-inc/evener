@@ -407,8 +407,53 @@ func mutationResumeFailureError(cfg hubcore.WebConfig, ref, threadID, clientMuta
 		if own := deletionFenceError(cfg, ref, threadID, clientMutationID); own != nil {
 			return own
 		}
+		// A stable alias can resolve to a different CURRENT target, and the resume
+		// fences that resolved ownership too (resumeThread resolves it and hands the
+		// resolved target to the locked launch's fence), so a deletion of the target
+		// this caller's alias resolves to is the caller's own even though the alias
+		// itself is not the deleted record. The resume discards the resolved target
+		// when it fails, so re-resolve it with the same resolver instead of
+		// guessing. Only these two ends of the caller's own request are claimed, so a
+		// SIBLING alias's deletion stays out of this caller's record.
+		if resolved := resolvedOwnershipTarget(cfg, ref, threadID); resolved != "" {
+			if own := deletionFenceError(cfg, "", resolved, clientMutationID); own != nil {
+				return own
+			}
+		}
 	}
 	return blockedUnknownMutationError(clientMutationID, resumeErr)
+}
+
+// resolvedOwnershipTarget returns the current target a mutation's ref resolves
+// to, computed with the same resolver the resume used (resumeOwnership), or ""
+// when it cannot be resolved: the hub holds no resume authority to resolve with,
+// the ref is not a local one, the request names no id, or the ownership chain
+// refuses to resolve (a pending recovery obligation, a cycle).
+//
+// It mirrors resumeThread's own derivation of the requested identity, so the
+// chain walked here is the chain that resume walked; a resolution that has moved
+// on since the resume failed simply yields a target the fence does not recognize,
+// which keeps the caller's record retained rather than misattributed.
+func resolvedOwnershipTarget(cfg hubcore.WebConfig, ref, threadID string) string {
+	if cfg.ResumeLocks == nil {
+		return ""
+	}
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID != "local" {
+		return ""
+	}
+	requestedID := strings.TrimSpace(threadID)
+	if requestedID == "" {
+		requestedID = parsed.ThreadID
+	}
+	if requestedID == "" {
+		return ""
+	}
+	target, _, err := resumeOwnership(cfg, requestedID, parsed.ThreadID)
+	if err != nil {
+		return ""
+	}
+	return target
 }
 
 // canonicalMutationID returns the form two clientMutationId values are compared

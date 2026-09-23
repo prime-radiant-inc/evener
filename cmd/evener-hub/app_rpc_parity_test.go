@@ -900,6 +900,112 @@ func TestResumeSiblingAliasDeletionIsNotTheCallersToClaim(t *testing.T) {
 	}
 }
 
+// TestMutationResumeFailureErrorRecognizesResolvedOwnershipTarget pins that a
+// deletion the resume reports for the caller's OWN resolved target is claimed for
+// the caller, even though the caller addressed a stable alias whose own ref is not
+// the deleted record -- while a SIBLING alias's deletion still is not claimed.
+//
+// A stable alias can resolve to a different current target (resumeOwnership walks
+// the redirect chain a completed resume records), the resume fences that resolved
+// ownership, and the resume discards the resolved target when it fails. Deciding
+// by the alias alone would therefore throw away an outcome the hub already knew
+// and report unknown/blocked instead.
+func TestMutationResumeFailureErrorRecognizesResolvedOwnershipTarget(t *testing.T) {
+	const verbatim = " mutation-padded "
+
+	var sessionID string
+	cfg, sid, _ := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Evener:    appwire.EvenerThread{Ref: params.Ref},
+			}}, nil
+		})
+	})
+	sessionID = sid
+	// alias is the stable id the caller addresses, target is the current session it
+	// resolves to, and sibling is a third alias of the same recovery group.
+	alias := sessionID
+	target := identifier.MustNewSessionID()
+	sibling := identifier.MustNewSessionID()
+	ref := "local:" + alias
+
+	cfg.ResumeLocks = hubcore.NewResumeLocks()
+	cfg.ResumeLocks.PersistForceStop([]string{alias, target, sibling}, target)
+
+	server, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer server.Close()
+
+	cases := []struct {
+		name            string
+		deleted         string
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+	}{
+		{
+			name:            "a deletion of the target the alias resolves to is the caller's own",
+			deleted:         target,
+			wantOutcome:     appwire.MutationOutcomeTargetDeleted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "a sibling alias's deletion still is not the caller's own",
+			deleted:         sibling,
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+				Ref:      "local:" + tc.deleted,
+				ThreadID: tc.deleted,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			cfg.DeletionStore = store
+
+			// The production auto-resume, addressed to the ALIAS, fails on the
+			// ownership group fence's report of the deleted alias.
+			_, resumeErr := hubThreadAutoResume(context.Background(), cfg, web.sources, appwire.ThreadResumeParams{Ref: ref})
+			if resumeErr == nil {
+				t.Fatal("the auto-resume reported success although an alias of the ownership group is deleted")
+			}
+			var wire appwire.WireError
+			if !errors.As(resumeErr, &wire) {
+				t.Fatalf("auto-resume error %T=%v, want a WireError", resumeErr, resumeErr)
+			}
+			if want := "target has been deleted: local:" + tc.deleted; wire.Message != want {
+				t.Fatalf("auto-resume refusal message = %q, want %q -- the group fence must be the one that failed (wire=%+v)", wire.Message, want, wire)
+			}
+
+			got := mutationResumeFailureError(cfg, ref, "", verbatim, resumeErr)
+			var gotWire appwire.WireError
+			if !errors.As(got, &gotWire) {
+				t.Fatalf("mutation failure %T=%v, want a WireError", got, got)
+			}
+			data, ok := gotWire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", gotWire.Data)
+			}
+			if data.MutationOutcome != tc.wantOutcome || data.RetryDisposition != tc.wantDisposition {
+				t.Fatalf("outcome=%q retryDisposition=%q, want %q/%q (wire=%+v)",
+					data.MutationOutcome, data.RetryDisposition, tc.wantOutcome, tc.wantDisposition, gotWire)
+			}
+			if data.ClientMutationID != verbatim {
+				t.Fatalf("the outcome names clientMutationId %q, want the caller's verbatim %q (wire=%+v)", data.ClientMutationID, verbatim, gotWire)
+			}
+		})
+	}
+}
+
 // TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins that a retry
 // which fails source resolution is NOT, by itself, accepted as proof that the
 // whole mutation was rejected. The pre-dispatch rule is decided by the CONCRETE
@@ -972,11 +1078,25 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 			// read runs later, during the resume, by which time it is set.
 			var hubSources *appsource.Registry
 			var sessionID string
-			cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+			// resumeTimeReads counts the daemon's thread/read invocations and the
+			// spawner resumes already recorded when each one ran. This fixture's
+			// premise is that the owning source is removed by the RESUME's own read,
+			// so the first attempt never reaches the daemon (it fails on the hub's
+			// local source with a session-unavailable error, which is what makes the
+			// resume fire at all, rather than a method-not-found from this daemon's
+			// router -- which only registers thread/read).
+			resumeTimeReads := 0
+			resumesAtRead := -1
+			var resumeCalls *int
+			var cfg hubcore.WebConfig
+			var sid string
+			cfg, sid, resumeCalls = parityResumeFixture(t, func(daemon *appserver.Server) {
 				appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 					// The resume's thread read is the last thing resume does.
 					// Removing the owning source here makes the post-resume retry's
 					// sourceForThread fail: the pre-dispatch failure under test.
+					resumeTimeReads++
+					resumesAtRead = *resumeCalls
 					if hubSources != nil {
 						hubSources.Remove("local")
 					}
@@ -1011,6 +1131,17 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 			}
 			if *resumeCalls != 1 {
 				t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+			}
+			// The premises the assertions rest on, pinned rather than assumed: the
+			// daemon was read exactly once, and that read happened AFTER the resume
+			// (so the source was removed at resume time, and the first attempt
+			// failed against the hub's own local source -- a session-unavailable
+			// failure, the only thing that triggers this resume).
+			if resumeTimeReads != 1 {
+				t.Fatalf("daemon thread/read calls=%d, want 1 (the resume's own read; the first attempt must not reach the daemon)", resumeTimeReads)
+			}
+			if resumesAtRead != 1 {
+				t.Fatalf("the daemon's thread/read ran with %d spawner resumes recorded, want 1: the source must be removed by the RESUME's read, not the initial capability read", resumesAtRead)
 			}
 
 			var wire appwire.WireError
