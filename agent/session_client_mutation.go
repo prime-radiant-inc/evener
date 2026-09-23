@@ -459,14 +459,27 @@ func (s *Session) claimableClientMutationStartIDs(snapshot *clientMutationSnapsh
 		// would sort it LAST and run the newest prompt first. Prioritising
 		// it here is what makes recovery order independent of the id
 		// spelling. The rest keep the sequence order below.
+		// Prioritise the inherited turn ONLY when its id carries no reserved
+		// sequence to compare -- the legacy "turn_11" spelling this exists for.
+		// When it parses as turn_m<N> the sequence comparison below already
+		// orders it: a genuinely inherited running turn was reserved before any
+		// follow-up admitted behind it, so sequence order puts it first anyway.
+		// Prioritising it unconditionally would reorder prompts after a crash:
+		// once the recovered turn completes, the accept side may name a NEWER
+		// follow-up in the freed slot (accept names the slot only when free), and
+		// a process that dies before the claim re-names it restores that NEWER
+		// turn as the inherited one -- which must not outrank the older follow-up
+		// still pending accepted.
 		if inherited := s.recoveredTurnID; inherited != "" {
-			aInherited := aID == inherited
-			bInherited := bID == inherited
-			if aInherited != bInherited {
-				if aInherited {
-					return -1
+			if _, inheritedParses := clientMutationStartSequence(inherited); !inheritedParses {
+				aInherited := aID == inherited
+				bInherited := bID == inherited
+				if aInherited != bInherited {
+					if aInherited {
+						return -1
+					}
+					return 1
 				}
-				return 1
 			}
 		}
 		aSeq, aOK := clientMutationStartSequence(aID)
@@ -1345,12 +1358,14 @@ func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 			startClaimable = true
 		}
 	}
+	// The start branch is settled BEFORE the queue branches, because the claim
+	// path claims the ordered start head whenever a start is claimable, fence
+	// aside. Answering from the map's order instead could name a claimable queue
+	// entry while the claim takes a start, arming cancellation for the wrong turn.
+	if startClaimable {
+		return startTurnID, startTurnID != ""
+	}
 	for _, pending := range snapshot.PendingExecutions {
-		if startClaimable &&
-			pending.Method == clientMutationMethodStart &&
-			(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated") {
-			return startTurnID, startTurnID != ""
-		}
 		if pending.Method == clientMutationMethodQueue &&
 			pending.ExecutionState == "incorporated" &&
 			pending.TurnID != "" &&

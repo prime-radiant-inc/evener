@@ -111,6 +111,12 @@ func acceptFollowUp(t *testing.T, s *Session, id, text string) appwire.TurnStart
 // running, and a follow-up admitted into the window would make two starts
 // simultaneously claimable -- the race the review named. The follow-up is
 // admitted the moment the inherited turn is claimed.
+//
+// The refusal in this window is INTENDED, not a dropped prompt: the caller keeps
+// its text and a resend succeeds (the second half of this test), which is the
+// tradeoff Jesse ruled on for this narrow design. Admitting a follow-up while
+// the recovered turn is only accepted is what produced the earlier ownership,
+// ordering and Stop-targeting findings, so the window stays closed.
 func TestAcceptBehindRecoveredTurnRefusedUntilTheInheritedTurnIsClaimed(t *testing.T) {
 	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
 
