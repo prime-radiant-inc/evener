@@ -2343,18 +2343,32 @@ func (s *Session) sclock() clock.Clock {
 // history without changing the provider response used for tool validation: the
 // raw bytes are kept in RawArguments so the durable record still shows what
 // the model actually sent, while Arguments carries the {} form every provider
-// round-trip needs.
+// round-trip needs. The recording fires for two classes of arguments that
+// cannot safely round-trip through JSON: not valid JSON (malformed), and not
+// valid UTF-8 (Go's json.Valid does not validate UTF-8, so a value like
+// {"output":"\xff"} parses but json.Marshal coerces the \xff to U+FFFD — the
+// exact loss this function exists to prevent). Both classes carry the replay-
+// safe {} placeholder in Arguments; the true bytes live in RawArguments.
 func assistantHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
-		if part.ToolCall == nil || len(part.ToolCall.Arguments) == 0 || json.Valid(part.ToolCall.Arguments) {
+		if part.ToolCall == nil || len(part.ToolCall.Arguments) == 0 {
+			continue
+		}
+		args := part.ToolCall.Arguments
+		// Record when the bytes cannot survive a JSON marshal/unmarshal
+		// losslessly: not valid JSON (malformed) OR not valid UTF-8 (Go's
+		// json.Valid does not check UTF-8, and json.Marshal coerces invalid
+		// bytes to U+FFFD). Both classes need the {} placeholder and the
+		// raw bytes in RawArguments.
+		if json.Valid(args) && utf8.Valid(args) {
 			continue
 		}
 		if content == nil {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
-		call.RawArguments = encodeRawArguments(call.Arguments)
+		call.RawArguments = encodeRawArguments(args)
 		call.Arguments = json.RawMessage(`{}`)
 		content[i].ToolCall = &call
 	}
@@ -2366,17 +2380,20 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 
 // rawArgumentsBase64Prefix marks a RawArguments value whose original bytes were
 // not valid UTF-8 and were base64-encoded; see encodeRawArguments for the
-// full rationale.
+// full rationale. The prefix is display-only: it marks an encoded payload
+// for a human reader but is NOT a decode contract — a literal argument text
+// beginning with "base64:" is stored verbatim and is indistinguishable.
 const rawArgumentsBase64Prefix = "base64:"
 
 // encodeRawArguments returns the raw tool-call argument bytes in a form that
 // survives JSON serialization losslessly. Valid-UTF-8 bytes are returned as a
 // plain string — the human-readable primary case, unchanged from the prior
 // behavior — so the common malformed-but-ASCII case (e.g. a bareword value)
-// stays readable. Invalid-UTF-8 bytes are returned base64-encoded with
-// rawArgumentsBase64Prefix so json.Marshal cannot coerce them to U+FFFD; the
-// prefix is self-describing and the field is display-only, so no read-side
-// decoder is required.
+// stays readable. Invalid-UTF-8 bytes (whether or not the bytes parse as
+// JSON — Go's json.Valid does not check UTF-8) are returned base64-encoded
+// with rawArgumentsBase64Prefix so json.Marshal cannot coerce them to U+FFFD.
+// The prefix is self-describing for a human reader; the field is display-only
+// and NOT a decode contract — no read-side decoder is required or provided.
 //
 // This is the same lossless-when-needed problem solved by
 // transcriptTurnExpansion's Encoding field ("utf8"/"base64") and its decoder
@@ -2384,7 +2401,8 @@ const rawArgumentsBase64Prefix = "base64:"
 // carries the encoding as a sibling field with a decoder that resolves it to
 // bytes; this site uses the prefix shape instead because RawArguments is a
 // display-only diagnostic string — no decoder, no schema change to the
-// llm.ToolCallData wire type.
+// llm.ToolCallData wire type, and no decode contract (a literal "base64:"
+// argument is stored verbatim and is indistinguishable from an encoded one).
 func encodeRawArguments(arguments []byte) string {
 	if utf8.Valid(arguments) {
 		return string(arguments)

@@ -174,15 +174,23 @@ type ToolCallData struct {
 	ParsedArguments map[string]any  `json:"parsed_arguments,omitempty"` // populated by Parse()
 	Type            string          `json:"type,omitempty"`             // usually "function"
 	// RawArguments preserves the model's original argument bytes when they
-	// were not valid JSON and Arguments was replaced with the replay-safe {}
-	// form. It is a diagnostic record — the durable transcript keeps what the
-	// model actually sent — and never feeds provider requests.
+	// were not safe to carry in Arguments and Arguments was replaced with the
+	// replay-safe {} form. It is a diagnostic record — the durable transcript
+	// keeps what the model actually sent — and never feeds provider requests.
+	// Recording fires for two classes: not valid JSON (malformed), and not
+	// valid UTF-8 (Go's json.Valid does not check UTF-8, so a value like
+	// {"output":"\xff"} parses but json.Marshal would coerce the \xff to
+	// U+FFFD). Both carry the {} placeholder in Arguments; the true bytes
+	// live in RawArguments.
 	//
 	// The bytes are stored conditionally lossless: when they are valid UTF-8
 	// they appear verbatim as a plain string; when they are not valid UTF-8
 	// they are base64-encoded with the "base64:" prefix so json.Marshal cannot
-	// coerce them to U+FFFD. The prefix is self-describing; consumers display
-	// the value verbatim and no read-side decoder is required. The encoding is
+	// coerce them to U+FFFD. The prefix is self-describing for a human reader
+	// but is NOT a decode contract — it is display-only, and a literal
+	// argument text beginning with "base64:" is stored verbatim and is
+	// indistinguishable from an encoded payload. Consumers display the value
+	// verbatim; no read-side decoder is required or provided. The encoding is
 	// applied at the recording site in agent/session.go (encodeRawArguments).
 	RawArguments string `json:"raw_arguments,omitempty"`
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
@@ -191,12 +199,15 @@ type ToolCallData struct {
 }
 
 // SentArguments returns the argument bytes the model actually sent: the
-// preserved raw bytes for a call whose arguments were not valid JSON
-// (Arguments holds the replay-safe {} placeholder there), else the recorded
-// arguments. For the invalid-UTF-8 corner the returned value is the
-// "base64:"-prefixed encoding (see RawArguments), not the original bytes —
-// callers wanting the original bytes must decode; display callers show it
-// verbatim. Callers wanting tidy edges trim presentation-side.
+// preserved raw bytes for a call whose arguments were not safe to carry in
+// Arguments (Arguments holds the replay-safe {} placeholder there — not valid
+// JSON or not valid UTF-8), else the recorded arguments. For the invalid-UTF-8
+// corner the returned value is the "base64:"-prefixed encoding (see
+// RawArguments), not the original bytes. The marker is display-only and NOT
+// round-trippable: a literal argument text beginning with "base64:" is stored
+// verbatim and is indistinguishable. Display callers show the value verbatim;
+// callers wanting the original bytes must decode and accept the ambiguity.
+// Callers wanting tidy edges trim presentation-side.
 func (tc *ToolCallData) SentArguments() string {
 	if tc.RawArguments != "" {
 		return tc.RawArguments

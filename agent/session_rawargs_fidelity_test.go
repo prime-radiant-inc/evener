@@ -20,25 +20,62 @@ import (
 // base64-encoded with the "base64:" prefix so json.Marshal cannot mangle them;
 // when they are valid UTF-8, it stores the plain string unchanged (no marker),
 // preserving the human-readable primary case. SentArguments() returns the
-// stored value verbatim — the read side the doctor displays.
+// stored value verbatim — the display-only read side the doctor renders.
+//
+// Two classes of arguments must be preserved:
+//   - not valid JSON (the original malformed-args case): Arguments holds the
+//     replay-safe {} placeholder.
+//   - valid JSON but not valid UTF-8 (Go's json.Valid does not check UTF-8):
+//     Arguments holds the {} placeholder too — the true bytes are not safe to
+//     carry in a JSON field that will be marshaled, so they must live in
+//     RawArguments.
 func TestAssistantHistoryMessage_RawArgumentsPreservesInvalidUTF8(t *testing.T) {
 	cases := []struct {
 		name      string
 		args      json.RawMessage
 		wantRaw   string // expected raw_arguments after JSON round-trip
 		validUTF8 bool
+		validJSON bool
 	}{
 		{
-			name:      "invalid_utf8_base64_prefixed",
+			name:      "not_valid_json_invalid_utf8_base64_prefixed",
 			args:      json.RawMessage(`{"value": broken` + "\xff"),
 			wantRaw:   rawArgumentsBase64Prefix + base64.StdEncoding.EncodeToString([]byte(`{"value": broken`+"\xff")),
 			validUTF8: false,
+			validJSON: false,
 		},
 		{
-			name:      "valid_utf8_plain_string",
+			name:      "not_valid_json_valid_utf8_plain_string",
 			args:      json.RawMessage(`{"value": broken`),
 			wantRaw:   `{"value": broken`,
 			validUTF8: true,
+			validJSON: false,
+		},
+		{
+			// Valid JSON but invalid UTF-8: Go's json.Valid does not validate
+			// UTF-8, so this passes json.Valid while carrying \xff inside a
+			// string value. ValidateRawArguments (registry.go) rejects it as
+			// "input is not valid UTF-8", so the call never dispatches — but
+			// the recording branch must still preserve the bytes so the
+			// durable record shows what the model actually sent, not the
+			// U+FFFD-coerced form json.Marshal would produce.
+			name:      "valid_json_invalid_utf8_base64_prefixed",
+			args:      json.RawMessage("{\"end_turn\":true,\"message\":\"top-level\",\"output\":\"{\xff}\"}"),
+			wantRaw:   rawArgumentsBase64Prefix + base64.StdEncoding.EncodeToString([]byte("{\"end_turn\":true,\"message\":\"top-level\",\"output\":\"{\xff}\"}")),
+			validUTF8: false,
+			validJSON: true,
+		},
+		{
+			// A literal argument text that begins with "base64:" but is valid
+			// UTF-8 and not valid JSON: stored verbatim — the prefix is
+			// display-only and not a decode contract, so a literal "base64:"
+			// value is indistinguishable from an encoded payload. The
+			// SentArguments() doc states this.
+			name:      "literal_base64_prefix_valid_utf8_plain_string",
+			args:      json.RawMessage(`base64:not-json`),
+			wantRaw:   `base64:not-json`,
+			validUTF8: true,
+			validJSON: false,
 		},
 	}
 	for _, tc := range cases {
@@ -46,8 +83,8 @@ func TestAssistantHistoryMessage_RawArgumentsPreservesInvalidUTF8(t *testing.T) 
 			if utf8.Valid(tc.args) != tc.validUTF8 {
 				t.Fatalf("fixture UTF-8 validity = %v, want %v", !tc.validUTF8, tc.validUTF8)
 			}
-			if json.Valid(tc.args) {
-				t.Fatalf("fixture must not be valid JSON so the recording branch fires")
+			if json.Valid(tc.args) != tc.validJSON {
+				t.Fatalf("fixture JSON validity = %v, want %v", !tc.validJSON, tc.validJSON)
 			}
 
 			decodedCall := recordAndRoundTrip(t, tc.args)
@@ -55,9 +92,11 @@ func TestAssistantHistoryMessage_RawArgumentsPreservesInvalidUTF8(t *testing.T) 
 				t.Fatalf("round-tripped raw_arguments = %q, want %q", got, tc.wantRaw)
 			}
 			// SentArguments() returns the stored raw_arguments verbatim — the
-			// read-side value the doctor transcript render displays. For the
-			// base64 case that is the "base64:"-prefixed encoding, not the
-			// original bytes (no read-side decoder).
+			// display-only read-side value the doctor transcript render
+			// displays. It is NOT a decode contract: for the base64 case the
+			// returned value is the "base64:"-prefixed encoding, not the
+			// original bytes, and a literal "base64:" argument is stored
+			// verbatim and indistinguishable.
 			if got, want := decodedCall.SentArguments(), tc.wantRaw; got != want {
 				t.Fatalf("SentArguments() = %q, want the stored raw_arguments verbatim %q", got, want)
 			}
@@ -92,7 +131,7 @@ func recordAndRoundTrip(t *testing.T, arguments json.RawMessage) *llm.ToolCallDa
 		t.Fatalf("recorded arguments = %q, want replay-safe {}", call.Arguments)
 	}
 	if call.RawArguments == "" {
-		t.Fatalf("raw arguments not recorded for invalid-JSON call")
+		t.Fatalf("raw arguments not recorded for call needing preservation")
 	}
 
 	// The durable transcript serializes the turn as JSON via json.NewEncoder.
