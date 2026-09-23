@@ -378,3 +378,31 @@ func TestBuildBwrapArgvReadOnlyRebindsDevShmItself(t *testing.T) {
 		t.Fatalf("a read-only /dev/shm cwd must be re-bound after --dev (dev idx %d, rebind idx %d): %v", devIdx, rebindIdx, args)
 	}
 }
+
+// A read-only root re-bound after --dev can contain the session tmp (a
+// /dev/shm workspace whose TMPDIR, and so session scratch, lives beneath it).
+// Its read-only mount must not cover the writable session tmp bound earlier:
+// the session tmp is bound again after the re-binds, so it stays writable.
+func TestBuildBwrapArgvSessionTmpStaysWritableUnderAReboundRoot(t *testing.T) {
+	cwd := devShmMainCheckout(t)
+	sessionTmp := filepath.Join(cwd, "session-tmp")
+	if err := os.Mkdir(sessionTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(t.TempDir()), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, sessionTmp, cwd)
+	rebindIdx := seqIndex(args, "--ro-bind", cwd, cwd)
+	lastSessionBind := -1
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--bind" && args[i+1] == sessionTmp && args[i+2] == sessionTmp {
+			lastSessionBind = i
+		}
+	}
+	if rebindIdx < 0 || lastSessionBind < rebindIdx {
+		t.Fatalf("the writable session tmp must be bound after the read-only re-bind of its ancestor (rebind idx %d, last session bind idx %d): %v", rebindIdx, lastSessionBind, args)
+	}
+}

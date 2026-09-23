@@ -102,6 +102,17 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 		reboundRO[r] = true
 		add("--ro-bind", r, r)
 	}
+	// A re-bound root can contain the session tmp (a /dev/shm workspace whose
+	// session scratch lives beneath it); its read-only mount would cover the
+	// writable session tmp bound above, so bind the session tmp again on top.
+	if sessionTmp != "" {
+		for r := range reboundRO {
+			if pathUnder(sessionTmp, r) {
+				add("--bind", sessionTmp, sessionTmp)
+				break
+			}
+		}
+	}
 
 	// Writable roots (worktree, git-metadata write subset, extra roots). Bound
 	// after the read baseline so they win; a non-existent root is skipped, because

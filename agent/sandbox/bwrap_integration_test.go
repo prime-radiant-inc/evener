@@ -318,3 +318,26 @@ func TestBwrapMasksSecretsInsideADevShmWorkspace(t *testing.T) {
 		t.Errorf("a secret under a re-bound /dev/shm workspace was readable in the sandbox:\n%s", out)
 	}
 }
+
+// With the session scratch inside a read-only /dev/shm workspace, the
+// workspace is read-only and the session scratch is still writable.
+func TestBwrapSessionTmpInsideADevShmWorkspaceStaysWritable(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	cwd := devShmMainCheckout(t)
+	sessionTmp := filepath.Join(cwd, "session-tmp")
+	if err := os.Mkdir(sessionTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, sessionTmp,
+		`if echo x > session-tmp/probe 2>/dev/null; then echo SCRATCH-WRITABLE; else echo SCRATCH-DENIED; fi; if echo x > workspace-probe 2>/dev/null; then echo WORKSPACE-WRITABLE; else echo WORKSPACE-DENIED; fi`)
+	if err != nil {
+		t.Fatalf("read-only /dev/shm sandbox failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "SCRATCH-WRITABLE") {
+		t.Errorf("the session scratch inside a read-only /dev/shm workspace was not writable:\n%s", out)
+	}
+	if !strings.Contains(out, "WORKSPACE-DENIED") {
+		t.Errorf("the read-only /dev/shm workspace accepted a write:\n%s", out)
+	}
+}
