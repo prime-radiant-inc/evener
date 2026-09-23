@@ -1,12 +1,15 @@
 package main
 
 import (
+	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
 // retiredEvenerEnvVars are names the product no longer declares but that a
@@ -44,6 +47,15 @@ func productEvenerEnvVars() []envvars.Var {
 // leak in; tests that need specific provider config set it (and
 // OPENAI_BASE_URL / provider key envs) explicitly.
 func TestMain(m *testing.M) {
+	// When evener dev cli-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). Apply it first:
+	// flag.Parse must run before it, and the EVENER_* sweep below would
+	// otherwise be free to clear the variable naming the file.
+	flag.Parse()
+	if err := shardrun.ConfigureRunFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener TestMain: %v\n", err)
+		os.Exit(2)
+	}
 	stateDir, err := os.MkdirTemp("", "evener-cli-test-state-*")
 	if err != nil {
 		panic(err)
@@ -79,4 +91,10 @@ func TestMain(m *testing.M) {
 	os.RemoveAll(stateDir)
 	os.RemoveAll(envRoot)
 	os.Exit(code)
+}
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// cli-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
 }
