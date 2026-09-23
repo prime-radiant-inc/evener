@@ -214,7 +214,7 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 			response.Results = append(response.Results, appwire.HostCredentialPushResult{
 				Instance: name,
 				Action:   appwire.HostCredentialPushSkipped,
-				Reason:   "the local entry holds a credential JSON document rather than an API key: a credential document is never pushed to another host (a gcp-adc instance signs in with its own credentials)",
+				Reason:   "the stored value is shaped like a JSON document (it begins with a brace or a bracket) and no API key begins with either, so it cannot be told apart from a credential document: it is not sent to another host as a key, because a credential document's private material must never leave this controller",
 			})
 			continue
 		}
@@ -275,6 +275,20 @@ func credentialPushActionKnown(action string) bool {
 //     every JSON document does, so the shape alone decides, and an unparseable
 //     body is still a pasted credential whose private material must not be
 //     copied to another host.
+//
+// The shape rule is a heuristic, and it is deliberately kept one. A legitimate
+// key whose first character happens to be "{" or "[" is refused along with a
+// credential document, because nothing available here can tell the two apart:
+// this function receives only the stored value, credentials.Store carries no
+// kind or provenance (Get returns a bare string), and the registry's own gate
+// parses content rather than knowing a type. The report's reason says what was
+// observed - the value's shape - rather than claiming the entry holds a
+// document, which the controller cannot prove for such a key. Preserving the
+// credential kind in the store (a field, or a sibling record written by
+// evener/auth/credentialJson/set) is the change that would lift the limitation;
+// until then the rule fails closed, because the two mistakes are not
+// symmetric - refusing a key costs an operator a visible skip they can redo,
+// while sending credential material to another host cannot be taken back.
 func credentialPushValueIsKey(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	if registry.CheckCredentialJSON([]byte(trimmed)) == nil {

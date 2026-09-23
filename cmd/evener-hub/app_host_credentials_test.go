@@ -648,6 +648,68 @@ func TestCredentialPushValueIsKeyRefusesAJSONShapedValue(t *testing.T) {
 	}
 }
 
+// TestHostPushCredentials_ValueKindSkipReasonDescribesWhatWasObserved pins the
+// reason a non-key value carries. The rule cannot tell a credential document
+// from a key whose first character happens to be "{" or "[": credentials.Store
+// carries no kind (Get returns a bare string), so the skip reason must describe
+// what was observed - the value's shape - and must not assert that the entry
+// holds a credential document, which is a cause the controller cannot prove and
+// is false for such a key. Both shapes appear here so the reason cannot drift
+// back into that claim.
+func TestHostPushCredentials_ValueKindSkipReasonDescribesWhatWasObserved(t *testing.T) {
+	const wantReason = "the stored value is shaped like a JSON document (it begins with a brace or a bracket) and no API key begins with either, so it cannot be told apart from a credential document: it is not sent to another host as a key, because a credential document's private material must never leave this controller"
+
+	store := newTestCredentialsStore(t)
+	// A truncated service-account document: the leak this rule exists to close.
+	if err := store.Set("truncated", truncatedCredentialJSONForPush); err != nil {
+		t.Fatal(err)
+	}
+	// A value that is not a document at all but is brace-led - the finding's case,
+	// a key that merely begins with "{" - so the report cannot claim it holds one.
+	if err := store.Set("brace-led", "{sk-brace-led-not-a-document"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+				{Name: "truncated", Auth: "bearer"},
+				{Name: "brace-led", Auth: "bearer"},
+			}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	for _, name := range []string{"truncated", "brace-led"} {
+		result := resultFor(t, resp, name)
+		if result.Action != appwire.HostCredentialPushSkipped {
+			t.Fatalf("%s result = %+v, want skipped", name, result)
+		}
+		if result.Reason != wantReason {
+			t.Fatalf("%s reason = %q, want %q", name, result.Reason, wantReason)
+		}
+	}
+
+	// Neither value left the controller, and neither was even asked about: the
+	// skip is pre-wire.
+	for _, call := range h.calls() {
+		encoded := string(call.params)
+		if strings.Contains(encoded, pushLeakMarker) || strings.Contains(encoded, "brace-led") {
+			t.Fatalf("%s carried a non-key value: %s", call.method, call.params)
+		}
+	}
+	for _, method := range []string{appwire.MethodEvenerAuthStatus, appwire.MethodEvenerAuthApiKeyConditionalSet} {
+		if n := len(countedMethod(t, h.calls(), method)); n != 0 {
+			t.Fatalf("%s calls = %d, want none for a non-key value", method, n)
+		}
+	}
+}
+
 // TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost pins the Medium
 // fix: the controller no longer decides a keyless scheme's capability from the
 // instance-list snapshot. That snapshot is stale by construction - the host's
