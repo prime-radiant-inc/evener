@@ -572,6 +572,34 @@ type AuditResult struct {
 	Unreadable      []UnreadableSession `json:"unreadable"`
 }
 
+// nonReproSession carries the bucket context for a non-reproducible session
+// — one whose bare sid is ambiguous across shell-unsafe buckets so
+// DoctorCommand cannot reproduce it via --sessions. The disclosure comment
+// names each session with its bucket so distinct sessions sharing a SID
+// across different unsafe buckets are distinguishable (finding 2).
+type nonReproSession struct {
+	bucket string
+	sid    string
+}
+
+// formatNonReproSessions formats non-reproducible sessions for DoctorCommand's
+// shell comment disclosure, each named with bucket context so distinct
+// sessions sharing a SID across different unsafe buckets are distinguishable
+// (finding 2). Sorted by bucket then sid for deterministic output.
+func formatNonReproSessions(sessions map[string]nonReproSession) string {
+	keys := make([]string, 0, len(sessions))
+	for k := range sessions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		s := sessions[k]
+		parts = append(parts, fmt.Sprintf("%s in bucket %q", s.sid, s.bucket))
+	}
+	return strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
+}
+
 // followSelector returns the selector that re-addresses one session:
 // refFor's transcript ref (proj:<id>:<sid> or local:<sid>) when refFor
 // produced one, a bucket-qualified proj:<id>:<sid> selector when refFor
@@ -652,12 +680,27 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	findingsBySignature := map[string]*Finding{}
 	checkBySignature := map[string]AuditCheck{}
 	var signatureOrder []string
-	// nonReproducibleBySig tracks session refs that cannot reproduce their
-	// session in the DoctorCommand reproduction line — a bare sid that is
-	// ambiguous across buckets because the bucket name fails safeTokenForRepro.
-	// DoctorCommand omits these from --sessions and discloses them in a
-	// shell comment instead, mirroring FU3's ambiguity-as-context pattern.
-	nonReproducibleBySig := map[string]map[string]bool{}
+	// doctorRefsBySig tracks the doctor-CLI-safe reproducible selectors per
+	// finding signature for DoctorCommand's --sessions reproduction line.
+	// These are followSelector outputs that resolve via Locate (not
+	// ambiguous across buckets). Separate from SessionRefs (finding 3):
+	// SessionRefs carries agent-consumable selectors (bare sid or canonical
+	// proj: ref) for read_transcript, while DoctorCommand carries
+	// doctor-CLI-safe selectors (proj:<safe-name>:<sid> via safeTokenForRepro)
+	// for the doctor CLI's --sessions grammar.
+	doctorRefsBySig := map[string][]string{}
+	// nonReproBySig tracks non-reproducible sessions per finding signature
+	// with bucket context, so DoctorCommand's disclosure names each
+	// individually (finding 2): distinct sessions sharing a SID across
+	// different unsafe buckets must each be disclosed, not collapsed into
+	// one bare-id entry. Keyed by projectID+"\x00"+sessionID for dedup.
+	nonReproBySig := map[string]map[string]nonReproSession{}
+	// sessionsBySig tracks the true count of distinct sessions per finding
+	// signature (keyed by projectID+"\x00"+sessionID), so the summary and
+	// Description reflect every audited session even when SessionRefs
+	// carries a deduped bare id (finding 2: two sessions sharing a SID
+	// across different buckets each count).
+	sessionsBySig := map[string]map[string]bool{}
 
 	for _, ref := range refs {
 		paths, err := Locate(stateBase, ref)
@@ -680,11 +723,26 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// Computed once after Locate; reused at every read site below so the
 		// grammar scan and string build run once, not five times.
 		sel := ref
-		// evidenceSel is the safe selector for SessionRefs and DoctorCommand.
-		// For safe/canonical explicit selectors and for the --since sweep,
-		// this is the same as sel; for unsafe explicit selectors it is the
-		// safe reconstruction (bare sid or safe proj: ref).
-		evidenceSel := followSelector(paths.ProjectID, paths.SessionID)
+		// agentSel is the agent-consumable selector for SessionRefs:
+		// refFor's transcript ref (proj:<canonical>:<sid> or local:<sid>)
+		// when refFor produced one, or the bare session id as a last resort
+		// (finding 3: agent-side read_transcript validates the project token
+		// with ValidateProjectID, so proj:<non-canonical>:<sid> refs that
+		// followSelector's safeTokenForRepro branch emits are rejected —
+		// SessionRefs carries the bare sid instead, which agent tools resolve
+		// cross-bucket and report ambiguity honestly).
+		agentSel := refFor(paths.ProjectID, paths.SessionID)
+		if agentSel == "" {
+			agentSel = paths.SessionID
+		}
+		// doctorSel is the doctor-CLI-safe selector for DoctorCommand:
+		// followSelector's output (canonical proj: ref, safeTokenForRepro
+		// proj: ref, or bare sid). This may diverge from agentSel for
+		// non-canonical shell-safe bucket names (e.g. hex names): doctorSel
+		// carries proj:<hex>:<sid> (the doctor CLI round-trips it fine),
+		// while agentSel carries the bare sid (agent tools reject the proj:
+		// form). For canonical names and for unsafe names, both are the same.
+		doctorSel := followSelector(paths.ProjectID, paths.SessionID)
 		// When followSelector falls through to the bare session id (bucket
 		// name fails both ValidateProjectID and safeTokenForRepro), check
 		// whether the bare id resolves uniquely. If it is ambiguous across
@@ -694,8 +752,8 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// explicit --sessions path: the --since sweep's bare ids that fail
 		// Locate land in Unreadable before reaching here.
 		nonReproducible := false
-		if evidenceSel == paths.SessionID {
-			if _, err := Locate(stateBase, evidenceSel); err != nil {
+		if doctorSel == paths.SessionID {
+			if _, err := Locate(stateBase, doctorSel); err != nil {
 				nonReproducible = true
 			}
 		}
@@ -747,31 +805,41 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				checkBySignature[sig] = check
 				signatureOrder = append(signatureOrder, sig)
 			}
-			// Evidence carries the same selector the reads used: the original
-			// ref for safe explicit --sessions inputs (already resolved by
-			// Locate), refFor's transcript ref for canonical names, a
-			// proj:<id>:<sid> for shell-safe non-canonical names
-			// (safeTokenForRepro), or the bare session id as a last resort
-			// — so the affected-session count, the --sessions reproduction
-			// line, and a re-run of that line all keep working. Unsafe
-			// explicit selectors (e.g. proj:has space:sid) are reconstructed
-			// via followSelector so the evidence and reproduction line stay
-			// shell-safe; the reads still use the user-supplied selector.
-			// When the bare id is ambiguous across buckets (the bucket name
-			// is shell-unsafe and the same sid exists in multiple such
-			// buckets), it is tracked as non-reproducible: it stays in
-			// SessionRefs (the session was audited, the finding is real)
-			// but DoctorCommand omits it and discloses the
-			// non-reproducibility in a shell comment — bucket names as
-			// context, never as fake refs (mirroring FU3 round 2's
-			// ambiguity-as-context pattern).
-			if nonReproducible {
-				if nonReproducibleBySig[sig] == nil {
-					nonReproducibleBySig[sig] = map[string]bool{}
-				}
-				nonReproducibleBySig[sig][evidenceSel] = true
+			// Track the true distinct session count per signature (finding 2):
+			// keyed by (projectID, sessionID) so two sessions sharing a SID
+			// across different buckets each count, even when SessionRefs
+			// carries a deduped bare id.
+			sessionKey := paths.ProjectID + "\x00" + paths.SessionID
+			if sessionsBySig[sig] == nil {
+				sessionsBySig[sig] = map[string]bool{}
 			}
-			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, evidenceSel)
+			sessionsBySig[sig][sessionKey] = true
+			// SessionRefs carries agent-consumable selectors (finding 3):
+			// refFor's transcript ref for canonical names, or the bare
+			// session id for non-canonical names (agent tools reject
+			// proj:<non-canonical>:<sid>). The bare id is deduped when
+			// distinct sessions share a SID — the true count is in
+			// sessionsBySig and the Description, not in len(SessionRefs).
+			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, agentSel)
+			// DoctorCommand carries doctor-CLI-safe selectors (finding 3):
+			// followSelector's output (canonical proj:, safeTokenForRepro
+			// proj:, or bare sid). Reproducible selectors go into
+			// doctorRefsBySig for --sessions; non-reproducible sessions
+			// (bare id ambiguous across buckets) go into nonReproBySig
+			// with bucket context for the disclosure comment (finding 2).
+			if nonReproducible {
+				if nonReproBySig[sig] == nil {
+					nonReproBySig[sig] = map[string]nonReproSession{}
+				}
+				if _, exists := nonReproBySig[sig][sessionKey]; !exists {
+					nonReproBySig[sig][sessionKey] = nonReproSession{
+						bucket: paths.ProjectID,
+						sid:    paths.SessionID,
+					}
+				}
+			} else {
+				doctorRefsBySig[sig] = appendUniqueString(doctorRefsBySig[sig], doctorSel)
+			}
 		}
 	}
 
@@ -782,42 +850,45 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// the prose: an envelope carrying a fleet-wide Finding would otherwise
 		// overflow any output limit mid-JSON. The true count is disclosed in
 		// TotalSessionRefs and in Description's count.
-		total := len(f.Evidence.SessionRefs)
-		if total > evidenceSessionRefCap {
-			f.Evidence.TotalSessionRefs = total
+		refCount := len(f.Evidence.SessionRefs)
+		if refCount > evidenceSessionRefCap {
+			f.Evidence.TotalSessionRefs = refCount
 			f.Evidence.SessionRefs = f.Evidence.SessionRefs[:evidenceSessionRefCap]
 		}
+		// True distinct session count (finding 2): sessionsBySig tracks each
+		// session by (projectID, sessionID), so two sessions sharing a SID
+		// across different buckets each count. len(SessionRefs) may be smaller
+		// because agent-consumable selectors (bare sid) dedup them.
+		trueCount := len(sessionsBySig[sig])
 		f.Description = fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
-			runbook.Name, check.Title, conditionsSummary(check.Conditions), total, joinSessionRefs(f.Evidence.SessionRefs))
+			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, joinSessionRefs(f.Evidence.SessionRefs))
 		// DoctorCommand stays a runnable reproduction command (the Finding
-		// contract defines it as such): it spells out the capped refs plainly,
-		// no ellipsis marker — the marker would make it non-executable shell.
-		// Refs are comma-joined without spaces to match the CLI's --sessions
-		// list syntax. When a session's bare id is ambiguous across buckets
-		// (the bucket name is shell-unsafe), that ref cannot reproduce the
-		// session — it is omitted from --sessions and disclosed in a shell
-		// comment instead, so the command never claims reproducibility it
-		// does not have.
-		nonRepro := nonReproducibleBySig[sig]
-		var reproRefs, nonReproRefs []string
-		if nonRepro != nil {
-			for _, ref := range f.Evidence.SessionRefs {
-				if nonRepro[ref] {
-					nonReproRefs = append(nonReproRefs, ref)
-				} else {
-					reproRefs = append(reproRefs, ref)
-				}
+		// contract defines it as such): it spells out the doctor-CLI-safe
+		// reproducible refs plainly, comma-joined without spaces to match
+		// the CLI's --sessions list syntax. When a session's bare id is
+		// ambiguous across buckets (the bucket name is shell-unsafe), that
+		// ref cannot reproduce the session — it is omitted from --sessions
+		// and disclosed in a shell comment with bucket context (finding 2),
+		// so the command never claims reproducibility it does not have.
+		// When ALL affected sessions are non-reproducible (finding 1),
+		// reproRefs is empty and a command with "--sessions " (no value)
+		// would be rejected by the parser — the command is comment-only
+		// instead, never mistaken for runnable with an empty flag value.
+		reproRefs := doctorRefsBySig[sig]
+		nonRepro := nonReproBySig[sig]
+		var cmd string
+		if len(reproRefs) > 0 {
+			cmd = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(reproRefs, ","))
+			if len(nonRepro) > 0 {
+				cmd += " # not reproducible: " + formatNonReproSessions(nonRepro)
 			}
 		} else {
-			reproRefs = f.Evidence.SessionRefs
-		}
-		cmd := fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(reproRefs, ","))
-		if len(nonReproRefs) > 0 {
-			cmd += " # not reproducible: " + strings.Join(nonReproRefs, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
+			// All sessions non-reproducible (finding 1): comment-only command.
+			cmd = "# not reproducible: " + formatNonReproSessions(nonRepro)
 		}
 		f.Evidence.DoctorCommand = cmd
 		res.Findings = append(res.Findings, *f)
-		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: len(f.Evidence.SessionRefs)})
+		res.Summary = append(res.Summary, AuditSummaryRow{Title: f.Title, Severity: f.Severity, Sessions: trueCount})
 	}
 	sort.Slice(res.Unreadable, func(i, j int) bool { return res.Unreadable[i].SessionID < res.Unreadable[j].SessionID })
 	return res, nil
