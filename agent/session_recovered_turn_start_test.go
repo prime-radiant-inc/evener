@@ -643,6 +643,60 @@ func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *tes
 	}
 }
 
+// TestFailedGiveBackDoesNotSpendTheOneShotRetry pins the one-shot to a give-back
+// that actually committed. The store write that returns the claim can fail; the
+// claim then stays claimed, exactly where it was, so the retry is still owed.
+// Spending it anyway would lock the recovered turn out of any later give-back
+// while a follow-up admitted behind it is still free to be claimed first.
+//
+// The store fault is armed at the announce seam -- after the claim committed and
+// before the run -- so the give-back's own write is the next store mutation.
+func TestFailedGiveBackDoesNotSpendTheOneShotRetry(t *testing.T) {
+	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
+
+	var followUp appwire.TurnStartResponse
+	restored.cfg.testOnly.clientMutationStartAnnounced = func() {
+		restored.cfg.testOnly.clientMutationStartAnnounced = nil
+		followUp = acceptFollowUp(t, restored, "cm-follow-up", "the follow-up")
+		restored.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			restored.clientMutations.faults.BeforeEffectSnapshotRename = nil
+			return errors.New("store write failed")
+		}
+	}
+	restored.cfg.testOnly.failTurnBeforeRecording = func() error { return errors.New("pre-turn failure") }
+
+	_, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {})
+	if runErr == nil || !processed {
+		t.Fatalf("the recovered turn's run: processed=%v err=%v, want the claim committed and the run failed", processed, runErr)
+	}
+	if restored.recoveredTurnClaimReturned {
+		t.Fatal("a give-back that did not commit spent the one-shot retry")
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "claimed" {
+		t.Fatalf("recovered pending after a failed give-back = %q, want it left claimed where it was", got)
+	}
+
+	// The cost while the claim is stuck, pinned: the follow-up admitted behind it
+	// can be claimed first.
+	claimed, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim while the recovered claim is stuck: ok=%v err=%v", ok, err)
+	}
+	if claimed.StableTurnID != followUp.Turn.ID {
+		t.Fatalf("claim while the recovered claim is stuck = %q, want the follow-up %q ahead of it", claimed.StableTurnID, followUp.Turn.ID)
+	}
+
+	// The unspent retry is real: once the fault is cleared the same claim CAN
+	// still be handed back, so the failed return did not strand it.
+	restored.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if err := restored.returnUnrunStartClaim(queuedInput{ClientMutationID: deadMutationID, StableTurnID: inheritedTurnID}); err != nil {
+		t.Fatalf("the give-back could not be retried after the fault cleared: %v", err)
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "accepted" {
+		t.Fatalf("recovered pending after the retried give-back = %q, want it handed back as accepted", got)
+	}
+}
+
 // TestRecordedRecoveredTurnIsNotHandedBackEvenWhenTheMarkWriteFailed pins the
 // duplicate the give-back must not cause. The user-input turn is durably appended
 // BEFORE the store's incorporation mark is written, so a mark write that fails

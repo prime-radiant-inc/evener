@@ -797,13 +797,19 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	// wake it sends drives an immediate retry. One in-process retry is for a
 	// failure that may be transient; a second consecutive failure of the same turn
 	// is deferred to restart recovery instead of spinning on it.
+	//
+	// A give-back that did NOT commit does not spend it: the claim is still
+	// exactly where it was, so the retry is still owed. Nothing can spin on the
+	// unspent flag either -- returnClaimedClientMutationStart wakes the runner
+	// only when its own write succeeded, so a failed return sends no wake.
 	if err != nil && claimed.StableTurnID == s.recoveredTurnID &&
 		!s.recoveredTurnClaimReturned &&
 		!s.clientMutationTranscriptHolds(claimed.ClientMutationID, claimed.StableTurnID) {
 		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
 			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
+		} else {
+			s.recoveredTurnClaimReturned = true
 		}
-		s.recoveredTurnClaimReturned = true
 	}
 	return result, true, err
 }
