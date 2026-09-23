@@ -222,3 +222,32 @@ func within(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
+
+// TestKeptTempDirStaysOutsideTheRedirect pins where a test keeps evidence it
+// means to outlive the run (a failing browser guard's screenshots and logs):
+// the temp dir that was in force before the redirect, which Discard does not
+// remove, handed down unchanged to an inheriting child.
+func TestKeptTempDirStaysOutsideTheRedirect(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(RootVar, "")
+	t.Setenv(KeptTempVar, "")
+	outerTemp := os.TempDir()
+	outer, err := RedirectHostTemp("evener-sandboxtest-kept-")
+	if err != nil {
+		t.Fatalf("RedirectHostTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = outer.Discard() })
+	if got := KeptTempDir(); got != outerTemp || within(outer.Root(), got) {
+		t.Fatalf("KeptTempDir() = %q, want the pre-redirect temp dir %q outside the root %q", got, outerTemp, outer.Root())
+	}
+	inner, err := RedirectHostTemp("evener-sandboxtest-kept-inner-")
+	if err != nil {
+		t.Fatalf("RedirectHostTemp (inner): %v", err)
+	}
+	if got := KeptTempDir(); got != outerTemp {
+		t.Fatalf("KeptTempDir() in an inheriting child = %q, want the outermost temp dir %q", got, outerTemp)
+	}
+	if err := inner.Discard(); err != nil {
+		t.Fatal(err)
+	}
+}

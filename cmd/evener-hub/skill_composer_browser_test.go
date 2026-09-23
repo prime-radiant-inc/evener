@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -483,10 +484,11 @@ func skillGuardDriverTail(contents []byte, lines int) (string, int) {
 
 func skillGuardSetup(t *testing.T) *skillGuardFixture {
 	t.Helper()
-	// Not t.TempDir(): on failure the artifacts (driver log, screenshots,
-	// request logs, transcripts) must SURVIVE for triage; they are removed
-	// only when the test passes.
-	root, err := os.MkdirTemp("", "skillguard-browser-")
+	// Not t.TempDir(), and not the redirected temp dir TestMain removes: on
+	// failure the artifacts (driver log, screenshots, request logs,
+	// transcripts) must SURVIVE for triage, and on CI the job uploads them from
+	// /tmp/skillguard-browser-*. They are removed only when the test passes.
+	root, err := os.MkdirTemp(sandboxtest.KeptTempDir(), "skillguard-browser-")
 	if err != nil {
 		t.Fatalf("fixture root: %v", err)
 	}
