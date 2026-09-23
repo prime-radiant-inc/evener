@@ -18,6 +18,7 @@ import {
 	MutationRecoveryPanel,
 	nativeMutationRecoveryActions,
 	projectNativeMutationRecovery,
+	recordCarriesAttachments,
 	recoveredComposerText,
 	recoveryFailureMessage,
 	shouldOfferRecoveryEntry,
@@ -97,6 +98,9 @@ it("offers restore only for a rejected row that carries restorable text, and nev
 		"discard",
 	]);
 	expect(nativeMutationRecoveryActions("rejected", false)).toEqual(["discard"]);
+	expect(nativeMutationRecoveryActions("rejected", true, true)).toEqual([
+		"discard",
+	]);
 	expect(nativeMutationRecoveryActions("orphaned", true)).toEqual(["discard"]);
 	expect(nativeMutationRecoveryActions("orphaned", false)).toEqual(["discard"]);
 });
@@ -460,6 +464,122 @@ it("refreshes a failed read on retry", async () => {
 
 	expect(result.current.error).toBeNull();
 	expect(result.current.count).toBe(1);
+});
+
+it("withholds restore for a rejected record that carries an image, and says why", () => {
+	const record = recovery(TARGET_A, "with-image", 1, "rejected", {
+		payload: {
+			input: [
+				{ type: "text", text: "look [image 1]" },
+				{
+					type: "image",
+					mediaType: "image/png",
+					data: "AQID",
+					name: "proof.png",
+				},
+			],
+		},
+		composerText: "look [image 1]",
+	});
+	expect(recordCarriesAttachments(record)).toBe(true);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
+	expect(rows[0].carriesAttachments).toBe(true);
+	expect(rows[0].actions).toEqual(["discard"]);
+
+	const props = {
+		targetKey: TARGET_A,
+		snapshot: snapshot([record]),
+		error: null as unknown,
+		actions: noActions,
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+	expect(
+		tree.root.findAllByProps({ accessibilityLabel: "Restore to draft" }),
+	).toHaveLength(0);
+	expect(renderedText(tree)).toContain("carried an image");
+});
+
+it("renders a failure banner above the rows instead of hiding them", () => {
+	const props = {
+		targetKey: TARGET_A,
+		snapshot: snapshot([
+			recovery(TARGET_A, "rejected", 1, "rejected", {
+				composerText: "hello there",
+			}),
+		]),
+		error: new Error("discard failed"),
+		actions: noActions,
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+	const text = renderedText(tree);
+	expect(text).toContain("discard failed");
+	expect(text).toContain("hello there");
+});
+
+it("clears a stale acquisition failure when a later acquisition succeeds", async () => {
+	let calls = 0;
+	const runtime = fakeRuntime();
+	const acquire = () => {
+		calls += 1;
+		if (calls === 1) throw new Error("mutations db unavailable");
+		return runtime;
+	};
+	let connected = true;
+	const { result, rerender } = renderHook(() =>
+		useRecoveryPanel({
+			connected,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire,
+		}),
+	);
+	await flush();
+	expect(result.current.error).toBeInstanceOf(Error);
+
+	connected = false;
+	rerender();
+	await flush();
+	connected = true;
+	rerender();
+	await flush();
+
+	expect(result.current.error).toBeNull();
+	expect(result.current.count).toBe(1);
+});
+
+it("clears an in-scope discard failure after a later successful discard", async () => {
+	let fail = true;
+	const runtime = fakeRuntime({
+		discardRecovery: async () => {
+			if (fail) throw new Error("discard failed");
+			return true;
+		},
+	});
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	const row = projectNativeMutationRecovery(
+		result.current.targetKey,
+		result.current.snapshot,
+	)[0];
+	act(() => {
+		result.current.discard(row);
+	});
+	await flush();
+	expect(result.current.error).toBeInstanceOf(Error);
+
+	fail = false;
+	act(() => {
+		result.current.discard(row);
+	});
+	await flush();
+	expect(result.current.error).toBeNull();
 });
 
 it("scopes a discard failure to its target, so switching targets shows the new target's rows", async () => {

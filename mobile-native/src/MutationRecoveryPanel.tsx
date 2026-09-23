@@ -41,6 +41,10 @@ export interface NativeMutationRecoveryRow {
 	reason?: string;
 	/** The text a restore writes into the composer. */
 	text: string;
+	/** Whether the record carries image inputs a composer restore cannot
+	 * reconstitute here. Restore is withheld for such a row rather than
+	 * silently dropping the image. */
+	carriesAttachments: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
 }
@@ -59,6 +63,28 @@ function isTextInputItem(
 		(item as { type?: unknown }).type === "text" &&
 		typeof (item as { text?: unknown }).text === "string"
 	);
+}
+
+function isImageInputItem(
+	item: unknown,
+): item is { type: "image"; data: string } {
+	return (
+		typeof item === "object" &&
+		item !== null &&
+		(item as { type?: unknown }).type === "image" &&
+		typeof (item as { data?: unknown }).data === "string"
+	);
+}
+
+// Whether the rejected mutation carries image inputs. Native intents persist
+// the composer's `{type:"image", data}` items in the payload, so a restore that
+// writes text only would drop them; the surface withholds restore for these
+// rows instead.
+export function recordCarriesAttachments(
+	record: MutationRecoveryRecord<MutationAttachmentRef>,
+): boolean {
+	const input = record.payload.input;
+	return Array.isArray(input) && input.some(isImageInputItem);
 }
 
 // The text a rejected mutation restores to the composer. `composerText` is the
@@ -81,8 +107,10 @@ export function recoveredComposerText(
 export function nativeMutationRecoveryActions(
 	status: NativeMutationRecoveryStatus,
 	hasText: boolean,
+	carriesAttachments = false,
 ): readonly NativeMutationRecoveryAction[] {
-	if (status === "rejected" && hasText) return ["restore", "discard"];
+	if (status === "rejected" && hasText && !carriesAttachments)
+		return ["restore", "discard"];
 	return ["discard"];
 }
 
@@ -95,6 +123,7 @@ export function projectNativeMutationRecovery(
 	for (const record of snapshot.recovery) {
 		if (record.targetRef !== targetKey) continue;
 		const text = recoveredComposerText(record);
+		const carriesAttachments = recordCarriesAttachments(record);
 		rows.push({
 			targetKey,
 			clientMutationId: record.clientMutationId,
@@ -105,10 +134,12 @@ export function projectNativeMutationRecovery(
 				? {}
 				: { reason: record.recoveryReason }),
 			text,
+			carriesAttachments,
 			record,
 			actions: nativeMutationRecoveryActions(
 				record.recoveryKind,
 				text.length > 0,
+				carriesAttachments,
 			),
 		});
 	}
@@ -214,6 +245,7 @@ export function useRecoveryPanel({
 		if (!connected || runtime !== null) return;
 		try {
 			setRuntime(acquire());
+			setFailure((current) => (current?.scope === scope ? null : current));
 		} catch (error) {
 			setFailure({ scope, error });
 		}
@@ -231,7 +263,7 @@ export function useRecoveryPanel({
 	const discard = useCallback(
 		(row: NativeMutationRecoveryRow) => {
 			void discardRecoveredMutation(projection, row).then(
-				() => undefined,
+				() => setFailure((current) => (current?.scope === scope ? null : current)),
 				(error) => setFailure({ scope, error }),
 			);
 		},
@@ -267,8 +299,11 @@ export function MutationRecoveryPanel({
 	actions: MutationRecoveryActions;
 }) {
 	const colors = useColors();
-	if (error !== null && error !== undefined) {
-		return (
+	// A failure renders as a banner above whatever rows exist, never as a
+	// replacement for them: a failed discard must not hide a target's still
+	// recoverable rows behind its own error.
+	const failure =
+		error !== null && error !== undefined ? (
 			<View style={{ gap: 8 }}>
 				<ErrorMessage message={recoveryFailureMessage(error)} />
 				{onRetry ? (
@@ -277,13 +312,18 @@ export function MutationRecoveryPanel({
 					</Action>
 				) : null}
 			</View>
-		);
+		) : null;
+	if (snapshot === null) {
+		if (failure) return failure;
+		return <Copy muted>Loading delivery status…</Copy>;
 	}
-	if (snapshot === null) return <Copy muted>Loading delivery status…</Copy>;
 	const rows = projectNativeMutationRecovery(targetKey, snapshot);
-	if (rows.length === 0) return <Copy muted>No messages need recovery.</Copy>;
 	return (
 		<View style={{ gap: 12 }}>
+			{failure}
+			{rows.length === 0 ? (
+				<Copy muted>No messages need recovery.</Copy>
+			) : null}
 			{rows.map((row) => {
 				const offersRestore = row.actions.includes("restore");
 				const restorable = offersRestore && actions.canRestore(row);
@@ -317,6 +357,12 @@ export function MutationRecoveryPanel({
 						{offersRestore && !restorable ? (
 							<Copy muted>
 								Clear or send your current draft to restore this message.
+							</Copy>
+						) : null}
+						{!offersRestore && row.carriesAttachments ? (
+							<Copy muted>
+								This message carried an image, so it can't be restored to the
+								draft here.
 							</Copy>
 						) : null}
 					</View>
