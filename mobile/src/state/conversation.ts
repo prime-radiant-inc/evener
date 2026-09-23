@@ -699,12 +699,24 @@ export function createConversationStore() {
     };
   }
 
-  // The position a notice arrived at: the identity of the row that was
-  // last on screen when the notice landed, or null when the timeline
-  // was empty (the notice predates every row the model has produced
-  // since).
-  function arrivalAnchor(items: MobileTimelineItem[]): string | null {
-    return items.length === 0 ? null : timelineIdentity(items[items.length - 1]);
+  // The position a notice arrived at: the identity of the last MODEL row
+  // on screen when the notice landed, or null when the timeline held
+  // nothing model-backed (the notice predates every row the model has
+  // produced since). Seated notices do not qualify (round 36: the second
+  // of two back-to-back notices anchored to the first, but the seating
+  // walk matches anchors against model rows only, so that notice never
+  // seated and the prune deleted it) — consecutive notices stack at the
+  // same arrival position in arrival order instead, and leave it
+  // together.
+  function arrivalAnchor(
+    items: MobileTimelineItem[],
+    noticeIdentities: ReadonlySet<string>,
+  ): string | null {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const identity = timelineIdentity(items[index]);
+      if (!noticeIdentities.has(identity)) return identity;
+    }
+    return null;
   }
 
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
@@ -3740,7 +3752,12 @@ export function createConversationStore() {
         if (idleWarningNotice !== null) {
           transientWarnings.push({
             row: idleWarningNotice,
-            anchor: arrivalAnchor(state.conversation.items),
+            anchor: arrivalAnchor(
+              state.conversation.items,
+              new Set(
+                transientWarnings.map((notice) => timelineIdentity(notice.row)),
+              ),
+            ),
           });
         }
         if (applied !== state.conversation) {

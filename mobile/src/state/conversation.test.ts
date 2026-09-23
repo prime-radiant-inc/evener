@@ -4190,6 +4190,93 @@ describe("ConversationStore", () => {
       expect(after[after.length - 1]?.id).toBe("a502");
     });
 
+    it("seats consecutive idle warnings at one arrival position, in arrival order, and evicts them with that position", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          turns: [
+            makeTurn({
+              items: [
+                userMessageItem("u1", "first"),
+                agentMessageItem("a1", "second"),
+              ],
+            }),
+          ],
+        }),
+      );
+      expect(rows(store).map((row) => row.id)).toEqual(["u1", "a1"]);
+      // Two notices land back-to-back, with no model row between them.
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "first warning",
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "second warning",
+        },
+      } as AnyNotification);
+      // Both notices hold the arrival position — after a1, in the order
+      // they arrived.
+      expect(rows(store).map((row) => row.id)).toEqual([
+        "u1",
+        "a1",
+        "warning:1",
+        "warning:2",
+      ]);
+      // A rebuild reseats both at that position, above newer messages.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: userMessageItem("u2", "newer"),
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => row.id)).toEqual([
+        "u1",
+        "a1",
+        "warning:1",
+        "warning:2",
+        "u2",
+      ]);
+      // Grow the transcript past the retained cap: the window keeps the
+      // newest 500 rows, and the arrival position — with both notices —
+      // leaves it together.
+      for (let i = 3; i <= 502; i++) {
+        store.getState().applyNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t2",
+            item: agentMessageItem(`a${i}`, `message ${i}`),
+          },
+        } as AnyNotification);
+      }
+      const after = rows(store);
+      expect(after.filter((row) => row.kind === "failure")).toEqual([]);
+      expect(after).toHaveLength(500);
+      expect(after[0]?.id).toBe("a3");
+      expect(after[after.length - 1]?.id).toBe("a502");
+    });
+
     it("preserves a command description through live item projection", async () => {
       const { store } = await openRunningTurn();
       store.getState().applyNotification({
