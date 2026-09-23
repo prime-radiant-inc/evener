@@ -17687,6 +17687,102 @@ describe("ConversationStore", () => {
       expect(rowById(store, "act-live")).toBeDefined();
     });
 
+    it("a preserved ask re-renders when the refresh clears askPending", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1", askPending: true }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      expect(rows(store).some((row) => row.kind === "question")).toBe(true);
+
+      // The refresh names the turn active but omits it, and the
+      // thread-level ask is no longer pending: the preserved ask must
+      // re-render as an ordinary tool activity, not keep its answerable
+      // card (RoboRev round 27 — the copied row baked in the previous
+      // askPending).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [userMessageItem("later", "fresh")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rows(store).some((row) => row.kind === "question")).toBe(false);
+      expect(rowById(store, "ask-1")).toMatchObject({
+        kind: "activity",
+        state: "completed",
+      });
+    });
+
+    it("a preserved ask renders its card when the refresh sets askPending", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1", askPending: false }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      expect(rows(store).some((row) => row.kind === "question")).toBe(false);
+
+      // The refresh names the turn active but omits it, and the
+      // thread-level ask is pending NOW: the preserved ask must render
+      // its answerable card, not stay an ordinary tool activity
+      // (RoboRev round 27).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [userMessageItem("later", "fresh")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1", askPending: true }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rows(store).some((row) => row.kind === "question")).toBe(true);
+      expect(rowById(store, "ask-1")).toMatchObject({ kind: "question" });
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

@@ -1052,11 +1052,26 @@ export function createConversationStore() {
       liveIdentities.add(item.transcriptKey ?? item.id);
       liveIdentities.add(item.id);
     }
+    // The preserved turn's rows reproject from the MODEL through the
+    // canonical projector with the REFRESHED conversation's own thread
+    // fields (RoboRev round 27): a row copied from the previous
+    // projection bakes in the previous askPending — a settled ask the
+    // snapshot says is no longer pending would keep rendering its
+    // answerable card, and an ask the snapshot says IS pending would keep
+    // rendering as an ordinary tool activity, both stale until the next
+    // row-changing frame. The module's own contract makes this exact —
+    // rows are always a function of turns (page prepends excepted, and
+    // the live turn owns none) — and the projector renders streamed
+    // chunks and activity state the same way the live applier does.
+    const reprojected = projectConversation({
+      ...projected,
+      turns: [preservedTurn],
+    });
     // Cluster rows are judged per member, not whole: a member the snapshot
     // re-served must not drag the live members it does not carry down
     // with it — the cluster rebuilds around the survivors exactly the way
     // the page prepend rebuilds its own (round 25).
-    const liveRows = previous.items.flatMap((row): MobileTimelineItem[] => {
+    const liveRows = reprojected.items.flatMap((row): MobileTimelineItem[] => {
       if (![...timelineIdentities(row), row.id].some((id) => liveIdentities.has(id))) {
         return [];
       }
