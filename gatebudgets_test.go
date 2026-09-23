@@ -326,27 +326,40 @@ func TestGateShardConcurrencyFollowsTheLoadAwareBudget(t *testing.T) {
 		{"idle one-CPU cgroup starts one shard", "1", "0", "1"},
 		{"a loaded host backs the cap off", "16", "13.5", "2"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := runSourcedGate(t, stubProbes(tc.cores, tc.load)+
-				`gate_init_budgets
-printf '%s' "$AGENT_SHARD_CONCURRENCY"`)
-			if got != tc.want {
-				t.Errorf("AGENT_SHARD_CONCURRENCY = %q, want %q (cores=%s load=%s)", got, tc.want, tc.cores, tc.load)
-			}
-		})
+	for _, variable := range []string{"AGENT_SHARD_CONCURRENCY", "HUB_SHARD_CONCURRENCY"} {
+		for _, tc := range cases {
+			t.Run(variable+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				got := runSourcedGate(t, stubProbes(tc.cores, tc.load)+
+					"gate_init_budgets\nprintf '%s' \"$"+variable+"\"")
+				if got != tc.want {
+					t.Errorf("%s = %q, want %q (cores=%s load=%s)", variable, got, tc.want, tc.cores, tc.load)
+				}
+			})
+		}
+	}
+}
+
+// TestGateHubShardCountDefaultsToEight pins the hub's shard count: eight shards
+// balance evener-hub's ~2100 tests to ~9s each, and the count only partitions
+// the tests; how many run at once is HUB_SHARD_CONCURRENCY's job.
+func TestGateHubShardCountDefaultsToEight(t *testing.T) {
+	t.Parallel()
+	got := runSourcedGate(t, stubProbes("16", "0")+"gate_init_budgets\nprintf '%s' \"$HUB_SHARD_COUNT\"")
+	if got != "8" {
+		t.Errorf("HUB_SHARD_COUNT = %q, want 8", got)
 	}
 }
 
 // TestGateShardConcurrencyHonorsEnvironmentOverride pins that an explicit value
-// wins over the budget, the way the other AGENT_SHARD_* budgets behave.
+// wins over the budget, the way the other *_SHARD_* budgets behave.
 func TestGateShardConcurrencyHonorsEnvironmentOverride(t *testing.T) {
 	t.Parallel()
-	got := runSourcedGateEnv(t, stubProbes("16", "0")+
-		`gate_init_budgets
-printf '%s' "$AGENT_SHARD_CONCURRENCY"`, "AGENT_SHARD_CONCURRENCY=3")
-	if want := "3"; got != want {
-		t.Errorf("AGENT_SHARD_CONCURRENCY = %q, want %q from the environment", got, want)
+	for _, variable := range []string{"AGENT_SHARD_CONCURRENCY", "HUB_SHARD_CONCURRENCY"} {
+		got := runSourcedGateEnv(t, stubProbes("16", "0")+
+			"gate_init_budgets\nprintf '%s' \"$"+variable+"\"", variable+"=3")
+		if want := "3"; got != want {
+			t.Errorf("%s = %q, want %q from the environment", variable, got, want)
+		}
 	}
 }

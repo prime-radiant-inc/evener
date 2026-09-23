@@ -120,6 +120,10 @@ done
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
+# HUB_SHARDS=0 tests cmd/evener-hub inside the root module's single go test
+# instead of through evener dev hub-shards; the -race gate uses it for the
+# same oversubscription reason as AGENT_SHARDS=0.
+HUB_SHARDS=${HUB_SHARDS:-1}
 # The agent module's test count has grown past the point where 4 shards
 # (the agentshards default) keep each shard's -run pattern under the OS
 # argument-list limit. The shard runner now writes the -run regex to a file
@@ -368,6 +372,10 @@ run_module() {
 				primeradiant.com/evener/cmd/evener-fuzzcov|primeradiant.com/evener/cmd/evener-fuzz-harvest)
 					continue
 					;;
+				primeradiant.com/evener/cmd/evener-hub)
+					# Sharded beside this go test instead; see below.
+					[ "$HUB_SHARDS" -ne 0 ] && continue
+					;;
 			esac
 			packages+=("$pkg")
 		done <"$package_list"
@@ -375,11 +383,25 @@ run_module() {
 			printf 'run-module-tests.sh: go list ./... returned no test packages\n' >&2
 			return 1
 		fi
+		# cmd/evener-hub's ~2100 tests are mostly serial and ran at about one
+		# core for 55-80s, the head of this wave. evener dev hub-shards splits
+		# them across processes (~13s) while the rest of the module runs. It
+		# gets the same flags and the same -skip; its -run is the gate's
+		# Test/Example surface, which the runner applies itself.
+		local hub_pid="" hub_status=0 root_status=0
+		if [ "$HUB_SHARDS" -ne 0 ]; then
+			HUB_SHARD_SKIP="$root_skip" go run ./cmd/evener-dev/bin dev hub-shards ${test_flags[@]+"${test_flags[@]}"} &
+			hub_pid=$!
+		fi
 		# ROOT_FULL removes short mode through module_test_flags_array while
 		# retaining the regular Test/Example name filter. Fuzz-owned targets and
 		# sanity functions stay under the explicit make fuzz gate.
-		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}"
-		return
+		/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$root_skip" "${packages[@]}" || root_status=$?
+		if [ -n "$hub_pid" ]; then
+			wait "$hub_pid" || hub_status=$?
+		fi
+		[ "$root_status" -ne 0 ] && return "$root_status"
+		return "$hub_status"
 	fi
 	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
 		# The agent module's wall time is dominated by its top-level package, one
