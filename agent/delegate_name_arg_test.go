@@ -7,16 +7,18 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/worktree"
 )
 
-// The delegate tool's optional `name` argument names the git branch of a
-// worktree-isolated delegate's lane, so `git branch` and merges read
-// mnemonically while the lane directory, sidecar, and every addressing surface
-// stay keyed to the delegate id (the delegate-lane branch-names design). The
-// decode test is pure over the args map; the spawn tests run on the real-git
-// harness because a lane cut on a branch that differs from its directory is a
-// `worktree add -b` registry effect, and the rollback must really delete it.
+// The delegate tool's optional `name` argument is accepted for every delegate.
+// With isolation:"worktree" it names the git branch of the lane, so `git
+// branch` and merges read mnemonically; without isolation it is a display-only
+// label. Either way the lane directory, sidecar, and every addressing surface
+// stay keyed to the delegate id. The decode test is pure over the args map; the
+// spawn tests run on the real-git harness because a lane cut on a branch that
+// differs from its directory is a `worktree add -b` registry effect, and the
+// rollback must really delete it.
 
 func TestDecodeDelegateArgs_Name(t *testing.T) {
 	// Absent name stays empty: the lane branch defaults to the delegate id.
@@ -46,20 +48,27 @@ func TestDecodeDelegateArgs_Name(t *testing.T) {
 		t.Fatalf("slashed name decoded as %q, want feat/parser", slashed.Name)
 	}
 
-	// A name without worktree isolation has nothing to name.
-	if _, err := decodeDelegateArgs(map[string]any{"prompt": "p", "name": "parser-rename"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
-		t.Fatalf("name without isolation: err = %v, want invalid_request", err)
+	// A name without worktree isolation is accepted as a display-only label.
+	labeled, err := decodeDelegateArgs(map[string]any{"prompt": "p", "name": "parser-rename"})
+	if err != nil {
+		t.Fatalf("name without isolation: %v", err)
+	}
+	if labeled.Name != "parser-rename" {
+		t.Fatalf("label decoded as %q, want parser-rename", labeled.Name)
 	}
 
 	// The same alphabet manage_worktree names use, checked before any capacity
-	// is reserved.
+	// is reserved — for every name, worktree or not.
 	if _, err := decodeDelegateArgs(map[string]any{"prompt": "p", "isolation": "worktree", "name": "bad name!"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
 		t.Fatalf("invalid name: err = %v, want invalid_request", err)
 	}
+	if _, err := decodeDelegateArgs(map[string]any{"prompt": "p", "name": "bad name!"}); err == nil || !strings.Contains(err.Error(), "invalid_request") {
+		t.Fatalf("invalid label: err = %v, want invalid_request", err)
+	}
 
-	// The isolation value is normalized at decode, so a padded value pairs
-	// with a name exactly like a clean one (create and describe trim it; the
-	// decode guard must not be the one place that doesn't).
+	// The isolation value is normalized at decode, so a padded value flows
+	// to every downstream consumer in the same shape as a clean one (create
+	// and describe trim it; decode must not be the one place that doesn't).
 	padded, err := decodeDelegateArgs(map[string]any{"prompt": "p", "isolation": "worktree ", "name": "parser-rename"})
 	if err != nil {
 		t.Fatalf("padded isolation with a name: %v", err)
@@ -69,20 +78,46 @@ func TestDecodeDelegateArgs_Name(t *testing.T) {
 	}
 }
 
-// describe must refuse a name without worktree isolation, the same pairing
-// decode enforces, so a direct caller cannot build a descriptor that silently
-// drops the name.
-func TestDescribeDelegate_NameWithoutWorktreeIsolationRefused(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	args := delegateArgs{Task: "unpaired name", Name: "parser-rename", DelegationAllowance: new(0)}
+// describeForTest runs the select→describe sequence the spawn path uses and
+// returns the descriptor describe built for args.
+func describeForTest(t *testing.T, r *wtRepo, args delegateArgs) delegatestore.Descriptor {
+	t.Helper()
 	selection, err := r.s.selectSubagentModel(context.Background(), args.Model, args.AgentType)
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
-	_, _, err = (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, selection, nil)
-	if err == nil || !strings.Contains(err.Error(), "invalid_request") {
-		t.Fatalf("describe with an unpaired name: err = %v, want invalid_request", err)
+	descriptor, _, err := (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, selection, nil)
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	return descriptor
+}
+
+// describe carries a non-worktree name as a display-only label: the
+// descriptor records it as Name, and nothing is cut, so WorktreeBranch stays
+// empty.
+func TestDescribeDelegate_NameLabelsNonWorktreeDelegate(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	args := delegateArgs{Task: "labeled unit", Name: "research-label", DelegationAllowance: new(0)}
+	descriptor := describeForTest(t, r, args)
+	if descriptor.Name != "research-label" {
+		t.Fatalf("descriptor name = %q, want research-label", descriptor.Name)
+	}
+	if descriptor.WorktreeBranch != "" {
+		t.Fatalf("non-worktree descriptor branch = %q, want empty (a label cuts no branch)", descriptor.WorktreeBranch)
+	}
+}
+
+// With worktree isolation the name still names the lane's branch while also
+// labeling the delegate: both descriptor fields carry it.
+func TestDescribeDelegate_WorktreeNameStillNamesBranch(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	args := delegateArgs{Task: "named lane unit", Name: "parser-rename", Isolation: "worktree", DelegationAllowance: new(0)}
+	descriptor := describeForTest(t, r, args)
+	if descriptor.Name != "parser-rename" || descriptor.WorktreeBranch != "parser-rename" {
+		t.Fatalf("descriptor name/branch = %q/%q, want parser-rename on both", descriptor.Name, descriptor.WorktreeBranch)
 	}
 }
 

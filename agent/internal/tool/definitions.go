@@ -210,7 +210,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 				},
 				"name": map[string]any{
 					"type":        "string",
-					"description": "Short mnemonic name for the git branch of a worktree-isolated delegate's lane, so `git branch` and merges read clearly (e.g. \"parser-rename\"); the lane directory, sidecar, and dispose addressing keep the delegate id. Only valid with isolation:\"worktree\". Refused if invalid or if the branch already exists; absent names the branch with the opaque delegate id.",
+					"description": "Short mnemonic name for the delegate (e.g. \"parser-rename\"), surfaced in job_list rows, job_status, and completion notifications so siblings read apart. Accepted for every delegate; addressing never uses it — delegate_send and every other surface stay keyed to the delegate id. With isolation:\"worktree\" it also names the lane's git branch, so `git branch` and merges read clearly; that spawn is refused if the name is invalid or the branch already exists, and an absent name branches with the opaque delegate id.",
 				},
 				"sandbox": map[string]any{
 					"type":        "string",
