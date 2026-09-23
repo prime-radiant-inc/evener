@@ -2049,12 +2049,17 @@ export function createConversationStore() {
             // stays live for the stream to continue on.
             const freshItemByKey = new Map<string, ItemModel>();
             const freshItemById = new Map<string, ItemModel>();
+            // The containing turn's status recorded PER ITEM, not keyed
+            // through item.turnId — the wire can omit turnId, and
+            // hydration turns the omission into "" (RoboRev round 15).
+            const freshTurnStatusByKey = new Map<string, string | undefined>();
             const freshTurnStatusById = new Map<string, string | undefined>();
             for (const turn of conversation.turns) {
-              freshTurnStatusById.set(turn.id, turn.status);
               for (const item of turn.items) {
                 freshItemByKey.set(item.transcriptKey ?? item.id, item);
                 freshItemById.set(item.id, item);
+                freshTurnStatusByKey.set(item.transcriptKey ?? item.id, turn.status);
+                freshTurnStatusById.set(item.id, turn.status);
               }
             }
             const stripSettledChunks = (item: ItemModel): ItemModel => {
@@ -2091,10 +2096,13 @@ export function createConversationStore() {
               // The snapshot item counts as settled by the package's own
               // activity rule — item status with the containing turn's as
               // the fallback — so a statusless item in a completed turn
-              // settles too (RoboRev round 14).
+              // settles too (RoboRev round 14) — with the containing
+              // turn recorded per item, so an omitted turnId cannot
+              // read as a missing one (round 15).
               const snapshotSettled = !isActiveItem(
                 fresh,
-                freshTurnStatusById.get(fresh.turnId),
+                freshTurnStatusByKey.get(item.transcriptKey ?? item.id) ??
+                  freshTurnStatusById.get(item.id),
               );
               if (snapshotSettled) {
                 settled = pending.length;
