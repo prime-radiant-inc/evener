@@ -2119,6 +2119,32 @@ describe("project row", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  // A host-first copy's + button must launch on the host the copy nests
+  // under, or every host's copy silently spawns on this hub.
+  test("a project copy's New-session button prefills the copy's host", async () => {
+    render(
+      <RailRow
+        node={
+          {
+            ...projectRailNode(apiProject({ working_dir: "/repo/next" })),
+            id: "projectnode:p1@devbox",
+            spawnHost: "devbox",
+          } as ProjectRailNode
+        }
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=devbox");
+    window.history.replaceState({}, "", "/");
+    // The copy's own menu makes the same host claim.
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "New session" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=devbox");
+    window.history.replaceState({}, "", "/");
+  });
+
   test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
     const observer = vi.fn();
     const firstInfo = info({ hasChildren: true });
@@ -2820,8 +2846,8 @@ describe("host group row", () => {
     expect(screen.getByText("devbox")).toBeTruthy();
   });
 
-  test("names a host by its manifest label rather than its id", () => {
-    render(
+  test("names a host by its manifest label rather than its id, in the tooltip too", () => {
+    const online = render(
       <RailRow
         node={hostGroupNode({ id: "host:local", host: { id: "local", label: "this host", online: true } })}
         info={info({ hasChildren: true })}
@@ -2829,6 +2855,16 @@ describe("host group row", () => {
       />,
     );
     expect(screen.getByText("this host")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host this host");
+    online.unmount();
+    render(
+      <RailRow
+        node={hostGroupNode({ id: "host:local", host: { id: "local", label: "this host", online: false } })}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host this host is offline");
   });
 
   test("an online host reads plain and its tooltip names just the host", () => {

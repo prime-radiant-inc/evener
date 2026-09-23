@@ -674,4 +674,46 @@ describe("host grouping (organize by)", () => {
     expect(liveNodesGroupedByHost(single, sources, closed)).toBe(single);
     expect(liveNodesGroupedByHost([], sources, closed)).toEqual([]);
   });
+
+  test("host-first copies carry the host they nest under; flat project rows carry none", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const hosts = hostProjectNodes([evener], sources, closed);
+    const localCopy = hosts.find((node) => node.id === "host:local")?.children[0];
+    const devboxCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
+    expect(localCopy).toMatchObject({ kind: "project", spawnHost: "local" });
+    expect(devboxCopy).toMatchObject({ kind: "project", spawnHost: "devbox" });
+    const [flat] = projectNodes([evener], closed);
+    expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
+  });
+
+  test("a reveal routes an archived-tier row to the archived group fold, whatever the grouping", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["devbox"],
+      sessions: [on("devbox", "a1", { tier: "archived" })],
+    });
+    expect(revealExpansionIds([evener], [], "devbox:a1", "flat")).toEqual(["archivedgroup:evener"]);
+    expect(revealExpansionIds([evener], [], "devbox:a1", "host-project")).toEqual(["archivedgroup:evener"]);
+  });
+
+  test("hosts order by their display labels, ties broken by id", () => {
+    const labeled: Source[] = [
+      { id: "local", label: "this host", kind: "local", online: true },
+      { id: "zz-host", label: "Alpha box", kind: "appwire", online: true },
+      { id: "mm-host", label: "Alpha box", kind: "appwire", online: true },
+      { id: "aa-host", label: "Zeta farm", kind: "appwire", online: true },
+    ];
+    const alpha = project({ key: "alpha", sources: ["zz-host"], sessions: [on("zz-host", "z1")] });
+    const twin = project({ key: "twin", sources: ["mm-host"], sessions: [on("mm-host", "m1")] });
+    const zeta = project({ key: "zeta", sources: ["aa-host"], sessions: [on("aa-host", "a1")] });
+    expect(hostProjectNodes([zeta, alpha, twin], labeled, closed).map((node) => node.id)).toEqual([
+      "host:mm-host",
+      "host:zz-host",
+      "host:aa-host",
+    ]);
+  });
 });

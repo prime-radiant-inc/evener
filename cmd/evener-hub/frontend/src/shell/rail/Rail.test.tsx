@@ -2467,6 +2467,38 @@ describe("host grouping (organize by)", () => {
     }
   });
 
+  // The reveal chain must come from the section that actually renders the row:
+  // a test-run project stays in the flat Test runs section whatever the
+  // grouping, so host-mode ids for it would expand folds that exist nowhere.
+  test("a reveal to a test-run row expands the Test runs fold, never phantom host groups (host-first)", async () => {
+    const restoreScroll = stubScrollIntoView();
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        resource(
+          { kind: "catalog", catalog: "test_runs", offset: 0, limit: 100 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            projects: [{ key: "t", name: "Test run", session_count: 1 }],
+            remaining: 0,
+          },
+        ),
+        projectResource("t", [summary({ ref: "local:target", title: "Target row" })]),
+      ],
+      remoteManifest(),
+    );
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="local:target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(within(sectionRoot("Test runs")).getByText("Target row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
+  });
+
   test("the organize row sits hard right, chrome like the headings around it", () => {
     const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
       /\/\*[\s\S]*?\*\//g,

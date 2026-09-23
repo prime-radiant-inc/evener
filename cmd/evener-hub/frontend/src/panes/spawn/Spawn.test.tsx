@@ -40,7 +40,13 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
-import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import {
+  applySpawnURL,
+  resetSpawnDraftsForTests,
+  selectSpawnDirectory,
+  setDraftField,
+  spawnDraftsStore,
+} from "./spawnDrafts";
 import { SPAWN_SLASH_CATALOG_DEBOUNCE_MS } from "./useSpawnSlashCatalog";
 
 let modelListOverride: ModelDescriptor[] | null = null;
@@ -9278,4 +9284,12 @@ test("a create confirmation waits for the selected host's catalogs before creati
     cwd: "/srv/unsettled-create",
   });
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a ?host= prefill seeds the draft's launch host (the rail's project-copy spawn carries it)", () => {
+  window.history.replaceState({}, "", "/new?dir=/repo/x&host=devbox");
+  applySpawnURL();
+  const draft = spawnDraftsStore.getState().current;
+  expect(draft?.fields.getState().source).toBe("devbox");
+  window.history.replaceState({}, "", "/");
 });

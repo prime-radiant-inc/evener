@@ -1189,12 +1189,14 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const chain = revealExpansionIds(
-      [...resources.projects, ...resources.testRuns, ...resources.archivedProjects],
-      resources.live,
-      revealTarget,
-      groupingMode,
-    );
+    // The chain must name folds that actually render: only the Projects
+    // section honors the grouping, so grouped ids apply to it alone while
+    // the always-flat tiers (test runs, archived projects) keep flat ids
+    // whatever the mode.
+    const chain = [
+      ...revealExpansionIds(resources.projects, resources.live, revealTarget, groupingMode),
+      ...revealExpansionIds([...resources.testRuns, ...resources.archivedProjects], [], revealTarget, "flat"),
+    ];
     const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
     if (nextFold) {
       setExpanded(nextFold, true);

@@ -126,6 +126,10 @@ export interface ProjectRailNode extends WidgetTreeNode {
   children: RailNode[];
   resourceError?: string;
   retry?: () => void;
+  // The host a "Host, then project" copy nests under: the row's launch
+  // affordances target that host, not this hub. Every other variant leaves
+  // it absent - a flat or project-first row claims no host.
+  spawnHost?: string;
 }
 
 export interface LoadingRailNode extends WidgetTreeNode {
@@ -244,6 +248,9 @@ type ProjectNodeCacheEntry = Readonly<{
   children: RailNode[];
   displayName: string | undefined;
   expanded: boolean;
+  // Absent on every variant a host-grouped copy is not (see
+  // ProjectRailNode.spawnHost); compared as undefined against those.
+  spawnHost?: string;
   value: ProjectRailNode;
 }>;
 const sessionChildrenCache = new WeakMap<object, WeakMap<IsExpanded, SessionRailNode["children"]>>();
@@ -747,7 +754,13 @@ function cachedProjectNode(
   p: RailProject,
   isExpanded: IsExpanded,
   variant: string,
-  fields: { id: string; displayName: string | undefined; expanded: boolean; children: RailNode[] },
+  fields: {
+    id: string;
+    displayName: string | undefined;
+    expanded: boolean;
+    children: RailNode[];
+    spawnHost?: string;
+  },
 ): ProjectRailNode {
   const cached = projectNodeCache
     .get(p as object)
@@ -757,7 +770,8 @@ function cachedProjectNode(
     cached &&
     cached.children === fields.children &&
     cached.displayName === fields.displayName &&
-    cached.expanded === fields.expanded
+    cached.expanded === fields.expanded &&
+    cached.spawnHost === fields.spawnHost
   )
     return cached.value;
   const result: ProjectRailNode = {
@@ -768,6 +782,7 @@ function cachedProjectNode(
     displayName: fields.displayName,
     expanded: fields.expanded,
     children: fields.children,
+    ...(fields.spawnHost === undefined ? {} : { spawnHost: fields.spawnHost }),
   };
   cacheProjectNode(p, isExpanded, variant, { ...fields, value: result });
   return result;
@@ -855,12 +870,12 @@ function sourceLookup(sources: readonly Source[]): Map<string, Source> {
 
 type HostFacts = { id: string; label: string; online: boolean };
 
-/** Hosts in rail order: this hub first, then online hosts alphabetically,
- * offline hosts last (an offline host cannot reveal rows until it
- * reconnects, so it sorts behind the hosts that can). A host the manifest
- * does not name reads as ONLINE - the same unknown-host contract the session
- * rows' own chips follow (RailRow's useHostOnline) - and falls back to its
- * id as a label. */
+/** Hosts in rail order: this hub first, then online hosts by their display
+ * labels (the id breaking ties), offline hosts last (an offline host cannot
+ * reveal rows until it reconnects, so it sorts behind the hosts that can). A
+ * host the manifest does not name reads as ONLINE - the same unknown-host
+ * contract the session rows' own chips follow (RailRow's useHostOnline) -
+ * and falls back to its id as a label. */
 function orderedHosts(hostIds: Iterable<string>, sources: readonly Source[]): HostFacts[] {
   return [...new Set(hostIds)]
     .map((id) => {
@@ -872,7 +887,7 @@ function orderedHosts(hostIds: Iterable<string>, sources: readonly Source[]): Ho
         tier: id === LOCAL_HOST ? 0 : source ? (source.online ? 1 : 2) : 1,
       };
     })
-    .sort((a, b) => a.tier - b.tier || a.id.localeCompare(b.id))
+    .sort((a, b) => a.tier - b.tier || a.label.localeCompare(b.label) || a.id.localeCompare(b.id))
     .map(({ id, label, online }) => ({ id, label, online }));
 }
 
@@ -971,7 +986,7 @@ function hostProjectCopyNode(
   const id = hostProjectCopyId(projectNodeExpansionKey(p.key), hostId);
   const expanded = isExpanded(id, p.default_expanded ?? false);
   const children = projectChildren(p, isExpanded, variant, () => activeChildren(p, id, isExpanded, hostId));
-  return cachedProjectNode(p, isExpanded, variant, { id, displayName, expanded, children });
+  return cachedProjectNode(p, isExpanded, variant, { id, displayName, expanded, children, spawnHost: hostId });
 }
 
 /** "Project, then host": project rows stay as they are today, but a loaded
@@ -1048,10 +1063,12 @@ function topLevelCarrier(nodes: readonly RailSession[], ref: string): RailSessio
  * expose the row `ref` renders at: the project's own node in flat mode, the
  * owning host group then the project's copy in "Host, then project", the
  * project then its per-host branch in "Project, then host", and a Live host
- * subheader for a live row whenever Live groups. Empty when nothing loaded
- * holds the ref yet - the reveal's location-lookup path owns that case.
- * Callers expand one id per pass and re-run, so reaching the end of the
- * chain means every fold it needs is already open. */
+ * subheader for a live row whenever Live groups. An archived-tier row routes
+ * to its project's archived-group fold instead - the one tier no grouping
+ * mode rewrites. Empty when nothing loaded holds the ref yet - the reveal's
+ * location-lookup path owns that case. Callers expand one id per pass and
+ * re-run, so reaching the end of the chain means every fold it needs is
+ * already open. */
 export function revealExpansionIds(
   projects: readonly RailProject[],
   live: readonly RailSession[],
@@ -1061,6 +1078,10 @@ export function revealExpansionIds(
   for (const p of projects) {
     const carrier = topLevelCarrier(p.sessions, ref);
     if (!carrier) continue;
+    // An archived-tier row renders in the Archived sessions section's
+    // archived-group fold (archivedSessionGroups), never under the flat or
+    // grouped project branch, whatever mode the rail is in.
+    if (isArchivedTier(carrier)) return [archivedGroupId(p.key)];
     const id = projectNodeExpansionKey(p.key);
     if (mode === "host-project") return [hostGroupId(carrier.host_id), hostProjectCopyId(id, carrier.host_id)];
     if (mode === "project-host") return [id, hostBranchId(id, carrier.host_id)];

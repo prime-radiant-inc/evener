@@ -51,6 +51,7 @@ import {
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
+import { LOCAL_HOST } from "../../stores/hostRouting";
 import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
@@ -380,17 +381,23 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
 const NO_PROJECT_KEY = "no-project";
 
 // Opens a fresh spawn targeted at this project's working directory, via the
-// same /new?dir= URL prefill the palette's "Start with prompt" command
-// already uses for /new?prompt= (shell/palette/commands.ts): Spawn.tsx reads
-// both off window.location.search (panes/spawn/urlPrefill.ts), never pane
-// params - the spawn pane's own params type is deliberately empty (see
-// panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
-// directory. Falls back to a bare /new when a project has no working_dir
+// same /new URL prefill the palette's "Start with prompt" command already
+// uses for /new?prompt= (shell/palette/commands.ts): Spawn.tsx reads dir,
+// prompt, and host off window.location.search (panes/spawn/urlPrefill.ts),
+// never pane params - the spawn pane's own params type is deliberately empty
+// (see panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
+// directory. A "Host, then project" copy passes the host it nests under so
+// the launch targets that host; this hub is Spawn's default and needs no
+// param. Falls back to a bare /new when a project has no working_dir
 // (shouldn't happen for a real project, but degrades gracefully rather than
 // silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
 // ever called, same as every other project-scoped action here.
-function spawnInProject(project: RailProject): void {
-  navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
+function spawnInProject(project: RailProject, host?: string): void {
+  const params = new URLSearchParams();
+  if (project.working_dir) params.set("dir", project.working_dir);
+  if (host && host !== LOCAL_HOST) params.set("host", host);
+  const query = params.toString();
+  navigate(query ? `/new?${query}` : "/new");
 }
 
 // The project menu offers delete unconditionally: the request is local-only,
@@ -398,13 +405,13 @@ function spawnInProject(project: RailProject): void {
 // a remote host also owns, with a toast that names the hosts (Rail.test.tsx
 // pins it), so the person gets an explanation instead of an item that is
 // silently missing. The row keeps no ownership verdict of its own.
-function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
+function projectMenuItems(project: RailProject, actions: RailRowActions, spawnHost?: string): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
     {
       id: "new-session",
       label: "New session",
-      onSelect: () => spawnInProject(project),
+      onSelect: () => spawnInProject(project, spawnHost),
     },
     {
       id: "favorite",
@@ -827,10 +834,10 @@ function ProjectRow({
               variant="quiet"
               size="sm"
               tabIndex={-1}
-              onClick={() => spawnInProject(project)}
+              onClick={() => spawnInProject(project, node.spawnHost)}
             />
           )}
-          <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
+          <ActionsMenu label={project.name} items={projectMenuItems(project, actions, node.spawnHost)} />
         </span>
       </span>
     </span>
@@ -852,7 +859,7 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
     <span
       className={CLASS.railRow}
       data-testid="rail-row-host-group"
-      title={host.online ? `Host ${host.id}` : `Host ${host.id} is offline`}
+      title={host.online ? `Host ${host.label}` : `Host ${host.label} is offline`}
     >
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>

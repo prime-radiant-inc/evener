@@ -13,6 +13,8 @@ export default defineConfig({
   ...base,
   server: {
     ...(base.server ?? {}),
-    allowedHosts: true,
+    // Named instead of `true`: the Tailscale hostname reviewers reach this
+    // machine by, plus this machine's own localhost.
+    allowedHosts: ["magic-kingdom", "localhost"],
   },
 });
