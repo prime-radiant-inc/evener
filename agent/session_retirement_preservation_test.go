@@ -538,52 +538,54 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 // own, so the startup sweep it drives can neither see nor delete another
 // process's scratch, and its verdict cannot depend on what else is on the host.
 // The sweep walks three kinds of base: the temp dir and the user cache dir,
-// both pointed at directories this test owns (pointScratchBasesAt), and the world-usable host temps a session temp
-// container lives in (/tmp and /var/tmp, which no environment variable moves,
-// so they are dropped). Call it after plantAmbientScratchDecoys when a test
-// proves the confinement.
+// both pointed at directories this test owns (pointScratchBasesAt), and the
+// world-usable host temps a session temp container lives in (/tmp and
+// /var/tmp, which no environment variable moves, so they are dropped). Call it
+// after plantAmbientScratchDecoys when a test proves the confinement.
 func confineSessionScratchSweep(t *testing.T) {
 	t.Helper()
 	pointScratchBasesAt(t, t.TempDir(), t.TempDir())
 	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
 }
 
-// pointScratchBasesAt points every variable os.TempDir and os.UserCacheDir
-// read, on any platform, into temp and home: TMPDIR, or TMP and TEMP on
-// Windows, for the temp dir; XDG_CACHE_HOME and HOME, or LocalAppData on
-// Windows (AppData as a fallback), for the user cache dir.
-func pointScratchBasesAt(t *testing.T, temp, home string) {
+// pointScratchBasesAt points the variables os.TempDir and os.UserCacheDir
+// read into temp and cache: TMPDIR, or TMP and TEMP on Windows, for the temp
+// dir; XDG_CACHE_HOME, or LocalAppData on Windows (AppData as a fallback), for
+// the user cache dir. HOME stays as the package TestMain set it, a directory
+// of its own: a per-test HOME would let the session's `go env` launch snapshot
+// start a telemetry sidecar in a TempDir (see
+// TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot). On macOS the
+// user cache dir follows HOME, so there it stays in that package-owned home.
+func pointScratchBasesAt(t *testing.T, temp, cache string) {
 	t.Helper()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, temp)
 	}
-	t.Setenv("HOME", home)
 	for _, name := range []string{"XDG_CACHE_HOME", "LocalAppData", "AppData"} {
-		t.Setenv(name, filepath.Join(home, "cache"))
+		t.Setenv(name, cache)
 	}
 }
 
 // plantAmbientScratchDecoys stands in for the host's shared scratch bases as
 // another process left them: it points the temp and user cache dirs
-// (pointScratchBasesAt) at directories this test owns and
-// plants a real session scratch in both the temp dir and the user cache dir,
+// (pointScratchBasesAt) at directories this test owns and plants a real
+// session scratch in both the temp dir and the user cache dir,
 // each retained and abandoned by some other session a day ago. That is exactly
 // what the startup sweep is built to reclaim, so a sweep that can see either
 // base will delete its decoy. The decoys' paths are returned for
 // requireAmbientScratchDecoysUntouched.
 func plantAmbientScratchDecoys(t *testing.T) []string {
 	t.Helper()
-	ambientTemp := t.TempDir()
-	pointScratchBasesAt(t, ambientTemp, t.TempDir())
-	ambientCache, err := os.UserCacheDir()
-	if err != nil {
-		t.Fatalf("user cache dir: %v", err)
-	}
-	if err := os.MkdirAll(ambientCache, 0o700); err != nil {
-		t.Fatal(err)
+	ambientTemp, ambientCache := t.TempDir(), t.TempDir()
+	pointScratchBasesAt(t, ambientTemp, ambientCache)
+	bases := []string{ambientTemp}
+	// Only where the variable moves the user cache dir (not macOS, where it
+	// follows the package's own HOME) is there a per-test cache base to probe.
+	if cache, err := os.UserCacheDir(); err == nil && cache == ambientCache {
+		bases = append(bases, ambientCache)
 	}
 	var decoys []string
-	for _, base := range []string{ambientTemp, ambientCache} {
+	for _, base := range bases {
 		other, err := sandbox.NewSessionScratch(base, t.TempDir())
 		if err != nil {
 			t.Fatalf("plant ambient scratch decoy in %s: %v", base, err)
