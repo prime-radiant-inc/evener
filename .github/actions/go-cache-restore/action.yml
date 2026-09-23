@@ -2,7 +2,7 @@ name: Restore Go caches
 description: >-
   Restore this job kind's newest Go build and module caches, and record the
   key and paths .github/actions/go-cache-save needs. Run it after Go is
-  installed; end the job with go-cache-save.
+  installed; run go-cache-save after the job's last Go build or test step.
 inputs:
   kind:
     description: >-

@@ -135,15 +135,16 @@ jobs:
       # The analysis cache lives where the Makefile's GOLANGCI_LINT_CACHE
       # points. That path hashes the checkout path, which is the same on every
       # hosted runner, so a restored cache lands where make lint looks. The
-      # key carries the linter version and config; like the Go build cache it
-      # restores the newest entry by prefix and saves only on main.
+      # key carries the linter version, its config, and the Go version; like
+      # the Go build cache it restores the newest entry by prefix and saves
+      # only on main.
       - name: Resolve golangci-lint cache
         id: golangci-cache
         env:
           CONFIG_HASH: ${{ hashFiles('.tool-versions', '.golangci.yml', '.golangci-appwire.yml') }}
         run: |
           echo "dir=$(scripts/lib/golangci-lint-cache.sh)" >> "$GITHUB_OUTPUT"
-          echo "prefix=golangci-lint-${ImageOS}-${CONFIG_HASH}-" >> "$GITHUB_OUTPUT"
+          echo "prefix=golangci-lint-${ImageOS}-$(go env GOVERSION)-${CONFIG_HASH}-" >> "$GITHUB_OUTPUT"
 
       - id: golangci-restore
         uses: actions/cache/restore@v6

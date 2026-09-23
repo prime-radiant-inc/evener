@@ -4,7 +4,8 @@ description: >-
   go-cache-restore chose. Everywhere else it does nothing: a pull request's
   saves are readable only by that pull request's branch and would crowd
   main's entries out of the repository's 10GB limit. A re-run whose restore
-  hit this commit's key exactly also skips it. Make it the job's last step.
+  hit this commit's key exactly also skips it. Put it after the job's last
+  Go build or test step.
 runs:
   using: composite
   steps:

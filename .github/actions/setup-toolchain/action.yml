@@ -3,7 +3,7 @@ description: >-
   setup-go pinned to go.work plus setup-node 22 with the hub frontend's npm
   cache. Used by every job that builds or tests both the Go and web sides.
   With go-cache-kind it also restores that kind's Go caches through
-  go-cache-restore, and the job must end with go-cache-save.
+  go-cache-restore, and the job must run go-cache-save after its Go work.
 inputs:
   go-cache-kind:
     description: >-
