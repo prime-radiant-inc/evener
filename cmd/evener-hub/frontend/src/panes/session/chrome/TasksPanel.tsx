@@ -77,7 +77,6 @@ import {
   groupTasks,
   relativeTime,
   type TaskRow,
-  type TaskStatus,
   taskAggregateLabel,
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
@@ -86,7 +85,7 @@ import { Button, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { TaskCheck, type TaskTouch } from "../transcript/tools/taskCheck";
+import { STATUS_TOUCH, TaskCheck } from "../transcript/tools/taskCheck";
 import styles from "./taskspanel.module.css";
 
 export interface TasksPanelProps {
@@ -143,23 +142,6 @@ const CLASS = {
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
   notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
   note: requireClass(styles.note, "taskspanel.module.css", "note"),
-};
-
-// The panel shares the transcript card's TaskCheck glyph family (the 2026-09
-// task-rendering unification): one box grammar across both surfaces, with
-// the empty box naming "not started yet" - distinct from cancelled's X so
-// "won't happen" reads differently from "hasn't started yet". The
-// cancellation rule is the one the legacy chain already settled
-// (renderer-format.js:496-506 planStateClass + style.css:3324-3329): a
-// cancelled task's glyph stays the dim neutral pending uses, never danger -
-// in this design system's color-is-attention rule, danger-tinting a routine
-// cancellation would make reprioritized work indistinguishable from a
-// genuine failure. The ✕ mark alone carries the "won't happen" distinction.
-export const STATUS_TOUCH: Record<TaskStatus, TaskTouch> = {
-  open: "pending",
-  in_progress: "started",
-  done: "done",
-  cancelled: "cancelled",
 };
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {

@@ -30,21 +30,6 @@
   font-size: var(--font-size-ui);
 }
 
-/* The Ladder's spine: a hairline from each glyph's foot to the next row's
- * glyph, so the three window slots read as one progression. left/top/bottom
- * are tuned to the 16px glyph box against an ~18px single-line row: the
- * segment starts 1px below the box and runs 1px into the next row's glyph,
- * so it reads connected whether or not the row carries a note. */
-.spined:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  left: 7px;
-  top: 17px;
-  bottom: -5px;
-  width: 1px;
-  background: var(--edge);
-}
-
 .winRowText {
   display: flex;
   flex-direction: column;
@@ -52,41 +37,13 @@
   min-width: 0;
 }
 
-.descNow {
-  color: var(--ink-hi);
-  font-weight: var(--font-weight-medium);
-}
-
-.descNext {
-  color: var(--ink-mid);
-}
-
-.descStruck {
-  color: var(--ink-low);
-  text-decoration: line-through;
-}
-
-/* The just-added note, in the two treatments the variants split on: serif
- * italic where the card reads as prose (Ladder, Now inset), sans italic
- * where it reads as chrome (Pipeline, Segment strip). */
-.noteSerif {
-  font-family: var(--font-prose);
-  font-style: italic;
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
+/* The just-added note's sans treatment, where the card reads as chrome
+ * (Pipeline, Segment strip); the serif treatment is the production card's
+ * own .note, reached through the prodCard import in variants.tsx. */
 .noteSans {
   font-family: var(--font-sans);
   font-style: italic;
   font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
-/* The pending glyph (an empty task box) inherits the row's quiet ink, the
- * same neutral the added/cancelled touches use in taskcheck.module.css. */
-.pending {
-  flex: none;
   color: var(--ink-mid);
 }
 

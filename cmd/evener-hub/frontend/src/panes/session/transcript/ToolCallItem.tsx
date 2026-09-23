@@ -24,7 +24,7 @@ import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
-import { toolCallFailed, toolRendererFor } from "./toolRenderers";
+import { type ToolRendererDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
@@ -66,6 +66,13 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
+}
+
+// summaryWhenExpanded resolves through one seam: a fixed string passes
+// through, a per-item function (the task card's recap of THIS call) is
+// applied to the item - so the render body below stays flat.
+function callWhen(when: ToolRendererDescriptor["summaryWhenExpanded"], item: ItemModel): string | undefined {
+  return typeof when === "function" ? when(item) : when;
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -281,11 +288,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // fallback the same way the descriptor's own summary does: a real line
   // about the call beats a neutral "unavailable" one while the open body
   // below shows the command whole.
-  const expandedSummary = expanded
-    ? typeof descriptor.summaryWhenExpanded === "function"
-      ? descriptor.summaryWhenExpanded(item)
-      : descriptor.summaryWhenExpanded
-    : undefined;
+  const expandedSummary = expanded ? callWhen(descriptor.summaryWhenExpanded, item) : undefined;
   const summary =
     expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
   // The summary text the row would actually SHOW once its summary line is

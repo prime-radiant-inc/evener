@@ -10,11 +10,29 @@
 // focusable; the row's visually-hidden status word (taskCard.tsx) is what
 // assistive tech reads. Both task surfaces share it: the transcript's
 // inline card and the tasks pane.
+import type { TaskStatus } from "@evener/appwire-client";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./taskcheck.module.css";
 
 export const TOUCHES = ["added", "done", "cancelled", "started", "pending"] as const;
 export type TaskTouch = (typeof TOUCHES)[number];
+
+// Both task surfaces (the pane's rows, the card's window slots) key their
+// glyph off the task's STATE through this one map - the 2026-09 rendering
+// unification's "one box grammar across both surfaces" rule, spelled once at
+// the glyph family's home. The cancellation rule is the one the legacy chain
+// already settled (renderer-format.js:496-506 planStateClass +
+// style.css:3324-3329): a cancelled task's glyph stays the dim neutral
+// pending uses, never danger - in this design system's
+// color-is-attention rule, danger-tinting a routine cancellation would make
+// reprioritized work indistinguishable from a genuine failure. The ✕ mark
+// alone carries the "won't happen" distinction.
+export const STATUS_TOUCH: Record<TaskStatus, TaskTouch> = {
+  open: "pending",
+  in_progress: "started",
+  done: "done",
+  cancelled: "cancelled",
+};
 
 const CLASS = {
   check: requireClass(styles.check, "taskcheck.module.css", "check"),

@@ -42,7 +42,7 @@ import { Meter, OpenButton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
-import { TaskCheck, type TaskTouch } from "./taskCheck";
+import { STATUS_TOUCH, TaskCheck, type TaskTouch } from "./taskCheck";
 import styles from "./taskcard.module.css";
 import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
 
@@ -62,16 +62,19 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "taskcard.module.css", "srOnly"),
 };
 
-interface TouchedRow {
+// A mutation touch only: "pending" is a window-slot state (TaskCheck's
+// empty box) and never something a call did to a task, so every record
+// keyed by what a call DID excludes it once, here.
+export type MutationTouch = Exclude<TaskTouch, "pending">;
+
+export interface TouchedRow {
   key: string;
-  // A mutation touch only: "pending" is a window-slot state (TaskCheck's
-  // empty box) and never something a call did to a task.
-  touch: Exclude<TaskTouch, "pending">;
+  touch: MutationTouch;
   label: string; // description (append; update when state is known) or "#<id>" (update, state absent)
   note?: string;
 }
 
-interface Progress {
+export interface Progress {
   done: number;
   total: number;
   cancelled?: number;
@@ -104,9 +107,8 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
 // action:append/action:update equivalent that CHANGES at least one task
 // status. Anything else - a view, a malformed call, a reopen, a notes-only
 // touch - is not a card: with no touch to name, neither the folded line nor
-// the recap has anything true to say. Re-derived (not cached) so suppress()
-// and the body agree exactly.
-function mutationRows(item: ItemModel): TouchedRow[] | undefined {
+// the recap has anything true to say.
+function deriveMutationRows(item: ItemModel): TouchedRow[] | undefined {
   const args = parseArgs(item.argumentsJSON);
   const action = str(args, "action") ?? "";
   if (action === "append") {
@@ -124,6 +126,20 @@ function mutationRows(item: ItemModel): TouchedRow[] | undefined {
   const updates = finalUpdates(asObjectArray(args.update));
   if (adds.length === 0 && updates.length === 0) return undefined;
   return [...appendRows(adds, false), ...updateRows(item, updates)];
+}
+
+// One parse per item: summary(), suppress(), the recap, and the body all
+// derive the same rows from one argumentsJSON/raw pair, and ItemModels are
+// immutable snapshots (rebuilt, never mutated in place, on each wire
+// frame), so item identity implies content. Caching on that identity keeps
+// every caller in exact agreement without re-parsing per call site.
+const mutationRowsCache = new WeakMap<ItemModel, { rows: TouchedRow[] | undefined }>();
+export function mutationRows(item: ItemModel): TouchedRow[] | undefined {
+  const cached = mutationRowsCache.get(item);
+  if (cached) return cached.rows;
+  const rows = deriveMutationRows(item);
+  mutationRowsCache.set(item, { rows });
+  return rows;
 }
 
 function appendRows(tasks: Record<string, unknown>[], legacy: boolean): TouchedRow[] {
@@ -176,7 +192,7 @@ function updateRows(item: ItemModel, updates: Record<string, unknown>[]): Touche
 
 // touchKind's status-to-flag mapping for the three statuses the card renders as
 // a row (renderer-format.js:525-533's touchKind, gated by renderer.js:5010).
-const TOUCH_BY_STATUS: Record<string, Exclude<TaskTouch, "pending">> = {
+const TOUCH_BY_STATUS: Record<string, MutationTouch> = {
   done: "done",
   cancelled: "cancelled",
   in_progress: "started",
@@ -193,7 +209,7 @@ function lastProgressMatch(output: string, pattern: RegExp): RegExpMatchArray | 
   return matches[matches.length - 1];
 }
 
-function parseProgress(output: string | undefined): Progress | undefined {
+export function parseProgress(output: string | undefined): Progress | undefined {
   if (!output) return undefined;
   const outcome = lastProgressMatch(output, OUTCOME_PROGRESS_RE);
   const legacy = lastProgressMatch(output, PROGRESS_RE);
@@ -228,7 +244,7 @@ const TOUCH_WORD: Record<TaskTouch, string> = {
 
 // The text mark the folded summary line carries per mutation touch: the
 // checkbox grammar in text form. "started" reads best as the arrow it means.
-const SUMMARY_MARK: Record<Exclude<TaskTouch, "pending">, string> = {
+export const SUMMARY_MARK: Record<MutationTouch, string> = {
   added: "☐",
   done: "☑",
   cancelled: "☒",
@@ -236,7 +252,7 @@ const SUMMARY_MARK: Record<Exclude<TaskTouch, "pending">, string> = {
 };
 
 // The recap verb per mutation touch, for the expanded summary line.
-const RECAP_VERB: Record<Exclude<TaskTouch, "pending">, string> = {
+const RECAP_VERB: Record<MutationTouch, string> = {
   added: "Added",
   done: "Completed",
   cancelled: "Dropped",
@@ -260,9 +276,10 @@ function taskMutationRecap(item: ItemModel): string {
   const rows = mutationRows(item) ?? [];
   const byVerb = new Map<string, string[]>();
   for (const row of rows) {
-    const labels = byVerb.get(RECAP_VERB[row.touch].toLowerCase()) ?? [];
+    const verb = RECAP_VERB[row.touch].toLowerCase();
+    const labels = byVerb.get(verb) ?? [];
     labels.push(`"${row.label}"`);
-    byVerb.set(RECAP_VERB[row.touch].toLowerCase(), labels);
+    byVerb.set(verb, labels);
   }
   const sentence = [...byVerb].map(([verb, labels]) => `${verb} ${labels.join(", ")}`).join("; ");
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
@@ -277,13 +294,13 @@ function taskMutationRecap(item: ItemModel): string {
 // order. Timestamps order the settled slot, with list position breaking ties
 // - a snapshot without timestamps therefore falls back to the LAST settled
 // row in list order, the same degradation the panel gives.
-interface TaskWindow {
+export interface TaskWindow {
   settled?: TaskRow;
   current?: TaskRow;
   next?: TaskRow;
 }
 
-function stateWindow(tasks: TaskRow[] | null): TaskWindow {
+export function stateWindow(tasks: TaskRow[] | null): TaskWindow {
   if (!tasks) return {};
   const settledAll = tasks.filter((task) => task.status === "done" || task.status === "cancelled");
   const settleKey = (task: TaskRow) => task.completedAt ?? task.updatedAt ?? "";
@@ -304,7 +321,7 @@ function stateWindow(tasks: TaskRow[] | null): TaskWindow {
 // render (a stale note from an earlier call never shows). Update-shaped calls
 // carry them per update; append-shaped calls mint no client-visible ids, so
 // a fresh note on an appended task has no key to ride and stays unrendered.
-function freshNotes(item: ItemModel): ReadonlyMap<number, string> {
+export function freshNotes(item: ItemModel): ReadonlyMap<number, string> {
   const args = parseArgs(item.argumentsJSON);
   const action = str(args, "action") ?? "";
   const map = new Map<number, string>();
@@ -322,27 +339,28 @@ function freshNotes(item: ItemModel): ReadonlyMap<number, string> {
 
 type SlotKind = "settled" | "current" | "next";
 
+// The label ink per slot: settled reads struck through low ink, the working
+// task carries the card's one semibold line, the next task stays quiet.
+const SLOT_DESC_CLASS: Record<SlotKind, string> = {
+  settled: CLASS.descStruck,
+  current: CLASS.descNow,
+  next: CLASS.descNext,
+};
+
 // One window slot: its state-named glyph, the label on the slot's ink, and
 // this call's fresh note (if any) hanging under the label. The spined class
-// joins the slots into one progression (see the stylesheet).
+// joins the slots into one progression (see the stylesheet). Glyph and
+// screen-reader word both key off the task's state through STATUS_TOUCH -
+// the same map the tasks pane's rows use; stateWindow guarantees a slot's
+// kind and its task's status agree.
 function TaskWindowRow({ task, kind, note }: { task: TaskRow; kind: SlotKind; note?: string }) {
-  const glyph =
-    kind === "next" ? (
-      <TaskCheck touch="pending" />
-    ) : kind === "current" ? (
-      <TaskCheck touch="started" />
-    ) : (
-      <TaskCheck touch={task.status === "done" ? "done" : "cancelled"} />
-    );
-  const word =
-    kind === "current" ? "started" : kind === "next" ? "pending" : task.status === "done" ? "done" : "cancelled";
-  const descClass = kind === "settled" ? CLASS.descStruck : kind === "current" ? CLASS.descNow : CLASS.descNext;
+  const touch = STATUS_TOUCH[task.status];
   return (
     <div className={`${CLASS.row} ${CLASS.spined}`} data-testid="task-card-row" data-kind={kind}>
-      {glyph}
+      <TaskCheck touch={touch} />
       <div className={CLASS.rowText}>
-        <span className={CLASS.srOnly}>{word}</span>
-        <span className={descClass}>{task.description}</span>
+        <span className={CLASS.srOnly}>{TOUCH_WORD[touch]}</span>
+        <span className={SLOT_DESC_CLASS[kind]}>{task.description}</span>
         {note && <span className={CLASS.note}>{note}</span>}
       </div>
     </div>

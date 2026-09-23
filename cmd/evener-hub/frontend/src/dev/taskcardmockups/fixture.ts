@@ -9,13 +9,13 @@
 // Dev-support scaffolding for a design decision, not production code.
 
 import type { EvenerUsage, ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
 
 const T13H40 = "2026-09-23T13:40:00.000Z";
 const T14H12 = "2026-09-23T14:12:00.000Z";
 const T14H20 = "2026-09-23T14:20:00.000Z";
 const T14H40 = "2026-09-23T14:40:00.000Z";
 const NOW = "2026-09-23T14:58:00.000Z";
-const FRAME_TIME = 1787680800000;
 const USAGE: EvenerUsage = { inputTokens: 128, outputTokens: 64, totalTokens: 192 };
 
 // The note THIS call added (task 2's second note, appended server-side).
@@ -349,58 +349,6 @@ export function readItem(id: string, turnId: string, path: string, intent: strin
   };
 }
 
-function threadModelBase(ref: string): ThreadModel {
-  return {
-    ref,
-    threadId: "preview-thread",
-    name: "Task card mock-ups",
-    status: { type: "idle" },
-    modelProvider: "preview",
-    model: "preview-model",
-    reasoningEffort: "medium",
-    visionModel: "",
-    askPending: false,
-    pendingEscalations: [],
-    turns: [],
-    queue: null,
-    tasks: null,
-    jobsUpdatedAt: null,
-    jobsTreeRevision: null,
-    lastFrameAt: FRAME_TIME,
-    capabilities: {
-      send: false,
-      steer: false,
-      interrupt: false,
-      compact: false,
-      clear: false,
-      forkFromTurn: false,
-      shutdown: false,
-      changeModel: false,
-      changeVisionModel: false,
-      queue: false,
-      goal: false,
-      sharedNotes: false,
-      rename: false,
-    },
-    goal: null,
-    humanNote: "",
-    agentNote: "",
-    sessionUrls: [],
-    contextUsed: 192,
-    contextWindow: 4096,
-    contextPressure: 0.047,
-    usage: { ...USAGE },
-    cost: "0.0125",
-    failedToolCalls: 0,
-    workMillis: 2400,
-    reasoningEffortLevels: ["low", "medium", "high"],
-    supportsReasoning: false,
-    cwd: "/workspace/preview",
-    createdAt: T13H40,
-    updatedAt: NOW,
-  };
-}
-
 /** A one-turn ThreadModel: the section's user message, then its items. */
 export function modelForSection(ref: string, turn: { id: string; userText: string; items: ItemModel[] }): ThreadModel {
   const userItem: ItemModel = {
@@ -422,5 +370,17 @@ export function modelForSection(ref: string, turn: { id: string; userText: strin
     cost: "0.0125",
     items: [userItem, ...turn.items],
   };
-  return { ...threadModelBase(ref), turns: [turnModel] };
+  // The preview base carries the wire-true ThreadModel shape
+  // (previewFixture, the same base the surface-sections harness builds on);
+  // only what a mock-up section actually varies is overridden.
+  return {
+    ...makeTranscriptPreviewModel(),
+    ref,
+    name: "Task card mock-ups",
+    failedToolCalls: 0,
+    supportsReasoning: false,
+    createdAt: T13H40,
+    updatedAt: NOW,
+    turns: [turnModel],
+  };
 }

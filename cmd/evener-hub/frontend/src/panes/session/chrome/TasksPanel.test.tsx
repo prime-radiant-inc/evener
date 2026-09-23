@@ -12,7 +12,8 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { STATUS_TOUCH, TasksPanel, TasksPanelBody } from "./TasksPanel";
+import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
+import { TasksPanel, TasksPanelBody } from "./TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,

@@ -66,6 +66,17 @@ function sevenTaskState(overrides: Partial<Record<number, Record<string, unknown
   return base.map((t) => (overrides[t.id] ? { ...t, ...overrides[t.id] } : t));
 }
 
+// The canonical completing-a-task call: task #4 completes, the daemon
+// auto-advances #5, so the folded line names the start ("→ fifth") and the
+// open window holds fourth/fifth/sixth. Most tests start from this shape.
+function mainUpdate(): ItemModel {
+  return taskItem(
+    { action: "update", updates: [{ id: 4, status: "done" }] },
+    "Updated 4→done. Progress: 4/7 tasks complete.",
+    { raw: sevenTaskState({ 5: { started: true } }) },
+  );
+}
+
 // ---- suppression: what renders at all --------------------------------
 
 test('action:"view" renders nothing at all (no card, no divider, no tool-call row)', () => {
@@ -131,13 +142,7 @@ test("a pure notes update on an open task renders nothing (no status changed)", 
 // ---- the folded line: only the most recent update ---------------------
 
 test("a settled mutation lands folded: no body, and the summary line names only the latest update", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   expect(rowIsOpen()).toBe(false);
   expect(screen.queryByTestId("tool-call-body")).toBeNull();
   // The completion caused the daemon to auto-advance #5, so the most recent
@@ -146,13 +151,7 @@ test("a settled mutation lands folded: no body, and the summary line names only 
 });
 
 test("opening the row swaps the summary line for a recap of this call's whole change", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   openRow();
   expect(screen.getByTestId("tool-row-summary").textContent).toBe('Completed "fourth"; started "fifth"');
   // Folding again restores the latest-update line - the swap is a display
@@ -346,13 +345,7 @@ test("distinct final occurrences retain their own order when an earlier duplicat
 // ---- the open body: the three-slot window -----------------------------
 
 test("the window shows the most recently completed task, the in-progress one, and the next one, in that order", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled", "current", "next"]);
@@ -364,13 +357,7 @@ test("the window shows the most recently completed task, the in-progress one, an
 });
 
 test("every window row leads with a TaskCheck glyph matching its slot's state", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
   expect(within(rows[0]!).getByTestId("task-check").getAttribute("data-touch")).toBe("done");
@@ -427,13 +414,7 @@ test("the window shrinks when slots are empty: no settled task, no next task", (
 });
 
 test("window ink: settled is struck, the working task is emphasized, the next one is quiet", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
   expect(within(rows[0]!).getByText("fourth").className).toContain("descStruck");
@@ -442,13 +423,7 @@ test("window ink: settled is struck, the working task is emphasized, the next on
 });
 
 test("the status rides along visually-hidden on every window row", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   openRow();
   const rows = screen.getAllByTestId("task-card-row");
   expect(within(rows[0]!).getByText("done").className).toContain("srOnly");
@@ -567,14 +542,7 @@ test("the footer's Open button opens the session's Tasks pane", () => {
     paneId: "pane_tasks",
     opened: true,
   }));
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-    "local:s1",
-  );
+  renderItem(mainUpdate(), "local:s1");
   openRow();
   fireEvent.click(screen.getByRole("button", { name: "Open task list" }));
   // The same workspace toggle the /tasks palette command runs.
@@ -583,13 +551,7 @@ test("the footer's Open button opens the session's Tasks pane", () => {
 });
 
 test("no Open button renders without a session ref (read-only transcript surfaces)", () => {
-  renderItem(
-    taskItem(
-      { action: "update", updates: [{ id: 4, status: "done" }] },
-      "Updated 4→done. Progress: 4/7 tasks complete.",
-      { raw: sevenTaskState({ 5: { started: true } }) },
-    ),
-  );
+  renderItem(mainUpdate());
   openRow();
   expect(screen.queryByRole("button", { name: "Open task list" })).toBeNull();
 });
