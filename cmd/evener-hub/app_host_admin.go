@@ -79,8 +79,10 @@ var remoteHostAdminMethods = map[string]struct{}{
 
 	// Auth and credentials (hubAuthController, app_auth.go). The host's own
 	// refusals (a stored key under a Codex or gcp-adc instance) pass through
-	// unchanged; 07c's credential push uses apiKey/conditionalSet through this
-	// same list (apiKey/set remains the unconditional path).
+	// unchanged. apiKey/conditionalSet is on this list so a CLIENT may proxy it
+	// like any other forwarded auth method - the controller's own credential
+	// push does NOT go through the list (see the row for it below) - and
+	// apiKey/set remains the unconditional path.
 	appwire.MethodEvenerAuthStatus:        {},
 	appwire.MethodEvenerAuthTest:          {},
 	appwire.MethodEvenerAuthList:          {},
