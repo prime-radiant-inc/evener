@@ -1205,6 +1205,262 @@ func TestAdoptResponseClientMutationIDCoversReceiptShapes(t *testing.T) {
 	}
 }
 
+// TestAdoptResponseClientMutationIDAdoptsFailureID pins that the response
+// adapter adopts the caller's verbatim id onto a FAILURE as well as onto a
+// receipt, and that it leaves alone every failure adoptCallerMutationID must not
+// touch.
+//
+// A direct (non-retry) refusal never passes through the resume-retry adoption,
+// so without this the daemon's normalized id would come back to a padded caller
+// and its outbox record would stay submitting with nothing to settle it -- the
+// same failure the receipt path and the retry paths already prevent.
+func TestAdoptResponseClientMutationIDAdoptsFailureID(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	refusal := func(id string) error {
+		return appwire.MutationNotAccepted(id, "the daemon refused the mutation")
+	}
+
+	cases := []struct {
+		name        string
+		callerID    string
+		err         error
+		wantID      string
+		wantOutcome appwire.MutationOutcome
+	}{
+		{
+			name:        "a daemon refusal naming the normalized caller id adopts the verbatim id",
+			callerID:    verbatim,
+			err:         refusal(normalized),
+			wantID:      verbatim,
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+		{
+			name:        "a hub-minted refusal already naming the caller is unchanged",
+			callerID:    verbatim,
+			err:         refusal(verbatim),
+			wantID:      verbatim,
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+		{
+			name:        "a refusal naming a different mutation is left alone",
+			callerID:    verbatim,
+			err:         refusal("some-other-mutation"),
+			wantID:      "some-other-mutation",
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+		{
+			name:     "a refusal naming no mutation is left alone",
+			callerID: verbatim,
+			err:      appwire.Unavailable("no mutation id here"),
+			wantID:   "",
+		},
+		{
+			name:        "an empty caller id leaves the refusal alone",
+			callerID:    "",
+			err:         refusal(normalized),
+			wantID:      normalized,
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}
+			gotResp, gotErr := adoptResponseClientMutationID[appwire.TurnStartResponse](resp, tc.err, tc.callerID)
+			if gotErr == nil {
+				t.Fatal("the adapter dropped the failure")
+			}
+			if !reflect.DeepEqual(gotResp, resp) {
+				t.Fatalf("response = %+v, want the given response unchanged (%+v)", gotResp, resp)
+			}
+			// Only the id in the error's data may change (adopt rebuilds the
+			// WireError value, so identity is not preserved); the refusal's message
+			// and code must survive.
+			if gotErr.Error() != tc.err.Error() {
+				t.Fatalf("adopted error %q, want the failure's own message %q", gotErr, tc.err)
+			}
+			var wire appwire.WireError
+			if !errors.As(gotErr, &wire) {
+				t.Fatalf("adopted error %T=%v, want a WireError", gotErr, gotErr)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+			}
+			if data.ClientMutationID != tc.wantID {
+				t.Fatalf("error names clientMutationId %q, want %q", data.ClientMutationID, tc.wantID)
+			}
+			if data.MutationOutcome != tc.wantOutcome {
+				t.Fatalf("error outcome=%q, want %q: only the id may change", data.MutationOutcome, tc.wantOutcome)
+			}
+		})
+	}
+
+	plain := errors.New("plain failure")
+	if _, gotErr := adoptResponseClientMutationID[appwire.TurnStartResponse](appwire.TurnStartResponse{}, plain, verbatim); !errors.Is(gotErr, plain) {
+		t.Fatalf("a non-WireError must be returned unchanged, got %v", gotErr)
+	}
+}
+
+// TestHubRPCTurnStartDirectRefusalKeepsPaddedCallerID drives a DIRECT refusal
+// (no resume in play) through turn/start with a padded caller id: the source's
+// startTurn refuses naming the id the daemon normalized, and the caller must get
+// that refusal back carrying its own verbatim id with its outcome intact.
+func TestHubRPCTurnStartDirectRefusalKeepsPaddedCallerID(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+	t.Cleanup(func() {
+		resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+	})
+
+	// The ref must be one the hub knows, or the handler returns the first failure
+	// unchanged before any resume decision.
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	ref := "local:" + sessionID
+
+	startCalls := 0
+	source := &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          ref,
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+		startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			startCalls++
+			// A direct refusal: the daemon names the id it trimmed.
+			return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(normalized, "the session refused the send")
+		},
+	}
+	resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+		return source, nil
+	}
+	resumeCalls := 0
+	resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+		resumeCalls++
+		return appwire.ThreadResumeResponse{Thread: source.thread}, nil
+	}
+
+	server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+	_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:              ref,
+		ClientMutationID: verbatim,
+		Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+	})
+	if err == nil {
+		t.Fatal("turn/start reported success although the source refused")
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls=%d, want 1 (a direct refusal needs no retry)", startCalls)
+	}
+	if resumeCalls != 0 {
+		t.Fatalf("resume calls=%d, want 0 (a refusal is not a session-unavailable failure)", resumeCalls)
+	}
+
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+	}
+	if data.ClientMutationID != verbatim {
+		t.Fatalf("refusal names clientMutationId %q, want the caller's verbatim %q: the client cannot settle its record (wire=%+v)",
+			data.ClientMutationID, verbatim, wire)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("outcome=%q retryDisposition=%q, want notAccepted/none (wire=%+v)",
+			data.MutationOutcome, data.RetryDisposition, wire)
+	}
+}
+
+// urlsRefusalSource is a scripted source whose urls/remove returns a
+// daemon-style refusal, so the hub's urls/remove path -- which returns a
+// receipt-less response but can still fail with a refusal naming an id -- can be
+// driven with a padded caller id.
+type urlsRefusalSource struct {
+	*scriptedAppSource
+	urlsRemove func(appwire.UrlsRemoveParams) error
+}
+
+func (s *urlsRefusalSource) UrlsRemove(_ context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
+	return appwire.UrlsRemoveResponse{}, s.urlsRemove(params)
+}
+
+// TestHubRPCUrlsRemoveDirectRefusalKeepsPaddedCallerID covers the receipt-less
+// half of the same rule: urls/remove returns no receipt at all, but a refusal it
+// relays still names a mutation id, so the caller must get its own verbatim id
+// back or its record never settles.
+func TestHubRPCUrlsRemoveDirectRefusalKeepsPaddedCallerID(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	source := &urlsRefusalSource{
+		scriptedAppSource: &scriptedAppSource{
+			id: "local",
+			thread: appwire.Thread{
+				ID:        "th_1",
+				SessionID: "sess_1",
+				Source:    "local",
+				Evener: appwire.EvenerThread{
+					Ref:          "local:th_1",
+					Capabilities: appwire.ThreadCapabilities{SharedNotes: true},
+				},
+			},
+		},
+		urlsRemove: func(appwire.UrlsRemoveParams) error {
+			// The daemon names the id it normalized at its own boundary.
+			return appwire.MutationNotAccepted(normalized, "no such url")
+		},
+	}
+	registry := appsource.NewRegistry()
+	registry.Add(source)
+	server := newHubAppServer(hubcore.WebConfig{}, registry)
+
+	_, err := exactDispatch(context.Background(), t, server, appwire.MethodUrlsRemove, appwire.UrlsRemoveParams{
+		Ref:                "local:th_1",
+		ClientMutationID:   verbatim,
+		ExpectedInstanceID: "sess_1",
+		ID:                 "u1",
+	})
+	if err == nil {
+		t.Fatal("urls/remove reported success although the source refused")
+	}
+
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("urls/remove error %T=%v, want a WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+	}
+	if data.ClientMutationID != verbatim {
+		t.Fatalf("refusal names clientMutationId %q, want the caller's verbatim %q: the client cannot settle its record (wire=%+v)",
+			data.ClientMutationID, verbatim, wire)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeNotAccepted || data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("outcome=%q retryDisposition=%q, want notAccepted/none (wire=%+v)",
+			data.MutationOutcome, data.RetryDisposition, wire)
+	}
+}
+
 // TestHubRPCTurnStartResumedSuccessCarriesVerbatimPaddedCallerID drives the
 // success path through the real turn/start resume flow: the caller submits a
 // padded clientMutationId, the hub resumes the exited session, and the resumed

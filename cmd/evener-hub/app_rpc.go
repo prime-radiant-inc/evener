@@ -497,22 +497,39 @@ func adoptCallerMutationReceipt(receipt appwire.MutationReceipt, clientMutationI
 	return receipt
 }
 
-// adoptResponseClientMutationID applies adoptCallerMutationReceipt to every
-// response shape the hub returns that carries a mutation receipt, and leaves
-// every other response -- and every failure -- untouched.
+// adoptResponseClientMutationID adopts the caller's own clientMutationId onto
+// BOTH halves of a hub mutation result: the error with adoptCallerMutationID and
+// the response's mutation receipt with adoptCallerMutationReceipt. Everything
+// else passes through untouched.
 //
-// It is the single place that knows which responses carry the field, wired
-// where each such response is returned: turn/start's first attempt and its
-// post-resume retry (both through attemptStart), the direct turn mutations
-// (steer, interrupt, queue, drainAsSteer, promoteQueuedAsSteer, cancelQueued),
-// and the resume relays (thread/clear, notes/human/set). urls/remove and
-// goal/set carry no receipt to adopt -- UrlsRemoveResponse is an empty struct
-// and GoalSetResponse holds only Started -- so they are not wired. Nothing here
-// touches the id the daemon stored, only the id this caller's response carries
-// back.
+// Both halves need it for the same reason. The daemon trims the caller's id at
+// its own boundary before it mints a receipt OR a refusal
+// (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear,
+// agent/session_notes_rpc.go), while the hub holds and echoes the caller's
+// verbatim id, and every client correlates its outbox record byte-for-byte
+// (appwire-client/typescript/state/mutation/dispatcher.ts). A failure named with
+// the daemon's normalized id would leave the record submitting exactly as a
+// mismatched receipt would. adoptCallerMutationID is not widened for this: it
+// already returns unchanged anything that is not a WireError, names no id, or
+// names a different mutation canonically, and it never rewrites an id to a
+// trimmed form.
+//
+// It is the single place that knows which responses carry the receipt field,
+// wired where each caller-id-bearing mutation path returns: turn/start's first
+// attempt and its post-resume retry (both through attemptStart), the direct turn
+// mutations (steer, interrupt, queue, drainAsSteer, promoteQueuedAsSteer,
+// cancelQueued), the resume relays (thread/clear, notes/human/set), and
+// urls/remove -- which has no receipt to adopt but can still return a
+// daemon-minted refusal naming the id. Goal-set and the EmptyResponse paths
+// carry no caller id in their response and no id-naming error of their own, so
+// they are not wired. Nothing here touches the id the daemon stored, only the id
+// this caller's result carries back.
 func adoptResponseClientMutationID[R any](resp R, err error, clientMutationID string) (R, error) {
-	if err != nil || clientMutationID == "" {
+	if clientMutationID == "" {
 		return resp, err
+	}
+	if err != nil {
+		return resp, adoptCallerMutationID(err, clientMutationID)
 	}
 	adopt := func(receipt appwire.MutationReceipt) appwire.MutationReceipt {
 		return adoptCallerMutationReceipt(receipt, clientMutationID)
@@ -1622,7 +1639,8 @@ func registerThreadHandlers(
 		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodUrlsRemove, func(ctx context.Context, params appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-		return removeURLWithResume(ctx, cfg, sources, params)
+		resp, err := removeURLWithResume(ctx, cfg, sources, params)
+		return adoptResponseClientMutationID(resp, err, params.ClientMutationID)
 	})
 }
 
