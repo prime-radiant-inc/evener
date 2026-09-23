@@ -3,6 +3,7 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -324,6 +325,92 @@ func TestPresenceTransportMatchesLaunchForDefaultRow(t *testing.T) {
 	}
 	if pres.Credential.Source != launch.Credential.Source {
 		t.Fatalf("presence source = %q, want the launch's %q: the credential judgment follows the launch's scheme", pres.Credential.Source, launch.Credential.Source)
+	}
+}
+
+// A default row can pin its own protocol, and the launch the bare name
+// makes speaks that protocol (ResolveInstanceListing). Presence must
+// report and gate under the same one, or the hub's views describe a
+// launch that is never made.
+func TestPresenceMatchesLaunchRowProtocol(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"protocol = \"openai-responses\"\n"
+	r := fixtureLoad(t, nil, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Protocol != "openai-responses" {
+		t.Fatalf("fixture: the default row's launch protocol = %q; want the row's openai-responses", launch.Protocol)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres.Protocol != launch.Protocol {
+		t.Fatalf("presence protocol = %q, want the launch's %q", pres.Protocol, launch.Protocol)
+	}
+}
+
+// The transport the presence view shows carries its own diagnostics —
+// what the launch's transport says, warnings included.
+func TestPresenceKeepsTransportWarningsForDefaultRow(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"models_endpoint = \"/models/{NEVER_SET}\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(launch.Warnings, "\n"), "unresolved variable NEVER_SET") {
+		t.Fatalf("fixture: the launch's warnings = %v; want the unresolved-variable diagnostic", launch.Warnings)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(pres.Warnings, "\n"), "unresolved variable NEVER_SET") {
+		t.Fatalf("presence warnings = %v; want the row transport's unresolved-variable diagnostic", pres.Warnings)
+	}
+	if !slices.Equal(pres.Warnings, launch.Warnings) {
+		t.Fatalf("presence warnings = %v; want exactly the launch's %v: the view describes the row's destination, warnings included", pres.Warnings, launch.Warnings)
+	}
+}
+
+// The default row's transport carries the vertex host-rule provenance,
+// and presence must keep the flag the row's resolution computed rather
+// than the provider shape's default.
+func TestPresenceKeepsHostDerivedFlagForDefaultRow(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"google-vertex-anthropic\"\n" +
+		"base_url = \"{GOOGLE_VERTEX_HOST}/v1/custom\"\n" +
+		"default_model = \"claude-opus-5\"\n"
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"}, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !launch.HostDerivedByRule {
+		t.Fatalf("fixture: the default row's launch transport = %+v; want a rule-derived host", launch.Transport)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pres.HostDerivedByRule {
+		t.Fatal("presence dropped the row's host-rule provenance at the transport depth")
 	}
 }
 

@@ -1882,6 +1882,11 @@ a closed stdin (a prompting command reads EOF instead of hanging), and a
 grace (at most five seconds) then closes captured pipes a straggler
 still holds, so the caller's worst-case wait is thirty-five seconds
 (amended 2026-09-23: the drain grace is part of the documented bound).
+Platforms that cannot put a command's whole tree in one process group —
+the builds outside linux and darwin — refuse a `$(command)` at
+evaluation rather than run it uncontained (amended 2026-09-23): a
+deadline kill that reaches only the direct child would leave the run's
+bounds a fiction.
 Results are cached
 per command text — instances sharing a command share one mint — until a
 JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a

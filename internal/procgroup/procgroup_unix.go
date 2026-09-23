@@ -4,6 +4,13 @@ package procgroup
 
 import "syscall"
 
+// ProcessGroupsSupported reports whether this build can contain a
+// spawned command's whole tree in one process group. The command
+// expression evaluator refuses to run commands where it cannot (spec
+// §10.1): a deadline kill that reaches only the direct child would
+// leave the run's bounds a fiction.
+var ProcessGroupsSupported = true
+
 // SysProcAttr places a spawned command in its own process group so
 // Terminate/Kill can signal the whole tree at once.
 func SysProcAttr() *syscall.SysProcAttr {

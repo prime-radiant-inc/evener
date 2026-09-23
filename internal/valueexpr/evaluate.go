@@ -227,6 +227,14 @@ func tokenExpiry(value string) (time.Time, bool) {
 // bare "no output". Extracting the exact value is the command's job, which
 // is why gateway recipes pipe through what they need.
 func realRunCommand(command string) (string, error) {
+	if !procgroup.ProcessGroupsSupported {
+		// The deadline kill reaches only the direct child on this
+		// build: a descendant would survive the timeout, so the run's
+		// bounds would be a fiction. Refuse before anything spawns
+		// (spec §10.1's containment contract); the refusal names the
+		// requirement, never the command.
+		return "", &CommandError{Detail: "command expressions are not supported on this platform: its processes cannot be contained to one group"}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 	shell, flag := "sh", "-c"

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // makeJWT builds a three-segment token whose payload carries exp, the shape
@@ -361,6 +363,40 @@ func TestEvaluatePruneClockIsReadUnderTheLock(t *testing.T) {
 	defer evaluateMu.Unlock()
 	if _, ok := cache["short-lived"]; ok {
 		t.Fatal("the prune judged the expired entry with the caller's arrival time; the clock must be read after the wait")
+	}
+}
+
+// Where a build cannot put a command's whole tree in one process group,
+// the real executor must refuse before anything spawns: the deadline
+// kill there reaches only the direct child, so the run's bounds would
+// be a fiction the security contract does not authorize.
+func TestRealRunCommandRefusedWithoutGroupContainment(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	old := procgroup.ProcessGroupsSupported
+	procgroup.ProcessGroupsSupported = false
+	t.Cleanup(func() { procgroup.ProcessGroupsSupported = old })
+	_, err := RunCommand("printf should-not-run")
+	if err == nil {
+		t.Fatal("the real executor ran a command on a build whose process groups cannot contain it")
+	}
+	var ce *CommandError
+	if !errors.As(err, &ce) || ce.Timeout || ce.Status != 0 || !strings.Contains(ce.Detail, "contain") {
+		t.Fatalf("refusal = %v; want a CommandError naming the containment requirement", err)
+	}
+}
+
+// The refusal must not over-suppress: on a build whose groups can
+// contain the tree, the real executor runs as always.
+func TestRealRunCommandRunsWhereGroupsContain(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	if !procgroup.ProcessGroupsSupported {
+		t.Skip("this build has no group containment; the refusal test covers it")
+	}
+	out, err := RunCommand("printf ok")
+	if err != nil || out != "ok" {
+		t.Fatalf("RunCommand = %q, %v; want ok on a contained build", out, err)
 	}
 }
 

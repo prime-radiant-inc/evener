@@ -334,6 +334,7 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	proto := rec.head.Protocol
 	if presence && rec.head.DefaultModel != "" && !isGlob(rec.head.DefaultModel) {
 		// The launch a bare instance name makes signs through the
 		// default row's merged transport (ResolveInstanceListing,
@@ -341,10 +342,15 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		// destination, so presence resolves the row's transport and
 		// falls back to the provider's own shape when the row cannot
 		// resolve — the same stale-default judgment the listing seam
-		// makes. ResolveInstance, the model-less probe, keeps the
-		// provider shape: it signs its own request, not the launch's.
-		if row, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, warnings, resolveTransport); err == nil {
+		// makes. The row's protocol and the row transport's own
+		// diagnostics replace the provider's on success: the view
+		// describes the row's destination, so the row's warnings and
+		// host-rule flag are the ones that describe it. ResolveInstance,
+		// the model-less probe, keeps the provider shape: it signs its
+		// own request, not the launch's.
+		if row, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport); err == nil {
 			transport, hostDerived, warnings = row.Transport, row.HostDerivedByRule, row.Warnings
+			proto = row.Protocol
 		}
 	}
 	// rowID/ref "" keep firstPartyEndpoint's canonical resolution row-less
@@ -354,7 +360,7 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	// launch's where a default row resolved, so the gate still follows
 	// the endpoint the bare launch signs with. The base_url and
 	// endpoint-path comparison applies in full either way.
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
+	if w := r.gateWebSearch(&caps, prov, rec, transport, proto, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
 	var cred Credential
@@ -375,7 +381,7 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		providerID = rec.name
 	}
 	return Resolved{
-		Instance: rec.name, ProviderID: providerID, Protocol: rec.head.Protocol, Surface: rec.head.Surface,
+		Instance: rec.name, ProviderID: providerID, Protocol: proto, Surface: rec.head.Surface,
 		Transport: transport, HostDerivedByRule: hostDerived, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
 		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
 		ShadowedEnvVar: r.shadowedEnvVar(rec, transport, cred),
@@ -803,7 +809,12 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
 	if depth == resolveTransport {
-		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport}, nil
+		// The transport depth keeps the diagnostics and the host-rule
+		// flag the transport build produced: the hub's presence view
+		// reads a default row through this depth, and what the row's
+		// transport says — warnings included — must survive the early
+		// return the deeper depths fold into their own Resolved.
+		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport, HostDerivedByRule: hostDerived, Warnings: warnings}, nil
 	}
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)

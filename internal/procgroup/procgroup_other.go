@@ -7,6 +7,13 @@ import (
 	"syscall"
 )
 
+// ProcessGroupsSupported reports whether this build can contain a
+// spawned command's whole tree in one process group — false here, so
+// the command expression evaluator refuses to run commands at all (spec
+// §10.1): a deadline kill that reaches only the direct child would
+// leave the run's bounds a fiction.
+var ProcessGroupsSupported = false
+
 // This platform has no process groups or SIGTERM semantics (mirroring the
 // execenv fallback this package replaces): the spawned command runs without a
 // dedicated process group, and both stop paths collapse to a best-effort kill
