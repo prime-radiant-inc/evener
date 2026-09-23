@@ -2310,7 +2310,10 @@ func (s *Session) sclock() clock.Clock {
 }
 
 // assistantHistoryMessage makes malformed tool arguments replayable in semantic
-// history without changing the provider response used for tool validation.
+// history without changing the provider response used for tool validation: the
+// raw bytes are kept in RawArguments so the durable record still shows what
+// the model actually sent, while Arguments carries the {} form every provider
+// round-trip needs.
 func assistantHistoryMessage(message llm.Message) llm.Message {
 	var content []llm.ContentPart
 	for i, part := range message.Content {
@@ -2321,6 +2324,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
+		call.RawArguments = string(call.Arguments)
 		call.Arguments = json.RawMessage(`{}`)
 		content[i].ToolCall = &call
 	}
