@@ -7,6 +7,7 @@ import {
   type InstanceEntry,
   type ProviderDescriptor,
 } from "@evener/appwire-client";
+import type { LiveReadiness } from "./connectionDisplay";
 import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -16,6 +17,7 @@ export function ProviderEditor({
   onCreate,
   onEdit,
   disabled,
+  canUseConnection,
   onSaved,
   onEndpointConflict,
   onCancel,
@@ -30,6 +32,13 @@ export function ProviderEditor({
   onCreate(params: InstanceCreateParams): Promise<boolean>;
   onEdit(params: InstanceEditParams): Promise<boolean>;
   disabled: boolean;
+  /** The live readiness an issued save re-checks at invocation time: the
+   * `disabled` prop is a render-time snapshot, and a disconnect between the
+   * render and the press leaves it saying ready. Every other mutation entry
+   * on the providers screen guards through this same predicate (act's own
+   * entry check, whenReady around each control); the save is the one write
+   * the screen cannot wrap, so the editor guards it itself. */
+  canUseConnection: LiveReadiness;
   onSaved(name: string): void;
   onEndpointConflict(name: string): void;
   onCancel(): void;
@@ -91,7 +100,11 @@ export function ProviderEditor({
     );
   }
   async function save() {
-    if (busy) return;
+    // The invocation-time readiness guard, ahead of every state change: a
+    // save that cannot be sent bails before clearing the error slot or
+    // reporting a failure, so the draft stays exactly as typed for the
+    // connection's return instead of reading as a save that was tried.
+    if (busy || !canUseConnection()) return;
     setError(null);
     let create: ReturnType<typeof createProviderParams> | undefined;
     let edit: ReturnType<typeof editProviderParams> | undefined;

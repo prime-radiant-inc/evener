@@ -555,6 +555,7 @@ function Providers({
                   disabled={
                     surface.busy || core.writesRefused || stale || !ready
                   }
+                  canUseConnection={canUseConnection}
                   onSaved={(name) => {
                     setConfiguration(null);
                     setSelected(name);

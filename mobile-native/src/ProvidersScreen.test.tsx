@@ -573,6 +573,7 @@ it("keeps the create form for a name-collision conflict", async () => {
 			onCreate={create}
 			onEdit={vi.fn(async () => true)}
 			disabled={false}
+			canUseConnection={() => true}
 			onSaved={() => {}}
 			onEndpointConflict={onEndpointConflict}
 			onCancel={() => {}}
