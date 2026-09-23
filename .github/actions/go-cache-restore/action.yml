@@ -1,8 +1,8 @@
 name: Restore Go caches
 description: >-
-  Restore the Go module cache and this job kind's newest Go build cache, and
-  record the keys and paths .github/actions/go-cache-save needs. Run it after
-  Go is installed; end the job with go-cache-save.
+  Restore this job kind's newest Go build and module caches, and record the
+  key and paths .github/actions/go-cache-save needs. Run it after Go is
+  installed; end the job with go-cache-save.
 inputs:
   kind:
     description: >-
@@ -13,50 +13,35 @@ inputs:
 runs:
   using: composite
   steps:
-    # The build-cache key ends in the commit, so every save on main is a new
-    # entry and every run restores the newest entry for its kind by prefix.
-    # The Go version is in the prefix because a toolchain bump makes every
-    # older entry dead weight.
-    - name: Resolve Go cache keys
+    # The key ends in the commit, so every save on main is a new entry and
+    # every run restores the newest entry for its kind by prefix. The Go
+    # version is in the prefix because a toolchain bump makes every older
+    # entry dead weight. The module cache rides in the same entry, so it holds
+    # the modules this kind downloads and picks up new ones on every save.
+    - name: Resolve Go cache key
       id: keys
       shell: bash
       env:
         KIND: ${{ inputs.kind }}
-        MOD_KEY: go-mod-${{ runner.os }}-${{ hashFiles('go.work', 'go.work.sum', '**/go.sum') }}
       run: |
-        prefix="go-build-${KIND}-${ImageOS}-$(go env GOARCH)-$(go env GOVERSION)-"
+        prefix="go-${KIND}-${ImageOS}-$(go env GOARCH)-$(go env GOVERSION)-"
         {
           echo "build-dir=$(go env GOCACHE)"
-          echo "build-prefix=$prefix"
           echo "mod-dir=$(go env GOMODCACHE)"
-          echo "mod-key=$MOD_KEY"
+          echo "prefix=$prefix"
         } >> "$GITHUB_OUTPUT"
         {
           echo "GO_BUILD_CACHE_DIR=$(go env GOCACHE)"
-          echo "GO_BUILD_CACHE_KEY=${prefix}${GITHUB_SHA}"
-          echo "GO_BUILD_CACHE_RESTORED_AT=$(date +%s)"
           echo "GO_MOD_CACHE_DIR=$(go env GOMODCACHE)"
-          echo "GO_MOD_CACHE_KEY=$MOD_KEY"
+          echo "GO_CACHE_KEY=${prefix}${GITHUB_SHA}"
+          echo "GO_CACHE_RESTORED_AT=$(date +%s)"
         } >> "$GITHUB_ENV"
 
-    - name: Restore Go module cache
-      id: mod
+    - name: Restore Go build and module caches
       uses: actions/cache/restore@v6
       with:
-        path: ${{ steps.keys.outputs.mod-dir }}
-        key: ${{ steps.keys.outputs.mod-key }}
-        restore-keys: go-mod-${{ runner.os }}-
-
-    - name: Restore Go build cache
-      uses: actions/cache/restore@v6
-      with:
-        path: ${{ steps.keys.outputs.build-dir }}
-        key: ${{ steps.keys.outputs.build-prefix }}${{ github.sha }}
-        restore-keys: ${{ steps.keys.outputs.build-prefix }}
-
-    # go-cache-save skips the module cache when this exact key already exists.
-    - name: Record module cache result
-      shell: bash
-      env:
-        MOD_HIT: ${{ steps.mod.outputs.cache-hit }}
-      run: echo "GO_MOD_CACHE_HIT=$MOD_HIT" >> "$GITHUB_ENV"
+        path: |
+          ${{ steps.keys.outputs.build-dir }}
+          ${{ steps.keys.outputs.mod-dir }}
+        key: ${{ steps.keys.outputs.prefix }}${{ github.sha }}
+        restore-keys: ${{ steps.keys.outputs.prefix }}
