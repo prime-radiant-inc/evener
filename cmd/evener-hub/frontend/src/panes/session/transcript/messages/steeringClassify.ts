@@ -25,8 +25,9 @@ export interface ParsedNotification {
   tone: NotificationTone;
   // The head line's label, assembled by notificationSecondary below:
   // intent (preferred) or description, then job type; warning heads may
-  // append the exit code and reason, and an error head shows the intent
-  // alone.
+  // append the exit code and reason, and an error head shows the intent,
+  // or the description gloss when an explicit empty intent marks the
+  // block post-split.
   secondary: string;
   jobId?: string;
   jobType?: string;
