@@ -567,6 +567,53 @@ func TestScratchRetentionPinScratchBindingRollsBackAFailedCallsPins(t *testing.T
 	}
 }
 
+// TestScratchRetentionPinScratchBindingRollsBackARepairedPin proves the atomic
+// writer also undoes a pin it created repairing a reference the manifest
+// already listed. The repair's listing predates the call, so the pre-call
+// state is a listed-but-unpinned — collectible — directory, and a failed
+// transaction must leave exactly that behind instead of an orphaned pin no
+// rollback or release will ever name (round 35).
+func TestScratchRetentionPinScratchBindingRollsBackARepairedPin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	dir, err := canonicalScratchPath(scratch.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PinScratchBinding(owner, retentionBinding("E0", owner.RootSessionID, workspace, nil), map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The repair premise: the manifest lists the reference, but its pin is
+	// gone, so the directory is collectible exactly as the call finds it.
+	if err := os.Remove(filepath.Join(dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	// The binding update fails after the repair: E1 carries a slot for a
+	// directory no reference lists, which the update's validation rejects.
+	binding := retentionBinding("E1", owner.RootSessionID, workspace, map[string]ScratchSlot{
+		ScratchKindUnsandboxed: {Dir: filepath.Join(workspace, "unreferenced"), OwnsLease: true},
+	})
+	err = PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil)
+	if err == nil || !strings.Contains(err.Error(), "unpinned directory") {
+		t.Fatalf("PinScratchBinding error = %v, want the binding update's rejection of the unreferenced slot", err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.References) != 1 || len(manifest.Bindings) != 1 {
+		t.Fatalf("failed repair left durable state: references=%+v bindings=%+v", manifest.References, manifest.Bindings)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, scratchPinName)); !os.IsNotExist(statErr) {
+		t.Fatalf("the failed repair left an orphaned pin over the listed %q: %v", dir, statErr)
+	}
+}
+
 func retentionOwner(t *testing.T) ScratchOwner {
 	t.Helper()
 	return ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
