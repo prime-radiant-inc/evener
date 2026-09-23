@@ -187,8 +187,8 @@ export class NativeMutationRuntime
 	}
 
 	async stop(): Promise<void> {
-		this.#startGeneration += 1;
 		if (!this.#started) return;
+		this.#startGeneration += 1;
 		this.#started = false;
 		await this.#outbox.stop();
 	}

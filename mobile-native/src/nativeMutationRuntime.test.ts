@@ -93,6 +93,26 @@ function registerAndStart(runtime: NativeMutationRuntime, client: FakeClient, hu
 	return runtime.start();
 }
 
+// The startup/retry regressions share a real NativeMutationRuntime with an
+// injected timer port that records the armed callbacks and cleared ids and can
+// throw on chosen setup attempts; no real timer is ever created.
+function timerRecordingRuntime(failSetups?: (attempt: number) => boolean) {
+	const intervals: Array<() => void> = [];
+	const cleared: number[] = [];
+	let attempts = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		setInterval: (callback) => {
+			attempts += 1;
+			if (failSetups?.(attempts)) throw new Error("timer setup unavailable");
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: (intervalId) => cleared.push(intervalId),
+	});
+	return { runtime, intervals, cleared, attempts: () => attempts };
+}
+
 test("a target stays gated until a matching authoritative read opens it", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: () => "mutation-1",
@@ -1293,19 +1313,7 @@ test("the process getter reuses one runtime and database handle across provider 
 });
 
 test("a timer setup failure rejects the first start and the retry re-arms exactly one timer", async () => {
-	const intervals: Array<() => void> = [];
-	const cleared: number[] = [];
-	let setupAttempts = 0;
-	const runtime = new NativeMutationRuntime(openDatabase(), {
-		createMutationId: () => "mutation-1",
-		setInterval: (callback) => {
-			setupAttempts += 1;
-			if (setupAttempts === 1) throw new Error("timer setup unavailable");
-			intervals.push(callback);
-			return intervals.length;
-		},
-		clearInterval: (intervalId) => cleared.push(intervalId),
-	});
+	const { runtime, intervals, cleared, attempts } = timerRecordingRuntime((attempt) => attempt === 1);
 	const client = new FakeClient("connecting");
 	runtime.registerTarget("hub-1", "ref-1", client);
 	// A "connecting" client gates every scan but startup, so the only
@@ -1324,7 +1332,7 @@ test("a timer setup failure rejects the first start and the retry re-arms exactl
 	await runtime.start();
 	await vi.waitFor(() => expect(targetRefReads).toBe(1));
 
-	expect(setupAttempts).toBe(2);
+	expect(attempts()).toBe(2);
 	expect(intervals).toHaveLength(1);
 	expect(cleared).toEqual([]);
 	// Exactly one startup scan: the failed setup scheduled none and the retry
@@ -1339,16 +1347,7 @@ test("a timer setup failure rejects the first start and the retry re-arms exactl
 });
 
 test("stop during an in-flight start still cancels the acquired timer", async () => {
-	const intervals: Array<() => void> = [];
-	const cleared: number[] = [];
-	const runtime = new NativeMutationRuntime(openDatabase(), {
-		createMutationId: () => "mutation-1",
-		setInterval: (callback) => {
-			intervals.push(callback);
-			return intervals.length;
-		},
-		clearInterval: (intervalId) => cleared.push(intervalId),
-	});
+	const { runtime, intervals, cleared } = timerRecordingRuntime();
 	const client = new FakeClient("connecting");
 	runtime.registerTarget("hub-1", "ref-1", client);
 
@@ -1370,19 +1369,7 @@ test("stop during an in-flight start still cancels the acquired timer", async ()
 });
 
 test("a stale failed start cannot clear a newer successful start", async () => {
-	const intervals: Array<() => void> = [];
-	const cleared: number[] = [];
-	let setupAttempts = 0;
-	const runtime = new NativeMutationRuntime(openDatabase(), {
-		createMutationId: () => "mutation-1",
-		setInterval: (callback) => {
-			setupAttempts += 1;
-			if (setupAttempts === 1) throw new Error("timer setup unavailable");
-			intervals.push(callback);
-			return intervals.length;
-		},
-		clearInterval: (intervalId) => cleared.push(intervalId),
-	});
+	const { runtime, intervals, cleared, attempts } = timerRecordingRuntime((attempt) => attempt === 1);
 	const client = new FakeClient("connecting");
 	runtime.registerTarget("hub-1", "ref-1", client);
 
@@ -1396,7 +1383,7 @@ test("a stale failed start cannot clear a newer successful start", async () => {
 	await stopping;
 	await restarting;
 
-	expect(setupAttempts).toBe(2);
+	expect(attempts()).toBe(2);
 	expect(intervals).toHaveLength(1);
 	// The runtime is still started, so this stop releases the acquired timer.
 	await runtime.stop();
