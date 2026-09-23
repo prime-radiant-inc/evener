@@ -1,0 +1,433 @@
+package hub
+
+// TestHostPushCredentialsDisposableHostE2E is the live acceptance check for
+// evener/host/pushCredentials (component 07c,
+// docs/superpowers/specs/2026-09-14-multi-host-07-remote-admin.md) against a real
+// remote host. It is the check that lets a credential push run "anywhere": the
+// host side is made disposable FIRST, so the push writes a host store the test
+// owns and the host's real evener install and real credentials.toml come out
+// byte-identical.
+//
+// # Why this is not simply the sibling add/attach check plus a push
+//
+// The host hub resolves its config root from XDG_CONFIG_HOME (else
+// ~/.config), and the hub config schema (cmd/evener-hub/config.go) has
+// hub_state_root but no credential-path or config-root field. So a private
+// hub.toml redirects the host hub's *state* but not its credential file. The
+// launch argv sshconn builds (channelArgv / hubBootstrapArgv,
+// internal/sshconn/runner.go) carries no environment seam and, by design, none
+// is added: a wire field would have to survive the ps-based relaunch path
+// (internal/sshconn/version.go relaunchCommand), which rebuilds argv from `ps`
+// where an inline env assignment has already been consumed by the shell.
+//
+// The disposable host side is therefore built entirely here, in the test:
+//
+//   - a per-run, test-owned directory on the host holds a private providers.toml,
+//     a private credentials.toml, and a private hub.toml (addr +
+//     hub_state_root);
+//   - the test launches the host's OWN evener hub itself, over ssh, with
+//     XDG_CONFIG_HOME pointed into that directory, so the hub resolves
+//     <dir>/evener/providers.toml and <dir>/evener/credentials.toml;
+//   - the controller then adds and attaches to that host. Because a hub is
+//     already running and healthy at the configured address, sshconn's Ensure
+//     attaches through the bridge form (channelArgv: `hub attach --stdio
+//     --config p --addr a`) — which "never starts a hub, never writes
+//     credentials" (attach.go) — instead of bootstrapping a second host hub with
+//     the host's real environment.
+//
+// # The load-bearing assertion
+//
+// The push must write the DISPOSABLE host store and leave the host's REAL
+// store byte-identical. The test fails if the real file changed, or if it did
+// not exist before but does after. That guard is proven able to fail: see
+// hostPushGuardedCredentials's EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE hook, used
+// by the falsification run.
+//
+// It is gated by EVENER_SSH_E2E_PUSH=1 ON TOP OF EVENER_SSH_E2E=1 and
+// EVENER_SSH_E2E_HOST, so default `go test ./...` performs no ssh. The push
+// gate is separate, like the deploy check's EVENER_SSH_E2E_DEPLOY, because this
+// check WRITES to the host: it creates its own directory and starts a hub from
+// it. The write is confined to that directory, removed on the way out. The
+// host must already carry a matching evener build at EVENER_SSH_E2E_EVENER_PATH
+// (default ~/.local/bin/evener): a test hub has no BuildSource, so a version
+// mismatch would be refused rather than deployed, and this check must not deploy
+// a binary over the host's real install.
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/BurntSushi/toml"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/e2ecap"
+	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/test/e2e/fakellm"
+)
+
+func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live SSH credential-push test: starts a disposable hub on a remote host and writes its config root")
+	}
+	// The write gate is checked first so an un-opted-in run's skip line states
+	// the contract plainly: this check WRITES to the host, and it needs all three
+	// variables. It is a separate opt-in from the read-mostly sibling's and from
+	// the deploy check's, so a developer running either is not signed up for a
+	// credential write.
+	if os.Getenv("EVENER_SSH_E2E_PUSH") != "1" {
+		t.Skip("set EVENER_SSH_E2E_PUSH=1 (with EVENER_SSH_E2E=1 and EVENER_SSH_E2E_HOST) to run the live credential-push test; this check WRITES to the host — it creates its own config-root directory there and starts a hub from it")
+	}
+	if os.Getenv("EVENER_SSH_E2E") != "1" {
+		t.Skip("set EVENER_SSH_E2E=1 and EVENER_SSH_E2E_HOST to run the live credential-push test")
+	}
+	dest := os.Getenv("EVENER_SSH_E2E_HOST")
+	if dest == "" {
+		t.Skip("set EVENER_SSH_E2E_HOST to a disposable ssh destination (an ssh alias or user@host) to run the live credential-push test")
+	}
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+
+	evenerPath := os.Getenv("EVENER_SSH_E2E_EVENER_PATH")
+	if evenerPath == "" {
+		evenerPath = "~/.local/bin/evener"
+	}
+
+	host := newHostSSH(t, dest, os.Getenv("EVENER_SSH_E2E_USER"))
+	home := host.output(`printf '%s' "$HOME"`)
+	if !strings.HasPrefix(home, "/") {
+		t.Fatalf("host %s HOME = %q, want an absolute path (the disposable directory and the host binary must be addressed absolutely)", host.target, home)
+	}
+	// The host target is probed so a host this check cannot run against (no
+	// shipped build) is announced as a skip, mirroring the deploy sibling.
+	hostTarget(t, host)
+
+	evenerAbs := expandTilde(evenerPath, home)
+
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatalf("start fake provider: %v", err)
+	}
+	t.Cleanup(provider.Close)
+
+	// The controller hub runs on its own isolated HOME. Its providers.toml
+	// declares the same instance the disposable host will hold, so the local
+	// credentials store can be seeded through the controller's own conditional
+	// set instead of reaching into its file behind its back.
+	stack := startHubStackOnProvider(t, controllerProvidersTOML(provider, hostPushInstance), "fake/"+fakellm.ModelID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), hostPushAttachTimeout+2*time.Minute)
+	defer cancel()
+	client := stack.dialRPC(ctx, t)
+
+	// Seed the controller's store: the unit of the push is the local
+	// credentials-store entry, whose key is the instance name.
+	seed, err := clientRequest[appwire.ApiKeyConditionalSetResponse](ctx, client, appwire.MethodEvenerAuthApiKeyConditionalSet,
+		appwire.ApiKeyConditionalSetParams{Provider: hostPushInstance, Value: hostPushKey})
+	if err != nil {
+		t.Fatalf("seed the controller's local credential store with %q: %v", hostPushInstance, err)
+	}
+	if seed.Action != appwire.ApiKeyConditionalSetActionAdded {
+		t.Fatalf("seeding the controller store for %q returned action %q, want %q (the fixture needs the key present locally to push)", hostPushInstance, seed.Action, appwire.ApiKeyConditionalSetActionAdded)
+	}
+
+	runID := hostDeployRunID()
+	hostDir := home + "/" + hostPushDirPrefix + "-" + runID
+	cfgRoot := hostDir + "/evener"
+	credsPath := cfgRoot + "/credentials.toml"
+	configPath := hostDir + "/" + hostPushToml
+
+	// The per-run token makes the name unique, and an existing path is refused
+	// HERE, before anything is created: `mkdir -p` on a name already present
+	// would adopt a directory this run did not make, and the cleanup would then
+	// delete whatever was already inside it.
+	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
+		t.Fatalf("host %s already has %s; this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir)
+	}
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/state") + " " + shellquote.RemoteWord(cfgRoot))
+
+	// The disposable host config root: the provider instance the push joins
+	// against, the credentials file the test controls (a sentinel entry the
+	// push's merge must preserve), and the private hub.toml.
+	host.writeFile(cfgRoot+"/providers.toml", []byte(hostPushProvidersTOML))
+	host.writeFile(credsPath, []byte(hostPushSeededCredentialsTOML))
+	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostPushAddr, hostDir+"/state")))
+
+	// The two files this check must leave untouched: the host's REAL credential
+	// store and its real install. They are hashed before anything is launched.
+	realCredsPath := hostPushGuardedCredentials(home, hostDir)
+	realCredsBefore := host.sha256IfFile(realCredsPath)
+	installPath := home + "/.local/bin/evener"
+	installBefore := host.sha256IfFile(installPath)
+
+	// The disposable hub is stopped first, then the directory it runs from is
+	// removed, and only then are the real files judged — a leftover directory or
+	// a live hub must not pass as a clean run, and a failure is reported rather
+	// than logged away.
+	t.Cleanup(func() {
+		stopHostListener(t, host, hostPushAddr, configPath)
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		}
+		if realCredsBefore == "" {
+			// The host had no real credential store when the check began.
+			// Skipping would let the push create one and still pass — exactly the
+			// violation the assertion exists to catch — so assert it is still
+			// absent.
+			if got := host.sha256IfFile(realCredsPath); got != "" {
+				t.Errorf("the push created the host's real credential store %s on host %s (sha256 %s); it must write only the test-owned %s", realCredsPath, host.target, got, credsPath)
+			}
+		} else if got := host.sha256IfFile(realCredsPath); got != realCredsBefore {
+			t.Errorf("the host's REAL credential store %s on %s changed during the push (sha256 %s -> %s); the push must write only the test-owned %s", realCredsPath, host.target, realCredsBefore, got, credsPath)
+		}
+		if installBefore == "" {
+			if got := host.sha256IfFile(installPath); got != "" {
+				t.Errorf("this check created %s on host %s (sha256 %s); it must install nothing, only run the host's own binary", installPath, host.target, got)
+			}
+			return
+		}
+		if got := host.sha256IfFile(installPath); got != installBefore {
+			t.Errorf("the host's own install %s changed during the check (sha256 %s -> %s); the check must not deploy over it", installPath, installBefore, got)
+		}
+	})
+
+	// Start the disposable host hub itself, so the attach below bridges to it
+	// instead of bootstrapping a hub with the host's real environment.
+	host.mustRun(hostPushLaunchScript(evenerAbs, hostDir, hostPushAddr))
+	hostPushAwaitHub(t, host, hostPushAddr, hostDir+"/hub.log")
+
+	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
+		Entry: appwire.HostEntry{
+			Name:       hostPushName,
+			Address:    dest,
+			User:       os.Getenv("EVENER_SSH_E2E_USER"),
+			EvenerPath: evenerAbs,
+			ConfigPath: configPath,
+			Addr:       hostPushAddr,
+		},
+	})
+	if err != nil {
+		t.Fatalf("step evener/host/add (ssh destination %q, config %q, addr %q): %v", dest, configPath, hostPushAddr, err)
+	}
+	if row.Origin != "sidecar" {
+		t.Fatalf("step evener/host/add: added row origin = %q, want %q (a host added through the wire is a sidecar entry)", row.Origin, "sidecar")
+	}
+
+	attached := awaitHostAttachedWithin(ctx, t, client, hostPushName, hostPushAttachTimeout)
+	t.Logf("attached disposable host %s: os=%s arch=%s hubVersion=%s evenerPath=%s", hostPushName, attached.OS, attached.Arch, attached.HubVersion, attached.EvenerPath)
+
+	// The push itself, through the controller's real AppWire client.
+	pushed, err := clientRequest[appwire.HostPushCredentialsResponse](ctx, client, appwire.MethodEvenerHostPushCredentials,
+		appwire.HostPushCredentialsParams{Host: hostPushName})
+	if err != nil {
+		t.Fatalf("step evener/host/pushCredentials to %q: %v", hostPushName, err)
+	}
+	if pushed.Host != hostPushName {
+		t.Fatalf("push response host = %q, want %q", pushed.Host, hostPushName)
+	}
+	result, ok := hostPushResultFor(pushed, hostPushInstance)
+	if !ok {
+		t.Fatalf("push response %+v carries no result for the seeded local entry %q", pushed.Results, hostPushInstance)
+	}
+	if result.Action != appwire.HostCredentialPushAdded {
+		t.Fatalf("push result for %q = %+v, want the host's own action %q (the disposable host has no credential for it)", hostPushInstance, result, appwire.HostCredentialPushAdded)
+	}
+	if len(pushed.Results) != 1 {
+		t.Fatalf("push response reports %d results %+v, want exactly one — the one entry the controller's store holds", len(pushed.Results), pushed.Results)
+	}
+
+	// The load-bearing read-back: the DISPOSABLE host store actually gained the
+	// key, read from the host rather than inferred from the response. The
+	// sentinel the file started with must survive, so a whole-file replace is not
+	// mistaken for a merge.
+	gained := hostPushReadCredentials(t, host, credsPath)
+	if got := gained[hostPushInstance]; got != hostPushKey {
+		t.Fatalf("the disposable host store %s on %s holds %q for %q, want the pushed key; entries = %+v", credsPath, host.target, got, hostPushInstance, gained)
+	}
+	if got := gained[hostPushSentinelInstance]; got != hostPushSentinelKey {
+		t.Fatalf("the disposable host store %s lost its pre-existing %q entry (got %q, want %q); the push must merge, not replace", credsPath, hostPushSentinelInstance, got, hostPushSentinelKey)
+	}
+	t.Logf("disposable host store %s gained %q and kept %q", credsPath, hostPushInstance, hostPushSentinelInstance)
+}
+
+// hostPushAttachTimeout bounds the add-then-attach wait. The attach RPC is
+// synchronous; the disposable hub is already up when it runs, so this is a
+// tripwire rather than the mechanism.
+const hostPushAttachTimeout = 8 * time.Minute
+
+// The private loopback port the disposable host hub listens on. Fixed because
+// the controller must be told the exact address to probe and bridge to; cleanup
+// never kills by port alone (stopHostListener gates the kill on the pid's command
+// line naming this test's own config path).
+const hostPushAddr = "127.0.0.1:19182"
+
+// hostPushDirPrefix names the per-run, test-owned directory on the host.
+const hostPushDirPrefix = "evener-push-e2e"
+
+// hostPushToml is the private hub.toml written inside that directory.
+const hostPushToml = "hub.toml"
+
+// hostPushName is the registry name the disposable host is added under.
+const hostPushName = "e2e-push"
+
+// hostPushInstance is the local store entry (and host instance) the push joins
+// on. hostPushKey is the value the controller pushes and the disposable host
+// must end up holding; hostPushSentinelInstance/hostPushSentinelKey are an
+// unrelated entry the disposable host store starts with, to prove the push
+// merges rather than replaces the file.
+const (
+	hostPushInstance         = "pushcheck"
+	hostPushKey              = "sk-push-e2e-4Vx1Qm7Lp9Kd2Ns8Zf6Hw3Ru5Tt"
+	hostPushSentinelInstance = "keepme"
+	hostPushSentinelKey      = "sentinel-not-a-real-key"
+)
+
+// hostPushProvidersTOML is the disposable host's providers.toml: a key-capable
+// instance with no credential, so the host's own locked conditional set
+// classifies the pushed key "added" and writes its file layer.
+const hostPushProvidersTOML = `default = "pushcheck"
+
+[providers.pushcheck]
+base     = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+`
+
+// hostPushSeededCredentialsTOML is the disposable host's credentials.toml at
+// the start of the run: an unrelated sentinel entry and nothing else. The push
+// must add pushcheck and keep keepme.
+const hostPushSeededCredentialsTOML = `schema = 1
+
+[providers.keepme]
+api_key = "` + hostPushSentinelKey + `"
+`
+
+// controllerProvidersTOML is the controller stack's providers.toml: the fake
+// provider every stack needs, plus the instance the push will seed and join on.
+func controllerProvidersTOML(provider *fakellm.Server, instance string) string {
+	return fmt.Sprintf(`
+default = "fake"
+
+[providers.fake]
+base     = "openai-compatible"
+base_url = %q
+api_key  = "fakellm-not-a-secret"
+
+[providers.%s]
+base     = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+`, provider.BaseURL(), instance)
+}
+
+// hostPushGuardedCredentials is the host file the check proves the push never
+// touched: the host's REAL credential store under its real config root.
+//
+// EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE is a falsification hook, and the reason
+// the guard can be trusted at all: a guard never seen to fail proves nothing. It
+// points the guard at the test-owned disposable store instead of the real one,
+// which the push DOES write, so the guard must fire. It is off in a normal run
+// and never risks the host's real file either way.
+func hostPushGuardedCredentials(home, hostDir string) string {
+	if os.Getenv("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE") == "1" {
+		return hostDir + "/evener/credentials.toml"
+	}
+	return home + "/.config/evener/credentials.toml"
+}
+
+// hostPushLaunchScript is the detached remote launch of the host's own hub with
+// the disposable config root. Each word is quoted individually and the line is
+// never handed to `sh -c`. `env` carries XDG_CONFIG_HOME into the hub process —
+// the one variable that relocates its whole config root — and nohup +
+// </dev/null + redirected fds is the same detachment sshconn's relaunchCommand
+// uses (macOS has no setsid), so the hub outlives the ssh command.
+func hostPushLaunchScript(evenerAbs, hostDir, addr string) string {
+	cmd := strings.Join([]string{
+		shellquote.RemoteWord(evenerAbs),
+		"hub",
+		"--config", shellquote.RemoteWord(hostDir + "/" + hostPushToml),
+		"--addr", shellquote.RemoteWord(addr),
+	}, " ")
+	return "nohup env XDG_CONFIG_HOME=" + shellquote.RemoteWord(hostDir) + " " + cmd +
+		" </dev/null >>" + shellquote.RemoteWord(hostDir+"/hub.log") + " 2>&1 &"
+}
+
+// hostPushAwaitHub waits until the disposable hub answers its /api/health on the
+// host, the same probe sshconn's Ensure makes before it decides to bridge rather
+// than bootstrap.
+func hostPushAwaitHub(t *testing.T, host *hostSSH, addr, logPath string) {
+	t.Helper()
+	url := "http://" + addr + "/api/health"
+	deadline := time.Now().Add(60 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		out, err := host.run("curl -fsS " + shellquote.RemoteWord(url))
+		if err == nil && strings.Contains(string(out), `"version"`) {
+			return
+		}
+		last = strings.TrimSpace(string(out))
+		time.Sleep(300 * time.Millisecond)
+	}
+	logTail, _ := host.run("tail -n 40 " + shellquote.RemoteWord(logPath))
+	t.Fatalf("the disposable host hub never answered %s within 60s (last probe %q); hub log tail:\n%s", url, last, logTail)
+}
+
+// hostPushReadCredentials reads a credentials.toml back from the host and
+// returns its instance->api_key map. It parses the real remote file, so the
+// assertion is on what the host wrote, not on a local copy.
+func hostPushReadCredentials(t *testing.T, host *hostSSH, path string) map[string]string {
+	t.Helper()
+	raw := host.output("cat " + shellquote.RemoteWord(path))
+	var doc struct {
+		Providers map[string]struct {
+			APIKey string `toml:"api_key"`
+		} `toml:"providers"`
+	}
+	if _, err := toml.Decode(raw, &doc); err != nil {
+		t.Fatalf("parse the disposable host store %s on %s: %v: %s", path, host.target, err, raw)
+	}
+	out := make(map[string]string, len(doc.Providers))
+	for name, section := range doc.Providers {
+		out[strings.ToLower(name)] = section.APIKey
+	}
+	return out
+}
+
+// hostPushResultFor returns the one push result for instance.
+func hostPushResultFor(resp appwire.HostPushCredentialsResponse, instance string) (appwire.HostCredentialPushResult, bool) {
+	for _, r := range resp.Results {
+		if r.Instance == instance {
+			return r, true
+		}
+	}
+	return appwire.HostCredentialPushResult{}, false
+}
+
+// expandTilde resolves a leading ~/ in path against home. The host binary must
+// be addressed absolutely: the non-interactive ssh PATH does not carry
+// ~/.local/bin.
+func expandTilde(p, home string) string {
+	if p == "~" {
+		return home
+	}
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		return home + "/" + rest
+	}
+	return p
+}
+
+// TestHostPushGuardedCredentialsDefaultTargetsRealStore pins the guard's target
+// without a host: a normal run guards the host's real credential store, and the
+// falsification hook is the only thing that moves it. A guard pointed at the
+// wrong file (or one that never moves) would make the live assertion vacuous.
+func TestHostPushGuardedCredentialsDefaultTargetsRealStore(t *testing.T) {
+	const home = "/Users/dev"
+	const hostDir = "/Users/dev/evener-push-e2e-123"
+	if got, want := hostPushGuardedCredentials(home, hostDir), home+"/.config/evener/credentials.toml"; got != want {
+		t.Fatalf("default guard target = %q, want the host's real store %q", got, want)
+	}
+	t.Setenv("EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE", "1")
+	if got, want := hostPushGuardedCredentials(home, hostDir), hostDir+"/evener/credentials.toml"; got != want {
+		t.Fatalf("falsification-hook guard target = %q, want the disposable store %q", got, want)
+	}
+}
