@@ -2026,15 +2026,21 @@ export function createConversationStore() {
             const freshTurnIds = new Set(conversation.turns.map((turn) => turn.id));
             const freshItemByKey = new Map<string, ItemModel>();
             const freshItemById = new Map<string, ItemModel>();
+            const freshTurnById = new Map<string, TurnModel>();
+            const freshTurnByItemKey = new Map<string, TurnModel>();
+            const freshTurnByItemId = new Map<string, TurnModel>();
             // The containing turn's status recorded PER ITEM, not keyed
             // through item.turnId — the wire can omit turnId, and
             // hydration turns the omission into "" (RoboRev round 15).
             const freshTurnStatusByKey = new Map<string, string | undefined>();
             const freshTurnStatusById = new Map<string, string | undefined>();
             for (const turn of conversation.turns) {
+              freshTurnById.set(turn.id, turn);
               for (const item of turn.items) {
                 freshItemByKey.set(item.transcriptKey ?? item.id, item);
                 freshItemById.set(item.id, item);
+                freshTurnByItemKey.set(item.transcriptKey ?? item.id, turn);
+                freshTurnByItemId.set(item.id, turn);
                 freshTurnStatusByKey.set(item.transcriptKey ?? item.id, turn.status);
                 freshTurnStatusById.set(item.id, turn.status);
               }
@@ -2051,17 +2057,26 @@ export function createConversationStore() {
             // one helper.
             const snapshotMatchFor = (
               item: ItemModel,
-            ): { fresh: ItemModel; turnStatus: string | undefined } | undefined => {
+            ): {
+              fresh: ItemModel;
+              turnStatus: string | undefined;
+              turn: TurnModel;
+            } | undefined => {
               const byKey = freshItemByKey.get(item.transcriptKey ?? item.id);
               if (byKey !== undefined && itemIdentityMatches(item, byKey)) {
                 return {
                   fresh: byKey,
                   turnStatus: freshTurnStatusByKey.get(item.transcriptKey ?? item.id),
+                  turn: freshTurnByItemKey.get(item.transcriptKey ?? item.id)!,
                 };
               }
               const byId = freshItemById.get(item.id);
               if (byId !== undefined && itemIdentityMatches(item, byId)) {
-                return { fresh: byId, turnStatus: freshTurnStatusById.get(item.id) };
+                return {
+                  fresh: byId,
+                  turnStatus: freshTurnStatusById.get(item.id),
+                  turn: freshTurnByItemId.get(item.id)!,
+                };
               }
               return undefined;
             };
@@ -2261,10 +2276,35 @@ export function createConversationStore() {
                 const stripped = kept
                   .map(stripSettledChunks)
                   .map(applySnapshotAuthority);
-                return kept.length === turn.items.length &&
+                const reconciled =
+                  kept.length === turn.items.length &&
                   stripped.every((item, index) => item === kept[index])
-                  ? turn
-                  : { ...turn, items: stripped };
+                    ? turn
+                    : { ...turn, items: stripped };
+                // Turn-level errors merge nullish-fallback like the
+                // coverage fields, so a snapshot whose covering turn
+                // carries no error must not inherit the retained failure:
+                // the next row-changing frame would project a failure
+                // row neither side holds (RoboRev round 23). Page-owned
+                // turns keep their history (the round-31 rule).
+                const covering =
+                  turnCoveredBySnapshot(turn) === false
+                    ? undefined
+                    : freshTurnIds.has(turn.id)
+                      ? freshTurnById.get(turn.id)
+                      : turn.items
+                          .map((item) => snapshotMatchFor(item)?.turn)
+                          .find((candidate) => candidate !== undefined);
+                if (
+                  turn.error !== undefined &&
+                  covering !== undefined &&
+                  covering.error === undefined &&
+                  !pageOwnedTurnIds.has(turn.id) &&
+                  !pageOwnedCompactTurnIds.has(turn.id)
+                ) {
+                  return { ...reconciled, error: undefined };
+                }
+                return reconciled;
               },
             );
             const injectedFresh = injectCompactedSkeletons(
