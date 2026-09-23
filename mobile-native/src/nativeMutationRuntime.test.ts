@@ -1369,6 +1369,40 @@ test("stop during an in-flight start still cancels the acquired timer", async ()
 	expect(cleared).toEqual([1, 2]);
 });
 
+test("a stale failed start cannot clear a newer successful start", async () => {
+	const intervals: Array<() => void> = [];
+	const cleared: number[] = [];
+	let setupAttempts = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		setInterval: (callback) => {
+			setupAttempts += 1;
+			if (setupAttempts === 1) throw new Error("timer setup unavailable");
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: (intervalId) => cleared.push(intervalId),
+	});
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+
+	// The first start rejects in a microtask. Before that settles, a stop and a
+	// successful restart run and acquire the timer. The stale rejection's
+	// rollback must not clear the newer start's started state.
+	const failing = runtime.start();
+	const stopping = runtime.stop();
+	const restarting = runtime.start();
+	await failing.catch(() => undefined);
+	await stopping;
+	await restarting;
+
+	expect(setupAttempts).toBe(2);
+	expect(intervals).toHaveLength(1);
+	// The runtime is still started, so this stop releases the acquired timer.
+	await runtime.stop();
+	expect(cleared).toEqual([1]);
+});
+
 test("a failed outbox setup unwinds its listeners and channel, and the retry re-arms once", async () => {
 	const storage = new MutationOutboxSQLite(openDatabase(), {
 		createMutationId: () => "mutation-1",

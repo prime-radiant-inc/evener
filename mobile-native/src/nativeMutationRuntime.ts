@@ -127,6 +127,10 @@ export class NativeMutationRuntime
 	readonly #blockedTargets = new Set<string>();
 	readonly #storageListeners = new Set<NativeMutationStorageListener>();
 	#started = false;
+	// Bumped by every start and stop. A start's failure rollback only applies
+	// while it still owns the lifecycle: a stop or a newer start that ran while
+	// this attempt was settling has already decided the runtime's state.
+	#startGeneration = 0;
 
 	#getClient(targetRef?: string): AppwireClientLike | undefined {
 		if (!this.#started) return undefined;
@@ -166,6 +170,7 @@ export class NativeMutationRuntime
 
 	async start(): Promise<void> {
 		if (this.#started) return;
+		const generation = ++this.#startGeneration;
 		// Publish the started state before awaiting the outbox, so a stop()
 		// racing this await still sees a started runtime and releases whatever
 		// the outbox acquired. If the outbox's transactional start rejects,
@@ -176,12 +181,13 @@ export class NativeMutationRuntime
 		try {
 			await this.#outbox.start();
 		} catch (error) {
-			this.#started = false;
+			if (this.#startGeneration === generation) this.#started = false;
 			throw error;
 		}
 	}
 
 	async stop(): Promise<void> {
+		this.#startGeneration += 1;
 		if (!this.#started) return;
 		this.#started = false;
 		await this.#outbox.stop();
