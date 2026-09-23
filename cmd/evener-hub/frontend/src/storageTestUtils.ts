@@ -1,10 +1,10 @@
 /**
- * MemoryStorage is an in-memory Storage for tests. Under vitest, Node's own
- * global localStorage shadows jsdom's working one, and Node's returns
- * undefined (printing "localStorage is not available because
- * --localstorage-file was not provided") because the test script does not
- * pass that flag. A test file that touches localStorage therefore installs a
- * MemoryStorage with installLocalStorage.
+ * MemoryStorage is an in-memory Storage for tests. Node's own experimental
+ * Web Storage global is disabled in every worker (vite.config.ts passes
+ * --no-experimental-webstorage), so jsdom's localStorage works; a test file
+ * installs a MemoryStorage anyway so each file starts from empty, isolated
+ * storage it controls, and so it can subclass or spy on it (FailingStorage,
+ * the prefs tests). Install it with installLocalStorage below.
  */
 export class MemoryStorage implements Storage {
   private store = new Map<string, string>();
