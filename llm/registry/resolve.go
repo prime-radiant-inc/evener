@@ -322,7 +322,7 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
-	cred, credHeaders, cw := r.resolveCredentials(rec)
+	cred, credHeaders, cw := r.resolveCredentials(rec, transport)
 	warnings = append(warnings, cw...)
 	if rec.head.Hidden {
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
@@ -597,7 +597,7 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
-	cred, credHeaders, cw := r.resolveCredentials(rec)
+	cred, credHeaders, cw := r.resolveCredentials(rec, transport)
 	warnings = append(warnings, cw...)
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
@@ -902,14 +902,14 @@ func templatePlaceholders(tpl string) []string {
 }
 
 // resolveCredentials expands a record's credential fields once per
-// resolution: the Authorization header's expansion feeds both the credential
-// and the header map, so a failing command runs once (a second run could
+// resolution: the auth header's expansion feeds both the credential and
+// the header map, so a failing command runs once (a second run could
 // also race the first and split the outcome between credential and header).
-// A failing Authorization header is reported once, by the header loop that
+// A failing auth header is reported once, by the header loop that
 // names it; the credential path's parallel reason is suppressed here and
 // kept only on the listing path, which builds no header map.
-func (r *Registry) resolveCredentials(rec *record) (Credential, map[string]string, []string) {
-	auth := r.authorization(rec)
+func (r *Registry) resolveCredentials(rec *record, transport Transport) (Credential, map[string]string, []string) {
+	auth := r.authorization(rec, transport)
 	cred, cw := r.credentialWithAuth(rec, auth, true)
 	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth)
 	return cred, credHeaders, append(cw, hw...)

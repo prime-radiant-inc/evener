@@ -1291,6 +1291,21 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 			env:      map[string]string{"GATEWAY_KEY": "gk"},
 			wantErr:  true,
 		},
+		{
+			// The gate judges the launch a bare instance name makes, so the
+			// default model row's auth_header override carries the credential
+			// even when the provider-level header names another slot.
+			name: "default row's auth_header override",
+			provider: registry.Provider{
+				Base:              "anthropic",
+				CredentialHeaders: map[string]string{"Authorization": "Bearer $GATEWAY_KEY"},
+				DefaultModel:      "house-model",
+				Models: map[string]registry.Model{
+					"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+				},
+			},
+			env: map[string]string{"GATEWAY_KEY": "gk"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := newSpawnGateRegistry(t, t.TempDir(), tt.env, map[string]registry.Provider{"work": tt.provider})

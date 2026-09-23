@@ -1142,6 +1142,64 @@ func TestCustomAuthHeaderConsumedEnvVarNotShadowed(t *testing.T) {
 	t.Fatal("the gw instance is missing from the listing")
 }
 
+// The credential follows the row-merged transport: a model row may override
+// auth_header, and the row a launch resolves decides which header carries
+// the credential. The resolve reads the same transport it returns, and the
+// listing reads the default row's — the launch a bare instance name makes.
+// With no default row the listing stays provider-level, its long-standing
+// approximation, pinned here.
+func TestRowAuthHeaderOverrideCarriesTheCredential(t *testing.T) {
+	const base = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Provider-Key\"\n" +
+		"credential_headers = { \"Authorization\" = \"$K\" }\n"
+	const overrideRow = "[providers.gw.models.\"house-model\"]\n" +
+		"auth_header = \"Authorization\"\n"
+	const plainRow = "[providers.gw.models.\"house-model\"]\n"
+	for _, tt := range []struct {
+		name        string
+		config      string
+		wantResolve string
+		wantListing string
+	}{
+		{"default row overrides", base + "default_model = \"house-model\"\n" + overrideRow, "credential_headers", "credential_headers"},
+		{"no default row", base + overrideRow, "credential_headers", "none"},
+		{"no override at all", base + plainRow, "none", "none"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, map[string]string{"K": "gk"}, tt.config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != tt.wantResolve {
+				t.Fatalf("resolve credential = %+v; want source %s", res.Credential, tt.wantResolve)
+			}
+			if tt.wantResolve == "credential_headers" {
+				if res.Credential.Value != "gk" {
+					t.Fatalf("credential value = %q; want the expanded key", res.Credential.Value)
+				}
+				if got := res.CredentialHeaders["Authorization"]; got != "gk" {
+					t.Fatalf("credential header map carries %q; want the expanded key", got)
+				}
+			}
+			for _, inst := range r.Instances() {
+				if inst.Name != "gw" {
+					continue
+				}
+				if inst.CredentialSource != tt.wantListing {
+					t.Fatalf("listing credential source = %q; want %s", inst.CredentialSource, tt.wantListing)
+				}
+				return
+			}
+			t.Fatal("the gw instance is missing from the listing")
+		})
+	}
+}
+
 // Multiple failing credential headers warn in a deterministic order: the
 // header loop walks the keys sorted, so the same config resolves to the
 // same warning sequence every time instead of Go's random map order.

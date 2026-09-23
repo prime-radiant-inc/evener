@@ -134,7 +134,7 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	// not fall through to the api_key_env candidates below. A present
 	// expression whose variables are unset means the row resolves nothing at
 	// all, which is also false.
-	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders, rec.authHeaderName()) != "" {
+	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders, authHeaderName(r.listingTransport(rec))) != "" {
 		return false
 	}
 	for _, name := range r.effectiveAPIKeyEnv(rec) {
@@ -425,13 +425,13 @@ func (r *Registry) envCandidates(rec *record) []string {
 // shadowedEnvVar can tell "this is what resolved the credential" apart from
 // "this lost." Empty for a literal value (no "$") and for every other
 // source, which consumes no expression.
-func consumedEnvVars(rec *record, source string) []string {
+func consumedEnvVars(rec *record, t Transport, source string) []string {
 	switch source {
 	case "api_key":
 		refs, _, _ := ScanConfigValue(rec.head.APIKey)
 		return refs
 	case "credential_headers":
-		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders[authHeaderKey(rec.head.CredentialHeaders, rec.authHeaderName())])
+		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders[authHeaderKey(rec.head.CredentialHeaders, authHeaderName(t))])
 		return refs
 	default:
 		return nil
@@ -459,7 +459,7 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 	default:
 		return ""
 	}
-	consumed := consumedEnvVars(rec, cred.Source)
+	consumed := consumedEnvVars(rec, r.listingTransport(rec), cred.Source)
 	for _, name := range r.envCandidates(rec) {
 		if slices.Contains(consumed, name) {
 			continue
@@ -488,18 +488,37 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 	if h.Transport.Auth == AuthOAuthOpenAICodex || h.Transport.Auth == AuthGCPADC || h.APIKey != "" {
 		return r.credentialWithAuth(rec, authExpansion{}, false)
 	}
-	return r.credentialWithAuth(rec, r.authorization(rec), false)
+	return r.credentialWithAuth(rec, r.authorization(rec, r.listingTransport(rec)), false)
 }
 
-// authHeaderName is the header the record's auth scheme writes the
-// credential to: the author's auth_header for header auth, Authorization
-// for every other scheme — the same choice the transport layer makes for
-// the wire, so the credential-carrying entry is the entry the scheme sends.
-func (rec *record) authHeaderName() string {
-	if rec.head.Transport.Auth == AuthHeader && rec.head.Transport.AuthHeader != "" {
-		return rec.head.Transport.AuthHeader
+// authHeaderName is the header the auth scheme of the transport a launch
+// resolves writes the credential to: the author's auth_header for header
+// auth, Authorization for every other scheme — the same choice the
+// transport layer makes for the wire, so the credential-carrying entry is
+// the entry the scheme sends.
+func authHeaderName(t Transport) string {
+	if t.Auth == AuthHeader && t.AuthHeader != "" {
+		return t.AuthHeader
 	}
 	return "Authorization"
+}
+
+// listingTransport is the transport a bare launch of the instance would
+// use: the canonical shape of the default model row — the provider's own
+// transport with the row's overrides and the cross-protocol rule applied —
+// or the provider's own when no default row exists. Rows are per model and
+// the listing is per instance, so this is the launch shape the spawn gate's
+// refusal judges.
+func (r *Registry) listingTransport(rec *record) Transport {
+	row, ok := rec.head.Models[rec.head.DefaultModel]
+	if !ok || isGlob(rec.head.DefaultModel) || row.Transport == nil {
+		return rec.head.Transport
+	}
+	proto := row.Protocol
+	if proto == "" {
+		proto = rec.head.Protocol
+	}
+	return r.transportShape(rec, row, proto)
 }
 
 // authHeaderKey resolves which credential-header key carries the named
@@ -540,12 +559,14 @@ type authExpansion struct {
 	noMaterial bool
 }
 
-// authorization expands the record's Authorization credential header once,
+// authorization expands the record's auth credential header once,
 // shared by credential() and resolveCredentials so its command expressions
 // run once per resolution, and reports which header key it expanded so the
 // header map and the credential always read the same entry.
-func (r *Registry) authorization(rec *record) authExpansion {
-	key := authHeaderKey(rec.head.CredentialHeaders, rec.authHeaderName())
+// The transport a launch resolves names the header: the resolve paths pass
+// their row-merged transport, the listing the default row's.
+func (r *Registry) authorization(rec *record, t Transport) authExpansion {
+	key := authHeaderKey(rec.head.CredentialHeaders, authHeaderName(t))
 	if key == "" {
 		return authExpansion{}
 	}
