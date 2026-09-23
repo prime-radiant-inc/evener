@@ -771,10 +771,18 @@ func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, a
 		if err != nil {
 			return nil, err
 		}
-		if parsed.AttemptID != "" {
-			return readAPILogAttempt(ctx, apiLogPathForTranscript(path), ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+		// Reject a symlinked api-log sidecar before opening — it is a
+		// different file from the validated transcript and can itself be a
+		// symlink pointing outside the state root. symlinkErrorDeep returns
+		// nil for missing sidecars (legitimate), rejecting only real symlinks.
+		sidecar := apiLogPathForTranscript(path)
+		if err := symlinkErrorDeep(sidecar); err != nil {
+			return nil, fmt.Errorf("api-log sidecar: %w", err)
 		}
-		return readAPILogSummary(ctx, apiLogPathForTranscript(path), ref, parsed.Range)
+		if parsed.AttemptID != "" {
+			return readAPILogAttempt(ctx, sidecar, ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+		}
+		return readAPILogSummary(ctx, sidecar, ref, parsed.Range)
 	}
 
 	path, ref, err := resolveTranscript(parsed.TranscriptRef, deps.stateDir, deps.sessionID)

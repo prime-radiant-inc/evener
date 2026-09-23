@@ -950,3 +950,145 @@ func TestResolveTranscript_ExplicitProjRefRejectsSymlinkedBucket(t *testing.T) {
 		t.Fatalf("expected error mentioning symlink for symlinked bucket ref, got: %v", err)
 	}
 }
+
+// --- roborev fix round 5: RED tests ---
+
+// TestResolveTranscript_CurrentSessionRejectsSymlinkedTranscript asserts that
+// the ""/"current" fast-path rejects a symlinked current-session transcript.
+// The fast-path returns transcriptPath with no symlinkError, while bare-ID,
+// local:, and proj: paths all reject symlinks. A symlinked current transcript
+// could point outside the state root.
+func TestResolveTranscript_CurrentSessionRejectsSymlinkedTranscript(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	const sid = "02wMz5TxvEMoJEDTDGOTil"
+	// Write a real transcript outside the state root and symlink it in.
+	outside := t.TempDir()
+	realPath := filepath.Join(outside, "02wMz5TxvEMoJEDTDGOTil.transcript.jsonl")
+	if err := os.WriteFile(realPath, []byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := transcriptPath(current, sid)
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	// "" fast-path currently reads THROUGH the symlink — must be rejected.
+	_, _, err := resolveTranscript("", current, sid)
+	if err == nil {
+		t.Fatal("current-session fast-path resolved through symlinked transcript; must be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+	// "current" keyword must also reject.
+	_, _, err = resolveTranscript("current", current, sid)
+	if err == nil {
+		t.Fatal("current keyword resolved through symlinked transcript; must be rejected")
+	}
+}
+
+// TestResolveTranscript_SymlinkedSessionsDirEscapesProtection asserts that a
+// symlinked sessions/ directory between the bucket dir and the transcript
+// file is rejected. symlinkError Lstats only the final path; os.Lstat follows
+// every path element except the last, so sessions/ being a symlink is not
+// detected by symlinkError on the transcript file. A component-walk that
+// Lstats each path element under the bucket dir must catch this.
+func TestResolveTranscript_SymlinkedSessionsDirEscapesProtection(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	// Remove the real sessions dir and symlink sessions/ to an outside dir.
+	os.RemoveAll(filepath.Join(current, "sessions"))
+	outsideSess := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(outsideSess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sid = "02wMz5Txv9yYdSRJat13MZ"
+	if err := os.WriteFile(filepath.Join(outsideSess, sid+".transcript.jsonl"),
+		[]byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSess, filepath.Join(current, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	// proj: ref currently reads THROUGH the symlinked sessions/ — must reject.
+	_, _, err := resolveTranscript("local:"+sid, current, "02wMz5TxvEMoJEDTDGOTil")
+	if err == nil {
+		t.Fatal("symlinked sessions/ dir escaped protection; must be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}
+
+// TestResolveTranscript_BareIDSymlinkedFileCausesSpuriousAmbiguity asserts
+// that a symlinked transcript file in one bucket does NOT count as a match
+// in findBareIDBuckets. findBareIDBuckets uses os.Stat (follows symlinks),
+// so a symlinked file is followed during discovery and counts as a match.
+// With a real file in another bucket, this produces totalMatches>1 and a
+// spurious "ambiguous" error for a session with exactly one legitimate
+// location. Switching to Lstat-based existence skips symlinks entirely.
+func TestResolveTranscript_BareIDSymlinkedFileCausesSpuriousAmbiguity(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	other := newBucketUnder(t, sh)
+	const sid = "02wMz5Txv9yYdSRJat13MZ"
+	// Real transcript in the other bucket.
+	writeTranscript(t, other, sid)
+	// Symlinked transcript in the current bucket pointing outside.
+	outside := t.TempDir()
+	realPath := filepath.Join(outside, sid+".transcript.jsonl")
+	if err := os.WriteFile(realPath, []byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := transcriptPath(current, sid)
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	// Bare ID must resolve to the one real bucket, not spuriously ambiguous.
+	path, _, err := resolveTranscript(sid, current, "02wMz5TxvEMoJEDTDGOTil")
+	if err != nil {
+		t.Fatalf("expected successful resolution to the real bucket, got: %v", err)
+	}
+	if !strings.Contains(path, filepath.Base(other)) {
+		t.Fatalf("expected path in bucket %q, got %q", filepath.Base(other), path)
+	}
+}
+
+// TestReadAPILogSummary_SymlinkedSidecarRejected asserts that a symlinked
+// .api.jsonl sidecar is rejected before opening. apiLogPathForTranscript
+// derives the sidecar path from the validated transcript path, but the
+// sidecar is a different file and can itself be a symlink pointing outside
+// the state root. The read path must reject a symlinked sidecar (missing
+// sidecars are still allowed — only real symlinks are rejected).
+func TestReadAPILogSummary_SymlinkedSidecarRejected(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	const sid = "02wMz5Txv5aIxgf9yVdd0N"
+	// Real transcript in current bucket.
+	writeTranscript(t, current, sid)
+	// Symlinked api sidecar pointing outside the state root.
+	outside := t.TempDir()
+	realSidecar := filepath.Join(outside, sid+".api.jsonl")
+	if err := os.WriteFile(realSidecar, []byte(`{"n":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sidecarLink := filepath.Join(current, "sessions", sid+".api.jsonl")
+	if err := os.Symlink(realSidecar, sidecarLink); err != nil {
+		t.Fatal(err)
+	}
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	_, err := execReadSessionTranscript(deps, map[string]any{
+		"transcript_ref": "local:" + sid,
+		"source":         apiLogSource,
+	})
+	if err == nil {
+		t.Fatal("symlinked api-log sidecar was opened; must be rejected before reading")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink for sidecar, got: %v", err)
+	}
+}
