@@ -248,6 +248,8 @@ func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 	done := sub.done
 	sub.mu.Unlock()
 	retirementAwait(t, done)
+	// done does not cover the namer the child's first turn launched.
+	joinRetirementTreeEmitters(sub.sess)
 	path := transcriptPath(root.stateDir, root.id)
 	original, err := readDelegateAttentionFold(path, root.id)
 	if err != nil || len(original.pendingIDs()) != 1 {
@@ -351,6 +353,8 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		done := sub.done
 		sub.mu.Unlock()
 		retirementAwait(t, done)
+		// done does not cover the namer the child's first turn launched.
+		joinRetirementTreeEmitters(sub.sess)
 		path := transcriptPath(root.stateDir, root.id)
 		original, err := readDelegateAttentionFold(path, root.id)
 		if err != nil || len(original.pendingIDs()) != 1 {
@@ -419,6 +423,8 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 		done := sub.done
 		sub.mu.Unlock()
 		retirementAwait(t, done)
+		// done does not cover the namer the child's first turn launched.
+		joinRetirementTreeEmitters(sub.sess)
 		path := transcriptPath(root.stateDir, root.id)
 		original, err := readDelegateAttentionFold(path, root.id)
 		if err != nil || len(original.pendingIDs()) != 1 {
@@ -495,6 +501,8 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	done := sub.done
 	sub.mu.Unlock()
 	retirementAwait(t, done)
+	// done does not cover the namer the child's first turn launched.
+	joinRetirementTreeEmitters(sub.sess)
 	path := transcriptPath(root.stateDir, root.id)
 	original, err := readDelegateAttentionFold(path, root.id)
 	if err != nil || len(original.pendingIDs()) != 1 {
@@ -1380,10 +1388,31 @@ func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, cate
 // own raw eligibility check both need to avoid racing that goroutine and
 // intermittently reporting a settled owner ineligible (#1879); this is the
 // one place that wait lives, so both call it, and both are exercised by the
-// same regression tests below.
+// same regression tests below. The wait covers the whole delegate tree: a
+// delegate child's first turn launches the child's own namer, and a namer
+// whose call fails (a scripted provider that answers with no JSON title)
+// leaves the session unnamed, so the next prompt launches another one.
 func retirementClaimAfterFirstTurn(root *Session, c *RetirementController) (*RetirementClaim, RetirementSnapshot, error) {
-	root.sendersWG.Wait()
+	joinRetirementTreeEmitters(root)
 	return c.TryClaim(true)
+}
+
+// joinRetirementTreeEmitters waits for the detached event emitters (subagent
+// runs, drives, session namers) of s and of every resident descendant. A
+// parent joins before its children, because a child's run goroutine is the
+// parent's emitter and is what launches the child's namer. A test that has
+// awaited a delegate child's done channel calls it on the child alone to join
+// the namer that turn launched: while that namer holds its "autonomous" lease,
+// TryClaim refuses before it reads any other evidence, so a claim the test
+// expects to succeed, or to refuse for a named reason, sees only the lease.
+func joinRetirementTreeEmitters(s *Session) {
+	s.sendersWG.Wait()
+	if s.subagents == nil {
+		return
+	}
+	for _, child := range s.subagents.sessions() {
+		joinRetirementTreeEmitters(child)
+	}
 }
 
 func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {

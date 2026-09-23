@@ -927,6 +927,21 @@ func (f *retirementPreservationFixture) assertRestored() *Session {
 			if outcome.result.Err != nil {
 				f.t.Fatalf("cold send to %s: %v", delegateID, outcome.result.Err)
 			}
+			// The send only launches the child's run. The next iteration
+			// sends to this delegate again (as the nested child's parent),
+			// which a run still completing refuses as target_busy.
+			sub := restored.subagents.get(f.childIDs[i])
+			if sub == nil {
+				f.t.Fatalf("cold-sent delegate %s missing from the restored root", delegateID)
+			}
+			sub.mu.Lock()
+			done := sub.done
+			sub.mu.Unlock()
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second): // TRIPWIRE: the run's own completion channel is the mechanism; this only bounds a deadlock in the fixture.
+				f.t.Fatalf("cold-sent delegate %s run did not finish", delegateID)
+			}
 		} else {
 			// A descendant delegate is controllable only by its direct parent, so
 			// it is cold-sent from the already-restored parent's own live turn.
@@ -1150,6 +1165,9 @@ func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
 	case <-time.After(30 * time.Second): // TRIPWIRE: bounds a fixture bug only.
 		t.Fatal("delegate runner did not finish")
 	}
+	// done does not cover the namer the child's first turn launched; the
+	// root's emitters stay unjoined so nothing drains the root attention.
+	joinRetirementTreeEmitters(sub.sess)
 	deadline := time.Now().Add(10 * time.Second)
 	for !root.hasPendingRootDelegateAttention() {
 		if time.Now().After(deadline) {
