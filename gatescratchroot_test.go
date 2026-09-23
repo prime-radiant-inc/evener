@@ -101,3 +101,28 @@ func TestGateScratchRootRefusesANoexecCandidate(t *testing.T) {
 		t.Fatalf("gate_scratch_root chose %q for a noexec candidate, want the ambient TMPDIR %q", got, ambient)
 	}
 }
+
+// TestGateScratchRootRefusesWhenNothingCanExecute pins the fallback's own
+// check: when the candidate is refused and the ambient TMPDIR is noexec too,
+// every test binary go test builds would fail to start, so the chooser fails
+// with an actionable message instead of handing the gate an unusable root.
+func TestGateScratchRootRefusesWhenNothingCanExecute(t *testing.T) {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("unshare not available")
+	}
+	ambient := t.TempDir()
+	probe := exec.Command("unshare", "-rm", "sh", "-c", `mount -t tmpfs tmpfs "$1" && umount "$1"`, "sh", t.TempDir())
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("cannot mount a tmpfs in an unprivileged user+mount namespace: %v: %s", err, out)
+	}
+	script := `mount -t tmpfs -o noexec tmpfs "$1" && . "$2" && gate_scratch_root "$3" 1`
+	cmd := exec.Command("unshare", "-rm", "sh", "-c", script, "sh", ambient, gateScratchRootLib, filepath.Join(t.TempDir(), "absent"))
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + ambient}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("gate_scratch_root succeeded with a noexec TMPDIR and no candidate: %s", out)
+	}
+	if !strings.Contains(string(out), ambient) || !strings.Contains(string(out), "execute") {
+		t.Fatalf("refusal does not name the TMPDIR and the exec problem: %s", out)
+	}
+}

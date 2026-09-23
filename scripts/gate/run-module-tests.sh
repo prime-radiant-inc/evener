@@ -286,7 +286,7 @@ trap 'interrupted 143 SIGTERM' TERM
 
 # Mint the scratch, and so every stream's TMPDIR, in RAM when the host offers
 # it; see gate-scratch-root.sh for the fsync cost this avoids.
-TMPDIR="$(gate_scratch_root /dev/shm "$GATE_SCRATCH_MIN_KB")"
+TMPDIR="$(gate_scratch_root /dev/shm "$GATE_SCRATCH_MIN_KB")" || exit 2
 export TMPDIR
 scratch_dir logdir evener-module-tests
 fail=0

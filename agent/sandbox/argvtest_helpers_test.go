@@ -76,7 +76,7 @@ func tmpMainCheckout(t *testing.T) string {
 	t.Helper()
 	root, err := os.MkdirTemp("/tmp", "sbx-tmp-cwd-")
 	if err != nil {
-		t.Fatalf("mkdir /tmp workspace: %v", err)
+		t.Skipf("this host offers no writable /tmp for the workspace: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	root = resolveCleanPath(root)

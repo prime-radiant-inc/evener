@@ -14,7 +14,8 @@
 
 # gate_scratch_root CANDIDATE MIN_KB — print CANDIDATE when it is a writable
 # directory with at least MIN_KB kilobytes free that can execute what is written
-# to it, else the ambient TMPDIR (or /tmp). The free-space floor keeps a
+# to it, else the ambient TMPDIR (or /tmp); fail with a message when that
+# fallback cannot execute either. The free-space floor keeps a
 # container's default 64MB /dev/shm from turning into ENOSPC failures in
 # whichever test writes next; the exec probe keeps a noexec /dev/shm (Docker's
 # default) from failing every test binary go test builds and runs from TMPDIR.
@@ -33,7 +34,15 @@ gate_scratch_root() {
 			;;
 		esac
 	fi
-	printf '%s\n' "${TMPDIR:-/tmp}"
+	_gsr_fallback=${TMPDIR:-/tmp}
+	# The fallback must be able to execute too: go test runs the binaries it
+	# builds from TMPDIR, so a noexec fallback would fail every test later and
+	# less clearly. Refuse now, naming the fix.
+	if [ -d "$_gsr_fallback" ] && ! gate_scratch_root_executes "$_gsr_fallback"; then
+		printf 'gate scratch: TMPDIR %s cannot execute the test binaries go test builds there (a noexec mount?), and %s is not usable either; point TMPDIR at an exec-capable directory\n' "$_gsr_fallback" "$_gsr_candidate" >&2
+		return 1
+	fi
+	printf '%s\n' "$_gsr_fallback"
 }
 
 # gate_scratch_root_executes DIR — whether a script written to DIR can run: a
