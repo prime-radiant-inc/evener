@@ -89,36 +89,22 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 // remoteForwardedThreadCapabilities lists the thread actions this source can
 // forward to the remote hub today. It is the controller-side half of the
 // capability answer: maskRemoteThreadCapabilities intersects it with the remote
-// hub's own claim, so an action is re-enabled only by naming its method here once
-// that method stops returning notImplemented (remote_hub_source.go and
-// remote_hub_mutations.go):
+// hub's own claim, so an action reaches a remote session only when this set names
+// it AND the remote advertises it.
 //
-//   - Shutdown (ShutdownThread) is on. The controller forwards thread/shutdown on
-//     the owning host's client, and the remote hub serves it against its own local
-//     daemon, so a controller can stop a session it did not host. The intersection
-//     keeps the remote daemon's own claim in charge: a remote that does not
-//     advertise Shutdown stays refused, and nothing here depends on component
-//     05d's host capability probe, which answers what the remote HOST's evener
-//     installation supports (launch config, models, plugins) rather than whether
-//     the remote HUB serves a lifecycle verb.
-//   - The turn mutations and the remaining lifecycle verbs (Send: StartTurn/
-//     ResumeThread, Steer: SteerTurn, Interrupt: InterruptTurn, Queue:
-//     QueueTurn/DrainAsSteer/PromoteQueuedAsSteer/CancelQueued, Compact:
-//     CompactThread, Clear: ClearThread, ForkFromTurn: ForkThread, ChangeModel:
-//     SetThreadModel/SetThreadReasoningEffort, ChangeVisionModel:
-//     SetThreadVisionModel, Goal: GoalSet, SharedNotes: NotesHumanSet/UrlsRemove,
-//     Rename: SetThreadName) are implemented in remote_hub_mutations.go but stay
-//     masked until 05d's host capability probe can say the host supports them.
-//   - SkillInput rides on the input-bearing turn mutations
-//     (appwire.ValidateSkillInputSupport) and is masked with them.
+// Shutdown is the one entry. The controller forwards thread/shutdown on the owning
+// host's client, and the remote hub serves it against its own local daemon, so a
+// controller can stop a session it did not host. The intersection keeps the remote
+// daemon's own claim in charge: a remote that does not advertise Shutdown stays
+// refused. The remaining lifecycle verbs and the turn mutations are implemented in
+// remote_hub_mutations.go but stay masked until the host capability probe can say
+// the host supports them.
 //
-// A capability that is not named here stays masked, so a field added to
-// appwire.ThreadCapabilities later starts masked until a component names the
-// method that answers for it.
+// A capability not named here stays masked, so a field added to
+// appwire.ThreadCapabilities later starts masked until a component names the method
+// that answers for it. TestRemoteHubCapabilitiesMatchForwardedMethods holds the
+// correspondence between this set and those methods; change the two together.
 func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
-	// Shutdown is the one lifecycle verb that is both forwarded today and does not
-	// wait on the host probe; it is the action the hub's shutdown gate
-	// (ensureThreadActionAvailable, app_compact.go) consults before forwarding.
 	return appwire.ThreadCapabilities{Shutdown: true}
 }
 

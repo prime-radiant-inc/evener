@@ -251,6 +251,10 @@ func retirementSettleDelegate(t *testing.T, root *Session, result delegateResult
 	if _, err := root.ProcessInput(context.Background(), "settle-root-sentinel", nil); err != nil {
 		t.Fatal(err)
 	}
+	// The child's task and the settle turn each launched their session's async
+	// namer, which holds an "autonomous" retirement lease until it finishes and
+	// is joined by neither the run's done channel nor ProcessInput.
+	joinRetirementTreeEmitters(root)
 }
 
 func TestRetirementDelegateRealIdleSource(t *testing.T) {
@@ -734,7 +738,7 @@ func TestRetirementDelegatePopulatedSourceRefusal(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			claim, state, err := c.TryClaim(true)
+			claim, state, err := retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("settled source blocks eligibility: %+v %v", state, err)
 			}
@@ -1264,7 +1268,7 @@ func TestRetirementDelegateOutcomeAcknowledgementAdmittedFirst(t *testing.T) {
 	if _, err := root.ProcessInput(context.Background(), "consume-ack-sentinel", nil); err != nil {
 		t.Fatal(err)
 	}
-	claim, state, err = c.TryClaim(true)
+	claim, state, err = retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("settled acknowledgement blocks: %+v %v", state, err)
 	}
@@ -1553,7 +1557,7 @@ func TestRetirementDelegateCallerRootSteeringHandoff(t *testing.T) {
 	if _, err := root.ProcessInput(context.Background(), "consume-caller-root-sentinel", nil); err != nil {
 		t.Fatal(err)
 	}
-	claim, state, err = c.TryClaim(true)
+	claim, state, err = retirementClaimAfterFirstTurn(root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("consumed root input blocks: %+v %v", state, err)
 	}
@@ -1635,7 +1639,7 @@ func TestRetirementDelegateStopDriverHandoff(t *testing.T) {
 			if _, err := root.ProcessInput(context.Background(), "consume-stop-driver-sentinel", nil); err != nil {
 				t.Fatal(err)
 			}
-			claim, state, err = c.TryClaim(true)
+			claim, state, err = retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("settled driver blocks: %+v %v", state, err)
 			}

@@ -1,9 +1,10 @@
 package dev
 
 // agent-shards runs the agent package's tests as cost-balanced shards, and
-// hub-shards does the same for cmd/evener-hub, whose ~2100 mostly-serial tests
-// otherwise run one after another in a single binary. Each reads its own
-// variables: AGENT_SHARD_* below, and HUB_SHARD_* with the same suffixes. The
+// hub-shards and cli-shards do the same for cmd/evener-hub and cmd/evener, whose
+// mostly-serial tests otherwise run one after another in a single binary. Each
+// reads its own variables: AGENT_SHARD_* below, and HUB_SHARD_* / CLI_SHARD_*
+// with the same suffixes. The
 // runner is the port of scripts/agent-test-shards.sh, whose header carried the
 // measurements this design rests on: one ~2750-test binary spends ~26-32s as
 // a single invocation, and cost-balanced shards (4 × -parallel 3) take it to
@@ -103,6 +104,12 @@ func runAgentShards(args []string) int {
 // go test resolves them; the shards still run in the package directory.
 func runHubShards(args []string) int {
 	return runPackageShards("hub", ".", filepath.Join("cmd", "evener-hub"), "HUB", args)
+}
+
+// runCLIShards shards cmd/evener, the CLI's ~340 mostly-serial serve and run
+// lifecycle tests, the same way.
+func runCLIShards(args []string) int {
+	return runPackageShards("cli", ".", filepath.Join("cmd", "evener"), "CLI", args)
 }
 
 // runPackageShards shards the package in pkgDir, building it from moduleDir

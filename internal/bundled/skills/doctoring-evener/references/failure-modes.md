@@ -89,14 +89,15 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 - **Symptom:** a parent, its delegate, and its observer can't be found in one
   place; `find` across one bucket misses them.
 - **What it is:** parent / delegate / observer sessions live in **different
-  project-hash buckets** (origin/cwd differ).
+  project buckets** (their projects' resolved identities differ).
 - **Confirm:** `doctor_evener` `tree <sel>` with `observers: true` links them — delegate edges
   from the root `delegatestore.Fold` (each stable descriptor resolves its child
   transcript ref, so a cross-bucket child links), observer edges from
   `schema.SessionMeta.ObservedBy`.
-- **Mechanics:** bucket = `hexHash(originURL else workDir)`. A child's
-  stable descriptor `TranscriptRef` carries `proj:<hash>:<sid>`, which the tree
-  resolves directly.
+- **Mechanics:** bucket = the project identity `Project.ID` (readable name +
+  10-character base62 suffix, `identifier.ResolveProject`). A child's stable
+  descriptor `TranscriptRef` carries `proj:<project-id>:<sid>`, which the
+  tree resolves directly.
 
 ---
 

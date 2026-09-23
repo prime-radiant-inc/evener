@@ -259,26 +259,9 @@ func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 // ("shutdown is not available for this session") without ever asking the host,
 // which is what left a controller unable to stop a session it did not host.
 func TestHubRPCThreadShutdownForwardsToRemoteHost(t *testing.T) {
-	remote, calls := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
-		switch method {
-		case appwire.MethodInitialize:
-			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
-		case appwire.MethodThreadRead:
-			return appwire.ThreadReadResponse{Thread: appwire.Thread{
-				ID:     "t1",
-				Source: "local",
-				Evener: appwire.EvenerThread{
-					Ref: "local:t1",
-					// A remote daemon's own claim, which the mask must preserve for
-					// the shutdown gate to pass. Send stays advertised remotely and
-					// must stay masked here: the controller does not forward it.
-					Capabilities: appwire.ThreadCapabilities{Send: true, Shutdown: true},
-				},
-			}}
-		default:
-			return appwire.EmptyResponse{}
-		}
-	})
+	// The remote daemon's own claim carries Shutdown, which the mask must
+	// preserve for the shutdown gate to pass.
+	remote, calls := newScriptedRemoteHub(t, scriptedRemoteThreadT1With(appwire.ThreadCapabilities{Shutdown: true}))
 	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
 		return remote, nil
 	})
@@ -512,6 +495,7 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 		Queue:        true,
 		ForkFromTurn: true,
 		SkillInput:   true,
+		Shutdown:     true,
 	}
 	if err := push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID:     "t1",
@@ -544,8 +528,12 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 			if status.Capabilities == nil {
 				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
 			}
-			if *status.Capabilities != (appwire.ThreadCapabilities{}) {
-				t.Fatalf("relayed status capabilities = %+v, want every unforwarded action masked like the read path", *status.Capabilities)
+			// The daemon claims Shutdown as well, so this pins both halves of the
+			// mask: the one forwarded action survives, every unforwarded one is
+			// dropped. An expectation of the empty set would only show that a claim
+			// containing no forwarded action stays empty.
+			if want := (appwire.ThreadCapabilities{Shutdown: true}); *status.Capabilities != want {
+				t.Fatalf("relayed status capabilities = %+v, want %+v", *status.Capabilities, want)
 			}
 			return
 		case <-deadline:
@@ -556,18 +544,26 @@ func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
 
 // scriptedRemoteThreadT1 answers a remote hub's attach-bridge requests for one
 // thread named "t1" in the remote hub's own local namespace.
-func scriptedRemoteThreadT1(method string, _ json.RawMessage) any {
-	switch method {
-	case appwire.MethodInitialize:
-		return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
-	case appwire.MethodThreadRead:
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{
-			ID:     "t1",
-			Source: "local",
-			Evener: appwire.EvenerThread{Ref: "local:t1"},
-		}}
-	default:
-		return appwire.EmptyResponse{}
+func scriptedRemoteThreadT1(method string, params json.RawMessage) any {
+	return scriptedRemoteThreadT1With(appwire.ThreadCapabilities{})(method, params)
+}
+
+// scriptedRemoteThreadT1With is scriptedRemoteThreadT1 with the daemon's own
+// capability claim attached to the thread it reports.
+func scriptedRemoteThreadT1With(caps appwire.ThreadCapabilities) func(string, json.RawMessage) any {
+	return func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:     "t1",
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:t1", Capabilities: caps},
+			}}
+		default:
+			return appwire.EmptyResponse{}
+		}
 	}
 }
 

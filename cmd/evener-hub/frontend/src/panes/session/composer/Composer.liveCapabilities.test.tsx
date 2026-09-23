@@ -43,7 +43,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../testing/editorGeometry";
-import { installLocalStorage } from "../../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 
@@ -60,26 +60,7 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
   installLocalStorage(new MemoryStorage());
 });
 

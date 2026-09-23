@@ -71,7 +71,8 @@ type SessionsOpts struct {
 	Since time.Duration
 	// Bucket scopes the enumeration to one project id. Empty enumerates every
 	// bucket under the state root (the default — the shape a fleet-wide batch
-	// study needs).
+	// study needs). A Bucket naming no enumerated bucket is an explicit
+	// not-found error, never a silently empty list.
 	Bucket string
 }
 
@@ -82,9 +83,16 @@ type SessionsOpts struct {
 // sweep or silently vanishes from the count — mirroring ScanTurnIDs, the
 // established convention for a whole-state-root sweep.
 func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
-	buckets, err := resolveBuckets(stateBase)
+	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return SessionsResult{}, err
+	}
+	if opts.Bucket != "" {
+		b, ok := bucketByProjectID(buckets, opts.Bucket)
+		if !ok {
+			return SessionsResult{}, fmt.Errorf("bucket %s not found %s", opts.Bucket, scannedUnder(stateRoot, len(buckets)))
+		}
+		buckets = []bucket{b}
 	}
 
 	var cutoff time.Time
@@ -95,9 +103,6 @@ func ListSessions(stateBase string, opts SessionsOpts) (SessionsResult, error) {
 	res := SessionsResult{Sessions: []SessionRow{}, Unreadable: []UnreadableSession{}}
 	delegates := delegateCache{}
 	for _, b := range buckets {
-		if opts.Bucket != "" && b.projectID != opts.Bucket {
-			continue
-		}
 		metas, err := schema.ListSessionMetas(b.dir)
 		if err != nil {
 			return SessionsResult{}, fmt.Errorf("list session metas in bucket %s: %w", b.dir, err)
