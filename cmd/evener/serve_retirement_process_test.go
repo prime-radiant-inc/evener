@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -134,6 +135,15 @@ func (h *daemonRetirementProcessHelper) close() {
 // runCommands reads the fixture's commands until the pipe closes. Advance and
 // release are the only operations; both are pipe requests the fixture waits on
 // an acknowledgement for, so nothing here is paced by a timer.
+//
+// The loop ends in one of three ways. The helper closing its own end when serve
+// returns is an orderly shutdown (os.ErrClosed): runCommands returns and
+// TestMain reports the exit. End of input means the fixture's end closed, and
+// its cleanup kills this process before closing it, so reading it means the
+// test binary died without cleaning up (a timeout panic, a kill). The daemon
+// then exits with code 3: its clock only moves when the fixture advances it, so
+// its idle retirement can never fire, and it would otherwise run on as an
+// orphan holding its scratch for good. Any other read error exits with code 4.
 func (h *daemonRetirementProcessHelper) runCommands() {
 	scanner := bufio.NewScanner(h.ctl)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
@@ -155,6 +165,16 @@ func (h *daemonRetirementProcessHelper) runCommands() {
 		default:
 			h.emit(daemonRetirementProcessEvent{Kind: "command_error", Err: "unknown command " + cmd.Cmd})
 		}
+	}
+	switch err := scanner.Err(); {
+	case errors.Is(err, os.ErrClosed):
+		return
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "daemon retirement helper: reading the control pipe: %v; exiting\n", err)
+		os.Exit(4)
+	default:
+		fmt.Fprintln(os.Stderr, "daemon retirement helper: the fixture's control pipe closed; exiting with it")
+		os.Exit(3)
 	}
 }
 
@@ -195,6 +215,23 @@ func (h *daemonRetirementProcessHelper) releaseChannel(seq int) chan struct{} {
 	h.provMu.Lock()
 	defer h.provMu.Unlock()
 	return h.releases[seq]
+}
+
+// The helper closes its own end of the control pipe when serve returns
+// normally, which ends runCommands' read too. That is an orderly shutdown, not
+// the fixture dying: runCommands must return and leave the exit code to
+// TestMain, or it would clobber a clean retirement's 0 with the orphan exit.
+func TestDaemonRetirementProcessHelperOwnCloseIsNotAnOrphanExit(t *testing.T) {
+	ctlR, ctlW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctlW.Close() //nolint:errcheck // test pipe teardown
+	h := newDaemonRetirementProcessHelper(ctlR, nil)
+	if err := ctlR.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h.runCommands()
 }
 
 // TestDaemonRetirementProcessHelperReleaseSurvivesAnEarlyLookup pins the
