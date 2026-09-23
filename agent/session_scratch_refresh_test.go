@@ -2467,6 +2467,80 @@ func TestSwapDropsTheSourceSlotAcrossSpellings(t *testing.T) {
 	}
 }
 
+// TestResumedRootKeepsTheEnvScratchAcrossSpellings pins round 46's Low:
+// the persisted-vs-live scratch comparisons used filepath.Clean instead of
+// the shared canonicalization, so a pool row spelling a directory
+// relatively against an environment already running on the absolute
+// spelling read as a DIFFERENT directory — the resumed-root branch then
+// disposed the environment's own scratch and rebuilt around the
+// canonically identical one. The comparison must canonicalize both
+// sides (the install guard and the unsandboxed tail carry the same
+// class).
+func TestResumedRootKeepsTheEnvScratchAcrossSpellings(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const childID = "01RESUMESPELL1"
+	const bindingID = "b-resume-spelling"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, childID, bindingID)
+	absDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, absDir)
+	if err != nil {
+		t.Fatalf("fixture: relative spelling of %q: %v", absDir, err)
+	}
+	relRow := bindingRow
+	relRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: rel, OwnsLease: true},
+	}
+	if err := sandbox.UpsertScratchBinding(owner, relRow, sandbox.ScratchConsumerBinding{
+		SessionID: childID, CurrentBindingID: bindingID,
+	}); err != nil {
+		t.Fatalf("fixture: publish the relative-spelled row: %v", err)
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: relRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{childID: {SessionID: childID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(absDir): slots[sandbox.ScratchKindSandbox]},
+	})
+
+	// The environment already runs on the retained directory — the very
+	// one the pool row spells relatively.
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.SetScratchRetentionBinding(owner, relRow); err != nil {
+		t.Fatalf("fixture: install the binding identity: %v", err)
+	}
+	if err := env.RestoreSessionScratch(bindingID, sandbox.ScratchReference{Dir: rel, Kind: sandbox.ScratchKindSandbox}, slots[sandbox.ScratchKindSandbox]); err != nil {
+		t.Fatalf("fixture: restore the owned scratch: %v", err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(absDir) {
+		t.Fatalf("fixture: the environment is not on the retained directory: %q", got)
+	}
+
+	// The resumed-root adoption must recognize the row's directory as the
+	// one the environment already occupies and keep the scratch; a
+	// Clean-only comparison read the spellings as different directories
+	// and disposed the environment's own scratch.
+	_ = s.adoptResumedRootScratch(env, childID)
+	if got := envScratchRefDir(env, sandbox.ScratchKindSandbox); got == "" {
+		t.Fatal("the resumed-root branch disposed the environment's own scratch over equivalent spellings")
+	}
+	if _, serr := os.Stat(absDir); serr != nil {
+		t.Fatalf("the resumed-root branch removed the retained directory over equivalent spellings: %v", serr)
+	}
+}
+
 // TestScratchRefreshBacksOffLockContention pins the round-11 backoff gap: the
 // refresh's re-derive loop retried a fail-fast manifest-lock refusal
 // immediately, so five passes — microseconds each — could all lose to one

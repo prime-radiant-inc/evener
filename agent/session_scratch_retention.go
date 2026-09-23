@@ -173,7 +173,7 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		if !slot.OwnsLease {
 			continue
 		}
-		if owned := envScratchRefDir(env, kind); owned == "" || filepath.Clean(owned) != filepath.Clean(slot.Dir) {
+		if owned := envScratchRefDir(env, kind); owned == "" || canonicalScratchDir(owned) != canonicalScratchDir(slot.Dir) {
 			env.MarkRetainedSlotPending(kind)
 		}
 	}
@@ -1531,7 +1531,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// defer every later publication off the allocation it already
 			// owns.
 			if slot.OwnsLease && pool.scratchSlotContended(canonicalScratchDir(slot.Dir)) &&
-				filepath.Clean(envScratchRefDir(env, kind)) != filepath.Clean(slot.Dir) {
+				canonicalScratchDir(envScratchRefDir(env, kind)) != canonicalScratchDir(slot.Dir) {
 				env.MarkRetainedSlotPending(kind)
 				markedPending = true
 			}
@@ -1877,7 +1877,7 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		return nil
 	}
 	dir, ok, contended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindSandbox)
-	if !ok || contended || filepath.Clean(dir) == filepath.Clean(env.SessionScratchDir()) {
+	if !ok || contended || canonicalScratchDir(dir) == canonicalScratchDir(env.SessionScratchDir()) {
 		if _, _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 			return err
 		}
@@ -1902,7 +1902,7 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		}
 	}
 	unsandboxed, ok, unsandboxedContended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindUnsandboxed)
-	if !ok || unsandboxedContended || filepath.Clean(unsandboxed) == filepath.Clean(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
+	if !ok || unsandboxedContended || canonicalScratchDir(unsandboxed) == canonicalScratchDir(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
 		return nil
 	}
 	env.DisposeUnsandboxedScratch()

@@ -2474,7 +2474,7 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 		return false, err
 	}
 	dir, ok, contended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindSandbox)
-	if ownsFresh && ok && !contended && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
+	if ownsFresh && ok && !contended && canonicalScratchDir(dir) != canonicalScratchDir(env.SessionScratchDir()) {
 		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
 			return false, err
 		}
