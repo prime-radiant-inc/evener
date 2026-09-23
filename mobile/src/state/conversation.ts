@@ -24,6 +24,7 @@ import {
   applyNotification,
   copyItemTextPresence,
   isStaleCursorError,
+  isActiveItem,
   isToolCallItemId,
   isToolResultItemId,
   itemTextPresence,
@@ -2048,7 +2049,9 @@ export function createConversationStore() {
             // stays live for the stream to continue on.
             const freshItemByKey = new Map<string, ItemModel>();
             const freshItemById = new Map<string, ItemModel>();
+            const freshTurnStatusById = new Map<string, string | undefined>();
             for (const turn of conversation.turns) {
+              freshTurnStatusById.set(turn.id, turn.status);
               for (const item of turn.items) {
                 freshItemByKey.set(item.transcriptKey ?? item.id, item);
                 freshItemById.set(item.id, item);
@@ -2085,8 +2088,14 @@ export function createConversationStore() {
               // advancing offset (RoboRev round 8: slice-and-join per
               // prefix was quadratic in the chunk count).
               let settled = 0;
-              const snapshotSettled =
-                fresh.status !== undefined && fresh.status !== "inProgress";
+              // The snapshot item counts as settled by the package's own
+              // activity rule — item status with the containing turn's as
+              // the fallback — so a statusless item in a completed turn
+              // settles too (RoboRev round 14).
+              const snapshotSettled = !isActiveItem(
+                fresh,
+                freshTurnStatusById.get(fresh.turnId),
+              );
               if (snapshotSettled) {
                 settled = pending.length;
               } else if (fresh.text.startsWith(item.text)) {

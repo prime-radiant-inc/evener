@@ -2664,6 +2664,49 @@ describe("ConversationStore", () => {
       });
     });
 
+    it("keeps streamed reasoning across a completion that omits text", async () => {
+      const { store } = await openRunningTurn([
+        { type: "reasoning", id: "reason-1", text: "Think", status: "inProgress" } as ThreadItem,
+      ]);
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-1",
+          summaryIndex: 0,
+          delta: "ing",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "reason-1")).toMatchObject({
+        kind: "activity",
+        detail: { output: "Thinking" },
+      });
+
+      // A completion that carries NO text is a sparse settle: the item's
+      // text stays the stale item/started seed while the summaries hold
+      // the streamed growth — the settled row must not revert to the
+      // seed (RoboRev round 14).
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "reasoning",
+            id: "reason-1",
+            status: "completed",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      expect(rowById(store, "reason-1")).toMatchObject({
+        kind: "activity",
+        detail: { output: "Thinking" },
+      });
+    });
+
     it("appends tool output delta to activity item", async () => {
       const { store } = await openRunningTurn([
         { type: "commandExecution", id: "tool-1", toolName: "shell", callId: "call-1", output: "line1", status: "inProgress" } as ThreadItem,
@@ -16438,6 +16481,85 @@ describe("ConversationStore", () => {
       expect(rowById(store, "item-a")).toMatchObject({
         kind: "assistant",
         markdown: "Hello world again.",
+      });
+    });
+
+    it("a completed snapshot turn settles a statusless item's chunks", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [agentMessageItem("item-a", "Hello", "inProgress")],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: " world",
+        },
+      } as AnyNotification);
+
+      // The reread's TURN has completed; its item carries no status of
+      // its own (RoboRev round 14). The turn's settle is the item's.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                { id: "item-a", turnId: "t1", type: "agentMessage", text: "Hello" } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .find((item) => item.id === "item-a")?.pendingText,
+      ).toBeUndefined();
+
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: ".",
+        },
+      } as AnyNotification);
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "Hello.",
       });
     });
 

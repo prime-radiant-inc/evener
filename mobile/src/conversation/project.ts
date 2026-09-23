@@ -342,22 +342,18 @@ function itemMarkdown(item: ItemModel): string {
 }
 
 // A reasoning item's text as the reader sees it. Two different fields can be
-// stale, depending on whether the item is still running. A SETTLED item's text
-// is always authoritative (reducer.ts's mergeCompletedText) — reasoningSummaries
-// can instead be the stale one: wireItemToModel seeds it from ANY non-empty
-// initial wire text, and mergeReasoning keeps that seed across later merges
-// once it's set, so a later completion's real text must not be masked by it.
-// An ACTIVE (still-streaming) item is the other way around: appendReasoningDelta
-// (reducer.ts) appends every live delta to reasoningSummaries ONLY, never to
-// text, so text can be a stale partial seed from item/started while
-// reasoningSummaries has grown well past it — preferring text there would lose
-// the streamed growth. Comparing lengths distinguishes the two without a third
-// model field: a settled item's text is the longer, complete value once
-// summaries stop growing; an active item's joined summary overtakes its seed as
-// soon as a delta arrives.
-function reasoningText(item: ItemModel, running: boolean): string {
+// stale, depending on how the item settled. A completion that CARRIES text
+// re-seeds reasoningSummaries from it (reducer.ts's mergeReasoning), so the
+// two read equal lengths and text wins the tie as the authoritative value.
+// A SPARSE completion — one that omits text — leaves text as the stale
+// item/started seed while the summaries hold everything the deltas streamed
+// (appendReasoningDelta appends to summaries only, never to text), so the
+// longer joined summary is the honest read and preferring text would revert
+// the row to the seed (RoboRev round 14). Comparing lengths distinguishes
+// the two without a third model field.
+function reasoningText(item: ItemModel): string {
   const joinedSummary = joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
-  return running && joinedSummary.length > item.text.length ? joinedSummary : item.text || joinedSummary;
+  return joinedSummary.length > item.text.length ? joinedSummary : item.text || joinedSummary;
 }
 
 // Returns null for an item with nothing to show — the timeline then carries
@@ -421,7 +417,7 @@ function projectItem(
           label: "Reasoning",
           family: "reasoning",
           state,
-          detail: { ...activityDetail(item), output: reasoningText(item, state === "running") },
+          detail: { ...activityDetail(item), output: reasoningText(item) },
         },
       },
     };
