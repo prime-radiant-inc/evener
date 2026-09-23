@@ -8,6 +8,7 @@ import {
 	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
+	STORED_NULL_RECORD,
 	parseDraftBytes,
 	readDraftOutcome,
 	readDraftOutcomeWithValue,
@@ -508,6 +509,57 @@ describe("fakeDraftBackend", () => {
 
 		expect(b.replaceIf("k", undefined, checkpoint)).toBe(false);
 		expect(b.store.has("k")).toBe(false);
+	});
+
+	it("round-trips the unreadable-record markers without reducing them to their JSON shapes", () => {
+		// The markers' brands are unique symbols, invisible to structuredClone
+		// and canonicalJson alike, so an unaware clone reduces a stored-null
+		// marker to an ordinary empty object and an unparseable marker to its
+		// raw-only shape - the identity loss the real backend cannot have: its
+		// get() re-parses the stored bytes on every read, re-deriving the same
+		// marker (parseDraftBytes). The double must keep that contract - a
+		// marker that went in comes back out as the same marker.
+		const b = fakeDraftBackend();
+
+		b.set("k", STORED_NULL_RECORD);
+		expect(isStoredNullRecord(b.get("k"))).toBe(true);
+
+		b.set("k", parseDraftBytes("{not json"));
+		const unparseable = b.get("k");
+		expect(isUnparseableDraftBytes(unparseable)).toBe(true);
+		expect((unparseable as { raw: string }).raw).toBe("{not json");
+	});
+
+	it("deleteIf matches an unreadable record by its marker identity, never its JSON shape", () => {
+		// canonicalJson reduces the markers to those same ordinary shapes, so a
+		// bare canonical compare lets any equal-shaped value match the record:
+		// an ordinary empty object would delete a stored-null one, an ordinary
+		// { raw } an unparseable one. The compare must route through the shared
+		// marker-aware identity helper, which tells a marker from its lookalike.
+		const b = fakeDraftBackend();
+
+		b.store.set("k", STORED_NULL_RECORD);
+		expect(b.deleteIf("k", {})).toBe(false);
+		expect(b.store.has("k")).toBe(true);
+		expect(b.deleteIf("k", STORED_NULL_RECORD)).toBe(true);
+		expect(b.store.has("k")).toBe(false);
+
+		b.store.set("k2", parseDraftBytes("{not json"));
+		expect(b.deleteIf("k2", { raw: "{not json" })).toBe(false);
+		expect(b.store.has("k2")).toBe(true);
+		expect(b.deleteIf("k2", parseDraftBytes("{not json"))).toBe(true);
+		expect(b.store.has("k2")).toBe(false);
+	});
+
+	it("replaceIf matches an unreadable record by its marker identity, never its JSON shape", () => {
+		const b = fakeDraftBackend();
+		const next = { id: "draft-2", baseRevision: 5, rules: [], writeUncertain: false };
+
+		b.store.set("k", STORED_NULL_RECORD);
+		expect(b.replaceIf("k", {}, next)).toBe(false);
+		expect(b.store.has("k")).toBe(true);
+		expect(b.replaceIf("k", STORED_NULL_RECORD, next)).toBe(true);
+		expect(b.get("k")).toEqual(next);
 	});
 });
 
