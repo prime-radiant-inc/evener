@@ -294,6 +294,39 @@ func TestResolveInstancePresenceMatchesFullDepth(t *testing.T) {
 	}
 }
 
+// The hub's automatic views describe the launch the bare instance name
+// makes: with a concrete default row, that launch signs through the
+// row's own merged transport (ResolveInstanceListing), top-level globs
+// included. A presence that builds the provider's model-less transport
+// instead shows setup and status a scheme the launch never uses.
+func TestPresenceTransportMatchesLaunchForDefaultRow(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"api_key = \"sk-lit\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"[models.\"*house*\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres.Transport.Auth != launch.Transport.Auth {
+		t.Fatalf("presence auth = %q, want the launch's %q: the hub's views must show the scheme the bare launch signs with", pres.Transport.Auth, launch.Transport.Auth)
+	}
+	if pres.Credential.Source != launch.Credential.Source {
+		t.Fatalf("presence source = %q, want the launch's %q: the credential judgment follows the launch's scheme", pres.Credential.Source, launch.Credential.Source)
+	}
+}
+
 // A command-bearing api_key counts as present at presence depth and keeps
 // its field's label, without ever running the command: that judgment is
 // the launch gate's (spec §10.1), and this is the depth the gate's

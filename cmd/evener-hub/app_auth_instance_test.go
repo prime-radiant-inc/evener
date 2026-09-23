@@ -628,14 +628,40 @@ func TestAuthStatusImplicitProviderResolvesPresence(t *testing.T) {
 	if resp.Provider != "amazon-bedrock" || !resp.Supported {
 		t.Fatalf("implicit-provider status = %+v; want a supported answer", resp)
 	}
-	full, err := ctrl.registry().ResolveInstance("amazon-bedrock")
+	// The truth the status pane must agree with is the launch the
+	// bare name makes — the listing resolve — not the model-less
+	// probe, which signs its own request.
+	launch, err := ctrl.registry().ResolveInstanceListing("amazon-bedrock")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.ActiveSource != full.Credential.Source {
-		t.Fatalf("status ActiveSource = %q, want the full resolve's %q", resp.ActiveSource, full.Credential.Source)
+	if resp.ActiveSource != launch.Credential.Source {
+		t.Fatalf("status ActiveSource = %q, want the launch's %q", resp.ActiveSource, launch.Credential.Source)
 	}
-	if resp.SignedIn != (full.Credential.Source != "none") {
+	if resp.SignedIn != (launch.Credential.Source != "none") {
 		t.Fatal("SignedIn drifted from the resolved credential source")
+	}
+}
+
+// The auth-status pane and the scheme gate behind instanceIsCodex and
+// instanceUsesGCPADC must judge an implicit provider through the launch
+// its bare name makes — the default row's merged transport — not the
+// provider's model-less shape: a top-level glob can repin the row's
+// scheme, and a pane that says "none" while the gate says "header" is
+// exactly the divergence the views must not have.
+func TestAuthStatusImplicitProviderMatchesLaunchScheme(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"none\"\n")
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
+	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.AuthModes) != 1 || resp.AuthModes[0] != "none" {
+		t.Fatalf("implicit-provider AuthModes = %v; want [none], the default row's scheme under the glob", resp.AuthModes)
+	}
+	scheme, ok := ctrl.instanceAuthScheme("amazon-bedrock")
+	if !ok || scheme != registry.AuthNone {
+		t.Fatalf("instanceAuthScheme = %q ok = %v; want the default row's none", scheme, ok)
 	}
 }

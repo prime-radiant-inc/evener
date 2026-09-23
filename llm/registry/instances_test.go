@@ -1627,6 +1627,28 @@ func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
 	}
 }
 
+// A cached live row resolves at full depth like a catalog row: the
+// listing (resolveListing) resolves every id the registry knows — exact
+// rows plus the cached live ids — and a top-level glob can pin a live
+// row's scheme onto one that sends api_key. The predicate's row scan
+// must cover the live ids too, or the hub's next prefetch spends the
+// mint the predicate just called safe.
+func TestLaunchMintsCoversLiveRowAuthOverride(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[models.\"*house*\"]\n" +
+		"auth = \"bearer\"\n"
+	r := fixtureLoad(t, nil, config)
+	r.ApplyLive("gw", []Model{{ID: "house-live-1"}})
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate missed the cached live row's glob-pinned scheme: the listing's full-depth row resolution executes the api_key command under it")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never

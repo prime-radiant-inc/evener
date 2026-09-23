@@ -321,7 +321,13 @@ func instanceIdentity(r *registry.Registry, name string) string {
 			authprint += "\x00" + oauthAccountFingerprint(r.StateRoot(), name)
 		}
 		if res.Transport.Auth == registry.AuthGCPADC {
-			authprint += "\x00" + adcFingerprint(r, res)
+			// A stored credential JSON outranks the ADC file (spec
+			// §4.2) and already rotates the identity through
+			// AuthFingerprint; the file's bytes count only when the
+			// file is the material the launch would actually read.
+			if pres, perr := r.ResolveInstancePresence(name); perr != nil || pres.Credential.Source != "store" {
+				authprint += "\x00" + adcFingerprint()
+			}
 		}
 	}
 	return strings.Join([]string{inst.ProviderID, proto, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
@@ -496,15 +502,11 @@ func oauthAccountFingerprint(stateRoot, instance string) string {
 // in-memory only) into the identity: an ADC account swap rewrites the
 // file behind a stable source label ("adc", no credential value in the
 // resolution), so without it rows fetched under the old account publish
-// into the newly-credentialed instance. A stored credential JSON
-// outranks the file (spec §4.2) and already feeds the registry's
-// AuthFingerprint directly; the file hash covers only the ADC branch.
-// Missing/unreadable contributes nothing: the source label already
-// distinguishes "no ADC" from "ADC".
-func adcFingerprint(r *registry.Registry, res registry.Resolved) string {
-	if res.Credential.Source == "store" {
-		return ""
-	}
+// into the newly-credentialed instance. The caller decides whether the
+// file is the material the launch reads at all — a stored credential
+// JSON outranks it (spec §4.2). Missing/unreadable contributes
+// nothing: the source label already distinguishes "no ADC" from "ADC".
+func adcFingerprint() string {
 	// No public accessor reaches the registry's injected env from
 	// here: the hub runs with the real process environment, and that
 	// lookup is what the authenticator resolves, so read it directly

@@ -548,6 +548,81 @@ func TestADCFileSwapChangesIdentity(t *testing.T) {
 	}
 }
 
+// A stored credential JSON outranks the ADC file (spec §4.2): the
+// store's material already rotates the identity through
+// AuthFingerprint, so a rotation of the outranked file must not churn
+// it further — or every ADC refresh would prune the cached live rows
+// of an instance whose launch credential never changed.
+func TestInstanceIdentityIgnoresADCRotationUnderStoredCredential(t *testing.T) {
+	dir := t.TempDir()
+	adc := filepath.Join(dir, "adc.json")
+	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
+	cfgDir := t.TempDir()
+	path := filepath.Join(cfgDir, "providers.toml")
+	cfg := "[providers.gadc]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\nauth = \"gcp-adc\"\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(path),
+		registry.WithCredentials(fakeCredentialSource{"gadc": `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`}),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres, perr := r.ResolveInstancePresence("gadc"); perr != nil || pres.Credential.Source != "store" {
+		t.Fatalf("fixture: presence source = %q err = %v; want the stored credential to win", pres.Credential.Source, perr)
+	}
+	first := instanceIdentity(r, "gadc")
+	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"b"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if second := instanceIdentity(r, "gadc"); second != first {
+		t.Fatal("identity churned on an ADC file rotation the stored credential outranks")
+	}
+}
+
+// The same gate must not over-suppress: with no stored credential the
+// ADC file is the launch material, and its rotation must still change
+// the identity.
+func TestInstanceIdentityChangesOnADCRotationWithoutStore(t *testing.T) {
+	dir := t.TempDir()
+	adc := filepath.Join(dir, "adc.json")
+	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", adc)
+	cfgDir := t.TempDir()
+	path := filepath.Join(cfgDir, "providers.toml")
+	cfg := "[providers.gadc]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\nauth = \"gcp-adc\"\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(path),
+		registry.WithCredentials(fakeCredentialSource{}),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := instanceIdentity(r, "gadc")
+	if err := os.WriteFile(adc, []byte(`{"type":"authorized_user","client_id":"b"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if second := instanceIdentity(r, "gadc"); second == first {
+		t.Fatal("identity unchanged across an ADC rotation that is the launch credential")
+	}
+}
+
 func TestReloadPrunesLastGoodLiveForRemovedInstances(t *testing.T) {
 	// A removed instance's snapshot must not linger: if the name
 	// returns later with a matching identity, the old rows must not

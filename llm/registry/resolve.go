@@ -334,12 +334,26 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	if presence && rec.head.DefaultModel != "" && !isGlob(rec.head.DefaultModel) {
+		// The launch a bare instance name makes signs through the
+		// default row's merged transport (ResolveInstanceListing,
+		// spec §8.1); the hub's automatic views must describe that
+		// destination, so presence resolves the row's transport and
+		// falls back to the provider's own shape when the row cannot
+		// resolve — the same stale-default judgment the listing seam
+		// makes. ResolveInstance, the model-less probe, keeps the
+		// provider shape: it signs its own request, not the launch's.
+		if row, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, warnings, resolveTransport); err == nil {
+			transport, hostDerived, warnings = row.Transport, row.HostDerivedByRule, row.Warnings
+		}
+	}
 	// rowID/ref "" keep firstPartyEndpoint's canonical resolution row-less
-	// and glob-less, mirroring the row-less buildTransport call above -
-	// correctly so: ListModels and credential probes, this path's only
-	// callers, never build a body, so there is no WebSearch tool for a
-	// row-level override to redirect. The base_url and endpoint-path
-	// comparison still applies in full.
+	// and glob-less - correctly so: neither a ListModels probe nor a
+	// hub view ever builds a body, so there is no WebSearch tool for a
+	// row-level override to redirect. The transport compared is the
+	// launch's where a default row resolved, so the gate still follows
+	// the endpoint the bare launch signs with. The base_url and
+	// endpoint-path comparison applies in full either way.
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
@@ -389,10 +403,12 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 		// its own: the listing resolves every row at full depth through
 		// the row's merged transport, so the predicate must cover the
 		// schemes the rows can actually reach, not only the one the
-		// listing's transport carries. A row that overrides onto a
+		// listing's transport carries. Every row means the full id set
+		// the listing resolves — exact catalog rows plus the cached
+		// live ids — and a row of either kind that overrides onto a
 		// scheme that sends api_key mints; rows that stay terminal do
 		// not.
-		for id := range rec.head.Models {
+		for _, id := range modelIDs(rec, r.LiveModels(rec.name)) {
 			rowRes, err := r.resolveLayersMode(rec, Ref{Model: id}, nil, resolveTransport)
 			if err != nil {
 				continue

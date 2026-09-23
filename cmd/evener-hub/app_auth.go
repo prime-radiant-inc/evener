@@ -1214,7 +1214,16 @@ func (c *hubAuthController) instanceAuthScheme(name string) (string, bool) {
 		return inst.Auth, true
 	}
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
-		return p.Transport.Auth, true
+		// The gate judges the launch the bare name makes — the default
+		// row's merged transport, the same presence resolution the
+		// status pane shows — not the provider's model-less shape: a
+		// row or glob override must move this gate with the pane it
+		// sits behind.
+		res, err := r.ResolveInstancePresence(name)
+		if err != nil {
+			return "", false
+		}
+		return res.Transport.Auth, true
 	}
 	return "", false
 }
