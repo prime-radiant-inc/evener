@@ -605,12 +605,13 @@ func followSelector(projectID, sessionID string) string {
 // path separators, NUL (path-escape defense, same as projectTokenOK);
 // commas (the CLI splits --sessions on ','); whitespace (shell
 // word-break); and shell metacharacters that alter command behavior
-// ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ", ', {, }, =).
+// including glob expansion ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ",
+// ', {, }, =, *, ?, [, ]).
 func safeTokenForRepro(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
 	}
-	return !strings.ContainsAny(name, "/\\\x00, \t\r\n$`;|&()<>=!#~\"'{}")
+	return !strings.ContainsAny(name, "/\\\x00, \t\r\n$`;|&()<>=!#~\"'{}*?[]")
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks

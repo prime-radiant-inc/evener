@@ -864,7 +864,9 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 	// Bucket names that pass projectTokenOK but are unsafe in a comma-joined
 	// --sessions reproduction line: a comma (CLI splits it), a space (shell
 	// word-break), and a '$' (shell expansion).
-	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket"} {
+	// --sessions reproduction line: a comma (CLI splits it), a space (shell
+	// word-break), a '$' (shell expansion), and a '*' (shell glob expansion).
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b"} {
 		t.Run(bucketName, func(t *testing.T) {
 			base := t.TempDir()
 			bucket := stateHomeBucket(base, bucketName)
@@ -902,7 +904,7 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			// The ref must not contain a comma (which would split into an
 			// invalid selector) or a space/shell metacharacter (injection).
 			for _, ref := range splitRefs {
-				if strings.ContainsAny(ref, ", \t$\x00") {
+				if strings.ContainsAny(ref, ", \t$\x00*?[]") {
 					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
 				}
 			}
