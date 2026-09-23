@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -128,6 +129,16 @@ func TestAcceptBehindRecoveredTurnRefusedUntilTheInheritedTurnIsClaimed(t *testi
 	}
 	if _, ok := restored.clientMutations.snapshot().PendingExecutions["cm-refused-before-claim"]; ok {
 		t.Fatal("the refused follow-up was left pending")
+	}
+	// The refusal is clean: the inherited turn still owns the slot, and nothing of
+	// the caller's was applied or recorded, so the client can simply resend.
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != inheritedTurnID {
+		t.Fatalf("ActiveTurnID after the refusal = %q, want the inherited turn %q untouched", got, inheritedTurnID)
+	}
+	for _, entry := range restored.history {
+		if entry.ClientMutationID == "cm-refused-before-claim" {
+			t.Fatalf("the refused follow-up reached the transcript: %#v", entry)
+		}
 	}
 
 	claimed, ok, err := restored.claimClientMutationStart()
@@ -640,6 +651,48 @@ func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *tes
 	if claimed.StableTurnID != inheritedTurnID {
 		t.Fatalf("claim after the failed recovered turn = %q, want the recovered turn %q before the follow-up %q",
 			claimed.StableTurnID, inheritedTurnID, followUp.Turn.ID)
+	}
+}
+
+// TestTranscriptRefusalDoesNotSpendTheRecoveredOneShotRetry pins the case the
+// pre-existing give-back owns. When the recovered turn's run fails as a
+// transcript refusal, that give-back returns the claim; the recovered-turn
+// branch must not then spend its one retry on the same, already-returned claim.
+// Spending it would leave the recovered turn with no in-process retry left for a
+// later genuine pre-incorporation failure, which is the retry the bound allows.
+//
+// The transcript refusal is delivered through the run seam (the writer is not
+// actually broken), so the session can still run the turn again afterwards.
+func TestTranscriptRefusalDoesNotSpendTheRecoveredOneShotRetry(t *testing.T) {
+	restored, _, deadMutationID := recoveredTurnSession(t)
+
+	var refusal error
+	refusal = transcript.ErrWriterClosed
+	restored.cfg.testOnly.failTurnBeforeRecording = func() error { return refusal }
+
+	// First failure: a transcript refusal. The pre-existing give-back returns the
+	// claim; the recovered branch must leave the one-shot unspent.
+	if _, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {}); runErr == nil || !processed {
+		t.Fatalf("the transcript refusal run: processed=%v err=%v", processed, runErr)
+	}
+	if restored.recoveredTurnClaimReturned {
+		t.Fatal("a transcript refusal spent the recovered turn's one-shot retry on an already-returned claim")
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "accepted" {
+		t.Fatalf("recovered pending after the transcript refusal = %q, want the pre-existing give-back to have returned it", got)
+	}
+
+	// The retry is still available: a later genuine pre-incorporation failure of
+	// the same turn hands the claim back and only then spends the one-shot.
+	refusal = errors.New("pre-turn failure")
+	if _, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {}); runErr == nil || !processed {
+		t.Fatalf("the genuine failure run: processed=%v err=%v", processed, runErr)
+	}
+	if !restored.recoveredTurnClaimReturned {
+		t.Fatal("the genuine pre-incorporation failure did not use the retry the transcript refusal left unspent")
+	}
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "accepted" {
+		t.Fatalf("recovered pending after the genuine failure = %q, want it handed back as accepted", got)
 	}
 }
 

@@ -802,7 +802,12 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 	// exactly where it was, so the retry is still owed. Nothing can spin on the
 	// unspent flag either -- returnClaimedClientMutationStart wakes the runner
 	// only when its own write succeeded, so a failed return sends no wake.
+	//
+	// A transcript refusal is excluded outright: the give-back above already
+	// returned that claim, so this branch would be a no-op that still spent the
+	// retry on nothing. That case belongs to the transcript-refusal branch alone.
 	if err != nil && claimed.StableTurnID == s.recoveredTurnID &&
+		!transcriptRefusedClaim(err) &&
 		!s.recoveredTurnClaimReturned &&
 		!s.clientMutationTranscriptHolds(claimed.ClientMutationID, claimed.StableTurnID) {
 		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
