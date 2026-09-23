@@ -2090,6 +2090,10 @@ export function createConversationStore() {
           // active turn to merged.turns; the page merge below reassigns
           // this from its own fold inputs when it runs.
           let mergedTurns = merged.turns;
+          // RoboRev round 30: failure-row identities the merge's turn
+          // folds move to their surviving turn — filled in by the merge
+          // below, read by the commit's row rewrite.
+          let foldedFailureRows: Map<string, string> | null = null;
           let wireOlderCursor = conversation.olderCursor;
           const rehydrateCapped = capItems(merged.items);
           if (preserveTurnHistory && currentConvForMerge !== null) {
@@ -2636,6 +2640,28 @@ export function createConversationStore() {
             carryFoldIdentities(retainedTurnsForMerge, mergedTurns);
             recordItemFoldSources(mergedTurns, history.itemFoldSources, history.toolResultFoldSources);
             transferFoldedCompactedEntries(mergedTurns, history.olderTurnFolds);
+            // RoboRev round 30: a page-owned failure whose turn the merge
+            // folds under a surviving id migrates with the fold. The
+            // merged turn carries the error now, so the failure row the
+            // page retained is the SURVIVOR's row — or the next
+            // row-changing frame projects failure:<survivor> from the
+            // model beside the retained failure:<older>, rendering the
+            // same failure twice. The page ownership and the committed
+            // row's identity move together, so the round-31 retention
+            // follows the content and the cap's ownership pruning reads
+            // the surviving id, not the folded-away one.
+            const failureRenames = new Map<string, string>();
+            for (const [outputId, olderTurnIds] of history.olderTurnFolds) {
+              for (const olderTurnId of olderTurnIds) {
+                const olderIdentity = failureRowIdentity(olderTurnId);
+                if (!pageOwnedIds.has(olderIdentity)) continue;
+                pageOwnedIds.delete(olderIdentity);
+                const survivorIdentity = failureRowIdentity(outputId);
+                pageOwnedIds.add(survivorIdentity);
+                failureRenames.set(olderIdentity, survivorIdentity);
+              }
+            }
+            if (failureRenames.size > 0) foldedFailureRows = failureRenames;
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
             // fragments supplied, and only out-of-window payloads trim. The
@@ -2657,10 +2683,19 @@ export function createConversationStore() {
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are its
           // own, plus the page history prepended above.
+          const mergedItems =
+            foldedFailureRows !== null && foldedFailureRows.size > 0
+              ? merged.items.map((row) => {
+                  if (row.kind !== "failure") return row;
+                  const renamed = foldedFailureRows?.get(row.id);
+                  return renamed === undefined ? row : { ...row, id: renamed };
+                })
+              : merged.items;
           const committedConversation = capAndTruncate({
             ...merged,
             turns: mergedTurns,
             olderCursor: wireOlderCursor,
+            items: mergedItems,
           });
           pruneEvictedIds(committedConversation.items);
           const commitBase = {
