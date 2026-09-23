@@ -166,13 +166,19 @@ export class NativeMutationRuntime
 
 	async start(): Promise<void> {
 		if (this.#started) return;
-		await this.#outbox.start();
-		// The outbox's own start is transactional, so this await only settles
-		// once every listener and timer it owns is acquired. Publishing the
-		// started state after it - rather than before - leaves a failed setup
-		// unlatched, so the next start re-runs it instead of returning early
-		// and never re-arming the timer that never got created.
+		// Publish the started state before awaiting the outbox, so a stop()
+		// racing this await still sees a started runtime and releases whatever
+		// the outbox acquired. If the outbox's transactional start rejects,
+		// nothing was acquired and the flag is rolled back, so the next start
+		// re-runs the whole setup instead of returning early and never
+		// re-arming the timer that never got created.
 		this.#started = true;
+		try {
+			await this.#outbox.start();
+		} catch (error) {
+			this.#started = false;
+			throw error;
+		}
 	}
 
 	async stop(): Promise<void> {

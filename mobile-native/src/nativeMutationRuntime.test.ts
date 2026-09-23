@@ -1338,6 +1338,37 @@ test("a timer setup failure rejects the first start and the retry re-arms exactl
 	expect(cleared).toEqual([1]);
 });
 
+test("stop during an in-flight start still cancels the acquired timer", async () => {
+	const intervals: Array<() => void> = [];
+	const cleared: number[] = [];
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		setInterval: (callback) => {
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: (intervalId) => cleared.push(intervalId),
+	});
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+
+	// The outbox acquires the timer synchronously and the start only settles a
+	// microtask later. A stop that lands before that settle must still release
+	// the acquired timer, and the settled start must not re-mark the runtime
+	// started after shutdown finished.
+	const pending = runtime.start();
+	await runtime.stop();
+	await pending;
+
+	expect(intervals).toHaveLength(1);
+	expect(cleared).toEqual([1]);
+	// The runtime really is stopped: a later start re-arms exactly one timer.
+	await runtime.start();
+	expect(intervals).toHaveLength(2);
+	await runtime.stop();
+	expect(cleared).toEqual([1, 2]);
+});
+
 test("a failed outbox setup unwinds its listeners and channel, and the retry re-arms once", async () => {
 	const storage = new MutationOutboxSQLite(openDatabase(), {
 		createMutationId: () => "mutation-1",
