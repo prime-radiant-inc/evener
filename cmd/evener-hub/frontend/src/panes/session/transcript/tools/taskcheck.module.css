@@ -23,3 +23,7 @@
 .started {
   color: var(--accent);
 }
+
+.pending {
+  color: var(--ink-mid);
+}

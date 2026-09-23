@@ -78,7 +78,7 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
   return value.filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v));
 }
 
-const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
+const TOUCH_BY_STATUS: Record<string, Exclude<TaskTouch, "pending">> = {
   done: "done",
   cancelled: "cancelled",
   in_progress: "started",
@@ -86,11 +86,12 @@ const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
 
 // The text mark the folded summary line carries per touch: the checkbox
 // grammar in text form, matching the current card's touch summary marks
-// except "started", whose arrow reads better than a hollow box.
-const MARK: Record<TaskTouch, string> = { added: "☐", done: "☑", cancelled: "☒", started: "→" };
+// except "started", whose arrow reads better than a hollow box. "pending"
+// is a window-slot state, never a mutation touch.
+const MARK: Record<Exclude<TaskTouch, "pending">, string> = { added: "☐", done: "☑", cancelled: "☒", started: "→" };
 
 interface MutationRow {
-  touch: TaskTouch;
+  touch: Exclude<TaskTouch, "pending">;
   label: string;
   note?: string;
 }

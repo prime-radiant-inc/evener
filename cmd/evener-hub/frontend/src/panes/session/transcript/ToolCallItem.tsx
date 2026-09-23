@@ -251,7 +251,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const superseded = supersededBySuccess(item, thread);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
-  const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  // foldByDefault opts the body out of the level's expand-details default
+  // (activity/full force-expand every body otherwise): its fallback stays
+  // closed at every level, so only the reader's own toggle opens it - and an
+  // explicit store entry still wins over any fallback afterward.
+  const configDefault =
+    (descriptor.foldByDefault ? false : expandDetailsByDefault(config)) ||
+    disclosureDefault(disclosureScope, item.id, false);
   const disclosureFallback = configDefault || (autoDefault && !superseded);
   const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
@@ -266,14 +272,20 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
 
   // A descriptor whose summary duplicates what its expanded body shows
   // (shell: the raw one-line command vs the body's pretty-printed block)
-  // swaps its summary text for a placeholder while the row is open. The
-  // summary line itself stays - hiding it lifted the disclosure chevron off
-  // the line it rides (onto the intent line, or adrift on an intent-less
-  // row) - and the swap keeps the call from appearing twice. The placeholder
-  // outranks the projected fallback the same way the descriptor's own summary
-  // does: a real line about the call beats a neutral "unavailable" one
-  // while the open body below shows the command whole.
-  const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
+  // swaps its summary text for a placeholder while the row is open - a
+  // fixed string, or a per-item function when the open line recaps THIS call
+  // (the task card's change sentence). The summary line itself stays -
+  // hiding it lifted the disclosure chevron off the line it rides (onto the
+  // intent line, or adrift on an intent-less row) - and the swap keeps the
+  // call from appearing twice. The placeholder outranks the projected
+  // fallback the same way the descriptor's own summary does: a real line
+  // about the call beats a neutral "unavailable" one while the open body
+  // below shows the command whole.
+  const expandedSummary = expanded
+    ? typeof descriptor.summaryWhenExpanded === "function"
+      ? descriptor.summaryWhenExpanded(item)
+      : descriptor.summaryWhenExpanded
+    : undefined;
   const summary =
     expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
   // The summary text the row would actually SHOW once its summary line is

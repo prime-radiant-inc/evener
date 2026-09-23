@@ -712,6 +712,43 @@ test("an expanded row of a descriptor WITHOUT summaryWhenExpanded keeps its summ
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
 });
 
+test("a function-form summaryWhenExpanded derives its swap text from the item", () => {
+  // The task card's expanded line recaps THIS call's change, so the swap
+  // text must be derivable per item, the way summary() itself is - the
+  // static string form still serves a descriptor whose placeholder is fixed
+  // (shell's "Ran a shell command").
+  registerToolRenderer({
+    match: "tci_summary_fn",
+    summary: () => "did a thing",
+    summaryWhenExpanded: (item) => `did a thing to ${item.id}`,
+    body: () => <div>body text</div>,
+    autoExpand: () => true,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_summary_fn" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing to item_1");
+});
+
+test("a foldByDefault descriptor settles folded even at activity level, and opens on click", () => {
+  // Activity (the app's default level) force-expands every body through the
+  // config default, so a card whose collapsed line already carries the news -
+  // the task card - needs a per-descriptor opt-out to land as one quiet
+  // line. The reader's own toggle still opens it, and it still wins afterward
+  // (the shared disclosure store), exactly like any other row.
+  registerToolRenderer({
+    match: "tci_fold_by_default",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_by_default" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);

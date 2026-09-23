@@ -17,7 +17,11 @@ import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
 import { requireClass } from "../widgets/internal/requireClass";
 import "../styles/tokens.css";
 import "../styles/global.css";
-import gallery from "./gallery.module.css";
+// Named galleryStyles, not gallery: the requireclass-contract scanner binds
+// member accesses per identifier, and an import named `gallery` would make
+// the file-hint string "gallery.module.css" read as `gallery.module` - a
+// "missing class" that exists only in the hint.
+import galleryStyles from "./gallery.module.css";
 import sectionStyles from "./gallery-section.module.css";
 import { ThemeFlip } from "./ThemeFlip";
 import {
@@ -35,8 +39,8 @@ import {
 // Registers the mock_taskcard_a..e descriptors (side-effect import).
 import "./taskcardmockups/variants";
 
-const GALLERY = requireClass(gallery.gallery, "gallery.module.css", "gallery");
-const INTRO = requireClass(gallery.intro, "gallery.module.css", "intro");
+const GALLERY = requireClass(galleryStyles.gallery, "gallery.module.css", "gallery");
+const INTRO = requireClass(galleryStyles.intro, "gallery.module.css", "intro");
 const NOTE = requireClass(sectionStyles.note, "gallery-section.module.css", "note");
 
 // toolCalls true (summary lines visible) with expandByDefault false: the
@@ -199,8 +203,8 @@ createRoot(root).render(
       fold and unfold; every section renders in dark and light.
     </p>
     <Section
-      title="Today: the current card, in context"
-      blurb="The production task_list descriptor unchanged - a changelog of every touch with its notes, always open at settle. The reads around it fold into an actions header the way they do live."
+      title="Production: the reworked card, in context"
+      blurb="The production task_list descriptor as reworked (2026-09): settles folded with the latest-update line, opens to the window, notes only when fresh. The five mock variants below are the historical alternatives the rework chose among."
     >
       <TaskTranscript scope="preview:taskcardmockups-today" model={todayModel} />
     </Section>

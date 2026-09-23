@@ -6,6 +6,18 @@
 // ToolCallItem's generic failed-row treatment instead (the legacy card was
 // appended only `if (!data.error)`).
 //
+// The 2026-09 rework (Jesse's ruleset): the card is a WINDOW onto the plan,
+// not a changelog. The folded summary line names only the most recent update
+// (mark + label: "→ fifth"); opening the row swaps that line for a recap
+// sentence of the whole call ('Completed "fourth"; started "fifth"') and the
+// body shows at most three tasks - most-recently-settled, in-progress, next -
+// joined by a hairline spine. A note renders only when THIS call added it,
+// set in the prose face. The footer keeps the aggregate sentence + meter and
+// adds an "Open task list" affordance (the same workspace toggle /tasks
+// runs). The card settles FOLDED at every verbosity level (foldByDefault),
+// so a run of updates reads as quiet one-liners; the tasks pane remains the
+// full-plan view. The 2026-07-15 "changes-only card" trims are superseded.
+//
 // Wire truth: agent/session_tools_task.go's task_list executor returns
 // tool.StateResult{State: store.View()} on every view/append/update call -
 // the authoritative snapshot carrying every task's status, description, and
@@ -15,28 +27,18 @@
 // wireItemToModel keeps it as item.raw verbatim), and taskData.ts's
 // parseTaskState narrows it - reusing the AppWire package's
 // parseTaskListData, since it's the same agent/task/task_store.go Task[]
-// shape the tasks side panel already parses from a different wire path. An
-// update row's label prefers the matched task's description there
-// (taskData.ts's taskLabel); a batch that completes a task without itself
-// also starting another earns one extra row for whatever task the daemon
-// auto-advanced to in_progress as a side effect (taskData.ts's
-// autoStartedTask) - the "and now working on X" row docs/superpowers/plans/
-// 2026-07-15-inline-task-update-cards.md required keeping ("authoritative
-// auto-activation").
+// shape the tasks side panel already parses from a different wire path.
 //
 // raw is absent for an old daemon that predates StateResult.State and for a
 // transcript replayed from before it existed - a real, ongoing case, not
 // just a historical one - and the card then degrades to exactly its
-// argument-only rendering: an update row falls back to "#<id>" for its
-// label, and no auto-started row, because nothing beyond the caller's own
-// args can be proven. Still absent regardless of raw: a full-list "show
-// all" fold, surrounding-context rows, and aggregate done/up-next counts -
-// the 2026-07-15 plan trimmed those from the legacy card deliberately (a
-// changes-only card, not a full-plan disclosure; the sidebar remains the
-// full-plan view), not because the data is unavailable.
-import type { ItemModel } from "@evener/appwire-client";
+// argument-only rendering: the window cannot be derived from state it
+// doesn't have, so the body falls back to one row per touched task with
+// "#<id>" labels, and no fabricated auto-start (taskData.ts's own contract).
+import type { ItemModel, TaskRow } from "@evener/appwire-client";
 import { parseArgs, str, taskAggregateLabel } from "@evener/appwire-client";
-import { Meter } from "../../../../widgets";
+import { workspaceStore } from "../../../../shell/workspace";
+import { Meter, OpenButton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -52,14 +54,19 @@ const CLASS = {
   rowText: requireClass(styles.rowText, "taskcard.module.css", "rowText"),
   desc: requireClass(styles.desc, "taskcard.module.css", "desc"),
   descStruck: requireClass(styles.descStruck, "taskcard.module.css", "descStruck"),
+  descNow: requireClass(styles.descNow, "taskcard.module.css", "descNow"),
+  descNext: requireClass(styles.descNext, "taskcard.module.css", "descNext"),
   note: requireClass(styles.note, "taskcard.module.css", "note"),
   progress: requireClass(styles.progress, "taskcard.module.css", "progress"),
+  spined: requireClass(styles.spined, "taskcard.module.css", "spined"),
   srOnly: requireClass(styles.srOnly, "taskcard.module.css", "srOnly"),
 };
 
 interface TouchedRow {
   key: string;
-  touch: TaskTouch; // added | done | cancelled | started
+  // A mutation touch only: "pending" is a window-slot state (TaskCheck's
+  // empty box) and never something a call did to a task.
+  touch: Exclude<TaskTouch, "pending">;
   label: string; // description (append; update when state is known) or "#<id>" (update, state absent)
   note?: string;
 }
@@ -94,8 +101,11 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
 }
 
 // A valid mutation is a current add/update batch or its historical
-// action:append/action:update equivalent. Anything else (view, or a malformed
-// call) is not a card.
+// action:append/action:update equivalent that CHANGES at least one task
+// status. Anything else - a view, a malformed call, a reopen, a notes-only
+// touch - is not a card: with no touch to name, neither the folded line nor
+// the recap has anything true to say. Re-derived (not cached) so suppress()
+// and the body agree exactly.
 function mutationRows(item: ItemModel): TouchedRow[] | undefined {
   const args = parseArgs(item.argumentsJSON);
   const action = str(args, "action") ?? "";
@@ -166,7 +176,7 @@ function updateRows(item: ItemModel, updates: Record<string, unknown>[]): Touche
 
 // touchKind's status-to-flag mapping for the three statuses the card renders as
 // a row (renderer-format.js:525-533's touchKind, gated by renderer.js:5010).
-const TOUCH_BY_STATUS: Record<string, TaskTouch> = {
+const TOUCH_BY_STATUS: Record<string, Exclude<TaskTouch, "pending">> = {
   done: "done",
   cancelled: "cancelled",
   in_progress: "started",
@@ -199,35 +209,149 @@ function parseProgress(output: string | undefined): Progress | undefined {
   return { done: Number(legacy[1]), total: Number(legacy[2]) };
 }
 
-// isTaskMutation is the non-suppression predicate: a valid append/update with
-// at least one row is the only thing that renders. It's re-derived (not cached)
-// so suppress() and the body agree exactly.
+// isTaskMutation is the non-suppression predicate: a valid append/update that
+// actually changed at least one task status is the only thing that renders.
 function isTaskMutation(item: ItemModel): boolean {
-  return mutationRows(item) !== undefined;
+  return (mutationRows(item) ?? []).length > 0;
 }
 
 // The word assistive tech reads for each touch - the visible flag label is
-// gone, so the status rides along visually-hidden beside the glyph.
+// gone, so the status rides along visually-hidden beside the glyph. "pending"
+// belongs to the window's next slot, not to a mutation touch.
 const TOUCH_WORD: Record<TaskTouch, string> = {
   added: "added",
   done: "done",
   cancelled: "cancelled",
   started: "started",
+  pending: "pending",
 };
 
-const TOUCH_SUMMARY_MARK: Record<TaskTouch, string> = {
+// The text mark the folded summary line carries per mutation touch: the
+// checkbox grammar in text form. "started" reads best as the arrow it means.
+const SUMMARY_MARK: Record<Exclude<TaskTouch, "pending">, string> = {
   added: "☐",
   done: "☑",
   cancelled: "☒",
-  started: "☐",
+  started: "→",
 };
 
+// The recap verb per mutation touch, for the expanded summary line.
+const RECAP_VERB: Record<Exclude<TaskTouch, "pending">, string> = {
+  added: "Added",
+  done: "Completed",
+  cancelled: "Dropped",
+  started: "Started",
+};
+
+// The folded line: only the most recent update this call made - the last
+// touch in the batch, which for the common completion is the daemon's
+// auto-advance (the completion itself stays in the recap and the window).
 function taskMutationSummary(item: ItemModel): string {
-  const rows = mutationRows(item) ?? [];
-  return rows.map((row) => `${TOUCH_SUMMARY_MARK[row.touch]} ${row.label}`).join(" · ");
+  const last = mutationRows(item)?.at(-1);
+  return last ? `${SUMMARY_MARK[last.touch]} ${last.label}` : "";
 }
 
-function TaskCardRow({ row }: { row: TouchedRow }) {
+// The expanded line: a real recap of this call's whole change, one clause
+// per verb in first-occurrence order, same-verb labels comma-joined inside
+// their quotes ('Completed "second", "first"'). Sentence case: only the
+// recap's first letter capitalizes, so the second clause reads
+// '...; started "fifth"', not a run of title-cased verbs.
+function taskMutationRecap(item: ItemModel): string {
+  const rows = mutationRows(item) ?? [];
+  const byVerb = new Map<string, string[]>();
+  for (const row of rows) {
+    const labels = byVerb.get(RECAP_VERB[row.touch].toLowerCase()) ?? [];
+    labels.push(`"${row.label}"`);
+    byVerb.set(RECAP_VERB[row.touch].toLowerCase(), labels);
+  }
+  const sentence = [...byVerb].map(([verb, labels]) => `${verb} ${labels.join(", ")}`).join("; ");
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+// ---- the window: settled, working, next -------------------------------
+
+// The three slots the open body shows, from the authoritative state: the
+// most recently SETTLED task (done or cancelled - a cancellation is the
+// plan's most recent "finished" event and belongs in the first slot rather
+// than vanishing), the in-progress task, and the first open task in list
+// order. Timestamps order the settled slot, with list position breaking ties
+// - a snapshot without timestamps therefore falls back to the LAST settled
+// row in list order, the same degradation the panel gives.
+interface TaskWindow {
+  settled?: TaskRow;
+  current?: TaskRow;
+  next?: TaskRow;
+}
+
+function stateWindow(tasks: TaskRow[] | null): TaskWindow {
+  if (!tasks) return {};
+  const settledAll = tasks.filter((task) => task.status === "done" || task.status === "cancelled");
+  const settleKey = (task: TaskRow) => task.completedAt ?? task.updatedAt ?? "";
+  // >= makes the later list entry win a tie, so equal/absent timestamps
+  // resolve to the most recent settle in list order rather than the first.
+  let settled: TaskRow | undefined;
+  for (const task of settledAll) {
+    if (settled === undefined || settleKey(task) >= settleKey(settled)) settled = task;
+  }
+  return {
+    settled,
+    current: tasks.find((task) => task.status === "in_progress"),
+    next: tasks.find((task) => task.status === "open"),
+  };
+}
+
+// The notes THIS call added, keyed by task id - the only notes the card may
+// render (a stale note from an earlier call never shows). Update-shaped calls
+// carry them per update; append-shaped calls mint no client-visible ids, so
+// a fresh note on an appended task has no key to ride and stays unrendered.
+function freshNotes(item: ItemModel): ReadonlyMap<number, string> {
+  const args = parseArgs(item.argumentsJSON);
+  const action = str(args, "action") ?? "";
+  const map = new Map<number, string>();
+  const collect = (list: unknown) => {
+    for (const update of asObjectArray(list)) {
+      const id = typeof update.id === "number" ? update.id : undefined;
+      const note = str(update, "notes") ?? "";
+      if (id !== undefined && note !== "") map.set(id, note);
+    }
+  };
+  if (action === "update") collect(args.updates);
+  else if (action === "") collect(args.update);
+  return map;
+}
+
+type SlotKind = "settled" | "current" | "next";
+
+// One window slot: its state-named glyph, the label on the slot's ink, and
+// this call's fresh note (if any) hanging under the label. The spined class
+// joins the slots into one progression (see the stylesheet).
+function TaskWindowRow({ task, kind, note }: { task: TaskRow; kind: SlotKind; note?: string }) {
+  const glyph =
+    kind === "next" ? (
+      <TaskCheck touch="pending" />
+    ) : kind === "current" ? (
+      <TaskCheck touch="started" />
+    ) : (
+      <TaskCheck touch={task.status === "done" ? "done" : "cancelled"} />
+    );
+  const word =
+    kind === "current" ? "started" : kind === "next" ? "pending" : task.status === "done" ? "done" : "cancelled";
+  const descClass = kind === "settled" ? CLASS.descStruck : kind === "current" ? CLASS.descNow : CLASS.descNext;
+  return (
+    <div className={`${CLASS.row} ${CLASS.spined}`} data-testid="task-card-row" data-kind={kind}>
+      {glyph}
+      <div className={CLASS.rowText}>
+        <span className={CLASS.srOnly}>{word}</span>
+        <span className={descClass}>{task.description}</span>
+        {note && <span className={CLASS.note}>{note}</span>}
+      </div>
+    </div>
+  );
+}
+
+// The no-raw fallback row: one line per touched task, argument-only. Notes
+// render bare (same treatment as the window's), never prefixed.
+function TaskFallbackRow({ row }: { row: TouchedRow }) {
   const struck = row.touch === "done" || row.touch === "cancelled";
   return (
     <div className={CLASS.row} data-testid="task-card-row" data-touch={row.touch}>
@@ -235,32 +359,66 @@ function TaskCardRow({ row }: { row: TouchedRow }) {
       <div className={CLASS.rowText}>
         <span className={CLASS.srOnly}>{TOUCH_WORD[row.touch]}</span>
         <span className={struck ? CLASS.descStruck : CLASS.desc}>{row.label}</span>
-        {row.note && <span className={CLASS.note}>Notes: {row.note}</span>}
+        {row.note && <span className={CLASS.note}>{row.note}</span>}
       </div>
     </div>
   );
 }
 
-function TaskCardBody({ item }: ToolRenderProps) {
+function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
   // A failed mutation renders no card - ToolCallItem's generic failed-row
   // treatment already shows the error text (mirrors the legacy card being
   // appended only on success).
   if (item.error) return null;
-  const rows = mutationRows(item) ?? [];
+  const touched = mutationRows(item) ?? [];
   const progress = parseProgress(item.output);
   // The parsed footer keeps the backend's own outcome shape (done/cancelled/
   // remaining/total, or legacy done/total); only the displayed sentence is
   // condensed, through the same helper the panel trigger uses.
   // Derived unconditionally: taskAggregateLabel always returns a non-empty
-  // sentence, and the head below only renders when progress parsed.
+  // sentence, and the footer below only renders when progress parsed.
   const progressLabel = taskAggregateLabel({
     total: progress?.total ?? 0,
     done: progress?.done ?? 0,
     cancelled: progress?.cancelled,
     remaining: progress?.remaining,
   });
+  const state = parseTaskState(item.raw);
+  const win = stateWindow(state);
+  const fresh = freshNotes(item);
   return (
     <div className={CLASS.card} data-testid="task-card">
+      {state !== null ? (
+        <div className={CLASS.rows}>
+          {win.settled && (
+            <TaskWindowRow
+              key={`settled_${win.settled.id}`}
+              task={win.settled}
+              kind="settled"
+              note={fresh.get(win.settled.id)}
+            />
+          )}
+          {win.current && (
+            <TaskWindowRow
+              key={`current_${win.current.id}`}
+              task={win.current}
+              kind="current"
+              note={fresh.get(win.current.id)}
+            />
+          )}
+          {win.next && (
+            <TaskWindowRow key={`next_${win.next.id}`} task={win.next} kind="next" note={fresh.get(win.next.id)} />
+          )}
+        </div>
+      ) : (
+        touched.length > 0 && (
+          <div className={CLASS.rows}>
+            {touched.map((row) => (
+              <TaskFallbackRow key={row.key} row={row} />
+            ))}
+          </div>
+        )
+      )}
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
@@ -272,13 +430,17 @@ function TaskCardBody({ item }: ToolRenderProps) {
             max={progress.total}
             tone="neutral"
           />
-        </div>
-      )}
-      {rows.length > 0 && (
-        <div className={CLASS.rows}>
-          {rows.map((row) => (
-            <TaskCardRow key={row.key} row={row} />
-          ))}
+          {/* The whole-list affordance: the same workspace toggle the /tasks
+              palette command runs, so the card hands off to the pane that
+              owns the full plan. Hidden on surfaces with no owning session
+              (a read-only transcript pane) - a control that cannot open
+              anything must not render. */}
+          {sessionRef !== undefined && (
+            <OpenButton
+              label="Open task list"
+              onClick={() => workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef })}
+            />
+          )}
         </div>
       )}
     </div>
@@ -290,13 +452,16 @@ registerToolRenderer({
   fold: "never", // the plan card stays visible
   icon: "tasks",
   summary: taskMutationSummary,
+  summaryWhenExpanded: taskMutationRecap,
   body: TaskCardBody,
-  // The card is a header, not a fold-to-open tool row - open it at settle so a
-  // task change is visible without a click, the way the legacy always-visible
-  // card was (a manual collapse afterward still sticks, ToolCallItem's own
-  // userToggled guard).
-  autoExpand: () => true,
-  // A read (view) or a malformed non-mutation renders nothing; a failed call is
-  // never suppressed so its error still surfaces (ToolCallItem generic path).
+  // Settle folded at EVERY verbosity level (activity/full force-expand every
+  // other body through the level default): the folded line already carries
+  // the news, so a run of updates reads as quiet one-liners and the reader's
+  // own click opens the window. A manual open still sticks (ToolCallItem's
+  // explicit store entry beats any fallback).
+  foldByDefault: true,
+  // A read (view), a malformed non-mutation, or a status-unchanged update
+  // renders nothing; a failed call is never suppressed so its error still
+  // surfaces (ToolCallItem generic path).
   suppress: (item) => !item.error && !isTaskMutation(item),
 });
