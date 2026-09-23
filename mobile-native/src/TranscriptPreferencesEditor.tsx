@@ -8,7 +8,6 @@ import {
 	presetContent,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
-import { unreadableDraftDiscardDisabled } from "./keybindingOfflineRecovery";
 import type { NativePreferencesSnapshot } from "./nativePreferences";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -142,7 +141,12 @@ export function TranscriptPreferencesEditor({
 						to edit these settings again.
 					</Copy>
 					<Action
-						disabled={unreadableDraftDiscardDisabled(connected, state)}
+						// Live-model-only: unlike keybindings there is no store-free
+						// offline discard for transcripts, so a disconnected screen
+						// must not offer an action that could silently do nothing.
+						disabled={
+							!connected || state.loading || state.saving || state.writeUncertain
+						}
 						onPress={discard}
 					>
 						Discard unreadable draft

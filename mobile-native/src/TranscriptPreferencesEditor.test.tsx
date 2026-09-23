@@ -68,3 +68,25 @@ it("does not offer the unreadable-record discard when the record is readable or 
 			),
 	).toBe(false);
 });
+
+it("disables the unreadable-record discard while disconnected", () => {
+	// The transcript recovery is live-model-only: unlike keybindings there is no
+	// store-free offline discard, so the action must not read as available when
+	// no model is reachable.
+	const tree = render(
+		<TranscriptPreferencesEditor
+			hubName="Work hub"
+			state={unreadable}
+			connected={false}
+			edit={() => {}}
+			save={() => {}}
+			refresh={() => {}}
+			discard={() => {}}
+			rebase={() => {}}
+		/>,
+	);
+	const action = tree.root
+		.findAllByProps({ accessibilityRole: "button" })
+		.find((node) => node.props.accessibilityLabel === "Discard unreadable draft");
+	expect(action?.props.accessibilityState).toMatchObject({ disabled: true });
+});
