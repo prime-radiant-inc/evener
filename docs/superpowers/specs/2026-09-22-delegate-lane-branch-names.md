@@ -20,11 +20,12 @@ This document is the simplest design that gets there.
 
 ## Design
 
-`delegate` gains an optional `name` argument that names the lane's **git branch**
-only. Every machine identity stays keyed to the delegate id: the worktree
-directory, the sidecar filename, the lock marker, and dispose addressing. The
-branch is the one surface a human reads, and it is the one place a mnemonic buys
-anything.
+`delegate` gains an optional `name` argument that names the lane's **git
+branch** only (amended 2026-09-22, delegate name labels: `name` is now accepted
+for every delegate as a display label — see the tool-schema note below). Every
+machine identity stays keyed to the delegate id: the worktree directory, the
+sidecar filename, the lock marker, and dispose addressing. The branch is the
+one surface a human reads, and it is the one place a mnemonic buys anything.
 
 Three facts make this the simplest possible cut:
 
@@ -41,9 +42,15 @@ Three facts make this the simplest possible cut:
 ## The changes
 
 **Tool schema** (`agent/internal/tool/definitions.go`): optional `name` on
-`delegate`, valid only with `isolation:"worktree"`; otherwise `invalid_request`.
-The description states that `name` becomes the lane's branch, that the lane
-directory and all addressing keep the delegate id, and that absent means the id.
+`delegate`. As originally proposed, the name was refused without
+`isolation:"worktree"`; amended later the same day (2026-09-22, delegate name
+labels), `name` is accepted for every delegate. With `isolation:"worktree"` it
+becomes the lane's branch as this section describes — refused if invalid or if
+the branch already exists, and an absent name branches with the delegate id.
+Without isolation it is a display-only label carried on the delegate
+descriptor and surfaced in listings and notifications. The lane directory and
+all addressing keep the delegate id either way; current semantics live in
+`docs/developing-evener/worktrees.md` ("Delegate worktree isolation").
 
 **Dispatch** (`agent/job_delegate.go`): parse into `delegateArgs.Name`, validate
 with `worktree.ValidateName`, and fail fast with `invalid_request` before
@@ -145,9 +152,10 @@ join, per-job reporting (already `sidecar.Branch`), `manage_worktree list`
 
 Red first, per TDD:
 
-1. Dispatch: an invalid `name` returns `invalid_request`; a `name` without
-   `isolation:"worktree"` returns `invalid_request`; a valid `name` reaches the
-   descriptor.
+1. Dispatch: an invalid `name` returns `invalid_request`; a valid `name`
+   reaches the descriptor. As originally proposed, a `name` without
+   `isolation:"worktree"` was also refused; amended 2026-09-22 (delegate name
+   labels), it is accepted as a display label.
 2. Create core: a branch that differs from the name cuts the lane on that branch
    (including a slash name such as `feat/parser`), and `sc.Branch` and the result
    record it.

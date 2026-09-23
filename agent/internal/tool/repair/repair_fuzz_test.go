@@ -20,6 +20,8 @@ func FuzzRepairJSON(f *testing.F) {
 	f.Add([]byte(`{"s":"\uZZ"}`), "broken escape")
 	f.Add([]byte(`{"s":"a\\ub"}`), "escaped backslash")
 	f.Add([]byte(`{"s":"\uD83D\uDE00"}`), "emoji")
+	f.Add([]byte(`{id: 2}`), "unquoted key")
+	f.Add([]byte(`{"update":[{id: 2, status: "in_progress"}]}`), "unquoted nested keys")
 
 	f.Fuzz(func(t *testing.T, raw []byte, value string) {
 		if len(raw) > 1<<16 || len(value) > 1<<16 {

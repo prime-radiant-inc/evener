@@ -1829,11 +1829,6 @@ func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModel
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
-	// The pairing decode enforces for the tool surface, re-asserted so a
-	// direct caller cannot build a descriptor that silently drops the name.
-	if args.Name != "" && isolationName != "worktree" {
-		return delegatestore.Descriptor{}, identifier.Project{}, errors.New(`invalid_request: name is only valid with isolation:"worktree"`)
-	}
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1930,7 +1925,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
-		WorktreeBranch:                args.Name,
+		Name:                          args.Name,
 		Sandbox:                       sandboxSnapshot,
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
@@ -1964,6 +1959,9 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			return delegatestore.Descriptor{}, identifier.Project{}, err
 		}
 		descriptor.WorkingDir = filepath.Join(root, project.ID)
+		// Only a worktree lane has a branch to name; everywhere else the name
+		// stays the display label the descriptor already carries.
+		descriptor.WorktreeBranch = args.Name
 	}
 	return descriptor, project, nil
 }
@@ -2767,6 +2765,7 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		ChildSessionID:      descriptor.ChildSessionID,
 		Type:                delegateResourceType,
 		Status:              status,
+		Name:                descriptor.Name,
 		AgentType:           descriptor.AgentType,
 		Tools:               append([]string(nil), descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,

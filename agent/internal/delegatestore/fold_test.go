@@ -3,6 +3,8 @@ package delegatestore
 import (
 	"encoding/json"
 	"maps"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -632,6 +634,72 @@ func createdEvent(id, parentID string) Event {
 		Kind:       EventDelegateCreated,
 		DelegateID: id,
 		Created:    &DelegateCreated{Descriptor: testDescriptor(id, parentID)},
+	}
+}
+
+// Descriptor.Name is a display label set once at creation. A journal written
+// before the field existed must fold with the zero name — which renders as
+// absent — and a named descriptor must round-trip through the same envelope.
+func TestDescriptorNameRoundTripAndLegacyTolerance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delegates.jsonl")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	named := createdEvent("dlg_named", "")
+	named.Seq = 1
+	named.Created.Descriptor.Name = "label-roundtrip"
+	if _, _, err := store.AppendBatch(make(State), []Event{named}); err != nil {
+		_ = store.Close()
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	events, err := ReadEvents(path)
+	if err != nil {
+		t.Fatalf("ReadEvents: %v", err)
+	}
+	state, err := Fold(events)
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if got := state["dlg_named"].Descriptor.Name; got != "label-roundtrip" {
+		t.Fatalf("folded descriptor name = %q, want label-roundtrip", got)
+	}
+
+	// A legacy record whose descriptor lacks the name key folds to the zero
+	// value, and the zero value serializes as absent.
+	legacyPath := filepath.Join(t.TempDir(), "delegates.jsonl")
+	legacy := "{\"version\":1}\n" +
+		"{\"events\":[{\"kind\":\"delegate_created\",\"seq\":1,\"delegate_id\":\"dlg_legacy\"," +
+		"\"created\":{\"descriptor\":{\"child_session_id\":\"child_legacy\",\"transcript_ref\":\"local:child_legacy\"," +
+		"\"owner_session_id\":\"root\",\"task\":\"legacy task\",\"agent_type\":\"general\"," +
+		"\"tool_name_ceiling\":[\"communicate\"],\"resumable\":true}}}]}\n"
+	if err := os.WriteFile(legacyPath, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	legacyEvents, err := ReadEvents(legacyPath)
+	if err != nil {
+		t.Fatalf("ReadEvents legacy: %v", err)
+	}
+	legacyState, err := Fold(legacyEvents)
+	if err != nil {
+		t.Fatalf("Fold legacy: %v", err)
+	}
+	aggregate := legacyState["dlg_legacy"]
+	if aggregate == nil {
+		t.Fatal("legacy delegate missing from folded state")
+	}
+	if got := aggregate.Descriptor.Name; got != "" {
+		t.Fatalf("legacy descriptor name = %q, want empty", got)
+	}
+	encoded, err := json.Marshal(aggregate.Descriptor)
+	if err != nil {
+		t.Fatalf("marshal legacy descriptor: %v", err)
+	}
+	if strings.Contains(string(encoded), "\"name\"") {
+		t.Fatalf("zero name serialized as present: %s", encoded)
 	}
 }
 
