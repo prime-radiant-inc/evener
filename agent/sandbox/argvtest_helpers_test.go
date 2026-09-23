@@ -51,24 +51,40 @@ func bwrapFacts(home string) HostFacts {
 // t.TempDir() unless that lands under /dev, as it does when the gate puts
 // TMPDIR on /dev/shm: bwrap's minimal --dev already hides everything under
 // /dev, so buildBwrapArgv rightly emits no mask there and a /dev home would
-// leave the masking under test unexercised. The package directory is on the
-// real filesystem, so the home moves there instead.
+// leave the masking under test unexercised. /var/tmp is the real-filesystem
+// scratch the sandbox fixtures already use for paths that must not live
+// under /tmp, so the home moves there instead.
 func secretHomeDir(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	if home != "/dev" && !strings.HasPrefix(home, "/dev/") {
 		return home
 	}
-	home, err := os.MkdirTemp(".", ".secret-home-")
+	home, err := os.MkdirTemp("/var/tmp", "sbx-secret-home-")
 	if err != nil {
 		t.Fatalf("mkdir fake home outside /dev: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	home, err = filepath.Abs(home)
+	return resolveCleanPath(home)
+}
+
+// tmpMainCheckout is a main-checkout workspace under /tmp itself, whatever
+// TMPDIR says. The read-only re-bind under test exists only for a cwd the
+// sandbox's fresh /tmp tmpfs would otherwise shadow, and with the gate's
+// TMPDIR on /dev/shm, t.TempDir() no longer lands under /tmp.
+func tmpMainCheckout(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "sbx-tmp-cwd-")
 	if err != nil {
-		t.Fatalf("absolute fake home: %v", err)
+		t.Fatalf("mkdir /tmp workspace: %v", err)
 	}
-	return home
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root = resolveCleanPath(root)
+	if !pathUnder(root, "/tmp") {
+		t.Fatalf("/tmp workspace resolved to %q, outside /tmp", root)
+	}
+	contractGitRunnerFor(t)(t, root, "init", "-q")
+	return root
 }
 
 // resolveFixture materializes a main-checkout git repo, plants ~/.ssh and

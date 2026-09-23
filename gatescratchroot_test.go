@@ -33,6 +33,10 @@ func TestGateScratchRootUsesAUsableCandidate(t *testing.T) {
 	if got := gateScratchRoot(t, ambient, candidate, "1"); got != candidate {
 		t.Fatalf("gate_scratch_root = %q, want the candidate %q", got, candidate)
 	}
+	// The exec probe cleans up after itself: the gate mints its scratch here.
+	if entries, err := os.ReadDir(candidate); err != nil || len(entries) != 0 {
+		t.Fatalf("candidate after the probe holds %v (err %v), want it empty", entries, err)
+	}
 }
 
 func TestGateScratchRootFallsBackToTMPDIR(t *testing.T) {
@@ -41,15 +45,15 @@ func TestGateScratchRootFallsBackToTMPDIR(t *testing.T) {
 	if err := os.Mkdir(readOnly, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if os.Getuid() == 0 {
-		t.Skip("root writes through 0500 directories")
-	}
 	for name, candidate := range map[string]string{
 		// macOS and most non-Linux hosts have no /dev/shm at all.
 		"missing":    filepath.Join(t.TempDir(), "absent"),
 		"unwritable": readOnly,
 	} {
 		t.Run(name, func(t *testing.T) {
+			if name == "unwritable" && os.Getuid() == 0 {
+				t.Skip("root writes through 0500 directories")
+			}
 			if got := gateScratchRoot(t, ambient, candidate, "1"); got != ambient {
 				t.Fatalf("gate_scratch_root = %q, want the ambient TMPDIR %q", got, ambient)
 			}
@@ -67,5 +71,30 @@ func TestGateScratchRootFallsBackToTMPDIR(t *testing.T) {
 func TestGateScratchRootDefaultsToSlashTmpWithoutTMPDIR(t *testing.T) {
 	if got := gateScratchRoot(t, "", filepath.Join(t.TempDir(), "absent"), "1"); got != "/tmp" {
 		t.Fatalf("gate_scratch_root = %q, want /tmp", got)
+	}
+}
+
+// TestGateScratchRootRefusesANoexecCandidate pins the check Docker's default
+// /dev/shm needs: it is mounted noexec, and go test runs the binaries it builds
+// from TMPDIR, so a writable, roomy but noexec candidate must fall back too.
+// The candidate is a real noexec tmpfs, mounted inside an unprivileged user
+// and mount namespace; hosts that do not allow one skip.
+func TestGateScratchRootRefusesANoexecCandidate(t *testing.T) {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("unshare not available")
+	}
+	ambient, candidate := t.TempDir(), t.TempDir()
+	if out, err := exec.Command("unshare", "-rm", "true").CombinedOutput(); err != nil {
+		t.Skipf("unprivileged user+mount namespaces unavailable: %v: %s", err, out)
+	}
+	script := `mount -t tmpfs -o noexec tmpfs "$1" && . "$2" && gate_scratch_root "$1" 1`
+	cmd := exec.Command("unshare", "-rm", "sh", "-c", script, "sh", candidate, gateScratchRootLib)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + ambient}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gate_scratch_root on a noexec tmpfs: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != ambient {
+		t.Fatalf("gate_scratch_root chose %q for a noexec candidate, want the ambient TMPDIR %q", got, ambient)
 	}
 }

@@ -20,10 +20,7 @@ import (
 // write root to save the cwd, so it must be re-bound read-only AFTER the tmpfs.
 func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
 	home := t.TempDir()
-	cwd := MaterializeWorkspace(t, MainCheckout) // t.TempDir()-based, under /tmp
-	if !pathUnder(cwd, "/tmp") {
-		t.Skipf("test needs a /tmp-based cwd; TempDir gave %q", cwd)
-	}
+	cwd := tmpMainCheckout(t)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(home), cwd)
 	if err != nil {
