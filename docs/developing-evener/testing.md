@@ -422,12 +422,15 @@ splitting it across processes is what bounds its wall time (hub: ~80s serial,
 the package's TestMain applies with `shardrun.ConfigureRunFile` and then
 unsets, so a test that re-execs its own binary as a helper keeps its explicit
 `-test.run`. `AGENT_SHARDS=0`, `HUB_SHARDS=0` and `CLI_SHARDS=0` fall back to
-one `go test`. A TestMain that dropped that call, or made it before
-`flag.Parse`, would still pass: every shard would just run the whole package.
+one `go test`. A TestMain that dropped that call would still pass: every
+shard would just run the whole package. One that made the call before
+`flag.Parse` would let any `-test.run` on the command line override the file.
 So each sharded package pins the wiring with a one-line test,
-`shardrun.RequireTestMainAppliesRunFile(t)`, which re-execs the binary with a
-run file naming only that test and fails unless exactly that test ran. A
-newly sharded package adds the same test.
+`shardrun.RequireTestMainAppliesRunFile(t)`, which re-execs the binary with
+`-test.run=^$` on the command line and a run file naming only that test, and
+fails unless exactly that test ran: a dropped call runs nothing, and so does
+a misordered one, because the command line wins. A newly sharded package
+adds the same test.
 
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
