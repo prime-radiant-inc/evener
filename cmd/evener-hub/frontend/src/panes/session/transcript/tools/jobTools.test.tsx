@@ -542,6 +542,38 @@ test("job_list: rows render one entity ref and exactly one open control per iden
   }
 });
 
+test("job_list: rows state the command-outcome statuses under the card's display words", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  const ids = ["job_cen", "job_kil"];
+  render(
+    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+      <Body
+        item={item({
+          toolName: "job_list",
+          raw: {
+            items: [
+              { id: "job_cen", type: "shell", status: "command_exited_nonzero" },
+              { id: "job_kil", type: "shell", status: "command_killed" },
+            ],
+            count: ids.length,
+            total: ids.length,
+          },
+        })}
+        live={false}
+      />
+    </TranscriptRenderProvider>,
+  );
+
+  const rows = screen.getAllByTestId("job-list-row");
+  expect(rows).toHaveLength(ids.length);
+  const [exited, killed] = rows;
+  expect(exited?.textContent ?? "").toContain("Command failed");
+  expect(exited?.textContent ?? "").not.toContain("command_exited_nonzero");
+  expect(killed?.textContent ?? "").toContain("Command killed");
+  expect(killed?.textContent ?? "").not.toContain("command_killed");
+});
+
 // --- job_stop -----------------------------------------------------------
 
 test("job_stop: summary shows the target job and the tool's own outcome footer", () => {

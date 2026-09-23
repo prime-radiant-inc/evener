@@ -1,4 +1,3 @@
-`exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`command_exited_nonzero`). A `command_killed`, `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a job that did not exit on its own from its `status` + `reason`, never from `exit_code`.
 # Job control
 
 Status: Evergreen contract for the shipped job-control system.
@@ -1017,7 +1016,7 @@ fresh activity, which is the signal the quiet watchdog acts on. A per-action
 
 `command` is shell-only and omitted for delegates.
 
-`exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`command_exited_nonzero`). A `command_killed`, `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a non-`completed` job from its `status` + `reason`, never from `exit_code`.
+`exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`command_exited_nonzero`). A `command_killed`, `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a job that did not exit on its own from its `status` + `reason`, never from `exit_code`.
 
 `job_list` returns a collection. Status/stop operate on one typed `target`.
 

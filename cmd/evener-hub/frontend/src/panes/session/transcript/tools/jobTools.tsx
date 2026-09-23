@@ -66,9 +66,12 @@ function JobListBody({ item, live }: ToolRenderProps) {
         state.items.map((job) => {
           const identity = textField(job, "id") ?? textField(job, "job_id");
           if (identity === undefined) return null;
-          const fields = [textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
-            (field): field is string => field !== undefined,
-          );
+          const rawStatus = textField(job, "status");
+          const fields = [
+            textField(job, "type"),
+            rawStatus === undefined ? undefined : jobStatusDisplay(rawStatus),
+            textField(job, "phase"),
+          ].filter((field): field is string => field !== undefined);
           const description = textField(job, "description");
           return (
             <div key={identity} data-testid="job-list-row">
