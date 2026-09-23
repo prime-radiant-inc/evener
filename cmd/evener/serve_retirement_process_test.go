@@ -134,7 +134,18 @@ func (h *daemonRetirementProcessHelper) close() {
 // runCommands reads the fixture's commands until the pipe closes. Advance and
 // release are the only operations; both are pipe requests the fixture waits on
 // an acknowledgement for, so nothing here is paced by a timer.
+//
+// The pipe closes only when the fixture is gone: its cleanup kills this process
+// before closing its end, so an end of input this process survives to read means
+// the test binary died without cleaning up (a timeout panic, a kill). The daemon
+// then exits too. Its clock only moves when the fixture advances it, so its idle
+// retirement can never fire, and it would otherwise run on as an orphan holding
+// its scratch for good.
 func (h *daemonRetirementProcessHelper) runCommands() {
+	defer func() {
+		fmt.Fprintln(os.Stderr, "daemon retirement helper: the fixture's control pipe closed; exiting with it")
+		os.Exit(3)
+	}()
 	scanner := bufio.NewScanner(h.ctl)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
 	for scanner.Scan() {
