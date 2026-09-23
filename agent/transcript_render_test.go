@@ -2241,3 +2241,35 @@ func TestRenderMarkdown_ResultToolRejectedCallShowsRawArguments(t *testing.T) {
 		t.Errorf("expected result-tool fallback to show raw arguments %q for a rejected call, got:\n%s", rawArgs, out)
 	}
 }
+
+// TestRenderMarkdown_ResultToolBoundedRawFallback verifies that
+// writeResultToolMessage's raw-arguments fallback is bounded by oneLine +
+// truncRunes, so a rejected call with very long raw arguments does not dump the
+// full payload into the transcript markdown.
+func TestRenderMarkdown_ResultToolBoundedRawFallback(t *testing.T) {
+	t.Parallel()
+	// Build raw args longer than resultLineMaxRunes (300) so truncation is required.
+	longRaw := `{message: "` + strings.Repeat("x", 500) + `", }`
+	part := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:           "call-bounded-raw",
+			Name:         "communicate",
+			Arguments:    []byte(`{}`),
+			RawArguments: longRaw,
+		},
+	}
+	msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{part}}
+	entries := []transcript.Entry{
+		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: msg}),
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	// The full 500-char payload must NOT appear; the bounded version (≤300 runes + …) should.
+	if strings.Contains(out, strings.Repeat("x", 400)) {
+		t.Errorf("expected raw fallback to be bounded to ≤300 runes, but found a 400+ char run of the payload in output:\n%s", out)
+	}
+	// The truncated form should still be present (the raw args up to the limit + ellipsis).
+	if !strings.Contains(out, strings.Repeat("x", 280)) {
+		t.Errorf("expected the bounded raw fallback to contain a long prefix of the raw args, got:\n%s", out)
+	}
+}

@@ -41,6 +41,11 @@ var replayFuzzSeeds = []string{
 	// Assistant turn with a rejected tool call: Arguments is the replay-safe {}
 	// placeholder, RawArguments preserves the model's original malformed bytes.
 	`{"kind":"entry","seq":9,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"running it"},{"kind":"tool_call","tool_call":{"id":"c4","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\", }"}}]},"timestamp":"2026-06-01T10:00:08Z"}}`,
+	// Assistant turn with a repairable-malformed tool call: bare keys that
+	// RepairJSON can heal. Like the rejected seed, Arguments is {} and
+	// RawArguments preserves the original bytes — the live emitter now uses
+	// the original bytes too, so live and reload agree.
+	`{"kind":"entry","seq":10,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"calling it"},{"kind":"tool_call","tool_call":{"id":"c5","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\"}"}}]},"timestamp":"2026-06-01T10:00:09Z"}}`,
 	`{}`,
 	`null`,
 	`not json`,

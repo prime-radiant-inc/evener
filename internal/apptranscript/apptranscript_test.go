@@ -1377,3 +1377,35 @@ func TestProjectTurn_WellFormedCallUnchanged(t *testing.T) {
 		t.Errorf("Description = %q, want intent %q for a well-formed call", items[0].Description, "inspect docs")
 	}
 }
+
+// TestProjectTurn_RejectedCommunicateShowsRawFallback verifies that a rejected
+// communicate call (Arguments={}, RawArguments=<original malformed bytes>)
+// surfaces in the hub thread as an agentMessage with the raw bytes as text,
+// not vanishing entirely. CommunicateMessageFromArguments returns "" for the
+// {} placeholder, so without a SentArguments fallback the call is invisible.
+func TestProjectTurn_RejectedCommunicateShowsRawFallback(t *testing.T) {
+	const rawArgs = `{message: "hello", }` // malformed JSON — bare key, trailing comma
+	toolNames := map[string]string{}
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_rej",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("want 1 item (agentMessage with raw fallback), got %d: %+v", len(items), items)
+	}
+	if items[0].Type != "agentMessage" {
+		t.Errorf("Type = %q, want agentMessage", items[0].Type)
+	}
+	if items[0].Text != rawArgs {
+		t.Errorf("Text = %q, want the model's raw arguments %q for a rejected communicate call", items[0].Text, rawArgs)
+	}
+}
