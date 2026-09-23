@@ -281,7 +281,6 @@ export function MarketplaceBrowser({
           // view's selection changes and remounts; only the browser-local
           // busy and write-failed displays stay behind the fence.
           void (async () => {
-            setError(null);
             let caught: unknown;
             const outcome = await runGatedMutation(gate, canUseConnection, () =>
               state.removeMarketplace(name).catch((error: unknown) => {
@@ -294,9 +293,11 @@ export function MarketplaceBrowser({
               // not one the hub confirmed, and reporting it would retire a
               // cleanup warning that still stands. The status copy the
               // connection banner already shows covers the reason nothing
-              // ran.
+              // ran, and the write-failed copy an earlier outcome left
+              // stays too - a press that ran nothing retires nothing.
               return;
             }
+            setError(null);
             if (outcome === "refused") {
               if (revision.current !== version) return;
               setError(PLUGIN_MUTATION_BUSY);
