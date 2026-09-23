@@ -5,8 +5,11 @@
 // (sandbox.SweepCrashedSessionScratch): a detached command may still be using
 // them. A test binary never runs that reclaim, so every session a test closes
 // would otherwise leave directories behind in the developer's temp dir and in
-// /tmp, which no TMPDIR setting moves. A TestMain that routes the run through
-// RedirectHostTemp collects all of it in one root and removes that root on exit.
+// /tmp, which no TMPDIR setting moves. The evener binaries a test starts do run
+// the reclaim, at startup, and without a redirect it walks the developer's /tmp
+// and /var/tmp and removes other sessions' abandoned scratch. A TestMain that
+// routes the run through RedirectHostTemp collects all of it in one root,
+// confines those children's sweep to it, and removes that root on exit.
 // The same serves anything else a test leaves in the temp dir on purpose, such
 // as the per-user bundled-skills cache every Evener process shares.
 package sandboxtest
@@ -19,7 +22,7 @@ import (
 	"slices"
 	"testing"
 
-	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 )
 
 // RootVar hands the root down to self-exec helper children, whose own TestMain
@@ -35,24 +38,25 @@ import (
 const RootVar = "EVENER_SANDBOXTEST_ROOT"
 
 // HostTemp is a test binary's private temp root. While it is in place, TMPDIR
-// names a directory inside it and so does the world-usable host temp base that
-// session temp containers are minted in.
+// names a directory inside it and so does EVENER_HOST_TEMP_BASES, the world-
+// usable host temp base that session temp containers are minted in and the
+// crashed-scratch sweep walks.
 type HostTemp struct {
-	root            string
-	inherited       bool
-	restoreHostTemp func()
-	restoreEnv      []func() error
+	root       string
+	inherited  bool
+	restoreEnv []func() error
 }
 
 // RedirectHostTemp points the temp dir (TMPDIR; TMP and TEMP on Windows), the
-// Windows user cache dir and the session temp container bases into a root: the
-// one RootVar names when an enclosing test process made it, or else a new one
-// under the current temp dir, named with prefix. Child processes inherit the
-// variables and RootVar. Call Discard once the tests have run.
+// Windows user cache dir and the session temp container bases
+// (EVENER_HOST_TEMP_BASES) into a root: the one RootVar names when an enclosing
+// test process made it, or else a new one under the current temp dir, named
+// with prefix. Child processes inherit the variables and RootVar. Call Discard
+// once the tests have run.
 func RedirectHostTemp(prefix string) (*HostTemp, error) {
 	h := &HostTemp{}
 	if root := os.Getenv(RootVar); root != "" {
-		if info, err := os.Stat(filepath.Join(root, "host-temp")); err == nil && info.IsDir() {
+		if info, err := os.Stat(hostTempBase(root)); err == nil && info.IsDir() {
 			h.root, h.inherited = root, true
 		}
 	}
@@ -72,13 +76,13 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 	for name, value := range map[string]string{
 		"TMPDIR": temp, "TMP": temp, "TEMP": temp,
 		"LocalAppData": cache, "AppData": cache,
-		RootVar: h.root,
+		RootVar:                          h.root,
+		envvars.EVENERHostTempBases.Name: hostTempBase(h.root),
 	} {
 		if err := h.setenv(name, value); err != nil {
 			return nil, errors.Join(err, h.Discard())
 		}
 	}
-	h.restoreHostTemp = sandbox.SetWorldTempBasesForTesting([]string{filepath.Join(h.root, "host-temp")})
 	return h, nil
 }
 
@@ -98,7 +102,7 @@ func newHostTempRoot(prefix string) (string, error) {
 		return "", errors.Join(fmt.Errorf("sandboxtest: open %s: %w", root, err), os.RemoveAll(root))
 	}
 	temp := filepath.Join(root, "tmp")
-	hostTemp := filepath.Join(root, "host-temp")
+	hostTemp := hostTempBase(root)
 	// cache inside tmp is the Windows user cache dir RedirectHostTemp names.
 	for _, dir := range []string{temp, filepath.Join(temp, "cache"), hostTemp} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -135,10 +139,6 @@ func (h *HostTemp) Root() string { return h.root }
 // unless the root was inherited, removes it with everything the tests left in
 // it.
 func (h *HostTemp) Discard() error {
-	if h.restoreHostTemp != nil {
-		h.restoreHostTemp()
-		h.restoreHostTemp = nil
-	}
 	var errs []error
 	for _, restore := range slices.Backward(h.restoreEnv) {
 		errs = append(errs, restore())
@@ -151,6 +151,22 @@ func (h *HostTemp) Discard() error {
 	}
 	return errors.Join(errs...)
 }
+
+// Redirected reports whether v is a product variable holding the value a
+// redirect in force set: the host temp bases, which RedirectHostTemp exports so
+// the evener processes a test starts create their temp containers in, and
+// confine their startup crashed-scratch sweep to, its root rather than /tmp and
+// /var/tmp. A TestMain that clears every product variable after
+// RedirectHostTemp must leave that one alone. Any other value, a developer's
+// own for the same variable included, is not the redirect's.
+func Redirected(v envvars.Var) bool {
+	root := os.Getenv(RootVar)
+	return root != "" && v.Name == envvars.EVENERHostTempBases.Name &&
+		envvars.EVENERHostTempBases.Getenv() == hostTempBase(root)
+}
+
+// hostTempBase is the world-usable host temp base inside root.
+func hostTempBase(root string) string { return filepath.Join(root, "host-temp") }
 
 // Run is a whole TestMain for a package that needs nothing else: it runs m
 // inside a RedirectHostTemp named with prefix and returns the exit code. A root

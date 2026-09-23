@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
@@ -234,9 +235,24 @@ func TestEvenerEnvScrubHelper(t *testing.T) {
 		t.Skip("re-executed helper for TestHostEvenerEnvNeverReachesTheTestEnvironment")
 	}
 	for _, v := range hubtestenv.ProductEvenerEnvVars() {
+		if sandboxtest.Redirected(v) {
+			continue // the test rig's own value, which replaced the seeded one
+		}
 		if value, ok := os.LookupEnv(v.Name); ok {
 			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `evener launch-check` all inherit it", v.Name, value)
 		}
+	}
+}
+
+// TestTestMainLeavesTheHostTempRedirectForChildren guards the order TestMain
+// runs in: RedirectHostTemp exports EVENER_HOST_TEMP_BASES before
+// hubtestenv.Redirect clears the product variables, and that clear must keep
+// the value. Cleared, every evener and evener serve the non-short suite starts
+// would sweep the developer's /tmp and /var/tmp at startup and reclaim other
+// sessions' abandoned scratch.
+func TestTestMainLeavesTheHostTempRedirectForChildren(t *testing.T) {
+	if !sandboxtest.Redirected(envvars.EVENERHostTempBases) {
+		t.Fatalf("%s = %q after TestMain, want the host temp redirect's own base", envvars.EVENERHostTempBases.Name, envvars.EVENERHostTempBases.Getenv())
 	}
 }
 

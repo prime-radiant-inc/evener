@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/envvars"
 )
 
 // TestRedirectHostTempContainsEverySessionTempAndIsRemoved proves the property a
@@ -28,7 +29,7 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	if err := os.Chmod(outerHostTemp, 0o777|os.ModeSticky); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{outerHostTemp}))
+	t.Setenv(envvars.EVENERHostTempBases.Name, outerHostTemp)
 
 	redirect, err := RedirectHostTemp("evener-sandboxtest-")
 	if err != nil {
@@ -59,6 +60,14 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	if !within(root, os.TempDir()) {
 		t.Fatalf("os.TempDir() = %q, want it under the redirect root %q", os.TempDir(), root)
 	}
+	// Exported, not only set in this process: the evener binaries a test starts
+	// read it, and their startup sweep must walk this root instead of /tmp.
+	if got, want := envvars.EVENERHostTempBases.Getenv(), filepath.Join(root, "host-temp"); got != want {
+		t.Fatalf("%s = %q, want the redirect's host temp %q", envvars.EVENERHostTempBases.Name, got, want)
+	}
+	if !Redirected(envvars.EVENERHostTempBases) {
+		t.Fatalf("Redirected(%s) = false while the redirect is in force", envvars.EVENERHostTempBases.Name)
+	}
 	scratch, err := os.MkdirTemp("", "leak-*")
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +94,12 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	}
 	if got := os.TempDir(); got != outerTemp {
 		t.Errorf("TMPDIR after Discard = %q, want the original %q", got, outerTemp)
+	}
+	if got := envvars.EVENERHostTempBases.Getenv(); got != outerHostTemp {
+		t.Errorf("%s after Discard = %q, want the original %q", envvars.EVENERHostTempBases.Name, got, outerHostTemp)
+	}
+	if Redirected(envvars.EVENERHostTempBases) {
+		t.Errorf("Redirected(%s) = true after Discard", envvars.EVENERHostTempBases.Name)
 	}
 	after, err := sandbox.NewSessionTmp()
 	if err != nil {
@@ -124,6 +139,9 @@ func TestRedirectHostTempInheritsTheEnclosingRoot(t *testing.T) {
 	if got := os.TempDir(); got != outerTemp {
 		t.Fatalf("inner TMPDIR = %q, want the inherited %q", got, outerTemp)
 	}
+	if got, want := envvars.EVENERHostTempBases.Getenv(), filepath.Join(outer.Root(), "host-temp"); got != want {
+		t.Fatalf("inner %s = %q, want the inherited root's host temp %q", envvars.EVENERHostTempBases.Name, got, want)
+	}
 	survivor := filepath.Join(outerTemp, "detached-daemon-temp")
 	if err := os.Mkdir(survivor, 0o700); err != nil {
 		t.Fatal(err)
@@ -139,6 +157,35 @@ func TestRedirectHostTempInheritsTheEnclosingRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(outer.Root()); !os.IsNotExist(err) {
 		t.Fatalf("the outer Discard left its root %q: %v", outer.Root(), err)
+	}
+}
+
+// TestRedirectedOwnsOnlyTheValueTheRedirectSet pins what a TestMain's scrub of
+// product variables may leave behind: the host temp bases the redirect set, and
+// nothing else. A developer's own value for the same variable, or any other
+// product variable, is not the redirect's and must still be cleared.
+func TestRedirectedOwnsOnlyTheValueTheRedirectSet(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(RootVar, "")
+	t.Setenv(envvars.EVENERHostTempBases.Name, "/developer/own/value")
+	if Redirected(envvars.EVENERHostTempBases) {
+		t.Fatal("Redirected reports a developer's value with no redirect in force")
+	}
+	redirect, err := RedirectHostTemp("evener-sandboxtest-owned-")
+	if err != nil {
+		t.Fatalf("RedirectHostTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = redirect.Discard() })
+	if !Redirected(envvars.EVENERHostTempBases) {
+		t.Fatalf("Redirected(%s) = false for the value the redirect set", envvars.EVENERHostTempBases.Name)
+	}
+	t.Setenv(envvars.EVENERHostTempBases.Name, "/developer/own/value")
+	if Redirected(envvars.EVENERHostTempBases) {
+		t.Fatal("Redirected reports a value the redirect did not set")
+	}
+	t.Setenv(envvars.EVENERStateDir.Name, filepath.Join(redirect.Root(), "host-temp"))
+	if Redirected(envvars.EVENERStateDir) {
+		t.Fatalf("Redirected reports %s, which the redirect never sets", envvars.EVENERStateDir.Name)
 	}
 }
 

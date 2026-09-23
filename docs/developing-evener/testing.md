@@ -466,6 +466,16 @@ package whose tests run sessions routes its TestMain through
 TestMain that does more, point `TMPDIR` and the container bases into one root
 and remove it when the run ends. Self-exec helper children inherit that
 `TMPDIR`, so what they leave when they are killed on purpose goes with it.
+The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
+`evener serve` a test starts inherits them too. That matters beyond leftovers:
+each of those processes runs the crashed-scratch sweep at startup, and without
+the variable it reclaims other sessions' abandoned scratch from the
+developer's real `/tmp` and `/var/tmp`. A TestMain that clears every product
+`EVENER_*` variable after `RedirectHostTemp` keeps that one value
+(`sandboxtest.Redirected`), and a test that builds a child environment from
+scratch must pass it on. A test that sets the bases itself has to prove they
+are in force before it mints or sweeps anything, so a regression fails the
+test instead of reaching `/tmp`.
 
 A test that drives the crashed-scratch sweep itself confines it to scratch it
 owns (its own `TMPDIR` and user cache dir, no container bases; see
