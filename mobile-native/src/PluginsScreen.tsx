@@ -468,11 +468,15 @@ function Plugins({
   }, [selected, state.plugins, entry, close]);
   async function act(action: () => Promise<void>, success?: string) {
     const version = editorVersion.current;
-    setActionError(null);
-    setNotice(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (version !== editorVersion.current) return;
+    // A not-ready press never ran the action, so it must not retire the
+    // diagnostics an earlier outcome left either: the copy the user was
+    // reading survives the no-op, and the status the banner already shows
+    // is the reason nothing ran.
     if (outcome === "not-ready") return;
+    setActionError(null);
+    setNotice(null);
     if (outcome === "refused") setActionError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed")
       setActionError(

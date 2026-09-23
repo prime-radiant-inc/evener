@@ -180,6 +180,59 @@ it("shows the connection status and reconnect inside an open plugin detail modal
 	expect(subtreeText(modal)).toContain("Installation details");
 });
 
+it("keeps the last action's notice when a disconnected press never runs the action", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	let upgrades = 0;
+	hub.on("evener/plugin/upgrade", () => {
+		upgrades += 1;
+		return { plugins: [plugin("kept")] };
+	});
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	const row = tree.root.find(
+		(node) =>
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("kept"),
+	);
+	act(() => {
+		row.props.onPress();
+	});
+	await act(async () => {});
+
+	// A successful upgrade leaves its notice in the open modal.
+	await act(async () => {
+		modalContaining(tree, "Installation details")
+			.findByProps({ accessibilityLabel: "Upgrade" })
+			.props.onPress();
+	});
+	await act(async () => {});
+	expect(upgrades).toBe(1);
+	expect(
+		subtreeText(modalContaining(tree, "Installation details")),
+	).toContain("Checked for upgrades.");
+
+	// The connection drops with the modal open: a press now is a no-op the
+	// gate refuses on readiness, and it must not retire the notice the last
+	// real outcome left - the status inside the modal already says why
+	// nothing ran.
+	harness.connection = connection(hub, "reconnecting");
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	await act(async () => {
+		modalContaining(tree, "Installation details")
+			.findByProps({ accessibilityLabel: "Upgrade" })
+			.props.onPress();
+	});
+	await act(async () => {});
+	expect(upgrades).toBe(1);
+	expect(
+		subtreeText(modalContaining(tree, "Installation details")),
+	).toContain("Checked for upgrades.");
+});
+
 it("shows the connection status and reconnect inside the add-marketplace modal", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
