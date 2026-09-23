@@ -26,8 +26,12 @@ import (
 // awaitTripwire is how long Await lets a call run before concluding it is
 // waiting on the grandchild. It is a tripwire, not the mechanism: a correct
 // call returns on its own, and one that waits on the grandchild would wait
-// forever without it.
-const awaitTripwire = 10 * time.Second
+// forever without it. It sits far above the expected time because a correct
+// call still pays process creation and its own WaitDelay on a machine that may
+// be running the rest of the suite beside it (internal/plugins'
+// gitCancelTripwire records process creation alone measured at 10s on a
+// loaded runner).
+const awaitTripwire = 90 * time.Second
 
 // Holder owns one pipe-holding grandchild's FIFOs.
 type Holder struct {
