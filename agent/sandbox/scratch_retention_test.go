@@ -127,6 +127,102 @@ func TestScratchRetentionUnreferencedReleasedStillCollected(t *testing.T) {
 	}
 }
 
+// TestSweepRemovalSerializesWithTheManifestReset pins the round-31 finding:
+// the sweep's retention check reads the Released tombstone without any lock
+// the reset's resurrection takes, so a ResetScratchRetentionIfReleased that
+// carries the directory's rows into an unreleased manifest can commit between
+// the check and the removal. The sweep would then RemoveAll the scratch the
+// resurrected manifest names — the retained allocation is lost with the
+// manifest permanently pointing at deleted scratch. The serialization makes
+// both orders safe: a reset that runs first leaves !Released for the sweep's
+// check to read, and one that comes second finds the directory gone and the
+// pair dies with the tombstone.
+func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	artifact := filepath.Join(scratch.Dir, "retained.bin")
+	if err := os.WriteFile(artifact, []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The carry needs the full graph: the lease-owning binding plus a
+	// consumer naming it (round 16).
+	consumer := ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	// Tombstone while the lease is still held, so the pin survives the
+	// release (round 25): Released:true is exactly what makes the sweep read
+	// the aged directory collectible.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(scratch.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+
+	atWindow := make(chan struct{})
+	proceed := make(chan struct{})
+	resetDone := make(chan error, 1)
+	sweepDone := make(chan error, 1)
+	scratchSweepBeforeRemove = func() {
+		atWindow <- struct{}{}
+		<-proceed
+	}
+	t.Cleanup(func() { scratchSweepBeforeRemove = nil })
+
+	go func() { sweepDone <- SweepCrashedSessionScratch(workspace) }()
+	<-atWindow
+
+	go func() {
+		_, _, err := ResetScratchRetentionIfReleased(owner)
+		resetDone <- err
+	}()
+	// Give the reset time to finish inside the sweep's hold. Pre-fix it
+	// commits the carry in this window; post-fix it blocks on the
+	// reclamation serialization until the sweep has removed the directory.
+	time.Sleep(250 * time.Millisecond)
+	close(proceed)
+
+	select {
+	case err := <-resetDone:
+		if err != nil {
+			t.Fatalf("reset: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("reset did not finish")
+	}
+	select {
+	case err := <-sweepDone:
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("sweep did not finish")
+	}
+
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namesDir := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			namesDir = true
+		}
+	}
+	_, statErr := os.Stat(scratch.Dir)
+	if !manifest.Released && namesDir && os.IsNotExist(statErr) {
+		t.Fatalf("the sweep removed a directory the concurrent reset had carried: the resurrected manifest names deleted scratch %s", scratch.Dir)
+	}
+}
+
 // TestScratchRetentionReportsLeaseAcquisitionFailure is the regression test for
 // the swallowed lease error: ReleaseScratchRetention must continue for confirmed
 // contention (a genuinely held lease is left for the collector) but must REPORT

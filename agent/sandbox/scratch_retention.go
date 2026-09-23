@@ -1104,6 +1104,14 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 	var out ScratchManifest
 	var reset bool
 	err := RetryScratchLockContention(func() error {
+		// The whole reset is serialized against scratch reclamation: the carry
+		// pass resurrects Released rows without taking any directory lease, so
+		// a sweep could otherwise remove a carried directory between this
+		// reset's read and its commit. Taken per attempt inside the retry —
+		// the reset never holds it across a backoff, and a manifest-lock
+		// refusal releases it before the retry.
+		scratchReclamationMu.Lock()
+		defer scratchReclamationMu.Unlock()
 		lock, err := acquireScratchRetentionLock(owner)
 		if err != nil {
 			return err

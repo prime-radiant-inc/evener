@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -256,6 +257,25 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	return errors.Join(failures...)
 }
 
+// scratchSweepBeforeRemove is a nil-in-production test seam fired while the
+// sweep holds the candidate's lease and the reclamation mutex, after the
+// retention check read the directory collectible and just before the removal.
+// Tests use it to run a concurrent manifest reset inside that window.
+var scratchSweepBeforeRemove func()
+
+// scratchReclamationMu serializes scratch reclamation with the manifest reset.
+// The sweep's retention check reads the Released tombstone without any lock the
+// reset's resurrection takes, and the reset's carry pass reclaims rows without
+// taking the directory lease (round 25's contract leaves contended pins
+// untouched), so without serialization a reset could carry a directory's rows
+// into an unreleased manifest between the sweep's check and its removal — the
+// sweep would then delete the scratch the resurrected manifest names. Both
+// orders are safe under the mutex: a reset that runs first leaves !Released
+// for the sweep's check to read, and one that comes second finds the directory
+// gone and its pair dies with the tombstone. Every lock each side takes besides
+// this one is fail-fast, so neither holder blocks on anything while holding it.
+var scratchReclamationMu sync.Mutex
+
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
 // lease is currently acquirable. A candidate whose lease is held, or whose age
 // cannot be read, is left untouched and is not an error: it is someone else's.
@@ -308,21 +328,28 @@ func sweepCrashedSessionScratch(base string) error {
 			_ = lease.Release()
 			continue
 		}
+		scratchReclamationMu.Lock()
 		retain, retentionErr := ScratchDirectoryRetained(dir)
 		if retentionErr != nil {
+			scratchReclamationMu.Unlock()
 			failures = append(failures, retentionErr)
 			_ = lease.Release()
 			continue
 		}
 		if retain {
+			scratchReclamationMu.Unlock()
 			_ = lease.Release()
 			continue
+		}
+		if scratchSweepBeforeRemove != nil {
+			scratchSweepBeforeRemove()
 		}
 		// Hold the lease through removal: releasing first would let a same-path
 		// restore acquire the lease and be deleted out from under it.
 		if err := os.RemoveAll(dir); err != nil {
 			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
 		}
+		scratchReclamationMu.Unlock()
 		_ = lease.Release()
 	}
 	return errors.Join(failures...)
