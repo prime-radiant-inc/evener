@@ -71,6 +71,7 @@ const defaultSurveyParallel = 6
 // where its words go.
 type shardsConfig struct {
 	label          string
+	envPrefix      string
 	pkgDir         string
 	count          int
 	parallel       int
@@ -130,6 +131,7 @@ func runPackageShards(label, dir, envPrefix string, args []string) int {
 	defer signal.Stop(signals)
 	return runShards(shardsConfig{
 		label:          label,
+		envPrefix:      envPrefix,
 		pkgDir:         dir,
 		count:          count,
 		parallel:       parallel,
@@ -327,7 +329,7 @@ func runShards(cfg shardsConfig) int {
 	// The build gets the caller's build flags: a -race run has to compile a
 	// race-detector binary, and a -tags run has to compile the files that tag
 	// selects, or the shards test something the caller did not ask for.
-	parsed, err := parseFlags(cfg.flags)
+	parsed, err := parseFlags(cfg.flags, cfg.envPrefix)
 	if err != nil {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
@@ -337,7 +339,7 @@ func runShards(cfg shardsConfig) int {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
-	if err := checkGoflags(goflags); err != nil {
+	if err := checkGoflags(goflags, cfg.envPrefix); err != nil {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
 	}
@@ -413,7 +415,7 @@ func runShards(cfg shardsConfig) int {
 		return 1
 	}
 
-	bins, _, err := packShards(costs, cfg.count)
+	bins, _, err := packShards(costs, cfg.count, cfg.envPrefix)
 	if err != nil {
 		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: %v\n", cfg.label, err)
 		return 1
