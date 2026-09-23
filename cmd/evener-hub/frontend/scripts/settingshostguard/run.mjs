@@ -44,6 +44,33 @@ import {
 } from "../browserGuardProcess.mjs";
 
 const PROFILE_PREFIX = "settingshostguard-chrome-";
+
+// makeChromeProfileDir creates the browser profile under a SHORT root.
+//
+// Chrome puts its process-singleton socket at
+// <user-data-dir>/com.google.Chrome.<id>/SingletonSocket, and a unix socket path
+// is capped at about 108 bytes. Taking the ambient temp dir on trust is not safe
+// here: a nested TMPDIR - a sandbox's own scratch directory, or the temp root a
+// test harness hands its children - pushes that path past the cap, and Chrome
+// aborts before DevTools is ready. The harness would then report it honestly as
+// an environment problem, but it is this layout that caused it, so prefer the
+// conventional short temp root and fall back to the ambient one only when the
+// short root is missing or unwritable.
+function makeChromeProfileDir() {
+  // Leaves room for Chrome's own ~35-byte singleton suffix under the 108-byte cap.
+  const budget = 60;
+  const roots = process.platform === "win32" ? [tmpdir()] : ["/tmp", tmpdir()];
+  for (const root of [...new Set(roots)]) {
+    if (root.length + PROFILE_PREFIX.length + 6 > budget) continue;
+    try {
+      return mkdtempSync(path.join(root, PROFILE_PREFIX));
+    } catch {
+      // Unwritable or absent: try the next root.
+    }
+  }
+  return mkdtempSync(path.join(tmpdir(), PROFILE_PREFIX));
+}
+
 const DEVTOOLS_ANNOUNCEMENT_PREFIX = "DevTools listening on ";
 const CHILD_EXIT_GRACE_MS = 2_000;
 const VIEWPORT = { width: 1440, height: 1000 };
@@ -181,7 +208,7 @@ class Driver {
 
   async start() {
     this.chromeBinary = findChrome();
-    this.profileDir = mkdtempSync(path.join(tmpdir(), PROFILE_PREFIX));
+    this.profileDir = makeChromeProfileDir();
     this.lifecycle = createBrowserProcessCleanup({ profileDir: this.profileDir });
     this.chromeArgv = [
       "--headless=new",
