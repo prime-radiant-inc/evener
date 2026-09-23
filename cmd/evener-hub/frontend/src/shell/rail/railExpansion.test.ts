@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { installLocalStorage } from "../../storageTestUtils";
 import { EXPANSION_LIMIT, EXPANSION_STORAGE_KEY, loadExpansion, saveExpansion } from "./railExpansion";
 
 // See stores/prefs.test.ts's identical comment: Node 26 shadows jsdom's real
@@ -38,7 +39,7 @@ class ThrowingStorage {
 
 function useStorage(storage: unknown): void {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = storage;
+  installLocalStorage(storage);
 }
 
 beforeAll(() => useStorage(new MemoryStorage()));

@@ -620,6 +620,40 @@ describe("ActivityTree", () => {
     expect(kindGlyph.getAttribute("aria-label")).toBe("Failed");
   });
 
+  test("a legacy terminal failed row states the display word by its reason", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const tree: ActivityTreeData = {
+      revision: 1,
+      root: {
+        kind: "session",
+        sessionId: "sess_root",
+        ref: "ref_root",
+        label: "Root session",
+        aggregate: "failed",
+        counts: { active: 0, failed: 1, completed: 0, complete: true },
+        entries: [
+          {
+            kind: "shell",
+            job: shellJob({
+              jobId: "job_legacy",
+              description: "legacy lint",
+              status: "failed",
+              reason: "exit_nonzero",
+              outcome: "failure",
+              terminal: true,
+              startedAt: "2026-08-05T14:00:00Z",
+            }),
+          },
+        ],
+        branch: {},
+      },
+    };
+    render(<ActivityTree tree={tree} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} onContinue={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "legacy lint" });
+    expect(row.textContent).toContain("Command failed");
+  });
+
   test("the kind glyph carries the row's status hue and accessible name", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);

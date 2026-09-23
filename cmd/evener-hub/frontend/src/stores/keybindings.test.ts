@@ -11,6 +11,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
+import { installLocalStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "./keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "./prefs";
@@ -38,7 +39,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function resetRegistryToDefaults(): void {

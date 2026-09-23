@@ -12,6 +12,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { installLocalStorage } from "../../../storageTestUtils";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
@@ -72,7 +73,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import { installLocalStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
@@ -31,7 +32,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 // jsdom does not implement window.matchMedia at all - useIsMobile.test.ts's

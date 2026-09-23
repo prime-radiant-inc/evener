@@ -97,10 +97,7 @@ func TestBwrapLinkedWorktreeStarts(t *testing.T) {
 func TestBwrapReadOnlyTmpWorktreeStarts(t *testing.T) {
 	facts := requireRealBwrap(t)
 	facts.Home = t.TempDir()
-	cwd := MaterializeWorkspace(t, MainCheckout) // t.TempDir()-based, under /tmp
-	if !pathUnder(cwd, "/tmp") {
-		t.Skipf("test needs a /tmp-based cwd; TempDir gave %q", cwd)
-	}
+	cwd := tmpMainCheckout(t)
 	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, t.TempDir(),
 		`echo RO-OK; pwd`)
 	if err != nil {
@@ -265,5 +262,82 @@ func TestBwrapDeniesGitConfigWrite(t *testing.T) {
 	// The real hook file must not exist on the host afterward.
 	if _, err := os.Stat(filepath.Join(cwd, ".git", "hooks", "post-commit")); err == nil {
 		t.Errorf("a git hook was persisted to the host despite the sandbox")
+	}
+}
+
+// A read-only sandbox whose workspace lives under /dev/shm must see the real
+// workspace and refuse writes to it, as it does anywhere else. Without the
+// re-bind, bwrap's fresh --dev tmpfs hid the workspace: the host file was
+// missing and a write "succeeded" into a private directory that vanished.
+func TestBwrapReadOnlyDevShmWorkspaceIsRealAndReadOnly(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	cwd := devShmMainCheckout(t)
+	if err := os.WriteFile(filepath.Join(cwd, "host-marker"), []byte("HOST-MARKER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, t.TempDir(),
+		`cat host-marker; echo; if echo x > sandbox-write 2>/dev/null; then echo WRITE-ALLOWED; else echo WRITE-DENIED; fi`)
+	if err != nil {
+		t.Fatalf("read-only /dev/shm sandbox failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "HOST-MARKER") {
+		t.Errorf("the sandbox did not see the host workspace under /dev/shm:\n%s", out)
+	}
+	if !strings.Contains(out, "WRITE-DENIED") {
+		t.Errorf("a read-only sandbox accepted a write to its /dev/shm workspace:\n%s", out)
+	}
+}
+
+// A secret under /dev/shm stays hidden when its directory is re-bound into the
+// sandbox: here the fake home is itself the read-only workspace under
+// /dev/shm, so the cwd re-bind after --dev exposes it, and ~/.ssh must still be
+// masked on top of it.
+func TestBwrapMasksSecretsInsideADevShmWorkspace(t *testing.T) {
+	facts := requireRealBwrap(t)
+	home := devShmMainCheckout(t)
+	facts.Home = home
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "id_ed25519"), []byte("SHM-SECRET-KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "visible"), []byte("SHM-VISIBLE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, home, t.TempDir(),
+		`cat visible; echo; cat .ssh/id_ed25519 2>/dev/null; echo END`)
+	if err != nil {
+		t.Fatalf("read-only /dev/shm sandbox failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "SHM-VISIBLE") {
+		t.Fatalf("the re-bound /dev/shm workspace is not visible, so the mask is untested:\n%s", out)
+	}
+	if strings.Contains(out, "SHM-SECRET-KEY") {
+		t.Errorf("a secret under a re-bound /dev/shm workspace was readable in the sandbox:\n%s", out)
+	}
+}
+
+// With the session scratch inside a read-only /dev/shm workspace, the
+// workspace is read-only and the session scratch is still writable.
+func TestBwrapSessionTmpInsideADevShmWorkspaceStaysWritable(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	cwd := devShmMainCheckout(t)
+	sessionTmp := filepath.Join(cwd, "session-tmp")
+	if err := os.Mkdir(sessionTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, sessionTmp,
+		`if echo x > session-tmp/probe 2>/dev/null; then echo SCRATCH-WRITABLE; else echo SCRATCH-DENIED; fi; if echo x > workspace-probe 2>/dev/null; then echo WORKSPACE-WRITABLE; else echo WORKSPACE-DENIED; fi`)
+	if err != nil {
+		t.Fatalf("read-only /dev/shm sandbox failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "SCRATCH-WRITABLE") {
+		t.Errorf("the session scratch inside a read-only /dev/shm workspace was not writable:\n%s", out)
+	}
+	if !strings.Contains(out, "WORKSPACE-DENIED") {
+		t.Errorf("the read-only /dev/shm workspace accepted a write:\n%s", out)
 	}
 }

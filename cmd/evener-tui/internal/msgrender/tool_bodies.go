@@ -268,7 +268,7 @@ func delegateBody(args ToolArgs, output string, width int) string {
 }
 
 func SubagentRunBody(run transcript.SubagentRunInfo, width int) string {
-	status := transcript.SubagentDisplayStatus(run)
+	status := transcript.JobStatusDisplay(transcript.SubagentDisplayStatus(run), run.Reason)
 	if status == "" {
 		status = "running"
 	}
@@ -447,7 +447,7 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 
 func subagentRailClass(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "failed", "error", "exhausted":
+	case "failed", "error", "exhausted", "command_exited_nonzero", "command_killed":
 		return "failed"
 	case "completed", "done", "succeeded", "cancelled", "stopped":
 		return "done"

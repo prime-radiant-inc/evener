@@ -2,8 +2,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
+import * as pageReload from "../../shell/pageReload";
+import { installLocalStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -117,7 +119,7 @@ function captureExpectedError(expectedError: Error) {
 }
 
 beforeAll(() => {
-  globalThis.localStorage = new MemoryStorage() as unknown as Storage;
+  installLocalStorage(new MemoryStorage() as unknown as Storage);
 });
 
 beforeEach(() => {
@@ -196,8 +198,8 @@ test("a retry that fails again offers a page reload instead of stranding the pro
   const chunkError = new Error(CHUNK_ERROR);
   const onCaughtError = captureExpectedError(chunkError);
   vi.mocked(loadConnectDialog).mockRejectedValue(chunkError);
-  const reload = vi.fn();
-  vi.stubGlobal("location", { ...window.location, reload });
+  const reload = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
+  onTestFinished(() => reload.mockRestore());
   const user = userEvent.setup();
   const client = missingCredentialsClient();
   connectionStore.getState().connect(client);

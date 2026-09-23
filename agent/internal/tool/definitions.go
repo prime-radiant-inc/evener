@@ -405,11 +405,11 @@ func DefJobStatus() llm.ToolDefinition {
 
 func DefJobList() llm.ToolDefinition {
 	strictFalse := false
-	statusEnum := []any{"running", "idle", "completed", "failed", "exhausted", "cancelled", "stopped"}
+	statusEnum := []any{"running", "idle", "completed", "failed", "command_exited_nonzero", "command_killed", "exhausted", "cancelled", "stopped"}
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
+		Description: "List this session's durable shell jobs and stable delegates, newest first; filter by `status` or `type`. Rows include typed identity, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list work to re-orient instead of re-running it. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal outcome statuses: completed, failed, command_exited_nonzero, command_killed, exhausted, cancelled, stopped. A short shell can finish before a running-only filter sees it, and an ended delegate becomes idle; when recency matters, list unfiltered or inspect the typed resource by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",

@@ -17,7 +17,7 @@ import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { HoverCard } from "../../../widgets/hovercard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenButton } from "../../../widgets/openbutton";
-import { formatQuietAge, formatUsagePair } from "../chrome/activityFormat";
+import { formatQuietAge, formatUsagePair, jobStatusDisplay } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
@@ -87,13 +87,14 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
   const command = job.command && job.command !== detail ? job.command : undefined;
   const statusKind = classifyJobStatus(job.status);
   const failed = isActivityFailure(job.outcome, job.status);
-  const status = live
-    ? job.status
-    : failed
-      ? "failed"
-      : statusKind === "done" || statusKind === "failed" || statusKind === "stopped"
-        ? job.status
-        : undefined;
+  // The card states the same display word every other surface uses, so a
+  // command-outcome run reads "Command failed", never the collapsed or raw
+  // machine status.
+  const display = jobStatusDisplay(job.status, job.reason);
+  const status =
+    live || failed || statusKind === "done" || statusKind === "failed" || statusKind === "stopped"
+      ? display
+      : undefined;
   return (
     <div className={CLASS.card} data-entity-kind="job">
       <div className={CLASS.head}>

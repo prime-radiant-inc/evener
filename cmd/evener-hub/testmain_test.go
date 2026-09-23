@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -28,6 +30,14 @@ func TestMain(m *testing.M) {
 	if os.Getenv(detachHelperRunDirEnv) != "" {
 		runDetachFakeDaemon()
 		os.Exit(0)
+	}
+	// When evener dev hub-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). flag.Parse must
+	// run first so the command line's (absent) -test.run cannot clobber it.
+	flag.Parse()
+	if err := shardrun.ConfigureRunFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		os.Exit(2)
 	}
 	testEnv = hubtestenv.Redirect("evener-hub-test-env-")
 	// Refuse to start when a default root still resolves outside the throwaway

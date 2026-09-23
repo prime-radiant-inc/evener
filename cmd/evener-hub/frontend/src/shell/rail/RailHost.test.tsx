@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { ClientProvider } from "../clientContext";
@@ -52,7 +53,7 @@ function render(ui: ReactElement, client = new FakeClient()) {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

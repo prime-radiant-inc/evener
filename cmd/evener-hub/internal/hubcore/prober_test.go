@@ -299,3 +299,36 @@ func TestProbeSeparatesActiveAndCompletedNonAgentJobs(t *testing.T) {
 		t.Fatalf("completed jobs = %+v, want only terminal non-agent job", result.CompletedJobs)
 	}
 }
+
+// The daemon's command-outcome statuses (command_exited_nonzero /
+// command_killed) are terminal: a reaped nonzero exit or a signal death is a
+// finished run, and SplitNonAgentJobs must file it with the completed jobs,
+// not leave it on the running rail forever.
+func TestTerminalJobStatusKnowsCommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if !terminalJobStatus(status) {
+			t.Errorf("terminalJobStatus(%q) = false, want true", status)
+		}
+	}
+}
+
+func TestSplitNonAgentJobsFilesCommandOutcomeJobsAsCompleted(t *testing.T) {
+	running, completed := SplitNonAgentJobs([]appwire.EvenerJobInfo{
+		{JobID: "job_cf", JobType: "shell", Status: "command_exited_nonzero"},
+		{JobID: "job_ck", JobType: "shell", Status: "command_killed"},
+		{JobID: "job_run", JobType: "shell", Status: "running"},
+	})
+	if len(running) != 1 || running[0].JobID != "job_run" {
+		t.Errorf("running = %+v, want only job_run", running)
+	}
+	if len(completed) != 2 {
+		t.Fatalf("completed = %+v, want the two command-outcome jobs", completed)
+	}
+	got := map[string]bool{}
+	for _, job := range completed {
+		got[job.JobID] = true
+	}
+	if !got["job_cf"] || !got["job_ck"] {
+		t.Errorf("completed = %+v, want job_cf and job_ck", completed)
+	}
+}
