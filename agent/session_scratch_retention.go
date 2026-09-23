@@ -40,6 +40,17 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 	if !ok {
 		return nil
 	}
+	// Whether the manifest arrived tombstoned decides what a fresh install
+	// may adopt below. Only a Released manifest's reset deliberately carries
+	// durable rows for the consumer a cold restore reinstalls; a binding any
+	// other install published belongs to that install's environment, and one
+	// session can run several of those (its own, and the clones a worktree
+	// re-entry re-roots), so adopting it would hand this environment a live
+	// sibling's identity.
+	released := false
+	if before, loadErr := sandbox.LoadScratchRetention(owner); loadErr == nil {
+		released = before.Released
+	}
 	manifest, err := sandbox.ResetScratchRetentionIfReleased(owner)
 	if err != nil {
 		return err
@@ -123,17 +134,47 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 		}
 		return fmt.Errorf("scratch retention: install rows for %q stayed stale", sessionID)
 	}
-	bindingID, err := identifier.NewSessionID()
-	if err != nil {
-		return err
-	}
 	binding := sandbox.ScratchBinding{
-		BindingID:      bindingID,
 		OwnerSessionID: sessionID,
 		WorkingDir:     env.WorkingDirectory(),
 	}
+	if released {
+		// A consumer row the released manifest's reset carried may already
+		// name this session with a binding that survived the reset — the
+		// contended pair, whose lease-owning slot names a directory a later
+		// restore can still re-probe and resume in. Minting a fresh binding
+		// would replace that row (the upsert below rewrites this session's
+		// consumer) and orphan the carried binding's slot: the graph reader
+		// fails closed on a slot no consumer role names, with Released false
+		// again and no later reset left to repair it. Adopt the carried
+		// binding instead, keeping the durable identity the manifest already
+		// records for this consumer.
+		if carried, ok := findCarriedConsumerBinding(manifest, sessionID); ok {
+			binding = carried
+		}
+	}
+	if binding.BindingID == "" {
+		bindingID, err := identifier.NewSessionID()
+		if err != nil {
+			return err
+		}
+		binding.BindingID = bindingID
+	}
 	if err := env.SetScratchRetentionBinding(owner, binding); err != nil {
 		return err
+	}
+	// The environment's freshly minted allocations are fallbacks for any
+	// adopted slot whose directory they are not: mark those kinds pending so
+	// the mint pins as a bare protected reference and the carried slot keeps
+	// naming the retained directory for a later restore to re-probe (the
+	// round-10 displacement contract).
+	for kind, slot := range binding.Slots {
+		if !slot.OwnsLease {
+			continue
+		}
+		if owned := envScratchRefDir(env, kind); owned == "" || filepath.Clean(owned) != filepath.Clean(slot.Dir) {
+			env.MarkRetainedSlotPending(kind)
+		}
 	}
 	if err := env.PinOwnedScratch(); err != nil {
 		return err
@@ -182,6 +223,23 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 func findScratchBinding(manifest sandbox.ScratchManifest, bindingID string) (sandbox.ScratchBinding, bool) {
 	for _, binding := range manifest.Bindings {
 		if binding.BindingID == bindingID {
+			return binding, true
+		}
+	}
+	return sandbox.ScratchBinding{}, false
+}
+
+// findCarriedConsumerBinding resolves the binding a manifest's consumer row
+// for sessionID still names as its current identity. A released manifest's
+// reset carries contended pairs binding-first, so the row a cold restore
+// lands on may already have durable state the reinstall must keep instead of
+// orphaning.
+func findCarriedConsumerBinding(manifest sandbox.ScratchManifest, sessionID string) (sandbox.ScratchBinding, bool) {
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID != sessionID || consumer.CurrentBindingID == "" {
+			continue
+		}
+		if binding, ok := findScratchBinding(manifest, consumer.CurrentBindingID); ok {
 			return binding, true
 		}
 	}
@@ -1633,17 +1691,18 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 			return err
 		}
 		env.DisposeSandboxScratch()
-		gained, err := s.adoptConsumerScratch(env, sessionID)
-		if err != nil {
+		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 			return reprovisionAfterFailedAdoption(env, err)
 		}
-		if !gained {
-			// The pool detached — or the consumer row died — between the slot
-			// read and the claim, and the adoption installed nothing: the
-			// fresh mint is already disposed and the rebuilt wrapper names a
-			// directory this session owns no lease on. The resume PROCEEDS
-			// with this environment, so it must own the scratch its wrapper
-			// names (round 17).
+		// The heal keys on the transfer the environment actually owns, not on
+		// the installed report: the guard's slot read and the claim take
+		// separate pool.mu holds, and a refresh fold racing the two can flip
+		// the slot to contended in between — the adoption then marks the kind
+		// pending and reports installed with no handle transferred, and with
+		// the fresh mint already disposed the resumed root would run on the
+		// retained directory it holds no lease on. Ownership is the same fact
+		// the detached-pool no-op lacks (round 17).
+		if envScratchRefDir(env, sandbox.ScratchKindSandbox) == "" {
 			return reprovisionUnclaimedSandboxScratch(env)
 		}
 	}
@@ -1821,34 +1880,29 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 		return
 	}
 	if s.retainedScratch.Load() == nil {
-		if !createdEnv {
-			// A shared environment is the live parent's own object. The failed
-			// construction's fresh mint is still this restore's to drop, but the
-			// parent's world-usable temp container is not: DisposeUnadoptedScratch
-			// would remove it (removeUnsandboxedTmpLocked), breaking the env
-			// layer's own rule that a live env keeps its container for the
-			// children already spawned through it.
-			local.DisposeSandboxScratch()
-			local.DisposeUnsandboxedScratch()
+		if createdEnv {
+			// No pool exists to classify anything. This is the state every
+			// failed CHILD construction reaches on an environment this
+			// restore created — prepareRetainedScratch never runs for a
+			// child — and every reference such an environment holds was
+			// published by this very restore: the fresh mint the failed
+			// construction pinned under its own new binding. Keeping it
+			// would leak a directory nothing will ever reacquire; disposing
+			// is exactly the fresh-mint contract.
+			local.DisposeUnadoptedScratch()
 			return
 		}
-		// No pool exists to classify anything. This is the state every failed
-		// CHILD construction reaches on an environment this restore created —
-		// prepareRetainedScratch never runs for a child — and every reference
-		// such an environment holds was published by this very restore: the
-		// fresh mint the failed construction pinned under its own new binding.
-		// Keeping it would leak a directory nothing will ever reacquire;
-		// disposing is exactly the fresh-mint contract. (When the manifest is
-		// released or empty the loop below reaches the same outcome anyway.)
-		// The precondition is the caller's, not the manifest's: the single
-		// production caller routes any environment that gained an adopted
-		// allocation to its retain branch before this settlement runs, and a
-		// manifest read cannot take that classification over — the round-11
-		// mint is manifest-referenced exactly like an adopted allocation, so
-		// settling by the manifest demonstrably regresses the pinned dispose
-		// contract.
-		local.DisposeUnadoptedScratch()
-		return
+		// A shared environment is the live parent's own object, and the
+		// manifest can still name what it holds: the failed construction's
+		// mint pins under the parent's inherited binding row — the round-11
+		// shape — and that row survives this settlement. The classification
+		// below is poolless by construction (retainedScratchReferenceDirs
+		// reads the manifest directly and the requeue guard is skipped with
+		// no pool), so it retains what the manifest references — the mint
+		// keeps its directory, its lease released for a later restore of the
+		// same child to reacquire — and the final dispose drops only the
+		// unreferenced scratch while keeping the parent's world-usable temp
+		// container.
 	}
 	referenced, ok := s.retainedScratchReferenceDirs()
 	if !ok {

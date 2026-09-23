@@ -498,6 +498,90 @@ func TestRestoreAdoptionSurvivesPoolDetachAfterDisposal(t *testing.T) {
 	}
 }
 
+// TestRestoreAdoptionReprovisionsWhenTheClaimTurnsContended pins the round-21
+// claim-flip hole: the replacement branch's guard reads the slot under one
+// pool.mu hold and the claim resolves under another, and a refresh fold racing
+// the two can flip the slot to contended in between. The adoption then marks
+// the kind pending and reports installed with NO handle transferred — and with
+// the fresh mint already disposed, the round-17 heal keyed on that installed
+// report never fired, leaving the restored delegate running on the retained
+// directory with no lease. The heal must key on the transfer the environment
+// actually owns.
+func TestRestoreAdoptionReprovisionsWhenTheClaimTurnsContended(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CLAIMFLIP1"
+	const bindingID = "b-claim-flip"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	// The fold lands between the guard's read and the claim's own hold: the
+	// handle leaves the pool and the contention mark goes up — exactly what a
+	// racing refresh converging onto a held-elsewhere lease does.
+	s.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		s.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		pool := s.retainedScratch.Load()
+		pool.mu.Lock()
+		delete(pool.handles, key)
+		pool.contended[key] = struct{}{}
+		pool.mu.Unlock()
+	}
+	adopted, err := s.adoptRestoredConsumerScratch(env, consumerID, true)
+	if err != nil {
+		t.Fatalf("restore adoption across the contended flip: %v", err)
+	}
+	if adopted {
+		t.Fatal("a contended-claim fallback reported a transferred allocation")
+	}
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := ""
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			owned = ref.Dir
+		}
+	}
+	if owned == "" {
+		t.Fatalf("the contended flip left the restored session with no owned sandbox scratch (SessionScratchDir %q)", env.SessionScratchDir())
+	}
+	if filepath.Clean(owned) == filepath.Clean(retainedDir) {
+		t.Fatalf("the restored session runs on the retained %q with no lease", retainedDir)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(owned) {
+		t.Fatalf("the wrapper %q does not name the owned scratch %q", got, owned)
+	}
+	if _, err := os.Stat(owned); err != nil {
+		t.Fatalf("the re-provisioned scratch is not on disk: %v", err)
+	}
+}
+
 // TestRestoreAdoptionSurvivesPoolDetachBetweenLoads pins round 18's High: the
 // pool can detach between adoptConsumerScratch's row read and
 // adoptRetainedScratchFor's own pool load. The inner transfer silently no-ops
@@ -2233,6 +2317,90 @@ func TestScratchReinstallKeepsLiveLeasedScratch(t *testing.T) {
 	}
 	if !referenced {
 		t.Fatalf("the live leased scratch %q is referenced by no allocation in the reinstalled manifest", liveDir)
+	}
+}
+
+// TestScratchReinstallAdoptsTheCarriedConsumerBinding pins the round-21
+// released-manifest orphan: the reset carries a contended binding and its
+// consumer for exactly the session being cold-restored, but the reinstall's
+// fresh path minted a NEW binding id and REPLACED the carried consumer row —
+// leaving the carried binding's lease-owning slot named by no consumer role,
+// the shape the graph reader fails closed on, with Released false again and
+// no later reset to repair it. The reinstall must adopt the carried binding:
+// the consumer row keeps naming it, its slot keeps naming the retained
+// directory, and the fresh mint pins as the pending fallback it is.
+func TestScratchReinstallAdoptsTheCarriedConsumerBinding(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const childID = "01CARRIEDCHILD1"
+	const bindingID = "b-carried-child"
+	slots, _ := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, childID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+
+	// The lease stays held, so the terminal release leaves the pin behind and
+	// the reset carries the contended pair.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+
+	// The cold restore reconstructs the child's environment fresh: a new
+	// object with no installed binding and a freshly minted scratch.
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	if err := s.installChildScratchRetention(env, childID); err != nil {
+		t.Fatalf("reinstall the carried child binding: %v", err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The graph must stay reader-valid: the carried binding owns a
+	// lease-owning slot, so some consumer role must name it.
+	if err := validateRetainedScratchGraph(manifest); err != nil {
+		t.Fatalf("the reinstall committed an invalid retention graph: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("the carried binding %q is absent after the reinstall", bindingID)
+	}
+	slot, hasSlot := row.Slots[sandbox.ScratchKindSandbox]
+	if !hasSlot || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the carried binding's slot must keep naming the retained %q: %+v", retainedDir, row.Slots)
+	}
+	current := ""
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == childID {
+			current = consumer.CurrentBindingID
+		}
+	}
+	if current != bindingID {
+		t.Fatalf("the child's consumer row names %q, want the carried %q", current, bindingID)
+	}
+	// The fresh mint is a fallback for the carried slot, not a replacement:
+	// its kind stays pending so it pins as a bare protected reference.
+	pending := false
+	for _, kind := range env.RetentionPendingKinds() {
+		if kind == sandbox.ScratchKindSandbox {
+			pending = true
+		}
+	}
+	if !pending {
+		t.Fatalf("the fresh mint's kind is not pending: %v", env.RetentionPendingKinds())
 	}
 }
 

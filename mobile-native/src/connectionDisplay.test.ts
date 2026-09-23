@@ -220,6 +220,78 @@ it("a hub re-key with the old client still ready walls, withholds the client, an
 	expect(deferred()).toBe(false);
 });
 
+// The persisting half of the re-key window: the moved render refuses the old
+// hub's pairing (the test above), but the settling effects must not then
+// re-adopt it. The connection still reports hub-1's client as ready, so every
+// render under hub-2 keeps refusing that pairing until the connection reports
+// for hub-2 itself - a genuinely new client, which the hooks adopt only once
+// its readiness is settled under the scope it arrived in.
+it("a hub re-key keeps refusing the previous hub's ready pairing until the connection re-points", () => {
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	const renderClient = renderHook(() => useRenderClient(client, state, hubId));
+	const live = renderHook(() => useLiveReadiness(hubId, client, state));
+
+	// hub-1's connection is genuinely ready.
+	expect(display.result.current).toBe("none");
+	expect(renderClient.result.current).toBe(first);
+	expect(live.result.current()).toBe(true);
+
+	// The re-key: hubId moves, client and state unchanged.
+	hubId = "hub-2";
+	display.rerender();
+	renderClient.rerender();
+	live.rerender();
+	expect(display.result.current).toBe("wall");
+	expect(renderClient.result.current).toBeNull();
+	expect(live.result.current()).toBe(false);
+
+	// The effects have settled; a plain rerender carries the same stale
+	// pairing and must refuse it just the same.
+	display.rerender();
+	renderClient.rerender();
+	live.rerender();
+	expect(display.result.current).toBe("wall");
+	expect(renderClient.result.current).toBeNull();
+	expect(live.result.current()).toBe(false);
+
+	// Back under hub-1 with no transition in between: the pairing is hub-1's
+	// own again, and every hook serves it immediately.
+	hubId = "hub-1";
+	display.rerender();
+	renderClient.rerender();
+	live.rerender();
+	expect(display.result.current).toBe("none");
+	expect(renderClient.result.current).toBe(first);
+	expect(live.result.current()).toBe(true);
+
+	// The connection re-points for hub-2: a null gap while it dials, then a
+	// genuinely new client. That client is genuinely hub-2's own - the
+	// adoption's settling re-render serves it, and nothing of hub-1's pairing
+	// leaks into it.
+	hubId = "hub-2";
+	client = null;
+	state = "connecting";
+	display.rerender();
+	renderClient.rerender();
+	live.rerender();
+	expect(display.result.current).toBe("wall");
+	expect(renderClient.result.current).toBeNull();
+	expect(live.result.current()).toBe(false);
+	client = second;
+	state = "ready";
+	display.rerender();
+	renderClient.rerender();
+	live.rerender();
+	expect(display.result.current).toBe("none");
+	expect(renderClient.result.current).toBe(second);
+	expect(live.result.current()).toBe(true);
+});
+
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
 	const handler = vi.fn();
 	whenReady(() => false, handler)("a", 1);

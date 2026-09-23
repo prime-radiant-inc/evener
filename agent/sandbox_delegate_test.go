@@ -303,12 +303,22 @@ func scratchDirsIn(t *testing.T, base string) []string {
 	return found
 }
 
-// A committed delegate's restore builds the child its own environment and then
-// constructs the session on it — and the construction runs the git snapshot,
-// which is what mints an unsandboxed environment's scratch dir. A restore that
-// fails after that point (a fault anywhere inside initSessionState) leaves no
-// session to own the scratch, so the abort has to drop it and its lease.
-func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
+// A committed delegate's restore constructs the session on the child's
+// environment — and the construction runs the git snapshot, which is what
+// mints an unsandboxed environment's scratch dir. The default child shape
+// works in the parent's workspace, so the mint lands on the live parent's
+// SHARED environment, and the construction's pin recorded it under the
+// parent's inherited binding row: the manifest references it. A restore that
+// fails after that point leaves no session to own the scratch, but the
+// settlement must still classify by the manifest the way the pooled tail does
+// (round 21): the referenced mint is retained with its lease released — the
+// handoff a retirement makes — so a later restore of the same child re-probes
+// and reacquires the durable directory instead of the state silently
+// disappearing. Round 11 disposed it as "a directory nothing will ever
+// reacquire"; that premise only ever held for an environment the restore
+// itself created, whose binding row died with the failure. The parent's
+// world-usable temp container is not the mint and stays (round 20).
+func TestRestoreIdleFailureRetainsTheManifestReferencedChildScratch(t *testing.T) {
 	// A write-capable ceiling keeps the restore off the read-only floor, so the
 	// child gets a plain unsandboxed environment — the default shape, which mints
 	// its scratch lazily rather than owning one from EnableSandbox.
@@ -351,8 +361,34 @@ func TestRestoreIdleFailureDisposesTheChildScratch(t *testing.T) {
 	}
 	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
 
-	if leaked := scratchDirsIn(t, scratchBase); len(leaked) != 0 {
-		t.Errorf("failed delegate restore left scratch %v, which nothing will ever release", leaked)
+	// The manifest-referenced mint survives, its lease released for the next
+	// restore of the same child to reacquire.
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root session has no scratch retention owner")
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var minted []sandbox.ScratchReference
+	for _, ref := range manifest.References {
+		if strings.HasPrefix(filepath.Clean(ref.Dir), filepath.Clean(scratchBase)+string(os.PathSeparator)) {
+			minted = append(minted, ref)
+		}
+	}
+	if len(minted) == 0 {
+		t.Fatalf("no manifest reference names a scratch under the mint base %q: %+v", scratchBase, manifest.References)
+	}
+	for _, ref := range minted {
+		if _, err := os.Stat(ref.Dir); err != nil {
+			t.Fatalf("the manifest-referenced scratch %q did not survive the failed restore: %v", ref.Dir, err)
+		}
+		handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
+		if err != nil {
+			t.Fatalf("the retained scratch %q was not left with its lease released for a later restore: %v", ref.Dir, err)
+		}
+		_ = handle.Retain()
 	}
 }
 

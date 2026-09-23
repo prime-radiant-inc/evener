@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
@@ -24,31 +24,34 @@ export type LiveReadiness = () => boolean;
  * state must still be ready for the same hub and client before it may run —
  * and in the re-key window, where the hub has moved while the connection
  * still reports the previous hub's client as ready, that pairing is the
- * previous hub's say-so and authorizes nothing. */
+ * previous hub's say-so and authorizes nothing. A client object's first
+ * observation is the scope it was born under: a moved scope carrying a client
+ * born under the previous hub is refused however often it re-renders, until
+ * the connection reports a client that genuinely arrived — and proved ready —
+ * under the scope it is asked to authorize. */
 export function useLiveReadiness(
 	scope: string,
 	client: object | null,
 	state: ConnectionState,
 ): LiveReadiness {
+	// The pairing is settled by the effect below, never during render: a
+	// render React abandons midway must not leave ref writes behind.
 	const current = useRef({ scope, client, state });
-	current.current = { scope, client, state };
-	// The last pairing an effect settled is the trusted one. A moved scope
-	// still carrying the client the previous scope adopted is the re-key
-	// window the doc comment describes; the effect below re-establishes the
-	// pair, so exactly the moved render refuses.
-	const established = useRef({ scope, client });
-	const stalePair =
-		established.current.scope !== scope && established.current.client === client;
+	const bornScope = useRef({ client, scope });
 	useEffect(() => {
-		established.current = { scope, client };
-	}, [scope, client]);
+		if (client !== null && bornScope.current.client !== client) {
+			bornScope.current = { client, scope };
+		}
+		current.current = { scope, client, state };
+	}, [scope, client, state]);
 	return useCallback(
 		() =>
-			!stalePair &&
+			bornScope.current.client === client &&
+			bornScope.current.scope === scope &&
 			current.current.scope === scope &&
 			current.current.client === client &&
 			current.current.state === "ready",
-		[scope, client, stalePair],
+		[scope, client],
 	);
 }
 
@@ -85,7 +88,21 @@ export function connectionDisplay(
  * `hubId` moves, and the new hub's first render already reads them as void,
  * so a hub the profile is still moving toward inherits neither the banner
  * history nor the fatal wall of the one before it. That first moved render
- * walls outright — the state it reports still belongs to the previous hub. */
+ * walls outright — the state it reports still belongs to the previous hub —
+ * and the window does not close when the effects settle: a ready state only
+ * earns its screen for the hub its readiness was earned under
+ * (`trustedScope`, re-recorded only on a transition into ready), so every
+ * ready render under the new hub walls until the connection itself
+ * transitions into ready for it. A return to a hub whose trust still stands
+ * shows immediately.
+ *
+ * `trustedScope` is state, not a ref, because it gates what the ready
+ * renders show: the transition into ready that re-records it is the same
+ * commit the ready renders arrive in, so without its own re-render a screen
+ * whose connection went ready under a new hub would read the stale trust
+ * until something else happened to render. The `everReady` and fatal
+ * recovery refs stay refs - they are only ever read alongside a state that
+ * already re-renders. */
 export function useConnectionDisplay(
 	hubId: string | undefined,
 	state: ConnectionState,
@@ -94,6 +111,14 @@ export function useConnectionDisplay(
 	const everReady = useRef(false);
 	const fatalRecovery = useRef(false);
 	const scope = useRef<string | undefined>(hubId);
+	// The hub whose connection the current ready state vouches for: set at
+	// mount and on every transition INTO ready, read on every ready render. A
+	// hub change alone — the re-key window's only event — never re-records
+	// it, so however long the connection keeps reporting the previous hub's
+	// client as ready under the new hub, the trust stays with the hub that
+	// earned it.
+	const [trustedScope, setTrustedScope] = useState<string | undefined>(hubId);
+	const lastState = useRef<ConnectionState | "unmounted">("unmounted");
 	// The hub the refs still record retention for. The reset itself runs in
 	// the effect below, so this render computes with voided values instead of
 	// mutating the refs mid-render.
@@ -103,6 +128,15 @@ export function useConnectionDisplay(
 			scope.current = hubId;
 			everReady.current = false;
 			fatalRecovery.current = false;
+		}
+		if (state !== lastState.current) {
+			if (state === "ready") {
+				// A transition INTO ready is the one event that vouches for
+				// the hub it happened under; the mount counts as one through
+				// the "unmounted" sentinel.
+				setTrustedScope(hubId);
+			}
+			lastState.current = state;
 		}
 		if (state === "ready") {
 			everReady.current = true;
@@ -116,10 +150,17 @@ export function useConnectionDisplay(
 	}, [state, fatal, hubId]);
 	// The connection reports the PREVIOUS hub in the re-key window (`hubId`
 	// has moved while the connection still reports the old one), and this
-	// hook cannot see which client that state vouches for. Void the whole
-	// moved render — the wall is the fail-closed display — and read retention
-	// only on the renders after the effect settles the new scope.
-	if (scopeMoved) {
+	// hook cannot see which client that state vouches for. Void the moved
+	// render's non-ready states outright — the wall is the fail-closed
+	// display — and read retention only on the renders after the effect
+	// settles the new scope; its ready states take the trust gate below.
+	if (scopeMoved && state !== "ready") {
+		return "wall";
+	}
+	// A ready state only earns its screen for the hub it vouches for: through
+	// the whole window that is the previous hub, so the ready renders under
+	// the new one wall until the connection transitions into ready for it.
+	if (state === "ready" && trustedScope !== hubId) {
 		return "wall";
 	}
 	return connectionDisplay(state, everReady.current, fatal || fatalRecovery.current);
@@ -155,37 +196,35 @@ export function whenReady<A extends unknown[]>(
  * ClientProvider slot - AFTER `await fresh.connect()` resolves, never on
  * construction.
  *
- * Scoped to `hubId` - the ACTIVE profile's hub, not the route's - for the
- * same reason `useConnectionDisplay` is: once the connection's hub moves,
- * whatever client the previous hub adopted is dropped, so a screen re-keyed
- * ahead of its profile never renders the previous hub's retained client
- * under the new hub's banner. */
+ * The adoption records the hub the new client proved ready under, and a
+ * client is only served for the hub that adopted it: a hub change alone
+ * re-adopts nothing, so in the re-key window — where the connection still
+ * reports the previous hub's client as ready — the carried client is refused
+ * on every render, the way `useConnectionDisplay` walls them, until the
+ * connection reports a client that proved ready under the new hub (withheld
+ * for the one render before its settling effect runs). A return to a hub
+ * whose adoption still stands serves immediately.
+ *
+ * The adoption is state, not a ref, because it gates what the ready renders
+ * hand out: a connection can deliver a new hub's client and its readiness in
+ * one commit, and without the adoption's own re-render the stores that read
+ * through the rendered client would wait on a render that never comes. */
 export function useRenderClient(
 	client: AppwireClient | null,
 	state: ConnectionState,
 	hubId: string | undefined,
 ): AppwireClient | null {
-	const lastClient = useRef<AppwireClient | null>(null);
-	const scope = useRef<string | undefined>(hubId);
-	// The same read-side void as useConnectionDisplay: the reset runs in the
-	// effect, so the new hub's first render must not fall back to the
-	// previous hub's client while the refs still hold it.
-	const scopeMoved = scope.current !== hubId;
+	const [adoption, setAdoption] = useState<{ client: AppwireClient | null; scope: string | undefined }>(() => ({
+		client: null,
+		scope: hubId,
+	}));
 	useEffect(() => {
-		if (scope.current !== hubId) {
-			scope.current = hubId;
-			lastClient.current = null;
+		if (state === "ready" && client !== null && client !== adoption.client) {
+			setAdoption({ client, scope: hubId });
 		}
-		if (state === "ready") lastClient.current = client;
-	}, [state, hubId, client]);
-	// In the re-key window the connection still reports the PREVIOUS hub's
-	// client as ready, and lastClient.current is exactly that previous
-	// adoption, so a moved scope still carrying it must not hand it out as
-	// though the new hub's connection had vouched for it. The new hub's own
-	// client is a different object and passes.
-	if (scopeMoved && client === lastClient.current) {
-		return null;
+	}, [state, hubId, client, adoption.client]);
+	if (state === "ready") {
+		return adoption.scope === hubId ? client : null;
 	}
-	return state === "ready" ? client : scopeMoved ? null : lastClient.current;
+	return adoption.scope === hubId ? adoption.client : null;
 }
-

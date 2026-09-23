@@ -2463,20 +2463,23 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 			return false, err
 		}
 		env.DisposeSandboxScratch()
-		gained, err := s.adoptConsumerScratch(env, sessionID)
-		if err != nil {
+		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 			return false, reprovisionAfterFailedAdoption(env, err)
 		}
-		if !gained {
-			// The pool detached — or the consumer row died — between the slot
-			// read and the claim, and the adoption installed nothing: the
-			// fresh mint is already disposed and the rebuilt wrapper names a
-			// directory this session owns no lease on. The restore PROCEEDS
-			// with this environment, so it must own the scratch its wrapper
-			// names — and no transfer is reported, so the failure path still
-			// treats a later scratch as a plain mint (round 17).
+		// The heal keys on the transfer the environment actually owns, not on
+		// the installed report: the guard's slot read and the claim take
+		// separate pool.mu holds, and a refresh fold racing the two can flip
+		// the slot to contended in between — the adoption then marks the kind
+		// pending and reports installed with NO handle transferred, and with
+		// the fresh mint already disposed the wrapper would run the session
+		// on the retained directory it holds no lease on. Ownership is the
+		// same fact the detached-pool no-op lacks (round 17), and no transfer
+		// is reported either way, so the failure path still treats a later
+		// scratch as a plain mint.
+		if envScratchRefDir(env, sandbox.ScratchKindSandbox) == "" {
 			return false, reprovisionUnclaimedSandboxScratch(env)
 		}
+		return true, nil
 	} else if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 		return false, err
 	}

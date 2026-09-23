@@ -181,9 +181,11 @@ function HubSettings({
 	);
 	useEffect(() => () => upgrade.dispose(), [upgrade]);
 	useEffect(() => () => model.dispose(), [model]);
+	const focusRead = useRef(false);
 	useFocusEffect(
 		useCallback(() => {
 			if (!canUseConnection()) return;
+			focusRead.current = true;
 			void model.getState().refresh();
 			void upgrade.reconcileAfterReconnect();
 		}, [canUseConnection, model, upgrade]),
@@ -195,17 +197,24 @@ function HubSettings({
 	// ready. The overview store keeps the last successful load through a
 	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
 	// data stays usable meanwhile; this is the recovery read: one refresh and
-	// one upgrade reconcile per transition back to ready. The seed counts a
-	// mount that is already ready as refreshed: the focus read above is the
-	// read it owes, and a ready "transition" that never happened must not
-	// fire a second refresh and reconcile on top of it.
-	const refreshedAtReady = useRef(connectionState === "ready");
+	// one upgrade reconcile per transition back to ready, and none on a mount
+	// that is already ready when the focus read above covered it. The focus
+	// read is live-gated, and the live predicate settles in the parent's
+	// effect AFTER this screen's own effects run: a mount that is already
+	// ready under a pairing the predicate has not settled yet (a re-keyed
+	// body remounting under the new hub's fresh client) sees its focus read
+	// refused, so the recovery arm below fires for the readiness the focus
+	// read could not cover - the render gates that let this screen mount are
+	// the trust authority for it, not the deferred-request predicate.
+	const refreshedAtReady = useRef(false);
 	useEffect(() => {
 		if (connectionState !== "ready") {
 			refreshedAtReady.current = false;
+			focusRead.current = false;
 			return;
 		}
 		if (refreshedAtReady.current) return;
+		if (focusRead.current) return;
 		refreshedAtReady.current = true;
 		void model.getState().refresh();
 		void upgrade.reconcileAfterReconnect();

@@ -1796,6 +1796,83 @@ func TestResumedRootAdoptionSurvivesPoolDetachAfterDisposal(t *testing.T) {
 	}
 }
 
+// TestResumedRootAdoptionReprovisionsWhenTheClaimTurnsContended is the
+// resumed-root flavor of the round-21 claim flip: the same separate-holds
+// window between adoptResumedRootScratch's guard and its claim, the same
+// pending-mark-installed-report lie, and the same requirement that the heal
+// key on the transfer the environment actually owns.
+func TestResumedRootAdoptionReprovisionsWhenTheClaimTurnsContended(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const sessionID = "01RESUMEDROOTFLIP1"
+	const bindingID = "b-resume-flip"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, sessionID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: {SessionID: sessionID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision enforced sandbox: %v", err)
+	}
+	minted := env.SessionScratchDir()
+	if minted == "" {
+		t.Fatal("environment minted no fresh sandbox scratch")
+	}
+	if filepath.Clean(minted) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture scratch dirs collide at %q", minted)
+	}
+
+	// The fold lands between the guard's read and the claim's own hold.
+	s.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		s.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		pool := s.retainedScratch.Load()
+		pool.mu.Lock()
+		delete(pool.handles, key)
+		pool.contended[key] = struct{}{}
+		pool.mu.Unlock()
+	}
+	if err := s.adoptResumedRootScratch(env, sessionID); err != nil {
+		t.Fatalf("resumed-root adoption across the contended flip: %v", err)
+	}
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := ""
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			owned = ref.Dir
+		}
+	}
+	if owned == "" {
+		t.Fatalf("the contended flip left the resumed root with no owned sandbox scratch (SessionScratchDir %q)", env.SessionScratchDir())
+	}
+	if filepath.Clean(owned) == filepath.Clean(retainedDir) {
+		t.Fatalf("the resumed root runs on the retained %q with no lease", retainedDir)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(owned) {
+		t.Fatalf("the wrapper %q does not name the owned scratch %q", got, owned)
+	}
+	if _, err := os.Stat(owned); err != nil {
+		t.Fatalf("the re-provisioned scratch is not on disk: %v", err)
+	}
+}
+
 // TestRetirementResumedUnsandboxedRootKeepsRetainedScratch is the regression for
 // a resumed unsandboxed root that kept a fresh launch mint instead of its
 // retained directory. The launcher environment handed to the restore may already
