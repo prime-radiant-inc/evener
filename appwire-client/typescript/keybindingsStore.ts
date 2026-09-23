@@ -283,7 +283,12 @@ const MALFORMED_MESSAGE = "Hub returned malformed keybindings overrides";
  * path, so it never reaches state verbatim. */
 const DRAFT_SAVE_FAILED_MESSAGE = "Could not save the shortcut draft locally.";
 const DRAFT_DISCARD_FAILED_MESSAGE = "Could not discard the shortcut draft locally.";
-const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved shortcut draft. Check current shortcuts to retry.";
+/** The one draft-port message the native offline provider also renders: its
+ * store-free probe reads the same record a live store's restoreDraft does, so
+ * the retained/offline projection imports this constant rather than
+ * re-declaring the copy - one literal, so the two surfaces cannot drift. */
+export const DRAFT_RESTORE_FAILED_MESSAGE =
+  "Could not restore the saved shortcut draft. Check current shortcuts to retry.";
 const DRAFT_CLEANUP_FAILED_MESSAGE =
   "The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
 const DRAFT_REVIEW_AGAIN_MESSAGE = "Shortcuts changed again. Review the current values.";

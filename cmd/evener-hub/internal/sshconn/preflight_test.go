@@ -3,7 +3,10 @@ package sshconn
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -47,7 +50,7 @@ func TestParseEffectiveUID(t *testing.T) {
 	}
 }
 
-// TestOSArchMappingParity pins the uname mapping to install.sh:21-45. If
+// TestOSArchMappingParity pins the uname mapping to install.sh:35-59. If
 // install.sh grows a target, this table and mapOS/mapArch must change together.
 func TestOSArchMappingParity(t *testing.T) {
 	osCases := []struct {
@@ -281,5 +284,55 @@ func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
 				t.Fatalf("sshRunFailure = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestPreflightMissingExecutableCarriesTheDeployRemedy pins the remedy half of
+// the terminal missing-executable refusal: with no deploy path configured the
+// host has no evener and nothing can install one, so the refusal must name the
+// flags that configure a deploy (Options.DeployHelp), or the library's own field
+// for an embedder that names none — the same seam the terminal version refusal
+// uses. Before this the operator saw only that the executable was missing.
+func TestPreflightMissingExecutableCarriesTheDeployRemedy(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
+	newRunner := func() *fakeRunner {
+		return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.HasSuffix(joined, "uname -s"):
+				return []byte("Linux\n"), nil
+			case strings.HasSuffix(joined, "uname -m"):
+				return []byte("x86_64\n"), nil
+			case strings.Contains(joined, "XDG_STATE_HOME"):
+				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+			case strings.HasSuffix(joined, "id -u"):
+				return []byte("1000\n"), nil
+			case strings.Contains(joined, "launch-check"):
+				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+			case strings.Contains(joined, `if [ -n "${HOME-}" ]`):
+				return nil, nil // nothing at the installer default either
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+	}
+
+	const help = "set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path>"
+	m := newTestManager(t, testRegistry(t, host), newRunner(), Options{DeployHelp: help})
+	_, err := m.preflight(context.Background(), host)
+	if !errors.Is(err, ErrExecutableMissing) {
+		t.Fatalf("preflight err = %v, want ErrExecutableMissing", err)
+	}
+	if !strings.Contains(err.Error(), help) {
+		t.Fatalf("refusal does not name the flags that configure a deploy: %v", err)
+	}
+
+	m = newTestManager(t, testRegistry(t, host), newRunner(), Options{})
+	_, err = m.preflight(context.Background(), host)
+	if !errors.Is(err, ErrExecutableMissing) {
+		t.Fatalf("preflight err = %v, want ErrExecutableMissing", err)
+	}
+	if !strings.Contains(err.Error(), "set Options.BuildSource") {
+		t.Fatalf("refusal does not keep the library's remedy for an embedder with no flags: %v", err)
 	}
 }

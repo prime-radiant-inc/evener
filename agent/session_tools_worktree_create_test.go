@@ -860,6 +860,42 @@ func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
 	}
 }
 
+// REAL git: a lane cut with `worktree add -b` on a branch that differs from its
+// directory name is a registry effect — the branch really exists, the lane
+// really checks it out — and only git can prove it. The sidecar must record the
+// two independently: the directory name stays the machine key, the branch
+// carries the human-facing name (the delegate-lane branch-names design).
+func TestWorktreeCreateCore_BranchDiffersFromName(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	active := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	res, err := r.s.worktreeCreateCore(t.Context(), active, "lane-dir", "feat/mnemonic", "", worktree.EvCreate, worktree.FormatSessionMarker(r.s.id), "manage_worktree create", nil)
+	if err != nil {
+		t.Fatalf("worktreeCreateCore: %v", err)
+	}
+	defer res.Done()
+	if res.Branch != "feat/mnemonic" {
+		t.Errorf("result Branch = %q, want feat/mnemonic", res.Branch)
+	}
+	if filepath.Base(res.Path) != "lane-dir" {
+		t.Errorf("lane path = %q, want a directory named lane-dir", res.Path)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "feat/mnemonic") {
+		t.Error("branch feat/mnemonic was not created")
+	}
+	e := r.porcelainEntry(t, res.Path)
+	if e.Branch != "refs/heads/feat/mnemonic" {
+		t.Errorf("lane's checked-out branch = %q, want refs/heads/feat/mnemonic", e.Branch)
+	}
+	sc, err := worktree.ReadSidecar(r.metaDir(t, res.MainRoot), "lane-dir")
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if sc.Name != "lane-dir" || sc.Branch != "feat/mnemonic" {
+		t.Errorf("sidecar name/branch = %q/%q, want lane-dir/feat/mnemonic", sc.Name, sc.Branch)
+	}
+}
+
 // REAL git: the base default is proven by really ADVANCING one worktree's HEAD
 // with a commit and watching the next create resolve against it.
 func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
@@ -1088,7 +1124,7 @@ func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
 	r.s.mu.Unlock()
 
 	marker := worktree.FormatSessionMarker(r.s.id)
-	_, err := r.s.worktreeCreateCore(context.Background(), active, "x", "", worktree.EvCreate, marker, "test", nil)
+	_, err := r.s.worktreeCreateCore(context.Background(), active, "x", "x", "", worktree.EvCreate, marker, "test", nil)
 	if err == nil || !strings.Contains(err.Error(), "local execution environment") {
 		t.Fatalf("worktreeCreateCore with a decoupled non-local session env: err = %v, want a local-execution-environment error", err)
 	}

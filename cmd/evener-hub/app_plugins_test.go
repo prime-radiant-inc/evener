@@ -597,7 +597,7 @@ func TestPlugins_Marketplace_RemoveCloneRemovalFailureReturnsALitterWireError(t 
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on a Unix directory permission to force a real removal failure")
 	}
-	if os.Getuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("root ignores the directory permission this test relies on")
 	}
 	ctl := newTestPluginsController(t)
@@ -675,7 +675,7 @@ func TestPlugins_Marketplace_RemoveCloneRemovalFailureSurvivesAReconcileListFail
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on a Unix file permission to force a real read failure")
 	}
-	if os.Getuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("root ignores the file permission this test relies on")
 	}
 	ctl := newTestPluginsController(t)
@@ -756,7 +756,7 @@ func TestPlugins_Marketplace_RemoveCloneRemovalFailureLogsTheReconcileListFailur
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on a Unix file permission to force a real read failure")
 	}
-	if os.Getuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("root ignores the file permission this test relies on")
 	}
 	ctl := newTestPluginsController(t)
@@ -879,7 +879,7 @@ func TestPlugins_Marketplace_RemoveSuccessListReadFailureStaysApplied(t *testing
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on a Unix file permission to force a real read failure")
 	}
-	if os.Getuid() == 0 {
+	if os.Geteuid() == 0 {
 		t.Skip("root ignores the file permission this test relies on")
 	}
 	ctl := newTestPluginsController(t)

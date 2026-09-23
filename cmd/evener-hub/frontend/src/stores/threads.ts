@@ -106,6 +106,16 @@ export class ConflictError extends Error {
   }
 }
 
+// The ghost's display input (steering-ghost spec §3): the row's full text
+// - or the daemon's own preview placeholder when the row is image-only -
+// plus its canonical skill selections, so the optimistic promote record
+// previews the message it will become instead of the action's wire
+// parameters.
+export interface PromoteDisplayInput {
+  text: string;
+  skillNames?: readonly string[];
+}
+
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
@@ -184,7 +194,12 @@ export interface ThreadsStoreState {
   // the id the daemon minted for that queue position (QueueState.IDs) - a
   // mismatch (the queue shifted under the caller's snapshot) is a Conflict,
   // never a wrong-message promote.
-  promoteQueuedAsSteer(ref: string, index: number, expectedEntryId: string): Promise<void>;
+  promoteQueuedAsSteer(
+    ref: string,
+    index: number,
+    expectedEntryId: string,
+    display: PromoteDisplayInput,
+  ): Promise<void>;
   // Removes the queued follow-up at index so it is never consumed (issue
   // #23; also the removal half of the composer's edit-and-recompose flow).
   // Same expectedEntryId Conflict semantics as promoteQueuedAsSteer. The
@@ -3382,7 +3397,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments, skillNames));
   },
 
-  async promoteQueuedAsSteer(ref, index, expectedEntryId) {
+  async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
     // turn id that would only add a second way to fail.
@@ -3390,7 +3405,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ref,
       "turn/promoteQueuedAsSteer",
       { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
-      { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
+      {
+        method: "turn/promoteQueuedAsSteer",
+        input: [
+          ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
+          ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
+        ],
+      },
     );
   },
 

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 )
@@ -555,8 +556,11 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
-		Isolation:       stringArg(args, "isolation"),
-		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
+		// Isolation is normalized here so every downstream consumer — the
+		// name pairing guard below, create, describe — sees one shape; a
+		// padded value must not refuse at exactly one of them.
+		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
+		Sandbox:   stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
 	if raw, exists := args["fork_context"]; exists {
 		var ok bool
@@ -593,6 +597,22 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		default:
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
+	}
+	// name: the mnemonic git branch of a worktree-isolated delegate's lane, so
+	// `git branch` and merges read clearly. Only meaningful with isolation
+	// "worktree" (the lane directory and every addressing surface stay keyed to
+	// the delegate id), so refuse it otherwise. Validated here with the same
+	// alphabet manage_worktree names use, before any capacity is reserved; the
+	// create core re-checks with git's own ref rules and refuses a branch that
+	// already exists.
+	if name := stringArg(args, "name"); name != "" {
+		if a.Isolation != "worktree" {
+			return delegateArgs{}, errors.New(`invalid_request: name is only valid with isolation:"worktree"`)
+		}
+		if verr := worktree.ValidateName(name); verr != nil {
+			return delegateArgs{}, fmt.Errorf("invalid_request: name: %w", verr)
+		}
+		a.Name = name
 	}
 	// delegation_allowance: absent = the default grant (one level below the
 	// creator, resolved by createDelegate); 0 = leaf delegate; positive =

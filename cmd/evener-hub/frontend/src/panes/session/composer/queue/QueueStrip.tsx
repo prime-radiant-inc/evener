@@ -128,7 +128,17 @@ const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this sess
 const RECOVERY_ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available until this session is resumed";
 
 function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
-  const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
+  // A promoted row's composed content lives in its optimisticDisplay.input -
+  // its wire params carry only the queue position - so this reading prefers
+  // the display input and falls back to the payload input every other
+  // method populates (the same precedence pendingEntries' outboxInput gives
+  // pending rows).
+  const display = record.optimisticDisplay;
+  const displayInput =
+    display && typeof display === "object" && "input" in display && Array.isArray(display.input)
+      ? (display.input as InputItem[])
+      : undefined;
+  const input = displayInput ?? (Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : []);
   const text = input
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
@@ -237,7 +247,12 @@ export function QueueStrip({
     });
   }
 
-  async function handlePromote(index: number, entryId: string): Promise<void> {
+  async function handlePromote(
+    index: number,
+    entryId: string,
+    displayText: string,
+    skillNames?: readonly string[],
+  ): Promise<void> {
     // The recovery fence, re-read live at the press (the same render-vs-press
     // rule as pressRefusal below): the hub refuses turn/promoteQueuedAsSteer
     // for the obligation's whole window, so an offered press could only mint
@@ -255,7 +270,10 @@ export function QueueStrip({
     }
     setRowBusy(entryId, true);
     try {
-      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
+      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
+        text: displayText,
+        skillNames,
+      });
       // Success is entirely rendered by the daemon's own thread/queueChanged
       // (row removed) + evener/steering/injected (transcript shows it) - no
       // local mirror, per parity §B.
@@ -515,7 +533,17 @@ export function QueueStrip({
                         : (controls.reason.drain ?? STEER_UNAVAILABLE)
                   }
                   onClick={() => {
-                    if (entryId !== undefined) void handlePromote(index, entryId);
+                    if (entryId !== undefined) {
+                      // The ghost's display text: the row's full text, or - for a
+                      // blank row - the same stripped preview the row renders
+                      // above: the image placeholder for an image-only row (its
+                      // whole content), and nothing for a skill-only row, where
+                      // the named markers carry the whole content and the raw
+                      // "[skill]" placeholder would only double it.
+                      const rowText = fullText ?? "";
+                      const displayText = rowText.trim() !== "" ? rowText : previewText;
+                      void handlePromote(index, entryId, displayText, entrySkillNames);
+                    }
                   }}
                 />
                 <ActionButton

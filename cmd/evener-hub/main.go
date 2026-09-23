@@ -101,6 +101,11 @@ type hubOptions struct {
 	addr         string
 	evenerBinary string
 	appwireTrace string
+	// deployBinary and buildSource describe how a missed host gets the
+	// controller's build pushed to it. They are empty for a local-only
+	// controller, which needs no deploy path at all.
+	deployBinary string
+	buildSource  string
 }
 
 type mainDeps struct {
@@ -111,6 +116,11 @@ type mainDeps struct {
 	loadAuthToken   func(string) (string, error)
 	loadCredentials func(string) (*credentials.Store, error)
 	loadRegistry    hubcore.RegistryLoader
+	// newSSHManager builds the SSH connection manager. It is a seam so a test can
+	// capture the sshconn.Options the hub hands it — in particular DeployHelp,
+	// which is what makes the terminal version refusal name the hub's flags
+	// instead of sshconn's internal field name. nil uses sshconn.New.
+	newSSHManager func(*hostreg.Registry, sshconn.Options) *sshconn.Manager
 	// startLivePrefetch warms the holder's live model cache: main wires it to
 	// the background runner and the broadcast, tests to a synchronous seam.
 	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
@@ -425,8 +435,27 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// manager, and its event recorder is only ever invoked once the
 	// background loops start attaching hosts.
 	var hostManageEvents func(sshconn.Event)
-	sshManager := sshconn.New(hostRegistry, sshconn.Options{
-		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+	// The deploy wiring is a pure function of the flags: -deploy-binary wins over
+	// -build-source, matching the manager's own BuildBinary-first dispatch. When
+	// both are set, say which one is used rather than silently ignoring the other.
+	deploy := opts.deployWiring()
+	switch {
+	case opts.deployBinary != "" && opts.buildSource != "":
+		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s takes precedence over -build-source %s\n", opts.deployBinary, opts.buildSource)
+	case opts.deployBinary != "":
+		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s\n", opts.deployBinary)
+	case opts.buildSource != "":
+		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -build-source %s\n", opts.buildSource)
+	}
+	newSSHManager := deps.newSSHManager
+	if newSSHManager == nil {
+		newSSHManager = sshconn.New
+	}
+	sshManager := newSSHManager(hostRegistry, sshconn.Options{
+		Logger:      func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+		BuildBinary: deploy.buildBinary,
+		BuildSource: deploy.buildSource,
+		DeployHelp:  deploy.help,
 		OnEvent: func(ev sshconn.Event) {
 			hubSSHStateInvalidation(
 				func() {
@@ -772,6 +801,8 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
 	fs.StringVar(&opts.evenerBinary, "evener", "", "path to evener binary (default: 'evener' on PATH)")
 	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
+	fs.StringVar(&opts.deployBinary, "deploy-binary", "", "path to a pre-built evener for the host's target, pushed as-is (no build source or Go toolchain needed)")
+	fs.StringVar(&opts.buildSource, "build-source", "", "path to an evener checkout's module root to cross-compile the host's target from")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
@@ -783,6 +814,13 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	err := fs.Parse(args)
 	if err == nil && fs.NArg() != 0 {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	// Validate the deploy flags where they are read: a bad path fails startup
+	// naming the flag rather than surfacing at the first attach as a deploy
+	// failure. A flag left unset needs no validation, so a local-only controller
+	// still starts.
+	if err == nil {
+		err = opts.validateDeployFlags()
 	}
 	return opts, err
 }

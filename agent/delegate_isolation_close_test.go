@@ -20,10 +20,17 @@ import (
 // spawned with isolation:"worktree", which is what prepareIsolation needs
 // before it can cut the lane.
 func reserveWorktreeIsolatedDelegate(t *testing.T, root *Session, task string) (delegateRuntime, *delegateStartReservation, identifier.Project) {
+	return reserveWorktreeIsolatedDelegateArgs(t, root, delegateArgs{Task: task, Isolation: "worktree", DelegationAllowance: new(0)})
+}
+
+// reserveWorktreeIsolatedDelegateArgs is the args-carrying core of
+// reserveWorktreeIsolatedDelegate: it takes a create reservation for the
+// worktree-isolated delegate described by args, which is what prepareIsolation
+// needs before it can cut the lane.
+func reserveWorktreeIsolatedDelegateArgs(t *testing.T, root *Session, args delegateArgs) (delegateRuntime, *delegateStartReservation, identifier.Project) {
 	t.Helper()
 	runtime := delegateRuntime{owner: root}
 	ctx := context.Background()
-	args := delegateArgs{Task: task, Isolation: "worktree", DelegationAllowance: new(0)}
 	selection, err := root.selectSubagentModel(ctx, args.Model, args.AgentType)
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)

@@ -34,6 +34,7 @@ type delegateArgs struct {
 	WatchParent         bool
 	ForkContext         bool
 	Isolation           string
+	Name                string
 	Sandbox             string
 	SandboxNet          *bool
 	ResultSchema        map[string]any

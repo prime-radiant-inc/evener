@@ -245,6 +245,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
+  DRAFT_RESTORE_FAILED_MESSAGE,
   decodeKeybindingDraftFields,
   discardStoredKeybindingDraft,
   fromWireOverrides,
@@ -323,7 +324,12 @@ export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey, TurnHistoryMergeResult } from "./reducer";
+export type {
+  NotificationRoutingKey,
+  OlderItemPageMerge,
+  TurnHistoryFoldDetail,
+  TurnHistoryMergeResult,
+} from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
@@ -331,11 +337,17 @@ export {
   hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  isToolCallItemId,
+  isToolResultItemId,
   itemIdentityMatches,
   joinedReasoningParagraphs,
   joinWarningParts,
+  markItemIdentityOnly,
+  markItemTextOmitted,
   mergeOlderItemPage,
+  mergeOlderItemPageWithFolds,
   mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,

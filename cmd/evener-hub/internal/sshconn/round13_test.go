@@ -274,7 +274,7 @@ func TestRound13WaitHealthyRequiresProofAUnverifiableRestartTook(t *testing.T) {
 				sleep: func(context.Context, time.Duration) error { return nil },
 			})
 
-			err := m.waitHealthy(context.Background(), host, tc.expected, tc.replaced)
+			err := m.waitHealthy(context.Background(), host, tc.expected, "", tc.replaced)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("waitHealthy = %v, wantErr %v", err, tc.wantErr)
 			}

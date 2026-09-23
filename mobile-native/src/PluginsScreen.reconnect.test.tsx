@@ -20,7 +20,10 @@ import type {
 	PluginEntry,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { createPluginsStore } from "@evener/appwire-client/state/extensions";
+import {
+	createMarketplacesStore,
+	createPluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { PluginsScreen } from "./PluginsScreen";
@@ -46,6 +49,12 @@ const ACME: MarketplaceEntry = {
 	source: { kind: "github", repo: "acme/plugins" },
 	lastUpdated: 1,
 };
+
+// The residue guard PluginsScreen wires around the browser in production, in
+// the minimal shape a reconnect test needs: nothing is fenced, nothing is
+// recorded, and every authoritative read reports to nobody. These tests
+// exercise the connection's own recovery, never a marketplace removal.
+const NO_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
 
 function plugin(name: string): PluginEntry {
 	return {
@@ -176,6 +185,13 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
 	hub.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
 	const client = hub as unknown as ConversationClientLike;
+	// The screen's half of the store wiring, in the minimal shape this
+	// browser-level test needs: one store held for the whole render, and a
+	// capture ref no add in this test ever fills.
+	const marketplaces = createMarketplacesStore(client);
+	const lastAddMarketplaces: {
+		current: readonly MarketplaceEntry[] | null;
+	} = { current: null };
 	// ConnectionStatus inside the modal reads the connection itself, so the
 	// harness must say what the browser's connectionState prop says - this
 	// test does not inherit the state a sibling test leaves behind.
@@ -186,10 +202,17 @@ it("shows the connection status and reconnect inside the add-marketplace modal",
 			connectionState={state}
 			hubName="Work hub"
 			installed={createPluginsStore(client)}
+			marketplaces={marketplaces}
+			lastAddMarketplaces={lastAddMarketplaces}
 			gate={createPluginMutationGate()}
 			ready={state === "ready"}
 			canUseConnection={() => state === "ready"}
 			onOpenPlugin={() => {}}
+			appliedRemovalNames={NO_APPLIED_REMOVALS}
+			onAppliedRemoval={() => true}
+			onAuthoritativeMarketplaces={() => {}}
+			onMarketplaceAdded={() => {}}
+			onRemovedMarketplace={() => {}}
 		/>
 	);
 	const tree = render(browser("ready"));
@@ -324,28 +347,25 @@ it("re-reads the marketplaces the browse panel shows when the connection is read
 						],
 		};
 	});
-	const client = hub as unknown as ConversationClientLike;
-	const browser = (state: ConnectionState) => (
-		<MarketplaceBrowser
-			client={client}
-			connectionState={state}
-			hubName="Work hub"
-			installed={createPluginsStore(client)}
-			gate={createPluginMutationGate()}
-			ready={state === "ready"}
-			canUseConnection={() => state === "ready"}
-			onOpenPlugin={() => {}}
-		/>
-	);
-	const tree = render(browser("ready"));
+	// The store's connection wiring is the screen's now, so the recovery this
+	// pins is driven the way the app drives it: through the mounted screen.
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	// Switch to the browse tab, which mounts MarketplaceBrowser.
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
 	await act(async () => {});
 	expect(reads).toBe(1);
 
+	harness.connection = connection(hub, "reconnecting");
 	await act(async () => {
-		tree.update(browser("reconnecting"));
+		tree.update(<PluginsScreen {...props} />);
 	});
+	harness.connection = connection(hub, "ready");
 	await act(async () => {
-		tree.update(browser("ready"));
+		tree.update(<PluginsScreen {...props} />);
 	});
 	await act(async () => {});
 	await act(async () => {});
