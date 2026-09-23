@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 )
 
@@ -157,5 +158,156 @@ func TestDelegateName_DeliveryPlanAndNotificationFrameCarryLabel(t *testing.T) {
 	}
 	if strings.Contains(plainContent, `name=`) {
 		t.Fatalf("unnamed notification frame carries a name attribute:\n%s", plainContent)
+	}
+}
+
+// The send/wait result family surfaces the delegate label the same way the
+// notification frame does: a named delegate's reply carries name, an unnamed
+// delegate's reply omits it. The label flows through the terminal metadata
+// packet (delegateTerminalMetadataFromRun → stableDelegateFinishFromRun) into
+// the send result (populateStableDelegateSendResult → marshalDelegateSendResult).
+
+func TestDelegateName_TerminalMetadataCarriesLabel(t *testing.T) {
+	t.Parallel()
+	// A named delegate's terminal metadata includes the label from the descriptor.
+	named := delegateTerminalMetadataFromRun(delegateTerminalRunInputs{
+		descriptor: delegatestore.Descriptor{Name: "send-label", Task: "task"},
+	})
+	if named.Name != "send-label" {
+		t.Fatalf("named metadata name = %q, want send-label", named.Name)
+	}
+	// An unnamed delegate's terminal metadata omits the label (zero value).
+	unnamed := delegateTerminalMetadataFromRun(delegateTerminalRunInputs{
+		descriptor: delegatestore.Descriptor{Task: "task"},
+	})
+	if unnamed.Name != "" {
+		t.Fatalf("unnamed metadata name = %q, want empty", unnamed.Name)
+	}
+}
+
+func TestDelegateName_FinishPacketMetadataCarriesLabel(t *testing.T) {
+	t.Parallel()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:       "completed result",
+		communicated: true,
+		descriptor:   delegatestore.Descriptor{Name: "finish-label", Task: "task"},
+	})
+	if finish.packet == nil {
+		t.Fatal("finish produced no packet")
+	}
+	metadata := decodeDelegatePacketMetadata(t, *finish.packet)
+	if got := metadata["name"]; got != "finish-label" {
+		t.Fatalf("packet metadata name = %v, want finish-label", got)
+	}
+}
+
+func TestDelegateName_PopulateSendResultCarriesLabel(t *testing.T) {
+	t.Parallel()
+	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{
+		Name: "populate-label",
+		Task: "task",
+	})
+	packet := delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketReported,
+		Metadata: metadata,
+	}
+	var result sendMessageResult
+	populateStableDelegateSendResult(&result, packet)
+	if result.Name != "populate-label" {
+		t.Fatalf("send result name = %q, want populate-label", result.Name)
+	}
+}
+
+func TestDelegateName_PopulateSendResultOmitsAbsentLabel(t *testing.T) {
+	t.Parallel()
+	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{
+		Task: "task",
+	})
+	packet := delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketReported,
+		Metadata: metadata,
+	}
+	var result sendMessageResult
+	populateStableDelegateSendResult(&result, packet)
+	if result.Name != "" {
+		t.Fatalf("unnamed send result name = %q, want empty", result.Name)
+	}
+}
+
+func TestDelegateName_MarshalSendResultCarriesLabel(t *testing.T) {
+	t.Parallel()
+	value, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID: "dlg_named",
+		Name:       "marshal-label",
+		Action:     "completed",
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalDelegateSendResult: %v", err)
+	}
+	sr, ok := value.(toolpkg.StateResult)
+	if !ok {
+		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
+	}
+	wire, err := json.Marshal(sr.State)
+	if err != nil {
+		t.Fatalf("marshal send result state: %v", err)
+	}
+	if !strings.Contains(string(wire), `"name":"marshal-label"`) {
+		t.Fatalf("send result JSON omits the label:\n%s", wire)
+	}
+}
+
+func TestDelegateName_MarshalSendResultOmitsAbsentLabel(t *testing.T) {
+	t.Parallel()
+	value, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID: "dlg_unnamed",
+		Action:     "completed",
+	}, 0)
+	if err != nil {
+		t.Fatalf("marshalDelegateSendResult: %v", err)
+	}
+	sr, ok := value.(toolpkg.StateResult)
+	if !ok {
+		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
+	}
+	wire, err := json.Marshal(sr.State)
+	if err != nil {
+		t.Fatalf("marshal send result state: %v", err)
+	}
+	if strings.Contains(string(wire), `"name"`) {
+		t.Fatalf("unnamed send result JSON carries a name field:\n%s", wire)
+	}
+}
+
+// TestDelegateName_FullChainSendReplyCarriesLabel drives the full chain:
+// stableDelegateFinishFromRun builds the packet with metadata that carries
+// the label, populateStableDelegateSendResult extracts it, and
+// marshalDelegateSendResult renders it.
+func TestDelegateName_FullChainSendReplyCarriesLabel(t *testing.T) {
+	t.Parallel()
+	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
+		result:       "chain result",
+		communicated: true,
+		descriptor:   delegatestore.Descriptor{Name: "chain-label", Task: "chain task"},
+	})
+	var result sendMessageResult
+	populateStableDelegateSendResult(&result, *finish.packet)
+	if result.Name != "chain-label" {
+		t.Fatalf("full-chain send result name = %q, want chain-label", result.Name)
+	}
+	value, err := marshalDelegateSendResult(result, 0)
+	if err != nil {
+		t.Fatalf("marshalDelegateSendResult: %v", err)
+	}
+	sr, ok := value.(toolpkg.StateResult)
+	if !ok {
+		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
+	}
+	wire, err := json.Marshal(sr.State)
+	if err != nil {
+		t.Fatalf("marshal send result state: %v", err)
+	}
+	if !strings.Contains(string(wire), `"name":"chain-label"`) {
+		t.Fatalf("full-chain send result JSON omits the label:\n%s", wire)
 	}
 }

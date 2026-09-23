@@ -202,3 +202,35 @@ func TestDelegateIsolation_AbsentNameDefaultsToDelegateID(t *testing.T) {
 		t.Fatalf("default lane branch = %q, want refs/heads/%s", e.Branch, reservation.delegateID)
 	}
 }
+
+// The describe store seam must validate the label with the same alphabet the
+// create path uses (worktree.ValidateName): an invalid name cannot get into
+// storage or renders, matching the create path's own invalid_request convention.
+// decodeDelegateArgs already validates, but describe is a separate entry point
+// that could receive an unvalidated label — the store seam must reject it too.
+
+func TestDescribeDelegate_InvalidNameRejectedAtStoreSeam(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	args := delegateArgs{Task: "bad label unit", Name: "bad name!", DelegationAllowance: new(0)}
+	_, _, err := (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, subagentModelSelection{}, nil)
+	if err == nil {
+		t.Fatal("describe with invalid name succeeded, want rejection")
+	}
+	if !strings.Contains(err.Error(), "invalid_request") {
+		t.Fatalf("invalid name error = %v, want invalid_request", err)
+	}
+}
+
+func TestDescribeDelegate_InvalidNameRejectedAtStoreSeam_NonWorktree(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	args := delegateArgs{Task: "bad label unit", Name: "has space", DelegationAllowance: new(0)}
+	_, _, err := (delegateRuntime{owner: r.s}).describe(context.Background(), args, args.Task, args.Isolation, nil, subagentModelSelection{}, nil)
+	if err == nil {
+		t.Fatal("describe with invalid non-worktree name succeeded, want rejection")
+	}
+	if !strings.Contains(err.Error(), "invalid_request") {
+		t.Fatalf("invalid name error = %v, want invalid_request", err)
+	}
+}

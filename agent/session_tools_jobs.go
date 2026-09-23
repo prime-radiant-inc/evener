@@ -1649,6 +1649,7 @@ type delegateSendResult struct {
 	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
 	ResolvedModel          string                  `json:"resolved_model,omitempty"`
 	ReasoningEffort        string                  `json:"reasoning_effort,omitempty"`
+	Name                   string                  `json:"name,omitempty"`
 	RunStartedAt           string                  `json:"run_started_at,omitempty"`
 	RunEndedAt             string                  `json:"run_ended_at,omitempty"`
 	LatestActivityAt       string                  `json:"latest_activity_at,omitempty"`
@@ -1771,6 +1772,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
+		Name:                res.Name,
 		ReasoningEffort:     res.ReasoningEffort,
 		RunStartedAt:        res.RunStartedAt,
 		RunEndedAt:          res.RunEndedAt,
