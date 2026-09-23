@@ -1096,6 +1096,87 @@ func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
 	}
 }
 
+// TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken is the
+// roborev fix round 5 RED case: when a bucket name fails safeTokenForRepro
+// (e.g. a space that word-breaks a shell line) AND the same session id
+// exists in multiple such buckets, an explicit --sessions proj:<unsafe-name>:<sid>
+// audit reads the session fine (Locate resolves the proj: selector via
+// locateInBucket) but evidenceSel downgrades to the bare sid — which is
+// ambiguous across the buckets. The DoctorCommand reproduction line carries
+// that bare sid, which cannot reproduce the selected session (Locate
+// returns an ambiguity error). The fix must omit the misleading token from
+// DoctorCommand and disclose the non-reproducibility honestly (bucket names
+// as context, never as fake refs — mirroring FU3 round 2's ambiguity-as-
+// context pattern).
+func TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken(t *testing.T) {
+	base := t.TempDir()
+	// Two buckets whose names pass projectTokenOK (so parseSelector and
+	// Locate accept proj:<name>:<sid>) but fail safeTokenForRepro (space
+	// word-breaks in a shell line), both containing the same session id.
+	// The bare sid is ambiguous across the two buckets.
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	// Explicitly select the session in bucketA via proj:<unsafe-name>:<sid>.
+	// parseSelector accepts the space-containing name via projectTokenOK
+	// (space is not a path separator or NUL), and Locate resolves it via
+	// locateInBucket.
+	sel := "proj:" + "has space-a" + ":" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The explicitly selected session must be audited (reading via the
+	// user's selector is honored).
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the explicitly selected session must be audited", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+
+	// The DoctorCommand must not carry a token that cannot reproduce the
+	// session. Extract the --sessions value (stripping any trailing shell
+	// comment) and verify every ref in it resolves via Locate — the bare
+	// sid is ambiguous across two buckets and would error on re-run.
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	if sessionsValue, ok := strings.CutPrefix(dc, prefix); ok {
+		// Strip any trailing shell comment (the disclosure note).
+		if parts := strings.SplitN(sessionsValue, "#", 2); len(parts) > 1 {
+			sessionsValue = parts[0]
+		}
+		for ref := range strings.SplitSeq(sessionsValue, ",") {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			if _, err := Locate(base, ref); err != nil {
+				t.Errorf("DoctorCommand %q: ref %q does not resolve via Locate: %v (reproduction line carries a non-reproducing token)", dc, ref, err)
+			}
+		}
+	}
+	// The DoctorCommand must disclose the non-reproducibility honestly.
+	if !strings.Contains(dc, "not reproducible") && !strings.Contains(dc, "ambiguous") {
+		t.Errorf("DoctorCommand %q must disclose the non-reproducible session (bucket name is shell-unsafe, bare id is ambiguous)", dc)
+	}
+}
+
 func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
 	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
