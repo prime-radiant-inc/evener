@@ -458,6 +458,15 @@ implements this join. The shipped wire types (`AuthStatusParams.Provider`,
 `AuthApiKeySetParams.Provider`, `InstanceEntry.Name/Base/ProviderID`,
 `appwire/types.go`) still do not disambiguate instance from provider, and they
 do not need to: the join is resolved once, locally, against `instance/list`.
+Two refinements the implementation carries beyond the rule above, both decided
+before anything is sent: the join's *lookup* folds case (the local store
+lowercases its keys, the host spells its instances as authored) while the
+`Provider` sent is the host's own spelling of the matched entry, and two kinds
+of entry are skipped without dialing at all - one whose stored value is not an
+API key (the store also holds the Google credential JSON
+`evener/auth/credentialJson/set` writes, which must never be copied to another
+host as a key) and one whose host entry's scheme cannot consume a key
+(`InstanceEntry.Auth`/`ProviderDescriptor.Auth` already say so).
 
 Write side (remote): for each local entry (whose key is the instance name), call
 the remote hub's **`evener/auth/apiKey/conditionalSet`** with
