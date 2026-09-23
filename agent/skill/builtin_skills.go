@@ -157,6 +157,12 @@ func embeddedProcessSkillsDirLocked() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// A copy that failed revalidation is this process's own extraction, and
+	// nothing else ever reclaims one, so it goes as soon as its replacement is
+	// in place rather than staying in the temp dir for good.
+	if replaced := processSkillsDir; replaced != "" {
+		_ = os.RemoveAll(replaced)
+	}
 	processSkillsDir = dir
 	processSkillsMeta = nil
 	return dir, nil

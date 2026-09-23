@@ -978,6 +978,17 @@ func TestEmbeddedSkillsDir_FallsBackToAProcessLifetimeCopy(t *testing.T) {
 
 // resetProcessSkills drops the process-lifetime extraction a test triggered, so
 // the next test resolves it afresh. The directory is removed with it.
+// requireReplacedProcessCopyRemoved fails when a process copy that failed
+// revalidation was left on disk after its replacement was extracted. Nothing
+// else ever reclaims a process copy, so an abandoned one stays in the temp dir
+// for good.
+func requireReplacedProcessCopyRemoved(t *testing.T, replaced string) {
+	t.Helper()
+	if _, err := os.Lstat(replaced); !os.IsNotExist(err) {
+		t.Errorf("the replaced process copy %q was left behind: %v", replaced, err)
+	}
+}
+
 func resetProcessSkills() {
 	processSkillsMu.Lock()
 	dir := processSkillsDir
@@ -1062,6 +1073,7 @@ func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyIsIncomplete(t *testing.T
 	if second == first {
 		t.Fatal("reused an incomplete process copy")
 	}
+	requireReplacedProcessCopyRemoved(t, first)
 	if _, err := os.Stat(filepath.Join(second, removed)); err != nil {
 		t.Fatalf("re-extracted copy %q is missing %q: %v", second, removed, err)
 	}
@@ -1268,6 +1280,7 @@ func TestEmbeddedSkillsDir_ReExtractsWhenANonSkillAssetDisappears(t *testing.T) 
 	if second == first {
 		t.Fatalf("reused a copy missing %q", asset)
 	}
+	requireReplacedProcessCopyRemoved(t, first)
 	rel, err := filepath.Rel(first, asset)
 	if err != nil {
 		t.Fatalf("rel %q to %q: %v", asset, first, err)
@@ -1319,6 +1332,7 @@ func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyIsModified(t *testing.T) 
 	if second == first {
 		t.Fatalf("reused a process copy with modified content: %q", second)
 	}
+	requireReplacedProcessCopyRemoved(t, first)
 	rel, err := filepath.Rel(first, skillFile)
 	if err != nil {
 		t.Fatalf("rel %q to %q: %v", skillFile, first, err)
