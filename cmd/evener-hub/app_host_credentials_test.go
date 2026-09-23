@@ -429,6 +429,122 @@ func TestHostPushCredentials_BlankLocalEntryStillGetsARow(t *testing.T) {
 	}
 }
 
+// TestHostPushCredentials_EmptyActionIsAFailedEntry pins the one part of the
+// host's answer the controller may not pass through verbatim. A newer host's
+// action name is reported as it stands - a controller that mapped unknown names
+// onto today's four would mislabel the host's own decision - but an empty or
+// whitespace-only action is not an unknown action, it is a malformed answer with
+// no outcome in it, and reporting it would hand the pane a result whose action
+// is outside the documented added/updated/skipped/failed contract.
+func TestHostPushCredentials_EmptyActionIsAFailedEntry(t *testing.T) {
+	for _, tc := range []struct{ name, action string }{
+		{name: "empty", action: ""},
+		{name: "whitespace", action: "  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestCredentialsStore(t)
+			if err := store.Set("openai", "sk-openai-local"); err != nil {
+				t.Fatal(err)
+			}
+			h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+				switch method {
+				case appwire.MethodEvenerInstanceList:
+					return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "openai"}}}}
+				case appwire.MethodEvenerAuthStatus:
+					return statusReply("none", "rev-openai")
+				case appwire.MethodEvenerAuthApiKeyConditionalSet:
+					return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{Action: tc.action, Status: appwire.AuthStatusResponse{Provider: "openai"}}}
+				default:
+					return hostAdminReply{result: appwire.EmptyResponse{}}
+				}
+			})
+
+			resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+			if err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+			result := resultFor(t, resp, "openai")
+			if result.Action != appwire.HostCredentialPushFailed {
+				t.Fatalf("result = %+v, want failed: %q is not an outcome the report can carry", result, tc.action)
+			}
+			if result.Reason == "" {
+				t.Fatal("Reason is empty for a failed entry; the report cannot say why")
+			}
+		})
+	}
+}
+
+// TestHostPushCredentials_UnknownActionIsReportedVerbatim is the other half of
+// that line: an action this controller does not know is still the host's
+// decision, so it is reported as it stands rather than folded into "failed" or
+// relabelled.
+func TestHostPushCredentials_UnknownActionIsReportedVerbatim(t *testing.T) {
+	const futureAction = "deferred"
+	store := newTestCredentialsStore(t)
+	if err := store.Set("openai", "sk-openai-local"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "openai"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			return statusReply("none", "rev-openai")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{Action: futureAction, Reason: "queued on the host", Status: appwire.AuthStatusResponse{Provider: "openai"}}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	result := resultFor(t, resp, "openai")
+	if result.Action != futureAction || result.Reason != "queued on the host" {
+		t.Fatalf("result = %+v, want the host's own action and reason passed through", result)
+	}
+}
+
+// TestHostPushCredentials_WritesRefusedOnTheHostIsAWholeCallFailure pins the
+// reporting-lies case: when the host cannot load its own providers.toml, its
+// instance list is empty or partial and its own mutators refuse, but the pusher
+// still joins the local store keys against that list - so every key comes back
+// "skipped: no matching instance on the host" and the operator reads a push
+// that completed against a host that could not read its own instances. The
+// listing is the host's own authority for "present", so the refusal has to end
+// the call, the way the host's own surfaces refuse the write while
+// WritesRefused stands (app_instances.go's refuseWhenBroken).
+func TestHostPushCredentials_WritesRefusedOnTheHostIsAWholeCallFailure(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("openai", "sk-openai-local"); err != nil {
+		t.Fatal(err)
+	}
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{
+				Instances:     []appwire.InstanceEntry{},
+				Diagnostics:   []string{"providers.toml: parse error at line 3"},
+				WritesRefused: true,
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	if _, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"}); err == nil {
+		t.Fatalf("Push succeeded against a host that refuses its own writes; every local key was reported as %q", "no matching instance on the host")
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 0 {
+		t.Fatalf("conditionalSet calls = %d, want none: a push that cannot establish the host's instances must not write", n)
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthStatus)); n != 0 {
+		t.Fatalf("auth/status calls = %d, want none: there is no instance list to join against", n)
+	}
+}
+
 // TestHostPushCredentials_RefusesRemoteOriginatedBeforeAnyDial pins the shared
 // origin guard: a bridge-originated push is refused typed, reaches no remote
 // host, and never dials.

@@ -86,6 +86,23 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	if err := json.Unmarshal(listRaw, &listing); err != nil {
 		return appwire.HostPushCredentialsResponse{}, appwire.InternalError("decode the host's instance list: " + err.Error())
 	}
+	// A host that cannot load its own providers.toml refuses its writes and
+	// answers with an empty or partial instance list (InstanceListResponse
+	// .WritesRefused; the host's own mutators refuse through
+	// hubInstancesController.refuseWhenBroken). This call's only authority for
+	// "present on the host" is that list, so pushing anyway would join the local
+	// keys against a list that describes nothing and report every one of them
+	// "skipped: no matching instance on the host" - a completed push reported
+	// against a host that could not read its own instances, which is the class
+	// of lie this whole report exists to avoid. The refusal ends the call, and
+	// the host's own diagnostics are the reason it carries.
+	if listing.WritesRefused {
+		diagnostics := strings.Join(listing.Diagnostics, "; ")
+		if diagnostics == "" {
+			diagnostics = "the host reported no diagnostics"
+		}
+		return appwire.HostPushCredentialsResponse{}, appwire.InternalError(fmt.Sprintf("no credential can be pushed to %q: it cannot read its own providers.toml, so it refuses writes (%s)", host, diagnostics))
+	}
 	// The join is the spec's instance->provider rule, both halves of it: an
 	// explicit instance matches by its name, and the implicit-provider fallback
 	// matches by the provider ID - but only for a provider the host itself
@@ -177,6 +194,17 @@ func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsourc
 	var set appwire.ApiKeyConditionalSetResponse
 	if err := json.Unmarshal(setRaw, &set); err != nil {
 		return failed("decode the host's conditional set: " + err.Error())
+	}
+	// The host's action is otherwise reported as it stands, unknown names
+	// included: an action this controller has never heard of is a newer host's
+	// own decision, and folding it into "failed" or relabelling it would hide
+	// what the host actually did. An empty or whitespace-only action is not an
+	// unknown action, though - it is no action at all, and a report row whose
+	// Action is outside the documented added/updated/skipped/failed contract
+	// tells the pane nothing about whether the key landed. That one is a failed
+	// entry naming the malformed answer.
+	if strings.TrimSpace(set.Action) == "" {
+		return failed("the host answered evener/auth/apiKey/conditionalSet without an action, so whether the key landed is unknown")
 	}
 	return appwire.HostCredentialPushResult{Instance: name, Action: set.Action, Reason: set.Reason}
 }
