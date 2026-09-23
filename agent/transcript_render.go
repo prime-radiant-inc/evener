@@ -1553,7 +1553,7 @@ func toolInputSummary(name string, args json.RawMessage) string {
 	// Non-object JSON (rejected-call raw bytes, or valid non-object args)
 	// falls through to a bounded raw rendering instead of an empty summary.
 	if m == nil && len(args) > 0 {
-		return truncRunes(string(args), 120)
+		return oneLine(truncRunes(string(args), 120))
 	}
 	get := func(key string) string {
 		if m == nil {
@@ -1711,4 +1711,10 @@ func truncRunes(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit]) + "…"
+}
+
+// oneLine collapses newlines to spaces and strips carriage returns so a
+// summary never breaks its one-line card. Mirrors doctor.oneLine.
+func oneLine(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 }

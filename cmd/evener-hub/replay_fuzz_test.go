@@ -38,6 +38,9 @@ var replayFuzzSeeds = []string{
 	`{"kind":"entry","seq":6,"turn":{"kind":"STEERING","steering_source":"user","message":{"role":"user","content":[{"kind":"text","text":"new worktree"}]},"timestamp":"2026-06-01T10:00:05Z"}}`,
 	// Daemon nudge: same turn kind, deliberately no provenance.
 	`{"kind":"entry","seq":7,"turn":{"kind":"STEERING","message":{"role":"user","content":[{"kind":"text","text":"<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"}]},"timestamp":"2026-06-01T10:00:06Z"}}`,
+	// Assistant turn with a rejected tool call: Arguments is the replay-safe {}
+	// placeholder, RawArguments preserves the model's original malformed bytes.
+	`{"kind":"entry","seq":9,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"running it"},{"kind":"tool_call","tool_call":{"id":"c4","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\", }"}}]},"timestamp":"2026-06-01T10:00:08Z"}}`,
 	`{}`,
 	`null`,
 	`not json`,
@@ -97,6 +100,18 @@ func FuzzHubReplayLiveVsReload(f *testing.F) {
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		checkLiveVsReload(t, raw)
 	})
+}
+
+// TestHubReplay_RejectedCallLiveVsReload verifies the live-vs-reload
+// metamorphic agrees for a rejected-call tool_call: both sides must surface
+// the model's raw argument bytes (SentArguments precedence) and skip the
+// Description (intent) for rejected calls. Before the fix, synthesizeLiveEvents
+// used Arguments (the {} placeholder) while ProjectTurn used SentArguments
+// (the raw bytes), diverging.
+func TestHubReplay_RejectedCallLiveVsReload(t *testing.T) {
+	const rawArgs = `{command: "ls", }` // malformed JSON — the rejected-call shape
+	entryJSON := `{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"running it"},{"kind":"tool_call","tool_call":{"id":"c4","name":"shell","arguments":{},"raw_arguments":` + `"` + strings.ReplaceAll(rawArgs, `"`, `\"`) + `"` + `}}]},"timestamp":"2026-06-01T10:00:00Z"}}`
+	checkLiveVsReload(t, []byte(entryJSON))
 }
 
 // checkLiveVsReload runs the live-vs-reload metamorphic on one entry's JSON: a
@@ -189,11 +204,17 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 					}
 					continue
 				}
+				// Rejected call: show raw bytes, skip intent (mirrors ProjectTurn).
+				argumentsJSON := p.ToolCall.SentArguments()
+				description := ""
+				if p.ToolCall.RawArguments == "" {
+					description = apptranscript.ToolIntentFromArguments(p.ToolCall.Arguments)
+				}
 				add(events.ToolCallStartData{
 					ToolName:      p.ToolCall.Name,
 					CallID:        p.ToolCall.ID,
-					ArgumentsJSON: string(p.ToolCall.Arguments),
-					Description:   apptranscript.ToolIntentFromArguments(p.ToolCall.Arguments),
+					ArgumentsJSON: argumentsJSON,
+					Description:   description,
 				})
 			}
 		}

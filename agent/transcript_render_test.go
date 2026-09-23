@@ -1109,6 +1109,20 @@ func TestToolInputSummary(t *testing.T) {
 			t.Errorf("unknown tool should show scalar arg, got %q", got)
 		}
 	})
+
+	t.Run("raw fallback escapes newlines to one line", func(t *testing.T) {
+		// Rejected-call raw bytes with embedded newlines must not break
+		// the one-line card. parseArgs returns nil for non-object JSON,
+		// hitting the raw-bytes fallback.
+		raw := "{command: \"ls\",\nfoo: \"bar\"}"
+		got := toolInputSummary("shell", []byte(raw))
+		if strings.Contains(got, "\n") {
+			t.Errorf("summary must be one line, got %q (contains newline)", got)
+		}
+		if !strings.Contains(got, "ls") {
+			t.Errorf("summary should contain raw content, got %q", got)
+		}
+	})
 }
 
 // TestRenderMarkdown_ResultBodyFenceCollision verifies that a result body which
