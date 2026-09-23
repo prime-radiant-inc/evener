@@ -541,11 +541,6 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 	return inspect.Watching || inspect.Source != "" || inspect.EndReason != ""
 }
 
-// decodeDelegateArgs decodes the delegate tool's raw params into delegateArgs,
-// returning an invalid_request error for a malformed wait/allowance value. It is
-// pure over the args map (no session state), so the decode — including the
-// tri-state sandbox_net (nil = inherit, never a silent false) — is unit-testable
-// without minting a delegate.
 // validateDelegateLabel validates a delegate name with the same alphabet
 // manage_worktree names use (worktree.ValidateName), wrapped in the
 // invalid_request convention both the create path and describe share.
@@ -560,6 +555,11 @@ func validateDelegateLabel(name string) error {
 	return nil
 }
 
+// decodeDelegateArgs decodes the delegate tool's raw params into delegateArgs,
+// returning an invalid_request error for a malformed wait/allowance value. It is
+// pure over the args map (no session state), so the decode — including the
+// tri-state sandbox_net (nil = inherit, never a silent false) — is unit-testable
+// without minting a delegate.
 func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	if strings.TrimSpace(stringArg(args, "prompt")) == "" {
 		return delegateArgs{}, errors.New("invalid_request: prompt is required")
