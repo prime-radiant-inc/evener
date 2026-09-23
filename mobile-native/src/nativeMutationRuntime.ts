@@ -127,10 +127,15 @@ export class NativeMutationRuntime
 	readonly #blockedTargets = new Set<string>();
 	readonly #storageListeners = new Set<NativeMutationStorageListener>();
 	#started = false;
-	// Bumped by every start and stop. A start's failure rollback only applies
-	// while it still owns the lifecycle: a stop or a newer start that ran while
-	// this attempt was settling has already decided the runtime's state.
+	// Bumped by every start and stop. A start attempt's failure rollback and
+	// in-flight cleanup only apply while it still owns the lifecycle: a stop or
+	// a newer start that ran while it was settling has already decided the
+	// runtime's state.
 	#startGeneration = 0;
+	// The in-flight start attempt, shared by concurrent start() callers so they
+	// observe one outcome instead of one caller being told the runtime started
+	// while a failed attempt's rollback leaves it stopped.
+	#startup: Promise<void> | undefined;
 
 	#getClient(targetRef?: string): AppwireClientLike | undefined {
 		if (!this.#started) return undefined;
@@ -168,8 +173,14 @@ export class NativeMutationRuntime
 		this.#outbox = new MutationOutbox(this.storage, outboxOptions);
 	}
 
-	async start(): Promise<void> {
-		if (this.#started) return;
+	start(): Promise<void> {
+		if (this.#startup) return this.#startup;
+		if (this.#started) return Promise.resolve();
+		this.#startup = this.#beginStart();
+		return this.#startup;
+	}
+
+	async #beginStart(): Promise<void> {
 		const generation = ++this.#startGeneration;
 		// Publish the started state before awaiting the outbox, so a stop()
 		// racing this await still sees a started runtime and releases whatever
@@ -183,6 +194,8 @@ export class NativeMutationRuntime
 		} catch (error) {
 			if (this.#startGeneration === generation) this.#started = false;
 			throw error;
+		} finally {
+			if (this.#startGeneration === generation) this.#startup = undefined;
 		}
 	}
 
@@ -190,6 +203,7 @@ export class NativeMutationRuntime
 		if (!this.#started) return;
 		this.#startGeneration += 1;
 		this.#started = false;
+		this.#startup = undefined;
 		await this.#outbox.stop();
 	}
 

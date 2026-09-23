@@ -1390,6 +1390,26 @@ test("a stale failed start cannot clear a newer successful start", async () => {
 	expect(cleared).toEqual([1]);
 });
 
+test("a concurrent start shares a failing attempt's rejection", async () => {
+	const { runtime, intervals, cleared } = timerRecordingRuntime((attempt) => attempt === 1);
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+
+	// Both calls run before the first attempt settles. They must share the one
+	// attempt: the failure rejects both callers rather than telling one the
+	// runtime started while the rollback leaves it stopped.
+	const first = runtime.start();
+	const second = runtime.start();
+	await expect(first).rejects.toThrow("timer setup unavailable");
+	await expect(second).rejects.toThrow("timer setup unavailable");
+
+	// The runtime stays retryable: a fresh start re-arms exactly one timer.
+	await runtime.start();
+	expect(intervals).toHaveLength(1);
+	await runtime.stop();
+	expect(cleared).toEqual([1]);
+});
+
 test("a failed outbox setup unwinds its listeners and channel, and the retry re-arms once", async () => {
 	const storage = new MutationOutboxSQLite(openDatabase(), {
 		createMutationId: () => "mutation-1",
