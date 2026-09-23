@@ -44,8 +44,8 @@ type HostTemp struct {
 	restoreEnv      []func() error
 }
 
-// RedirectHostTemp points TMPDIR and the session temp container bases into a
-// root: the one RootVar names when an enclosing test process made it, or else a
+// RedirectHostTemp points TMPDIR (TMP and TEMP on Windows) and the session
+// temp container bases into a root: the one RootVar names when an enclosing test process made it, or else a
 // new one under the current temp dir, named with prefix. Child processes inherit
 // the TMPDIR and RootVar. Call Discard once the tests have run.
 func RedirectHostTemp(prefix string) (*HostTemp, error) {
@@ -62,7 +62,9 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 		}
 		h.root = root
 	}
-	for name, value := range map[string]string{"TMPDIR": filepath.Join(h.root, "tmp"), RootVar: h.root} {
+	// TMP and TEMP are what os.TempDir reads on Windows.
+	temp := filepath.Join(h.root, "tmp")
+	for name, value := range map[string]string{"TMPDIR": temp, "TMP": temp, "TEMP": temp, RootVar: h.root} {
 		if err := h.setenv(name, value); err != nil {
 			return nil, errors.Join(err, h.Discard())
 		}
@@ -76,6 +78,12 @@ func newHostTempRoot(prefix string) (string, error) {
 	root, err := os.MkdirTemp("", prefix+"*")
 	if err != nil {
 		return "", fmt.Errorf("sandboxtest: create host temp root: %w", err)
+	}
+	// The root is traversable but not listable, as /tmp's parent is to any user:
+	// a command running as another user must reach the world-usable host-temp
+	// inside it, while tmp below stays this user's own.
+	if err := os.Chmod(root, 0o711); err != nil {
+		return "", errors.Join(fmt.Errorf("sandboxtest: open %s: %w", root, err), os.RemoveAll(root))
 	}
 	temp := filepath.Join(root, "tmp")
 	hostTemp := filepath.Join(root, "host-temp")

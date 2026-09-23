@@ -15,6 +15,9 @@ import (
 // one root, and Discard removes that root and puts TMPDIR and the host temp
 // bases back.
 func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
+	if !sandbox.SessionTmpSupported {
+		t.Skip("session temp containers exist only where the platform supports them")
+	}
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv(RootVar, "")
 	outerTemp := os.TempDir()
@@ -32,6 +35,15 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 		t.Fatalf("RedirectHostTemp: %v", err)
 	}
 	root := redirect.Root()
+	// Traversable but not listable, so a command running as another user can
+	// reach the world-usable host temp inside it, as it can reach /tmp.
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o711 {
+		t.Fatalf("root %q mode = %v, want 0711", root, got)
+	}
 	if !within(outerTemp, root) {
 		t.Fatalf("root %q is not under the temp dir it was created in %q", root, outerTemp)
 	}
