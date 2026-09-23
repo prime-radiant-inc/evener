@@ -32,7 +32,6 @@ import {
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationTargetsThread,
-  pendingTextJoined,
   sessionControls,
   WireError,
 } from "@evener/appwire-client";
@@ -2002,11 +2001,14 @@ export function createConversationStore() {
             // re-served steering item used to come back as a twin, and
             // the next row-changing frame projected both. Matched items
             // stay (they are the merge's own fold inputs) and page items
-            // stay. Page-owned turns and turns the fresh read does NOT
-            // cover keep everything: they are the page history this
-            // block exists to preserve, their folds run through the
-            // remembered aliases below, and their out-of-window payloads
-            // compact in the bound afterwards.
+            // stay — page ownership is item-level here, so a page
+            // fragment of the LIVE turn paging in cannot hide that
+            // turn's live twins behind the page exemption (RoboRev
+            // round 8). Turns the fresh read does not cover keep
+            // everything: they are the page history this block exists
+            // to preserve, their folds run through the remembered
+            // aliases below, and their out-of-window payloads compact
+            // in the bound afterwards.
             //
             // Rule 2 — a retained warning outside page ownership is a
             // transient: the transcript never persists warnings, so no
@@ -2019,12 +2021,6 @@ export function createConversationStore() {
             // that), so only the non-page warnings drop.
             const freshTurnIds = new Set(conversation.turns.map((turn) => turn.id));
             const turnCoveredBySnapshot = (turn: TurnModel): boolean => {
-              if (
-                pageOwnedTurnIds.has(turn.id) ||
-                pageOwnedCompactTurnIds.has(turn.id)
-              ) {
-                return false;
-              }
               return (
                 freshTurnIds.has(turn.id) ||
                 turn.items.some(
@@ -2069,20 +2065,23 @@ export function createConversationStore() {
               // sit AHEAD of the chunks the client received (base
               // "Hello", pending [" world"], text "Hello world!"),
               // which a suffix scan cannot see (RoboRev rounds 6-7).
-              // The largest run of chunks the advance STARTS with is
-              // exactly what the wire settled; a text that does not
-              // start with the base rewrote it, and the chunks keep
-              // their conservative fallback — the wire never rewrites
-              // agent text mid-stream.
+              // The largest run of chunks the advance starts with is
+              // exactly what the wire settled — walked once at an
+              // advancing offset (RoboRev round 8: slice-and-join per
+              // prefix was quadratic in the chunk count); a text that
+              // does not start with the base rewrote it, and the chunks
+              // keep their conservative fallback — the wire never
+              // rewrites agent text mid-stream.
               const advance = freshText.startsWith(item.text)
                 ? freshText.slice(item.text.length)
                 : null;
               if (advance === null) return item;
               let settled = 0;
-              for (let run = 1; run <= pending.length; run += 1) {
-                if (advance.startsWith(pendingTextJoined(pending.slice(0, run)))) {
-                  settled = run;
-                }
+              let offset = 0;
+              for (const chunk of pending) {
+                if (!advance.startsWith(chunk, offset)) break;
+                offset += chunk.length;
+                settled += 1;
               }
               if (settled === 0) return item;
               const live = pending.slice(settled);

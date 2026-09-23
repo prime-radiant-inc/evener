@@ -15923,6 +15923,97 @@ describe("ConversationStore", () => {
       ).toHaveLength(1);
     });
 
+    it("a live steering twin drops even when the active turn's own fragment paged in", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // The older page is a FRAGMENT of the active turn itself: the turn
+      // id becomes page-owned while the turn stays live (RoboRev round 8).
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t1", 400, 10)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      store.getState().applyNotification({
+        method: "evener/steering/injected",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          text: "go left",
+          kind: "user",
+          source: "user",
+          startedAt: 1000,
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter(
+          (row) => row.kind === "user" && row.text === "go left",
+        ),
+      ).toHaveLength(1);
+
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "steering",
+                  id: "item_steering_0",
+                  turnId: "t1",
+                  text: "go left",
+                  status: "completed",
+                  source: "user",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.items.filter(
+          (row) => row.kind === "user" && row.text === "go left",
+        ),
+      ).toHaveLength(1);
+
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter(
+          (row) => row.kind === "user" && row.text === "go left",
+        ),
+      ).toHaveLength(1);
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .filter((item) => item.type === "steering"),
+      ).toHaveLength(1);
+    });
+
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
