@@ -998,29 +998,18 @@ func writeToolCard(b *strings.Builder, callOwnerSeq int, tc *llm.ToolCallData, i
 }
 
 // writeToolCardLine emits the "- [status] `name` — intent: <X> — input: <summary>"
-// header line for a tool card. The intent segment is omitted when absent. A
-// rejected call (RawArguments set) shows the model's raw bytes and skips the
-// intent lookup: its recorded arguments are the {} placeholder, which can only
-// parse to an empty intent anyway — mirroring doctor/transcript.go's
-// SentArguments treatment (#2162).
+// header line for a tool card.
 func writeToolCardLine(b *strings.Builder, status, name string, tc *llm.ToolCallData) {
 	args := json.RawMessage(tc.SentArguments())
 	fmt.Fprintf(b, "- [%s] `%s`", status, name)
-	if intent := toolIntentForCard(tc); intent != "" {
-		fmt.Fprintf(b, " — intent: %s", intent)
+	// Skip the intent lookup for rejected calls: Arguments holds the {}
+	// placeholder, which parses to an empty intent anyway.
+	if tc.RawArguments == "" {
+		if intent := toolIntent(tc.Arguments); intent != "" {
+			fmt.Fprintf(b, " — intent: %s", intent)
+		}
 	}
 	fmt.Fprintf(b, " — input: %s\n", toolInputSummary(name, args))
-}
-
-// toolIntentForCard returns the tool-call intent for the card line, applying the
-// same precedence as doctor/transcript.go's summarizeTurn: the intent lookup is
-// skipped for a rejected call (RawArguments set), since Arguments holds the {}
-// placeholder that parses to an empty intent regardless of what the model sent.
-func toolIntentForCard(tc *llm.ToolCallData) string {
-	if tc.RawArguments != "" {
-		return ""
-	}
-	return toolIntent(tc.Arguments)
 }
 
 // wantFullResult reports whether the result for a call should render in full.
@@ -1076,25 +1065,17 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) 
 // tool call's JSON arguments as plain assistant text. Falls back to the raw
 // arguments string if the message field is absent.
 func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData) {
-	// A rejected call (RawArguments set) records Arguments as the replay-safe {}
-	// placeholder; show the model's raw bytes instead, mirroring the
-	// SentArguments precedence applied in doctor/transcript.go (#2162). The
-	// "message" lookup is skipped there too: {} has no message key.
-	if tc.RawArguments != "" {
-		b.WriteString(tc.RawArguments)
-		b.WriteString("\n")
-		return
-	}
-	if len(tc.Arguments) > 0 {
-		var args map[string]any
-		if err := json.Unmarshal(tc.Arguments, &args); err == nil {
-			if msg, ok := args["message"]; ok {
+	args := json.RawMessage(tc.SentArguments())
+	if len(args) > 0 {
+		var m map[string]any
+		if err := json.Unmarshal(args, &m); err == nil {
+			if msg, ok := m["message"]; ok {
 				fmt.Fprintf(b, "%v\n", msg)
 				return
 			}
 		}
-		// No "message" key: render the raw arguments as a fallback.
-		b.Write(tc.Arguments)
+		// No "message" key or unparseable: render the raw arguments.
+		b.Write(args)
 		b.WriteString("\n")
 	}
 }
@@ -1569,11 +1550,8 @@ func formatNumber(f float64) string {
 // safe scalar arguments.
 func toolInputSummary(name string, args json.RawMessage) string {
 	m := parseArgs(args)
-	// A rejected call's arguments are not valid JSON (writeToolCardLine passes
-	// the model's raw bytes via SentArguments), so parseArgs returns nil. Show
-	// the raw bytes bounded instead of an empty summary — the card must display
-	// what the model actually sent, mirroring doctor/transcript.go's treatment
-	// of rejected calls (#2162).
+	// Non-object JSON (rejected-call raw bytes, or valid non-object args)
+	// falls through to a bounded raw rendering instead of an empty summary.
 	if m == nil && len(args) > 0 {
 		return truncRunes(string(args), 120)
 	}

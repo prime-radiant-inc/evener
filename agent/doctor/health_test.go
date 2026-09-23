@@ -420,13 +420,13 @@ func TestTranscriptHealth_RejectedCallsDistinctSignatures(t *testing.T) {
 		// 2-call identical run; with the raw bytes they must be distinct, so the
 		// longest identical run is length 1.
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			healthRejectedToolCall("ra", "shell", rawA),
+			rejectedToolCallWithID("ra", "shell", rawA),
 		}}),
 		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 			healthToolResult("ra", "shell", "arguments not valid JSON", true),
 		}}),
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
-			healthRejectedToolCall("rb", "shell", rawB),
+			rejectedToolCallWithID("rb", "shell", rawB),
 		}}),
 		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
 			healthToolResult("rb", "shell", "arguments not valid JSON", true),
@@ -441,16 +441,6 @@ func TestTranscriptHealth_RejectedCallsDistinctSignatures(t *testing.T) {
 		t.Errorf("LongestIdenticalRun.Length = %d, want 1 (two distinct malformed calls must not collapse to one identical run); Tool=%q AllErrors=%v",
 			h.LongestIdenticalRun.Length, h.LongestIdenticalRun.Tool, h.LongestIdenticalRun.AllErrors)
 	}
-}
-
-// healthRejectedToolCall builds a tool-call part as the durable transcript
-// records a rejected call: Arguments replaced with the replay-safe {} form,
-// RawArguments holding the model's original bytes. Unlike transcript_test.go's
-// rejectedToolCall (which derives id "tc-"+name), this takes an explicit id so a
-// health fixture can hold several distinct rejected calls to the same tool.
-func healthRejectedToolCall(id, name, rawArgs string) llm.ContentPart {
-	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-		ID: id, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: rawArgs}}
 }
 
 // rejectedSignatureFixture writes a session's turns to a real transcript on
