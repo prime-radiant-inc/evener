@@ -1018,11 +1018,12 @@ export interface HostCredentialPushResult {
   instance: string;
   /**
    * Action is "added" | "updated" | "skipped" | "failed". "added" and
-   * "updated" are the host's own conditional-set actions; "skipped" is either
-   * the host's classification (a source a pushed key must not shadow) or this
-   * controller's "no matching instance on the host"; "failed" is a per-instance
-   * failure (chiefly a refused or stale-revision conditional set) that does not
-   * abort the remaining entries.
+   * "updated" are the host's own conditional-set actions; "skipped" is the
+   * host's classification (a source a pushed key must not shadow, or a scheme
+   * that reads no key), or a controller-side skip whose Reason names why (no
+   * matching instance on the host, or a local value that is not an API key);
+   * "failed" is a per-instance failure (chiefly a refused or stale-revision
+   * conditional set) that does not abort the remaining entries.
    */
   action: string;
   reason?: string;
