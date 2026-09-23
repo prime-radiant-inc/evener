@@ -1247,6 +1247,37 @@ func TestDaemonRetirementProcessDirectZeroStaysResident(t *testing.T) {
 	}
 }
 
+// TestDaemonRetirementProcessHelperExitsWithItsFixture proves the helper does
+// not outlive a test binary that died without cleaning up. Such a death closes
+// the control pipe without the kill a normal cleanup sends first, and a daemon
+// that never retires (0s) would otherwise run on as an orphan: its clock moves
+// only when the fixture advances it.
+func TestDaemonRetirementProcessHelperExitsWithItsFixture(t *testing.T) {
+	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
+	if testing.Short() {
+		t.Skip("live-stack e2e: builds binaries and runs a real daemon")
+	}
+	f := newDaemonRetirementProcessFixtureNoInitialLaunch(t, DefaultConfig())
+	handle, err := f.startDirectServe(t, "--daemon-idle-timeout", "0s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.awaitStartup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := handle.ctlW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, err := f.directExitCode(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 3 {
+		t.Fatalf("helper exit code after its control pipe closed = %d, want 3", code)
+	}
+}
+
 // TestDaemonRetirementProcessHubZeroStaysResident proves the same for a
 // Hub-configured `daemon_idle_timeout = "0s"`: the spawned daemon arms no timer
 // and remains resident.
