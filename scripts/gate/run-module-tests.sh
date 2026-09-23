@@ -36,6 +36,12 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 # library so their failure modes can be exercised directly rather than
 # inspected as script text; see gatebounded_test.go.
 . "$script_dir/../lib/gate-bounded.sh"
+. "$script_dir/../lib/gate-scratch-root.sh"
+# The RAM-backed scratch must hold the gate's peak: test binaries, go build
+# work directories and every test's temp files across concurrent streams. A
+# full `make test` peaked at ~600MB (2026-09-22); 2GiB leaves room for growth
+# and a neighbouring gate.
+GATE_SCRATCH_MIN_KB=${GATE_SCRATCH_MIN_KB:-2097152}
 
 # The load-aware budgets, and the effective -p/-parallel flags they become,
 # live in scripts/lib/gate-budgets.sh so the wiring can be exercised directly
@@ -278,6 +284,16 @@ trap 'interrupted 129 SIGHUP' HUP
 trap 'interrupted 130 SIGINT' INT
 trap 'interrupted 143 SIGTERM' TERM
 
+# Mint the scratch, and so every stream's TMPDIR, in RAM when the host offers
+# it; see gate-scratch-root.sh for the fsync cost this avoids.
+TMPDIR="$(gate_scratch_root /dev/shm "$GATE_SCRATCH_MIN_KB")" || exit 2
+export TMPDIR
+# Go builds and runs test binaries in GOTMPDIR instead of TMPDIR when one is
+# set (in the environment or with go env -w), so check that it can execute too.
+gate_gotmpdir="$(go env GOTMPDIR 2>/dev/null)"
+if [ -n "$gate_gotmpdir" ]; then
+	gate_require_exec "$gate_gotmpdir" GOTMPDIR || exit 2
+fi
 scratch_dir logdir evener-module-tests
 fail=0
 failed_modules=()

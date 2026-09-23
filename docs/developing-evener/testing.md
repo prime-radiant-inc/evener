@@ -436,6 +436,23 @@ the evidence that produced the failure remains available. Standard reusable
 caches outside the owned roots are audited separately rather than claimed as
 temporary cleanup.
 
+That per-run directory lives in RAM when the host offers it: the runner mints
+it under `/dev/shm` when that is a writable directory with at least
+`GATE_SCRATCH_MIN_KB` (default 2GiB) free, and under the ambient `TMPDIR`
+otherwise (scripts/lib/gate-scratch-root.sh). On a disk every `t.TempDir`,
+SQLite fixture and atomic write pays real fsync latency; measured on a busy
+host, tmpfs took the gate from 558s to 221s and evener-doctor alone from 52s to
+0.5s. macOS has no `/dev/shm` and stays on disk. Two consequences for test
+authors: a failed run's retained logs occupy RAM until you delete them or
+reboot, and a test must not assume `TMPDIR` is under `/tmp`: a fixture that
+needs a `/tmp` path creates one explicitly (`tmpMainCheckout` in
+agent/sandbox). The agent sandbox's minimal `--dev` replaces `/dev`, so it
+re-binds read roots under `/dev/shm` afterwards and masks secrets there, the
+same way it treats `/tmp`; sandbox tests therefore behave the same with
+`TMPDIR` on disk or on `/dev/shm`. `XDG_RUNTIME_DIR` is not a usable
+alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
+their workspace under it.
+
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
 browser-specific gate in its web job.
