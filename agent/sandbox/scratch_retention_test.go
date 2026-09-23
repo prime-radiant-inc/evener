@@ -614,6 +614,59 @@ func TestScratchRetentionPinScratchBindingRollsBackARepairedPin(t *testing.T) {
 	}
 }
 
+// TestScratchRetentionKeepsARepairedPinWhenTheWriteCommits pins round 39's
+// High: writeScratchRetention can report a failure after the manifest rename
+// already committed, and a committed transaction keeps the pin it created
+// repairing a listed reference — the manifest's revision advanced, so the
+// repair is part of the durable coherent state, and rolling it back would
+// leave the committed reference unpinned and its directory collectible. The
+// repair rolls back only when the transaction definitely failed before the
+// commit.
+func TestScratchRetentionKeepsARepairedPinWhenTheWriteCommits(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	dir, err := canonicalScratchPath(scratch.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PinScratchBinding(owner, retentionBinding("E0", owner.RootSessionID, workspace, nil), map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatal(err)
+	}
+	pre, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The repair premise: the manifest lists the reference, but its pin is
+	// gone, so the directory is collectible exactly as the call finds it.
+	if err := os.Remove(filepath.Join(dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	// The manifest write commits and then reports a failure — the
+	// post-rename fsync class.
+	probeErr := errors.New("probe: directory fsync failed")
+	scratchManifestWriteProbe = func() error { return probeErr }
+	t.Cleanup(func() { scratchManifestWriteProbe = nil })
+	err = PinScratchBinding(owner, retentionBinding("E1", owner.RootSessionID, workspace, nil), map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil)
+	if !errors.Is(err, probeErr) {
+		t.Fatalf("PinScratchBinding error = %v, want the post-commit probe failure", err)
+	}
+	current, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Revision == pre.Revision {
+		t.Fatalf("fixture: the manifest write did not commit (revision %d unchanged)", current.Revision)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, scratchPinName)); statErr != nil {
+		t.Fatalf("the rollback removed a repaired pin the committed manifest still lists: %v", statErr)
+	}
+}
+
 func retentionOwner(t *testing.T) ScratchOwner {
 	t.Helper()
 	return ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}

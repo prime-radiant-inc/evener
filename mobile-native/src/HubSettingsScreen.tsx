@@ -193,7 +193,7 @@ function HubSettings({
 	const transitionRecovered = useRef<{
 		client: ConversationClientLike;
 	} | null>(null);
-	const refreshedAtReady = useRef(false);
+	const recoveredForClient = useRef<ConversationClientLike | null>(null);
 	// useFocusEffect covers a screen the user comes back to; a passive
 	// reconnect never refocuses it, and the client a manual retry replaces
 	// this one with is still connecting when the focus effect re-runs, so
@@ -217,11 +217,17 @@ function HubSettings({
 	// predicate.
 	useEffect(() => {
 		if (connectionState !== "ready") {
-			refreshedAtReady.current = false;
+			recoveredForClient.current = null;
 			return;
 		}
-		if (refreshedAtReady.current) return;
-		refreshedAtReady.current = true;
+		// The gate keys on the client, not the readiness alone: a replacement
+		// client can arrive while the state never leaves ready — a state-keyed
+		// boolean would stay consumed for it — and its pairing's focus read is
+		// refused while it settles, with no later event left to re-run it. Each
+		// newly paired ready client is therefore its own recovery event
+		// (round 39).
+		if (recoveredForClient.current === client) return;
+		recoveredForClient.current = client;
 		// Only a focused screen's authorization means the focus effect is
 		// about to read in this same commit; an unfocused screen's is a
 		// pairing nothing else will use until the user comes back.

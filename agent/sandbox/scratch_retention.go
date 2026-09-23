@@ -208,6 +208,13 @@ func loadScratchRetention(owner ScratchOwner) (ScratchManifest, error) {
 	return manifest, nil
 }
 
+// scratchManifestWriteProbe is a nil-in-production test seam fired after a
+// manifest write's rename already committed: its error simulates the
+// post-rename fsync failure class, where writeScratchRetention reports a
+// failure for a transaction that is already durable and every caller must
+// treat as committed.
+var scratchManifestWriteProbe func() error
+
 func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 	manifest.Version = scratchRetentionVersion
 	manifest.Owner = owner
@@ -215,7 +222,13 @@ func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 	if err != nil {
 		return fmt.Errorf("sandbox: marshal scratch retention manifest: %w", err)
 	}
-	return atomicWritePrivateFile(scratchManifestPath(owner), raw)
+	if err := atomicWritePrivateFile(scratchManifestPath(owner), raw); err != nil {
+		return err
+	}
+	if hook := scratchManifestWriteProbe; hook != nil {
+		return hook()
+	}
+	return nil
 }
 
 func acquireScratchRetentionLock(owner ScratchOwner) (scratchLease, error) {
@@ -425,6 +438,11 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 	if manifest.Released {
 		return ErrScratchRetentionReleased
 	}
+	// The pre-call revision is the rollback's commit discriminator: the
+	// rollback runs under this lock, so a revision that moved proves the
+	// manifest write's rename landed — the transaction is durable despite
+	// the reported error (round 39).
+	preRevision := manifest.Revision
 	if binding.Slots == nil {
 		binding.Slots = make(map[string]ScratchSlot, len(refs))
 	}
@@ -435,13 +453,13 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 		for _, existing := range manifest.References {
 			existingDir, err := canonicalScratchPath(existing.Dir)
 			if err != nil {
-				return rollbackPinScratchBindingPins(owner, added, repaired, err)
+				return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 			}
 			if existingDir != ref.Dir {
 				continue
 			}
 			if existing.Kind != ref.Kind {
-				return rollbackPinScratchBindingPins(owner, added, repaired, fmt.Errorf("sandbox: conflicting retention reference for %q", ref.Dir))
+				return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, fmt.Errorf("sandbox: conflicting retention reference for %q", ref.Dir))
 			}
 			listed = true
 			break
@@ -454,7 +472,7 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 		// absence marks a pin this call is about to create.
 		_, pinErr := readScratchDirectoryPin(ref.Dir)
 		if err := writeScratchDirectoryPin(ref.Dir, owner, ref); err != nil {
-			return rollbackPinScratchBindingPins(owner, added, repaired, err)
+			return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 		}
 		if !listed {
 			added = append(added, ref)
@@ -467,13 +485,13 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 	}
 	manifest.References = append(manifest.References, added...)
 	if err := applyScratchBindingUpdate(&manifest, binding, nil); err != nil {
-		return rollbackPinScratchBindingPins(owner, added, repaired, err)
+		return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 	}
 	if err := writeScratchRetention(owner, manifest); err != nil {
 		// writeScratchRetention can report an error after the rename committed;
 		// the rollback re-reads the manifest and then leaves a published
 		// reference's pin alone, so a committed transaction stays whole.
-		return rollbackPinScratchBindingPins(owner, added, repaired, err)
+		return rollbackPinScratchBindingPins(owner, added, repaired, preRevision, err)
 	}
 	return nil
 }
@@ -486,10 +504,13 @@ func PinScratchBinding(owner ScratchOwner, binding ScratchBinding, owned map[str
 // (round 35). It is called with the manifest lock held. For a newly published
 // reference it never removes a pin the manifest already holds —
 // rollbackUnpublishedScratchPin re-reads the manifest first — so a publication
-// that committed despite reporting an error keeps its protection. The original
-// error is returned unwrapped when every rollback succeeds; every cause is
-// reported when one does not.
-func rollbackPinScratchBindingPins(owner ScratchOwner, added, repaired []ScratchReference, cause error) error {
+// that committed despite reporting an error keeps its protection. A repaired
+// pin is gated on the pre-call revision for the same reason: a revision that
+// moved proves the manifest write's rename landed, and a committed
+// transaction keeps its repair (round 39). The original error is returned
+// unwrapped when every rollback succeeds; every cause is reported when one
+// does not.
+func rollbackPinScratchBindingPins(owner ScratchOwner, added, repaired []ScratchReference, preRevision uint64, cause error) error {
 	var failures []error
 	for _, ref := range added {
 		if err := rollbackUnpublishedScratchPin(owner, ref.Dir, ref.Kind); err != nil {
@@ -497,7 +518,7 @@ func rollbackPinScratchBindingPins(owner ScratchOwner, added, repaired []Scratch
 		}
 	}
 	for _, ref := range repaired {
-		if err := rollbackRepairedScratchPin(owner, ref.Dir, ref.Kind); err != nil {
+		if err := rollbackRepairedScratchPin(owner, ref.Dir, ref.Kind, preRevision); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -509,13 +530,26 @@ func rollbackPinScratchBindingPins(owner ScratchOwner, added, repaired []Scratch
 
 // rollbackRepairedScratchPin removes a pin this transaction created over a
 // reference the manifest already listed — the repair of a lost pin whose
-// transaction then failed. The listing predates the call, so the pre-call
-// state had no pin and removing restores it exactly; the published-reference
-// protection does not apply because the manifest's claim survived the failure
-// without this transaction's help. A pin that is absent, unreadable, or no
-// longer this owner's own pin for the directory and kind is left alone,
-// mirroring rollbackUnpublishedScratchPin's doubt-handling.
-func rollbackRepairedScratchPin(owner ScratchOwner, dir, kind string) error {
+// transaction then failed BEFORE its commit. The durable manifest is re-read
+// first: writeScratchRetention can report an error after the rename committed,
+// and a committed transaction keeps its repair — the revision moved, the
+// listing is part of the durable coherent state, and removing the pin would
+// leave the committed reference unpinned and its directory collectible
+// (round 39). Only a revision still at the pre-call value proves the
+// transaction never committed, and only then does the pre-call state — no pin —
+// get restored. A pin that is absent, unreadable, or no longer this owner's
+// own pin for the directory and kind is left alone, mirroring
+// rollbackUnpublishedScratchPin's doubt-handling.
+func rollbackRepairedScratchPin(owner ScratchOwner, dir, kind string, preRevision uint64) error {
+	current, err := loadScratchRetention(owner)
+	if err != nil {
+		return fmt.Errorf("sandbox: confirm rollback of repaired retention pin for %q: %w", dir, err)
+	}
+	if current.Revision != preRevision {
+		// The transaction committed despite the reported error; the repair
+		// stays with it.
+		return nil
+	}
 	pin, pinErr := readScratchDirectoryPin(dir)
 	switch {
 	case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == kind:
