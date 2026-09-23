@@ -2166,3 +2166,64 @@ func lastChars(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// TestRenderMarkdown_RejectedCallShowsRawArguments verifies the read_transcript
+// markdown tool card displays the model's original (raw, malformed) argument
+// bytes for a rejected call rather than the replay-safe {} placeholder. When a
+// call's Arguments were not valid JSON, assistantHistoryMessage preserves them
+// in RawArguments and replaces Arguments with {} for provider round-trip; the
+// durable transcript therefore holds Arguments={}. Before FU5 the card rendered
+// that {} placeholder instead of what the model actually sent. The card's
+// input summary and the result-tool message fallback must both prefer the raw
+// bytes (mirroring doctor/transcript.go's SentArguments treatment from #2162).
+func TestRenderMarkdown_RejectedCallShowsRawArguments(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{command: "ls", }` // malformed JSON — the shape that rejects
+	// A rejected call as the durable transcript records it: Arguments replaced
+	// with the replay-safe {} form, RawArguments holding the model's original
+	// bytes.
+	rejected := &llm.ToolCallData{
+		ID:           "call-rejected",
+		Name:         "shell",
+		Arguments:    []byte(`{}`),
+		RawArguments: rawArgs,
+	}
+	entries := []transcript.Entry{
+		toolCallEntry(rejected),
+		toolResultEntry(result("call-rejected", "shell", "arguments not valid JSON", true)),
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+
+	if !strings.Contains(out, rawArgs) {
+		t.Errorf("expected the tool card to show the model's raw arguments %q for a rejected call, got:\n%s", rawArgs, out)
+	}
+	if strings.Contains(out, "input: {}") {
+		t.Errorf("the card must not show the {} placeholder as input for a rejected call, got:\n%s", out)
+	}
+}
+
+// TestRenderMarkdown_ResultToolRejectedCallShowsRawArguments verifies the
+// writeResultToolMessage fallback path: a communicate (result-tool) call whose
+// Arguments were replaced with {} after rejection must render the raw bytes,
+// not the empty {} placeholder, when no "message" key is present.
+func TestRenderMarkdown_ResultToolRejectedCallShowsRawArguments(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{message: "done", }` // malformed JSON
+	part := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:           "call-result-rej",
+			Name:         "communicate",
+			Arguments:    []byte(`{}`),
+			RawArguments: rawArgs,
+		},
+	}
+	msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{part}}
+	entries := []transcript.Entry{
+		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: msg}),
+	}
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+	if !strings.Contains(out, rawArgs) {
+		t.Errorf("expected result-tool fallback to show raw arguments %q for a rejected call, got:\n%s", rawArgs, out)
+	}
+}

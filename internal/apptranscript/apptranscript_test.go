@@ -1308,3 +1308,72 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 		t.Fatalf("zero-timestamp tool call item StartedAt=%v, want nil", items[0].StartedAt)
 	}
 }
+
+// TestProjectTurn_RejectedCallShowsRawArguments verifies the hub/web/TUI thread
+// projection (ProjectTurn's reload path) shows the model's original raw
+// argument bytes in ArgumentsJSON for a rejected call rather than the
+// replay-safe {} placeholder the durable transcript records. When a call's
+// Arguments were not valid JSON, assistantHistoryMessage preserves them in
+// RawArguments and replaces Arguments with {}; the projection must prefer the
+// raw bytes (SentArguments precedence) so the thread shows what the model
+// actually sent. The Description (intent) must be empty for a rejected call,
+// mirroring doctor/transcript.go's treatment from #2162: parsing the {}
+// placeholder yields an empty intent anyway, so skipping the parse when
+// RawArguments is set preserves the current outcome.
+func TestProjectTurn_RejectedCallShowsRawArguments(t *testing.T) {
+	const rawArgs = `{command: "ls", }` // malformed JSON — the shape that rejects
+	toolNames := map[string]string{}
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_rejected",
+				Name:         "shell",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(items), items)
+	}
+	if items[0].ArgumentsJSON != rawArgs {
+		t.Errorf("ArgumentsJSON = %q, want the model's raw arguments %q for a rejected call", items[0].ArgumentsJSON, rawArgs)
+	}
+	if items[0].Description != "" {
+		t.Errorf("Description = %q, want empty (intent from a {} placeholder is structurally empty; skip the parse for rejected calls)", items[0].Description)
+	}
+}
+
+// TestProjectTurn_WellFormedCallUnchanged verifies the SentArguments precedence
+// does not alter well-formed-call display: when RawArguments is empty,
+// ArgumentsJSON must still carry the recorded arguments verbatim and the
+// Description must still surface the intent. This pins the "do not alter
+// well-formed-call display" requirement from the brief.
+func TestProjectTurn_WellFormedCallUnchanged(t *testing.T) {
+	const args = `{"path":"README.md","intent":"inspect docs"}`
+	toolNames := map[string]string{}
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_ok",
+				Name:      "read_file",
+				Arguments: []byte(args),
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(items), items)
+	}
+	if items[0].ArgumentsJSON != args {
+		t.Errorf("ArgumentsJSON = %q, want unchanged %q for a well-formed call", items[0].ArgumentsJSON, args)
+	}
+	if items[0].Description != "inspect docs" {
+		t.Errorf("Description = %q, want intent %q for a well-formed call", items[0].Description, "inspect docs")
+	}
+}
