@@ -149,7 +149,21 @@ export default defineConfig({
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],
-    pool: "threads",
+    // vmThreads keeps each file's module registry and jsdom isolated in its own
+    // VM context but reuses the worker, so jsdom itself (~450ms to load) loads
+    // once per worker instead of once per file: the threads pool spent more CPU
+    // re-loading jsdom than running tests (113s -> 41s wall at 8 workers). The
+    // global is then the jsdom window itself, so a test cannot replace its
+    // non-configurable members (location) or assign getter-only ones
+    // (localStorage: use installLocalStorage), and `instanceof` fails for
+    // objects built in the runner's realm, such as vi.mock's wrapper errors.
+    pool: "vmThreads",
+    // VM contexts grow a worker's memory file after file, and the default
+    // recycle point is 1/maxWorkers of SYSTEM memory - effectively never on a
+    // big host, and the whole machine on a small one. Recycling at 512MB held
+    // the suite to ~3GB peak RSS at 4 workers (8.3GB unbounded; 2GB on the
+    // threads pool) with no measurable wall-time cost.
+    vmMemoryLimit: "512MB",
     // Frontend stores, pane registrations, and module mocks are deliberately
     // module-scoped. Keep each file's module registry and jsdom isolated: a
     // worker-count change otherwise changes file-to-worker assignment and can

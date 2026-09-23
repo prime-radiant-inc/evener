@@ -38,6 +38,7 @@ import {
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
+import { installLocalStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
@@ -488,7 +489,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
 
 beforeEach(() => {
   // @ts-expect-error — Node 26 localStorage workaround (same as integration test)
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();

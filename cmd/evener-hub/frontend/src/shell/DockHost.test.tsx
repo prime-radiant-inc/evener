@@ -5,6 +5,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -88,7 +89,7 @@ let restoreSettingsPane: (() => void) | undefined;
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 
   restoreDocPane = registerPaneForTests({
     id: "doc",

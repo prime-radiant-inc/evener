@@ -1,5 +1,6 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../storageTestUtils";
 
 // The adapter module evaluates AFTER the handshake when the settings chunk
 // loads lazily (or under HMR): connectionStore already holds a ready client
@@ -27,7 +28,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see stores/keybindings.test.ts's MemoryStorage comment
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

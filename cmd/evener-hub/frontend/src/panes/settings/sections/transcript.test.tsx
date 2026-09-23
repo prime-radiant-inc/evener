@@ -4,6 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { installLocalStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import {
   initTranscriptDisplay,
@@ -41,7 +42,7 @@ class FailingStorage extends MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

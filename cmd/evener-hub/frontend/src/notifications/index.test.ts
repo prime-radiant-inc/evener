@@ -10,6 +10,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
+import { installLocalStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
@@ -89,7 +90,7 @@ class MemoryStorage {
 }
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function node(ref: string, state: string, askPending = false): NavigationSessionSummary {
