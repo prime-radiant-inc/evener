@@ -6296,6 +6296,23 @@ test("host picker lists sources, preselects local, and disables offline hosts", 
   expect(offline.textContent).toContain("offline");
 });
 
+// The Host row sits above the working directory: the folder list, recents,
+// and validation all come from the selected machine (hostRequest), so the
+// form reads pick-the-machine first, then the folder on it. Asserted in DOM
+// order, not visually, so keyboard focus follows the same path.
+test("the host row renders above the working directory", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  const host = screen.getByLabelText("Host");
+  const dir = workingDir();
+  expect(host.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 // Selecting an already-online remote host is NOT an attach request: the
 // manifest reports the host online (its channel is attached), so the picker must
 // not spend a redundant evener/host/attach on it. Only a host the manifest
