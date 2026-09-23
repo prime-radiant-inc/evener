@@ -349,6 +349,49 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
 ~~~
 
+### `EVENER_SSH_E2E_SESSION=1` — the live session spawned on a host
+
+The session half of the multi-host contract: a session the CONTROLLER asks for,
+from a host attached through `evener/host/attach`, is spawned and served by that
+host's own hub. It drives the same private loopback hub and add → attach wire path
+the checks above do, then starts a session with the host as its source and **no
+model**, so success is evidence the host resolved the launch from its own
+configuration rather than inheriting anything from this controller. It asserts
+the returned ref belongs to the host rather than `local:`, that the controller's
+fleet list carries it, and that a read of it is answered by the host's daemon —
+the fleet list is roster-derived and cannot prove anything is running. It sends
+no input items, so **no turn runs and the host's provider is never called**: a
+run costs nothing beyond the session and the ssh round trips.
+
+**This gate writes to the host**, which is why it is a separate opt-in from the
+read-only `EVENER_SSH_E2E` check. It needs `EVENER_SSH_E2E=1`,
+`EVENER_SSH_E2E_HOST`, and `EVENER_SSH_E2E_ROOT` (a working directory that exists
+on the host — the spawned session's cwd), and skips under `-short`.
+
+What it leaves behind: the session runs on the host, against the host's own
+provider and credentials, and the daemon it spawns outlives this test's hub. The
+controller cannot yet shut a remote session down — remote thread capabilities are
+masked to the actions the source can carry
+(`appsource.maskRemoteThreadCapabilities`), and the flags that would turn them on
+belong to the host capability probe — so `thread/shutdown` is attempted and its
+refusal is logged rather than asserted, and the daemon exits on its own idle
+timeout. Because of that, and because the session is recorded in the host's own
+state root, run this against a **disposable** host: the same contract the deploy
+check states.
+
+Prerequisites: the sibling checks' live-stack build prerequisites, and a
+disposable host reachable over non-interactive ssh whose own launch
+configuration resolves a model (a `model` in its `launch.toml`, or its provider
+environment). A host that cannot resolve one refuses the spawn, which is the
+failure this check exists to surface — the controller side needs nothing, since
+this check's own hub runs a fake provider that a remote session never reaches.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
+  EVENER_SSH_E2E_SESSION=1 EVENER_SSH_E2E_ROOT=/Users/jesse \
+  go test ./cmd/evener-hub/ -run 'TestHostSpawnSessionE2E' -count=1 -v
+~~~
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
