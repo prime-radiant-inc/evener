@@ -14,7 +14,14 @@ import (
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/orphanpipe"
 )
+
+// commandHookWaitDelay bounds how long a hook's output pipes may stay open
+// after the hook exits or its timeout ends. A hook that backgrounds a job hands
+// the job those pipes, and killing the hook on timeout does not kill the job,
+// so without this bound the timeout would not bound the hook (see orphanpipe).
+const commandHookWaitDelay = time.Second
 
 // commandHookInvocation is the fully prepared external command boundary. Its
 // fields make the launch contract explicit without exposing an exec.Cmd to the
@@ -101,12 +108,13 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = commandHookWaitDelay
 
 	run := r.run
 	if run == nil {
 		run = runSystemCommandHookProcess
 	}
-	err := run(ctx, invocation, cmd)
+	err := orphanpipe.ChildErr(cmd, run(ctx, invocation, cmd))
 	result := hookResult{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
