@@ -430,7 +430,7 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
   }
   const status = (attrs.status || attrs.event || "notification").trim();
   if (!status) return "Job notification";
-  return terminalJobTitle(status, attrs.reason ?? "");
+  return terminalJobTitle(status, attrs.reason ?? "", optionalSignedInteger(attrs.exit_code));
 }
 
 // terminalJobTitle names a terminal job frame, keeping the three failure
@@ -439,11 +439,12 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
 // statuses — the job ran the command fine; the COMMAND is what failed), and
 // "Job failed" is reserved for the job system's own failures. Pre-split
 // blocks (status="failed" carrying a command-outcome reason) fall back on
-// the reason so durable history renders under the same words. The compared
-// literals contain none of the four characters escapeNotificationText
+// the reason so durable history renders under the same words, and a
+// completed frame with a nonzero exit is the command's failure too. The
+// compared literals contain none of the four characters escapeNotificationText
 // escapes, so the raw attribute value compares directly — no entity a
 // producer could emit decodes into a literal.
-function terminalJobTitle(status: string, reason: string): string {
+function terminalJobTitle(status: string, reason: string, exitCode?: number): string {
   if (status === "command_exited_nonzero") return "Command failed";
   if (status === "command_killed") return "Command killed";
   if (status === "failed") {
@@ -451,6 +452,10 @@ function terminalJobTitle(status: string, reason: string): string {
     if (trimmedReason === "exit_nonzero") return "Command failed";
     if (trimmedReason.startsWith("killed_by_signal")) return "Command killed";
   }
+  // The glyph that tones this frame error sits in an aria-hidden seat, so
+  // the title is the only failure text a screen reader reaches — a nonzero
+  // exit under a "completed" status must still name the command's failure.
+  if (status === "completed" && exitCode !== undefined && exitCode !== 0) return "Command failed";
   return `Job ${status}`;
 }
 

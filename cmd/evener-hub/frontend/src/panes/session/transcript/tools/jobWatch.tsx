@@ -38,6 +38,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -217,10 +218,12 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
     // completed before it could fire"). A catch-up that FIRED matched on
     // the terminal scan instead — same shape, opposite outcome.
     if (boolField(raw, "fired")) {
-      return status ? `Watch on ${source} fired on terminal scan — ${status}` : `Watch on ${source} fired`;
+      return status
+        ? `Watch on ${source} fired on terminal scan — ${jobStatusDisplay(status)}`
+        : `Watch on ${source} fired`;
     }
     return status
-      ? `Watch on ${source} ended — job ${status} before it could fire`
+      ? `Watch on ${source} ended — ${jobStatusDisplay(status)} before it could fire`
       : `Watch on ${source} ended — job ended before it could fire`;
   }
   const timer = timerSpec(raw);

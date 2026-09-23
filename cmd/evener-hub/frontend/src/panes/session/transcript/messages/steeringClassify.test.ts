@@ -200,6 +200,10 @@ Job job_42 completed.
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
   expect(n.tone).toBe("error");
+  // The title names the failure: the glyph's aria-hidden seat is decorative,
+  // so the title is the only failure text a screen reader reaches (RoboRev
+  // round 7's accessibility finding).
+  expect(n.title).toBe("Command failed");
   expect(n.secondary).toBe("");
   expect(n.description).toBe("Inspect the workspace");
   expect(n.exitCode).toBe(2);
