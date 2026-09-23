@@ -18,11 +18,12 @@ const NOW = "2026-09-23T14:58:00.000Z";
 const FRAME_TIME = 1787680800000;
 const USAGE: EvenerUsage = { inputTokens: 128, outputTokens: 64, totalTokens: 192 };
 
-// The note THIS call added (task 2's second note, appended server-side), and
-// the stale one from an earlier call that must never render under the new
-// "only notes that were just added" rule.
+// The note THIS call added (task 2's second note, appended server-side).
 const FRESH_NOTE = "Folded names the single latest touch; the open body is the window: settled, working, next.";
-const OLD_NOTE = "An old note from an earlier call that must not show.";
+// Task 2's stale note, from an earlier call: the CARD must not render it
+// (the fresh-only rule); the PANE legitimately shows it as the task's
+// latest note, so the wording has to read naturally on both surfaces.
+const OLD_NOTE = "Scouted the fold contract and the row grammar before deciding anything.";
 
 /** agent/task/task_store.go's Task json shape, snake_case as it rides the wire. */
 interface WireTask {

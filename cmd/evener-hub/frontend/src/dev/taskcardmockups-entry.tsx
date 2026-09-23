@@ -11,9 +11,13 @@
 // Dev-support scaffolding for a design decision, not production code.
 
 import { makeTranscriptDisplayConfig, type ThreadModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
 import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
+import { connectionStore } from "../stores/connection";
+import { toggleDisclosure } from "../widgets/disclosure/disclosureStore";
 import { requireClass } from "../widgets/internal/requireClass";
 import "../styles/tokens.css";
 import "../styles/global.css";
@@ -73,8 +77,8 @@ function TaskTranscript({ scope, model }: { scope: string; model: ThreadModel })
   );
 }
 
-// Today's card, unchanged, in a realistic run: the reads around it fold
-// into an "N actions" header exactly as they do live.
+// The production card in a realistic run: the reads around it fold into an
+// "N actions" header exactly as they do live.
 const todayModel = modelForSection("preview:taskcardmockups-today", {
   id: "turn-today",
   userText:
@@ -177,6 +181,39 @@ const stripModel = variantModel(
   ],
 );
 
+// The restyled tasks pane, live: the real TasksPanelBody fed by a fake
+// client carrying the SAME five-task state the card sections render, so the
+// two surfaces can be compared directly. Both theme panes mount the same
+// body against the same tasksPanelStore entry (keyed by this dev
+// sessionRef), so a single fetch serves both.
+const PANE_SESSION_REF = "dev-taskcardmockups-pane";
+const PANE_CLIENT = new FakeClient("ready");
+PANE_CLIENT.on("evener/tasks/list", () => ({ data: MAIN.state }));
+connectionStore.getState().connect(PANE_CLIENT);
+const paneModel: ThreadModel = {
+  ...modelForSection("preview:taskcardmockups-pane", {
+    id: "turn-pane",
+    userText: "Compare the pane and the card on the same task state.",
+    items: [],
+  }),
+  tasks: { total: 5, done: 2, remaining: 3 },
+};
+
+// Capture affordance for the headless one-shot screenshot path
+// (google-chrome --headless=new --screenshot): with #pane-open in the URL
+// the entry pre-opens the pane demo's settled group - the explicit store
+// entry wins over Disclosure's collapsed fallback - and scrolls the section
+// into view once mounted, so a single headless load can capture all five
+// rows. Dev-only; nothing reads the hash otherwise.
+if (location.hash === "#pane-open") {
+  toggleDisclosure(`${PANE_SESSION_REF}\0settled-group`, false);
+  requestAnimationFrame(() => {
+    [...document.querySelectorAll("main > section")]
+      .find((section) => section.querySelector("h2")?.textContent.includes("Tasks pane"))
+      ?.scrollIntoView({ block: "start" });
+  });
+}
+
 // Edge cases, all through the ladder renderer (the recommendation): the
 // no-note rule, a two-task list, everything done, a cancellation as the
 // most recent settle, and an append that lands beyond the window.
@@ -207,6 +244,12 @@ createRoot(root).render(
       blurb="The production task_list descriptor as reworked (2026-09): settles folded with the latest-update line, opens to the window, notes only when fresh. The five mock variants below are the historical alternatives the rework chose among."
     >
       <TaskTranscript scope="preview:taskcardmockups-today" model={todayModel} />
+    </Section>
+    <Section
+      title="Tasks pane · restyled"
+      blurb="The real TasksPanelBody on the shared TaskCheck family: rows lead with the box glyphs (the empty box for open), the live row's latest note hangs bare in the prose face, and the notes timeline sets the same way. Fed by a fake client carrying the same five tasks the card sections render."
+    >
+      <TasksPanelBody sessionRef={PANE_SESSION_REF} model={paneModel} />
     </Section>
     <Section
       title="A · Ladder"
