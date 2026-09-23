@@ -9,7 +9,12 @@
 import { useCallback, useEffect } from "react";
 import { HOST_QUERY_PARAM, navigate, paneToURL, urlToPane } from "../../shell/routing";
 import { isLocalHost } from "../../stores/hostRouting";
-import { adoptSettingsHostFromURL, setSettingsHost, useSettingsHostStore } from "../../stores/settingsHost";
+import {
+  adoptSettingsHostFromURL,
+  setSettingsHost,
+  syncSettingsHostToRoute,
+  useSettingsHostStore,
+} from "../../stores/settingsHost";
 
 /** settingsURL is the settings route for `section` carrying `host`. `local`
  * adds nothing, so a user who never picks a host keeps today's URL. */
@@ -64,6 +69,17 @@ export function useSettingsHostURLSync(): void {
   useEffect(() => {
     adoptSettingsHostFromURL();
     window.addEventListener("popstate", adoptSettingsHostFromURL);
-    return () => window.removeEventListener("popstate", adoptSettingsHostFromURL);
+    return () => {
+      window.removeEventListener("popstate", adoptSettingsHostFromURL);
+      // Leaving the settings route drops the selection with it. This hook is the
+      // ROUTE-level one (Settings.tsx calls it once), so a section switch INSIDE
+      // settings re-renders the same pane and never runs this - a remote
+      // selection survives it, as it must - while any real departure does. An
+      // app-built navigation is already mirrored by shell/routing.ts's navigate;
+      // this covers the rest (a browser Back/Forward, a direct pushState, a pane
+      // close), seeding from the live URL so it is a no-op for a settings route
+      // and a reset off one.
+      syncSettingsHostToRoute(window.location.pathname, window.location.search);
+    };
   }, []);
 }

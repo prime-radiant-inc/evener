@@ -17,8 +17,8 @@ import type { ReactNode } from "react";
 import { useConnectionStore } from "../../../../stores/connection";
 import { fetchHost, useHostInstances } from "../../../../stores/credentials";
 import { isLocalHost } from "../../../../stores/hostRouting";
-import { useHostsStore } from "../../../../stores/hosts";
-import { EmptyState, Skeleton } from "../../../../widgets";
+import { type HostsLoadState, hostsStore, useHostsStore } from "../../../../stores/hosts";
+import { Button, EmptyState, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostPicker, isConfiguredHost, useHostRegistryFacts } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
@@ -64,7 +64,7 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
       </p>
     );
   } else {
-    body = <RemoteHostInstances host={host} identity={identity} attached={attached} />;
+    body = <RemoteHostInstances host={host} identity={identity} attached={attached} phase={load.phase} />;
   }
 
   return (
@@ -85,10 +85,13 @@ function RemoteHostInstances({
   host,
   identity,
   attached,
+  phase,
 }: {
   host: string;
   identity: string | null;
   attached: boolean;
+  /** The registry's load phase, so the read can wait until it names the host. */
+  phase: HostsLoadState["phase"];
 }) {
   const state = useHostInstances(host);
   const { client, state: connection } = useConnectionStore();
@@ -105,7 +108,23 @@ function RemoteHostInstances({
   // there with no retry control. It is deliberately NOT part of the identity the
   // rows are keyed on (see hosts.ts's hostIdentity): folding live state in would
   // invalidate a perfectly good listing on every detach.
-  useConnectedEffect(() => fetchHost(host, identity), [host, identity, attached, client, connection]);
+  //
+  // The registry's PHASE is the last trigger (L1): while it is still unread the
+  // pane has no identity, and a read issued then can never be shown - `verified`
+  // below requires one, and the registry's own answer re-runs this effect and
+  // discards that first read - so it is not issued at all. A registry that has
+  // FAILED is different: no identity will ever arrive, so waiting would be a
+  // permanent skeleton. The read goes out without one; if it FAILS the host's own
+  // refusal is shown, and if it SUCCEEDS the rows really are that host's own
+  // (they came back through the proxy for the selected name) - but `verified`
+  // still cannot hold, because what is unknown is whether the name still refers
+  // to the same registration. The pane states exactly that instead of spinning
+  // (see `unverifiable` below), rather than pretending to still be working.
+  const registryUnread = phase === "loading" && identity === null;
+  useConnectedEffect(
+    () => (registryUnread ? Promise.resolve() : fetchHost(host, identity)),
+    [host, identity, attached, client, connection, registryUnread],
+  );
 
   const title = `Providers on ${host}`;
   // Rows are this host's only when they were read under the identity the
@@ -116,18 +135,35 @@ function RemoteHostInstances({
   const verified = state.readIdentity !== null && (identity === null || state.readIdentity === identity);
   const empty = state.instances.length === 0;
   const pending = !verified || (state.loading && empty);
+  // The registry has settled on a FAILURE: no identity is coming, so nothing
+  // read here can ever pass `verified`. Rather than a permanent skeleton - which
+  // reads as "still working" - say what is and is not known, and offer the
+  // registry's own read to retry. (The picker also re-reads it on its own poll,
+  // so this is not the only way back.)
+  const unverifiable = phase === "error";
   return (
     <section className={CLASS.remote} aria-label={title}>
       <h3 className={CLASS.heading}>{title}</h3>
       <p className={CLASS.note}>Read-only. These are {host}'s own provider instances, not this hub's.</p>
       {/* An error is an answer: the skeleton is for "nothing, and no failure,
           yet" - beside a refusal it would read as "still working". */}
-      {pending && state.error === null && <Skeleton />}
       {state.error !== null && (
         <p className={CLASS.error}>
           Couldn't read providers from {host}: {state.error}
         </p>
       )}
+      {state.error === null && unverifiable && (
+        <EmptyState
+          title={`Couldn't check ${host}'s registration`}
+          hint="The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the name it was selected by. Retry to read the hosts list again."
+          action={
+            <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
+              Retry
+            </Button>
+          }
+        />
+      )}
+      {state.error === null && !unverifiable && pending && <Skeleton />}
       {verified && !pending && state.error === null && empty && (
         <EmptyState title={`No provider instances on ${host}.`} />
       )}

@@ -2715,3 +2715,54 @@ describe("notification-triggered refetch", () => {
     expect(hostIdentity({ ...configured, address: "b.example" })).not.toBe(hostIdentity(configured));
   });
 });
+
+// registryRow builds one registry row for the invalidation tests below - the
+// same shape stores/hosts.ts publishes in its ready snapshot.
+function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
+  return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
+}
+
+// L2 (roborev round 5): an identity-less read (the spawn form's fetchHost(host),
+// stores/credentials.ts:223's default) recorded NO identity, and survivesRegistry
+// treated "no identity" as proof of no mismatch - so a name re-registered as a
+// DIFFERENT host kept the previous registration's rows for that consumer. Every
+// read now records the registration the registry names at read time.
+test("an identity-less read does not survive a re-registration under the same name", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  const first = registryRow({ name: "buildbox", address: "a.example" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [first] } });
+
+  await fetchHost("buildbox"); // no identity handed, like panes/spawn/useProviderSetup
+  const partition = hostPartition(hostInstancesStore.getState(), "buildbox");
+  expect(partition.instances).toEqual([REMOTE_INSTANCE]);
+  expect(partition.readIdentity).toBe(hostIdentity(first));
+
+  // The name now means a different host: an identity-less read must not keep the
+  // previous registration's rows on screen.
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] } });
+
+  expect(hostInstancesStore.getState().hosts).toEqual({});
+  hostsStore.getState().resetForTests();
+});
+
+// The trap the fix must avoid: making "no identity" mean "does not survive a
+// ready snapshot" would drop an identity-less partition on every poll tick. Two
+// ready snapshots of the SAME registration must keep the rows and issue no new
+// read.
+test("an identity-less read survives two ready snapshots of the same registration without re-reading", async () => {
+  const fake = connectFakeClient();
+  const row = registryRow({ name: "buildbox", address: "a.example" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
+  serveRemoteList(fake, REMOTE_LIST);
+
+  await fetchHost("buildbox");
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+
+  // The registry's poll republishes the SAME registration as a fresh snapshot.
+  hostsStore.setState({ load: { phase: "ready", hosts: [{ ...row }] } });
+
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+  hostsStore.getState().resetForTests();
+});

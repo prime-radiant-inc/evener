@@ -12,7 +12,7 @@ import {
 } from "../../../../stores/credentials";
 import { hostsStore } from "../../../../stores/hosts";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
-import { resetSettingsHostForTests } from "../../../../stores/settingsHost";
+import { resetSettingsHostForTests, settingsHostStore } from "../../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsHostScope } from "./CredentialsHostScope";
 
@@ -447,4 +447,96 @@ test("a host re-registered under the same name never shows the previous host's r
   await act(async () => gate.resolve(REPLACED_HOST_LIST));
   expect(await screen.findByText("on-beta-replaced")).toBeTruthy();
   expect(screen.queryByText("on-beta")).toBeNull();
+});
+
+// L1 (roborev round 5): on a fresh deep-link the registry has not answered yet,
+// so the pane has no identity. Issuing the read then is pure waste - it is never
+// displayable (verified requires an identity) and the registry's own answer
+// replaces it immediately. The read waits for the registry instead.
+test("a fresh deep-link does not read the remote host until the registry names it", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  const registry = deferRequest<unknown>(fake, "evener/host/list");
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  // The selection is the route's (a deep link), and the registry is still out.
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  // deferRequest arms its resolver one microtask after the request is issued.
+  await act(async () => {});
+
+  // No remote read while the registry is unread: nothing it could answer is
+  // displayable, and the registry's answer would replace it anyway.
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
+
+  await act(async () => {
+    registry({ hosts: [hostRow({ name: "beta", attached: true })] });
+  });
+
+  // The registry names the host, and exactly one read follows.
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+});
+
+// The gate must not turn a registry that never answers into an eternal skeleton:
+// once the registry has FAILED, no identity is coming, so the pane reads anyway
+// and shows the host's own refusal instead of hanging.
+test("a registry read that fails still shows the host's own refusal", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => {
+    throw new WireError("registry unavailable", -32000);
+  });
+  fake.on("evener/host/request", () => {
+    throw new WireError('host "beta" is not attached', -32000);
+  });
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  expect(await screen.findByText(/host "beta" is not attached/)).toBeTruthy();
+});
+
+// The fallback's SUCCESS path must be honest too: with a failed registry no
+// identity ever arrives, so a read that answers can never be `verified`. It used
+// to sit on a permanent skeleton, which reads to a user as "still working" - the
+// same lie as showing the wrong host's data, only quieter.
+test("a failed registry never leaves a successful read on a permanent skeleton", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => {
+    throw new WireError("registry unavailable", -32000);
+  });
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  // The read reached the host and answered, but ownership cannot be checked:
+  // the pane says so instead of spinning on a skeleton.
+  expect(await screen.findByText(/hosts list/i)).toBeTruthy();
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+});
+
+// The unverifiable state is not a dead end: the registry's own read (Retry)
+// restores the check, and the listing is shown once it lands.
+test("the unverifiable state's retry re-reads the registry and restores verification", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  let registryDown = true;
+  fake.on("evener/host/list", () => {
+    if (registryDown) throw new WireError("registry unavailable", -32000);
+    return { hosts: [hostRow({ name: "beta", attached: true })] };
+  });
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  await screen.findByText(/hosts list/i);
+
+  // The hosts list comes back, and Retry issues the registry's own read.
+  registryDown = false;
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("on-beta")).toBeTruthy();
 });

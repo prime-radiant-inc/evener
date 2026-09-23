@@ -17,7 +17,7 @@
 // shared hook and the mount/popstate sync - lives in panes/settings/settingsHost.ts;
 // shell/routing.ts's navigate carries the host across the app's own navigations.
 import { createStore, useStore } from "zustand";
-import { HOST_QUERY_PARAM, isSettingsPath } from "../shell/routing";
+import { HOST_QUERY_PARAM, isSettingsPath, setSettingsHostRouteSync } from "../shell/routing";
 import { LOCAL_HOST, normalizeHost } from "./hostRouting";
 
 // The one spelling rule (absent / empty / `local` -> LOCAL_HOST) lives in
@@ -84,6 +84,26 @@ export function adoptSettingsHostFromURL(): void {
   if (!isSettingsPath(window.location.pathname)) return;
   setSettingsHost(readHostFromSearch(window.location.search));
 }
+
+/** syncSettingsHostToRoute mirrors the selection onto a route the app just
+ * navigated to: the host a SETTINGS route names, or the local hub off one. It is
+ * the both-directions form of the route's authority - adoptSettingsHostFromURL
+ * only ever rewrites inside a settings route, while this also DROPS a remote
+ * selection the app has navigated away from, so the selection cannot outlive the
+ * route.
+ *
+ * shell/routing.ts's navigate calls it at the moment it applies an app-built
+ * navigation (its own withSettingsHost has already carried the host onto a
+ * settings target, so the target names exactly what the route should select),
+ * and the settings pane's unmount seeds from the live URL so a browser
+ * Back/Forward - which never calls navigate - drops it too. */
+export function syncSettingsHostToRoute(pathname: string, search: string): void {
+  setSettingsHost(initialSettingsHost(pathname, search));
+}
+
+// Handed to shell/routing.ts's navigate, which cannot import this store itself
+// (the dependency runs one way only - see that module's settingsHostRouteSync).
+setSettingsHostRouteSync(syncSettingsHostToRoute);
 
 export function useSettingsHostStore<T>(selector: (state: SettingsHostState) => T): T {
   return useStore(settingsHostStore, selector);

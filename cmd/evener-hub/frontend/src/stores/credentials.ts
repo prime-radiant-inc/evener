@@ -207,6 +207,19 @@ export function useHostInstances(host: string): HostInstanceState {
  * listing is the one that describes the host. */
 const hostRequestVersions = new Map<string, number>();
 
+/** registryIdentityFor is hosts.ts's identity for `host` as of the registry's
+ * current READY snapshot - the same snapshot forgetPartitionsForRegistry
+ * invalidates against - or null while that snapshot does not name the host. A
+ * read handed no identity still records this, so a name re-registered as a
+ * different host is detectable for an identity-less consumer too; an unread
+ * registry records nothing, exactly as the identity-less read always did. */
+function registryIdentityFor(host: string): string | null {
+  const load = hostsStore.getState().load;
+  if (load.phase !== "ready") return null;
+  const row = load.hosts.find((candidate) => candidate.name === host && !candidate.removed);
+  return row === undefined ? null : hostIdentity(row);
+}
+
 /** fetchHost reads `host`'s own instance listing through evener/host/request
  * (component 07b), so the spawn form's provider setup describes the machine the
  * launch will use. The controller's host is not a partition - its rows are the
@@ -219,7 +232,10 @@ const hostRequestVersions = new Map<string, number>();
  * of the next one, so rows read under a different registration are dropped
  * rather than kept for a name that now means another host. Callers with no
  * registry row to hand (the spawn form, the wrapped-notification refetch) omit
- * it: an unknown identity proves no mismatch and never erases a known one. */
+ * it, and the read records instead the identity the registry names for the host
+ * RIGHT NOW (registryIdentityFor) - so that consumer's rows are still tied to a
+ * registration, and a later re-registration drops them too. An unread registry
+ * records nothing, which erases no known identity. */
 export async function fetchHost(host: string, identity: string | null = null): Promise<void> {
   if (isLocalHost(host)) return;
   const client = connectionStore.getState().client;
@@ -227,7 +243,10 @@ export async function fetchHost(host: string, identity: string | null = null): P
   const version = (hostRequestVersions.get(host) ?? 0) + 1;
   hostRequestVersions.set(host, version);
   const generation = hostInstancesStore.getState().generation;
-  setHostPartition(host, (previous) => ({ ...startHostRead(previous, identity), loading: true, error: null }));
+  // What this read records: the identity handed in, or the registry's current one
+  // for the name when the caller had none to hand (see this function's doc).
+  const readIdentity = identity ?? registryIdentityFor(host);
+  setHostPartition(host, (previous) => ({ ...startHostRead(previous, readIdentity), loading: true, error: null }));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
@@ -238,9 +257,9 @@ export async function fetchHost(host: string, identity: string | null = null): P
       loading: false,
       error: null,
       // The identity this read SUCCEEDED under, never lowered to unknown: a
-      // caller with no registry row to hand cannot erase what a caller that had
-      // one established.
-      readIdentity: identity ?? previous.readIdentity,
+      // read that resolved to no identity cannot erase what a read that had one
+      // established.
+      readIdentity: readIdentity ?? previous.readIdentity,
     }));
   } catch (err) {
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
