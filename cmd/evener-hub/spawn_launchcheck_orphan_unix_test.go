@@ -23,10 +23,12 @@ import (
 // that unblocks it and fails the test rather than hanging the suite.
 func TestEvenerLaunchCheckDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testing.T) {
 	t.Parallel()
+	// The backgrounded child opens the release FIFO before it announces
+	// itself, so by the time the test hears "started" the grandchild is
+	// attached to the release and blocked reading it, holding the output pipe.
 	const orphansAPipeHolder = `#!/bin/sh
 dir=$(dirname "$0")
-cat "$dir/release" &
-echo started > "$dir/started"
+{ exec 3<"$dir/release"; echo started > "$dir/started"; cat <&3; } &
 wait
 `
 	for name, call := range map[string]func(ctx context.Context, evenerBinary string) error{
@@ -49,20 +51,29 @@ wait
 					t.Fatalf("mkfifo %s: %v", fifo, err)
 				}
 			}
-			// Opening a FIFO for writing blocks until its reader opens it, so
-			// this returns only once the grandchild is waiting on it.
-			releaseGrandchild := func() {
-				if f, err := os.OpenFile(release, os.O_WRONLY, 0); err == nil {
-					_ = f.Close()
-				}
+			// The test holds both FIFOs open read-write, which never blocks, so
+			// no setup failure can hang it: the fake's opens succeed at once,
+			// the grandchild reads the release until the test's end closes,
+			// and cleanup closes both even when the fake never ran.
+			startedEnd, err := os.OpenFile(started, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatalf("open %s: %v", started, err)
 			}
+			t.Cleanup(func() { _ = startedEnd.Close() })
+			releaseEnd, err := os.OpenFile(release, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatalf("open %s: %v", release, err)
+			}
+			releaseGrandchild := func() { _ = releaseEnd.Close() }
+			t.Cleanup(releaseGrandchild)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			go func() {
-				// Reading "started" returns once the fake has backgrounded the
-				// grandchild, so the cancel below cannot race its creation.
-				_, _ = os.ReadFile(started)
+				// The first byte arrives once the grandchild holds the release,
+				// so the cancel below cannot race its creation. A read that
+				// fails because cleanup closed the FIFO cancels harmlessly.
+				_, _ = startedEnd.Read(make([]byte, 1))
 				cancel()
 			}()
 			done := make(chan error, 1)
