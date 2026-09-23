@@ -429,17 +429,36 @@ func isShapeRefusal(err error) bool {
 	return evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorInvalidParams)
 }
 
+// shapeRefusalNamesOtherMutation reports whether a shape refusal names a
+// clientMutationId that belongs to a caller other than this one: a non-empty id
+// that is not the caller's. The client dispatcher correlates by that id alone,
+// so such a refusal is unrelated to this caller's record and must not be
+// returned as the shape refusal it is.
+func shapeRefusalNamesOtherMutation(err error, clientMutationID string) bool {
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return false
+	}
+	id := clientMutationIDFromData(wire.Data)
+	return id != "" && id != clientMutationID
+}
+
 // correlateRetryFailure decides what a retry that an earlier failure's resume
 // made possible must report when it fails in turn.
 //
 // Several failures keep their own meaning and are returned unchanged: the
 // caller's own cancellation (context.Canceled / context.DeadlineExceeded, which
 // is not a mutation outcome at all), a refusal that already names this caller's
-// mutation, and a true shape refusal (see isShapeRefusal). The one exemption
-// whose meaning is kept but whose id is added is a target deletion that names no
-// mutation (below). Everything else is a failure no client's mutation dispatcher
-// can classify -- one that names no clientMutationId, or names a different
-// mutation (the web outbox correlates by that id alone) -- and is wrapped in the
+// mutation, and a true shape refusal (see isShapeRefusal) that is this caller's
+// to own -- one that names NO mutation id or names the caller's own. A shape
+// refusal that names a DIFFERENT mutation belongs to that other caller: it is
+// not passed through, because the client would treat it as unrelated to its
+// record and skip the no-id recovery path it applies to invalid-params, leaving
+// this caller's mutation stuck submitting. The one exemption whose meaning is
+// kept but whose id is added is a target deletion that names no mutation
+// (below). Everything else is a failure no client's mutation dispatcher can
+// classify -- one that names no clientMutationId, or names a different mutation
+// (the web outbox correlates by that id alone) -- and is wrapped in the
 // blocked-unknown envelope so the mutation is retained for a retry rather than
 // left submitting forever (see blockedUnknownMutationError).
 //
@@ -461,7 +480,15 @@ func correlateRetryFailure(clientMutationID string, err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return nil
 	}
-	if errorNamesClientMutation(err, clientMutationID) || isShapeRefusal(err) {
+	if errorNamesClientMutation(err, clientMutationID) {
+		return nil
+	}
+	// A shape refusal is preserved only when it is this caller's to own: one that
+	// names no mutation, or names the caller's own (returned above). A refusal
+	// naming a DIFFERENT mutation is not this caller's to act on, and passing it
+	// through unchanged would leave this caller's record submitting, so it falls
+	// through to the blocked-unknown default below.
+	if isShapeRefusal(err) && !shapeRefusalNamesOtherMutation(err, clientMutationID) {
 		return nil
 	}
 	if isTargetDeletedError(err) {
@@ -1164,6 +1191,12 @@ func registerThreadHandlers(
 			return appwire.TurnStartResponse{}, appwire.InvalidParams("clientMutationId is required")
 		}
 		resolved := false
+		// initialPreDispatch records whether the ORIGINAL attempt is proven to
+		// have failed before anything was dispatched: it stayed true only when the
+		// first attempt never resolved a source. Any other first-attempt failure
+		// resolved the source first, so it may have dispatched; see
+		// retryAfterResume's not-accepted rule.
+		initialPreDispatch := false
 		attemptStart := func() (appwire.TurnStartResponse, error) {
 			source, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, params.ThreadID, params.ClientMutationID, func() (appsource.Source, error) {
 				return resolveTurnStartSource(sources, params.Ref, params.ThreadID)
@@ -1184,9 +1217,12 @@ func registerThreadHandlers(
 		// that already carries its own meaning is never rewritten: a refusal
 		// naming this caller's mutation (recovery admission, daemon-restart-
 		// required, a shape refusal) and a target deletion keep their own
-		// outcome. Only a genuinely uncorrelated failure is left, and a
-		// pre-dispatch one proves nothing was dispatched, so its outcome is
-		// known -- not accepted -- rather than unknown. The caller's
+		// outcome. Only a genuinely uncorrelated failure is left. It is reported
+		// not-accepted only when the WHOLE operation is proven pre-dispatch --
+		// both the retry and the original attempt failed before reaching a
+		// source -- because a retry that fails source resolution proves nothing
+		// about an earlier attempt that already reached a source and may have
+		// applied the mutation before its response was lost. The caller's
 		// cancellation is handled before either, since it is not a mutation
 		// outcome at all.
 		retryAfterResume := func() (appwire.TurnStartResponse, error) {
@@ -1203,10 +1239,11 @@ func registerThreadHandlers(
 				// deleted target never accepts the mutation, but the caller must
 				// still be told the target is gone rather than re-offered it as
 				// not-accepted. correlateRetryFailure hands it back enriched.
-				if !resolved && !isTargetDeletedError(err) {
+				if !resolved && initialPreDispatch && !isTargetDeletedError(err) {
 					// Source resolution failed before the retry reached a source,
-					// so nothing was dispatched and the mutation's outcome is
-					// known -- not accepted -- rather than unknown.
+					// and the original attempt never reached one either, so nothing
+					// was dispatched and the mutation's outcome is known -- not
+					// accepted -- rather than unknown.
 					return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(params.ClientMutationID, err.Error())
 				}
 				return appwire.TurnStartResponse{}, wrapped
@@ -1217,6 +1254,7 @@ func registerThreadHandlers(
 		if err == nil {
 			return resp, nil
 		}
+		initialPreDispatch = !resolved
 		if !resolved {
 			if wire, ok := errors.AsType[appwire.WireError](err); ok && wire.Code == appwire.CodeInvalidParams {
 				return appwire.TurnStartResponse{}, err
@@ -1311,7 +1349,9 @@ func registerThreadHandlers(
 		return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.TurnQueueResponse, error) {
 			source, err := sourceForThread(sources, params.Ref, "")
 			if err != nil {
-				return appwire.TurnQueueResponse{}, err
+				// Resolution failed before anything reached a source, so a resume
+				// retry that fails the same way proves nothing was dispatched.
+				return appwire.TurnQueueResponse{}, preDispatchRefusalError{err}
 			}
 			if err := ensureSkillInputSupported(ctx, source, params.Ref, "", params.Input); err != nil {
 				return appwire.TurnQueueResponse{}, err

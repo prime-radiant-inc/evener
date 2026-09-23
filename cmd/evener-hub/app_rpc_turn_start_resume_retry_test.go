@@ -450,6 +450,89 @@ func TestHubRPCTurnStartRetryKeepsPreDispatchRefusalOutcome(t *testing.T) {
 	}
 }
 
+// TestCorrelateRetryFailureShapeRefusalMutationScope pins that a shape refusal
+// is preserved only when it is this caller's to own. A true shape refusal that
+// names NO mutation, or the caller's own, keeps its own meaning: resending the
+// identical payload can never answer differently, and the client already
+// recovers from an uncorrelated invalid-params. One that names a DIFFERENT
+// mutation belongs to that other caller; the client dispatcher correlates by
+// that id alone, so it would treat this refusal as unrelated to its record and
+// skip its no-id recovery path, leaving this caller's mutation stuck
+// submitting. It is wrapped as this caller's blocked-unknown instead.
+func TestCorrelateRetryFailureShapeRefusalMutationScope(t *testing.T) {
+	const mutationID = "mutation-shape-refusal-scope"
+
+	cases := []struct {
+		name                 string
+		refusalID            string
+		wantPreserved        bool
+		wantClientMutationID string
+		wantOutcome          appwire.MutationOutcome
+		wantDisposition      appwire.RetryDisposition
+	}{
+		{
+			name:                 "unnamed shape refusal is preserved",
+			wantPreserved:        true,
+			wantClientMutationID: "",
+		},
+		{
+			name:                 "shape refusal naming this caller's mutation is preserved",
+			refusalID:            mutationID,
+			wantPreserved:        true,
+			wantClientMutationID: mutationID,
+		},
+		{
+			name:                 "shape refusal naming a different mutation is blocked-unknown",
+			refusalID:            "some-other-mutation",
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeUnknown,
+			wantDisposition:      appwire.RetryDispositionBlocked,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retryErr := appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: "input item type is not supported",
+				Data: appwire.ErrorData{
+					EvenerErrorInfo:  appwire.ErrorInvalidParams,
+					ClientMutationID: tc.refusalID,
+				},
+			}
+			// A nil correlateRetryFailure return means the refusal keeps its own
+			// meaning; the finished failure is then the refusal itself.
+			preserved := correlateRetryFailure(mutationID, retryErr) == nil
+			if preserved != tc.wantPreserved {
+				t.Fatalf("preserved=%v, want %v (refusal names %q)", preserved, tc.wantPreserved, tc.refusalID)
+			}
+			var final error = retryErr
+			if !preserved {
+				final = correlateRetryFailure(mutationID, retryErr)
+			}
+			var wire appwire.WireError
+			if !errors.As(final, &wire) {
+				t.Fatalf("finished error %T=%v, want a WireError", final, final)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+			}
+			if data.ClientMutationID != tc.wantClientMutationID ||
+				data.MutationOutcome != tc.wantOutcome ||
+				data.RetryDisposition != tc.wantDisposition {
+				t.Fatalf("clientMutationId=%q mutationOutcome=%q retryDisposition=%q, want %q/%q/%q (wire=%+v)",
+					data.ClientMutationID, data.MutationOutcome, data.RetryDisposition,
+					tc.wantClientMutationID, tc.wantOutcome, tc.wantDisposition, wire)
+			}
+			if tc.wantPreserved && wire.Code != appwire.CodeInvalidParams {
+				t.Fatalf("a preserved shape refusal must keep its invalid-params code: code=%d want %d (wire=%+v)",
+					wire.Code, appwire.CodeInvalidParams, wire)
+			}
+		})
+	}
+}
+
 // relayedWireDataMap decodes a WireError's Data the way a remote-hub relay
 // leaves it: a JSON round-trip into map[string]any. The test reads finished
 // failures through this shape so the assertions match what the web client
@@ -559,6 +642,34 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantClientMutationID: "",
 			wantOutcome:          "",
 			wantDisposition:      "",
+		},
+		{
+			name: "relayed shape refusal naming this caller's mutation passes through",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: "relayed shape refusal for this caller",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorInvalidParams),
+					"clientMutationId": mutationID,
+				},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          "",
+			wantDisposition:      "",
+		},
+		{
+			name: "relayed shape refusal naming a different mutation is blocked-unknown",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeInvalidParams,
+				Message: "relayed shape refusal for another caller",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorInvalidParams),
+					"clientMutationId": "some-other-mutation",
+				},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeUnknown,
+			wantDisposition:      appwire.RetryDispositionBlocked,
 		},
 	}
 

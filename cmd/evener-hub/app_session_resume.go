@@ -18,8 +18,15 @@ import (
 // whether a mutation it cannot correlate was accepted, so it stays
 // blocked-unknown (see correlateRetryFailure). A retry that failed to resolve a
 // source proves nothing was dispatched, exactly like turn/start's pre-dispatch
-// retry failure, so its outcome is known -- not accepted -- and it must report
-// the same MutationNotAccepted rather than blocked-unknown.
+// retry failure, so its outcome is known -- not accepted.
+//
+// The signal must be present on EVERY attempt for the whole operation to count
+// as pre-dispatch: the not-accepted outcome is emitted only when the original
+// attempt and the retry both carry it. The original attempt that triggered the
+// resume reached the owning source by definition (that is what raised the
+// session-unavailable failure), so a retry-only signal never proves the whole
+// operation was rejected -- the mutation may already have been applied before
+// the response was lost.
 //
 // Wrapped at the resolution source (the caller shapes'
 // sourceForThread calls) so the signal is exact: an arbitrary pre-dispatch
@@ -77,6 +84,14 @@ func withSessionResume[R any](
 	if err == nil {
 		return resp, nil
 	}
+	// firstAttemptPreDispatch records whether the ORIGINAL attempt is proven to
+	// have failed before anything was dispatched. Only the source-resolution
+	// signal proves it (see preDispatchRefusalError): any other first-attempt
+	// failure resolved the owning source first, so it may have reached it and
+	// applied the mutation before failing. The retry's own pre-dispatch signal
+	// cannot stand in for that, so it is kept here for the not-accepted rule
+	// below.
+	firstAttemptPreDispatch := isPreDispatchRefusal(err)
 	// Outside the retry rule the pre-dispatch signal carries no meaning: the
 	// first attempt's failure is returned exactly as it was raised.
 	err = unwrapPreDispatchRefusal(err)
@@ -105,12 +120,19 @@ func withSessionResume[R any](
 	}
 	if wrapped := correlateRetryFailure(clientMutationID, retryErr); wrapped != nil {
 		var zero R
-		// A pre-dispatch resolution failure proves nothing was dispatched, so
-		// the mutation's outcome is known -- not accepted -- rather than
-		// unknown, matching turn/start's identical "nothing was dispatched"
-		// rule. A target deletion keeps its own meaning even here, as it does
-		// in that rule.
-		if isPreDispatchRefusal(retryErr) && !isTargetDeletedError(retryErr) {
+		// not-accepted requires the WHOLE operation to be proven pre-dispatch:
+		// both the original attempt and the retry must have failed before
+		// reaching a source. A retry can fail source resolution while the
+		// original attempt already reached the owning source -- indeed reaching
+		// it is what raised the session-unavailable failure that triggered the
+		// resume -- and a source call that loses its response does not turn a
+		// possibly-applied mutation into a known rejection (thread/clear is the
+		// example). Emitting not-accepted from the retry's signal alone would
+		// overstate that possibly-applied mutation as rejected, so a
+		// not-fully-proven operation stays blocked-unknown and the record is
+		// retained. A target deletion keeps its own meaning even here, as it does
+		// in turn/start's identical rule.
+		if firstAttemptPreDispatch && isPreDispatchRefusal(retryErr) && !isTargetDeletedError(retryErr) {
 			return zero, appwire.MutationNotAccepted(clientMutationID, retryErr.Error())
 		}
 		return zero, wrapped

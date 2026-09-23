@@ -602,41 +602,58 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 
 // TestSessionResumeRetryCorrelation pins what withSessionResume reports when
 // the retry its own resume made possible fails. Every session mutation that
-// shares withSessionResume (notes/human/set, urls/remove, clear, goal/set)
-// must correlate that failure the same way turn/start's retry does.
+// shares withSessionResume (notes/human/set, urls/remove, clear, goal/set,
+// turn/queue) must correlate that failure the same way turn/start's retry does.
 //
 // An uncorrelated failure names no clientMutationId, so the caller's mutation
 // dispatcher cannot classify it; it is wrapped as a blocked unknown outcome so
-// the input is retained. A pre-dispatch resolution failure proves nothing was
-// dispatched at all -- the retry could not even resolve the owning source -- so
-// its outcome is known, not-accepted, exactly matching turn/start's identical
-// pre-dispatch rule. Both carry the caller's clientMutationId so the browser's
-// outbox, the TUI's draft restore and every other surface can settle the record
-// instead of leaving it submitting forever.
+// the input is retained. A resolution failure proves nothing was dispatched at
+// all -- the attempt could not even resolve the owning source -- but its
+// outcome is reported not-accepted only when the WHOLE operation is proven
+// pre-dispatch: the original attempt AND the retry both failed before reaching a
+// source. A retry that fails source resolution while the original attempt
+// already reached a source proves nothing about what that earlier attempt did
+// (a source call that loses its response does not turn an applied mutation into
+// a known rejection), so it stays blocked-unknown. Every outcome carries the
+// caller's clientMutationId so the browser's outbox, the TUI's draft restore and
+// every other surface can settle the record instead of leaving it submitting
+// forever.
 //
 // The once closure is withSessionResume's own seam: it stands in for the
 // relayWithResume / setGoalWithResume / clearThreadWithResume shapes that wrap
-// their sourceForThread failure in preDispatchRefusalError.
+// their sourceForThread failure in preDispatchRefusalError. firstErr is the
+// original attempt's failure -- bare when it stood in for a closure that reached
+// a source, wrapped when the closure failed to resolve one.
 func TestSessionResumeRetryCorrelation(t *testing.T) {
 	const mutationID = "mutation-session-resume-retry"
 
 	cases := []struct {
 		name            string
+		firstErr        error
 		retryErr        error
 		wantOutcome     appwire.MutationOutcome
 		wantDisposition appwire.RetryDisposition
 	}{
 		{
 			name:            "uncorrelated retry failure is blocked-unknown",
+			firstErr:        appwire.SessionUnavailable("session has exited"),
 			retryErr:        appwire.InternalError("resumed session refused the retry without naming the mutation"),
 			wantOutcome:     appwire.MutationOutcomeUnknown,
 			wantDisposition: appwire.RetryDispositionBlocked,
 		},
 		{
-			name:            "pre-dispatch resolution failure is not-accepted",
+			name:            "both attempts failed before reaching a source is not-accepted",
+			firstErr:        preDispatchRefusalError{appwire.SessionUnavailable("session has exited")},
 			retryErr:        preDispatchRefusalError{errors.New("source registry unavailable")},
 			wantOutcome:     appwire.MutationOutcomeNotAccepted,
 			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "first attempt reached the source is blocked-unknown",
+			firstErr:        appwire.SessionUnavailable("session has exited"),
+			retryErr:        preDispatchRefusalError{errors.New("source registry unavailable")},
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
 		},
 	}
 
@@ -664,7 +681,7 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 			_, err := withSessionResume(context.Background(), cfg, web.sources, ref, mutationID, func() (appwire.EmptyResponse, error) {
 				attempts++
 				if attempts == 1 {
-					return appwire.EmptyResponse{}, appwire.SessionUnavailable("session has exited")
+					return appwire.EmptyResponse{}, tc.firstErr
 				}
 				return appwire.EmptyResponse{}, tc.retryErr
 			})
@@ -698,19 +715,25 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 	}
 }
 
-// TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins that the
-// pre-dispatch "nothing was dispatched" rule is decided by the CONCRETE caller
-// wrappers -- clearThreadWithResume, relayWithResume -- not only by the shared
-// withSessionResume. Those wrappers are what wrap their own sourceForThread
-// failure in preDispatchRefusalError; a test that injects the signal straight
-// into withSessionResume keeps passing if a caller drops its wrap, so this
-// drives the real RPC surface instead.
+// TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins that a retry
+// which fails source resolution is NOT, by itself, accepted as proof that the
+// whole mutation was rejected. The pre-dispatch rule is decided by the CONCRETE
+// caller wrappers -- clearThreadWithResume, relayWithResume, and turn/queue's
+// own closure -- not only by the shared withSessionResume, and those wrappers
+// are what wrap their own sourceForThread failure in preDispatchRefusalError; a
+// test that injects the signal straight into withSessionResume keeps passing if
+// a caller drops its wrap, so this drives the real RPC surface instead.
 //
-// The first attempt finds the exited session, the hub resumes it, and the
-// retry's sourceForThread then fails because the owning source is gone from the
-// registry. The caller must be told the mutation was NOT accepted -- carrying
-// its own clientMutationId -- rather than being left submitting because the
-// retry failure names nothing the dispatcher can correlate.
+// The first attempt reaches the exited session's source and fails there with
+// SessionUnavailable, the hub resumes it, and the retry's sourceForThread then
+// fails because the owning source is gone from the registry. Because the ORIGINAL
+// attempt reached a source -- a source call that loses its response does not turn
+// a possibly-applied mutation into a known rejection -- the whole operation is
+// not proven pre-dispatch, so the caller must be told the outcome is UNKNOWN and
+// blocked, carrying its own clientMutationId, rather than being told the
+// mutation was rejected (not-accepted) or left submitting because the retry
+// failure names nothing the dispatcher can correlate. The proven-pre-dispatch
+// not-accepted case is pinned by TestSessionResumeRetryCorrelation.
 func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -744,6 +767,16 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 					Ref: ref, ClientMutationID: mutationID, ExpectedInstanceID: sessionID, ID: "u1",
 				})
 				return err
+			},
+		},
+		{
+			name: "turn/queue via withSessionResume",
+			dispatch: func(t *testing.T, client *appwire.Client, ref, sessionID, mutationID string) error {
+				t.Helper()
+				return client.TurnQueue(context.Background(), appwire.TurnQueueParams{
+					Ref: ref, ClientMutationID: mutationID, ExpectedInstanceID: sessionID,
+					Input: []appwire.InputItem{{Type: "text", Text: "queue it"}},
+				})
 			},
 		},
 	}
@@ -804,9 +837,9 @@ func TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted(t *testing.T) {
 				t.Fatalf("wire data %#v is not map[string]any", wire.Data)
 			}
 			if data["clientMutationId"] != mutationID ||
-				data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
-				data["retryDisposition"] != string(appwire.RetryDispositionNone) {
-				t.Fatalf("a retry that failed source resolution proves nothing was dispatched and must be not-accepted for %q: wire=%+v data=%#v",
+				data["mutationOutcome"] != string(appwire.MutationOutcomeUnknown) ||
+				data["retryDisposition"] != string(appwire.RetryDispositionBlocked) {
+				t.Fatalf("an original attempt that reached a source is not proven pre-dispatch, so a retry that failed source resolution must be blocked-unknown for %q: wire=%+v data=%#v",
 					mutationID, wire, data)
 			}
 		})
