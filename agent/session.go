@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/oklog/ulid/v2"
 
@@ -2352,7 +2354,7 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 			content = append([]llm.ContentPart(nil), message.Content...)
 		}
 		call := *part.ToolCall
-		call.RawArguments = string(call.Arguments)
+		call.RawArguments = encodeRawArguments(call.Arguments)
 		call.Arguments = json.RawMessage(`{}`)
 		content[i].ToolCall = &call
 	}
@@ -2360,6 +2362,27 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 		message.Content = content
 	}
 	return message
+}
+
+// rawArgumentsBase64Prefix marks a RawArguments value whose original bytes were
+// not valid UTF-8 and so were base64-encoded to survive JSON serialization
+// losslessly. json.Marshal coerces invalid-UTF-8 string bytes to U+FFFD, which
+// would silently mangle the diagnostic; the prefix lets a reader see that the
+// value is an encoding rather than the raw text. The diagnostic is display-only,
+// so no read-side decoder is required.
+const rawArgumentsBase64Prefix = "base64:"
+
+// encodeRawArguments returns the raw tool-call argument bytes in a form that
+// survives JSON serialization losslessly. Valid-UTF-8 bytes are returned as a
+// plain string — the human-readable primary case, unchanged from the prior
+// behavior — so the common malformed-but-ASCII case (e.g. a bareword value)
+// stays readable. Invalid-UTF-8 bytes are returned base64-encoded with
+// rawArgumentsBase64Prefix so json.Marshal cannot coerce them to U+FFFD.
+func encodeRawArguments(arguments []byte) string {
+	if utf8.Valid(arguments) {
+		return string(arguments)
+	}
+	return rawArgumentsBase64Prefix + base64.StdEncoding.EncodeToString(arguments)
 }
 
 // appendAssistantTurn appends an assistant turn that carries the full response
