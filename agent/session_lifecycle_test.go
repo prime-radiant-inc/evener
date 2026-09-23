@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1872,5 +1873,67 @@ func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
 				t.Fatalf("selectDrainNextAction(%+v) = (%v,%v), want (%v,%v)", tc.in, got, skip, tc.want, tc.skip)
 			}
 		})
+	}
+}
+
+// Close's environment-work join waits on exactly the admissions it can name:
+// ending one admission's handle twice must not let the join past another that
+// is still live. The seam runs on the joining goroutine just before it blocks,
+// so ending the second admission there is the only way the join returns.
+func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	first, ok := s.beginEnvWork("first")
+	if !ok {
+		t.Fatal("first environment work was refused")
+	}
+	second, ok := s.beginEnvWork("second")
+	if !ok {
+		t.Fatal("second environment work was refused")
+	}
+	s.endEnvWork(first)
+	s.endEnvWork(first)
+	if got := s.outstandingEnvWork(); !slices.Equal(got, []string{"second"}) {
+		t.Fatalf("outstanding after ending first twice = %q, want [second]", got)
+	}
+	waited := false
+	s.cfg.testOnly.closeAwaitingEnvWork = func() {
+		waited = true
+		s.endEnvWork(second)
+	}
+	s.joinEnvWorkWithinCloseBudget(context.Background())
+	if !waited {
+		t.Fatal("the join returned without waiting for the admission still live")
+	}
+	if got := s.outstandingEnvWork(); len(got) != 0 {
+		t.Fatalf("outstanding after the join = %q, want none", got)
+	}
+}
+
+// closeAwaitingEnvWork is the fence tests' signal that a close is waiting at
+// its environment-work join, so the join must actually wait once it has fired.
+// Spending the budget from inside the seam proves it: a join parked in its
+// select can only leave through the budget arm, which names the held work in a
+// warning, while a join that fired the seam and then walked on would return
+// with the work still held and say nothing.
+func TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	held, ok := s.beginEnvWork("held work")
+	if !ok {
+		t.Fatal("environment work was refused")
+	}
+	defer s.endEnvWork(held)
+	drainBufferedWarnings(s)
+	ctx, spendBudget := context.WithCancel(context.Background())
+	defer spendBudget()
+	s.cfg.testOnly.closeAwaitingEnvWork = spendBudget
+	s.joinEnvWorkWithinCloseBudget(ctx)
+	if ctx.Err() == nil {
+		t.Fatal("the join never signalled it was waiting on the held work")
+	}
+	warnings := fenceWarnings(drainBufferedWarnings(s))
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "held work") {
+		t.Fatalf("fence warnings = %q, want one naming the held work", warnings)
 	}
 }
