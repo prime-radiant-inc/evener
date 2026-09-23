@@ -44,10 +44,11 @@ type HostTemp struct {
 	restoreEnv      []func() error
 }
 
-// RedirectHostTemp points TMPDIR (TMP and TEMP on Windows) and the session
-// temp container bases into a root: the one RootVar names when an enclosing test process made it, or else a
-// new one under the current temp dir, named with prefix. Child processes inherit
-// the TMPDIR and RootVar. Call Discard once the tests have run.
+// RedirectHostTemp points the temp dir (TMPDIR; TMP and TEMP on Windows), the
+// Windows user cache dir and the session temp container bases into a root: the
+// one RootVar names when an enclosing test process made it, or else a new one
+// under the current temp dir, named with prefix. Child processes inherit the
+// variables and RootVar. Call Discard once the tests have run.
 func RedirectHostTemp(prefix string) (*HostTemp, error) {
 	h := &HostTemp{}
 	if root := os.Getenv(RootVar); root != "" {
@@ -62,9 +63,17 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 		}
 		h.root = root
 	}
-	// TMP and TEMP are what os.TempDir reads on Windows.
+	// TMP and TEMP are what os.TempDir reads on Windows, and LocalAppData
+	// (AppData as a fallback) what os.UserCacheDir reads there: the bundled
+	// skills cache lives in the temp dir on Unix but in the user cache dir on
+	// Windows.
 	temp := filepath.Join(h.root, "tmp")
-	for name, value := range map[string]string{"TMPDIR": temp, "TMP": temp, "TEMP": temp, RootVar: h.root} {
+	cache := filepath.Join(temp, "cache")
+	for name, value := range map[string]string{
+		"TMPDIR": temp, "TMP": temp, "TEMP": temp,
+		"LocalAppData": cache, "AppData": cache,
+		RootVar: h.root,
+	} {
 		if err := h.setenv(name, value); err != nil {
 			return nil, errors.Join(err, h.Discard())
 		}
@@ -79,9 +88,11 @@ func newHostTempRoot(prefix string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("sandboxtest: create host temp root: %w", err)
 	}
-	// The root is traversable but not listable, as /tmp's parent is to any user:
-	// a command running as another user must reach the world-usable host-temp
-	// inside it, while tmp below stays this user's own.
+	// The root is traversable but not listable, so tmp below stays this user's
+	// own while host-temp keeps /tmp's mode. That mode is what the session temp
+	// container requires of its base; the tests run every command as this user,
+	// and a private TMPDIR above the root would still keep other users out, so
+	// the redirect makes no promise of reach to another user.
 	if err := os.Chmod(root, 0o711); err != nil {
 		return "", errors.Join(fmt.Errorf("sandboxtest: open %s: %w", root, err), os.RemoveAll(root))
 	}

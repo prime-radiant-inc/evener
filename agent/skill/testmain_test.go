@@ -7,9 +7,10 @@ import (
 	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
-// TestMain keeps the bundled-skills cache these tests publish in the temp dir,
-// which is shared by every Evener process of this user and deliberately outlives
-// each one, inside a root of the run's own that is removed when the run ends.
+// TestMain keeps the bundled-skills cache these tests publish, which is shared
+// by every Evener process of this user and deliberately outlives each one (in
+// the temp dir, or the user cache dir on Windows), inside a root of the run's
+// own that is removed when the run ends.
 func TestMain(m *testing.M) {
 	os.Exit(sandboxtest.Run(m, "evener-skill-test-"))
 }

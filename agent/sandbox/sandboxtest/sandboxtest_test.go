@@ -87,9 +87,6 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	}
 }
 
-// within reports whether path lies strictly under root. Both are compared in
-// canonical form, because a session temp container reports its canonical path
-// and the temp dir may sit behind a symlink (macOS's /var).
 // TestRedirectHostTempInheritsTheEnclosingRoot covers a self-exec helper child,
 // whose TestMain runs again inside the parent's redirect. A detached process the
 // child starts can outlive it (a daemon whose Hub exits), so the child must use
@@ -136,9 +133,17 @@ func TestRedirectHostTempInheritsTheEnclosingRoot(t *testing.T) {
 	}
 }
 
+// within reports whether path lies strictly under root. Both are compared in
+// canonical form where they resolve, because a session temp container reports
+// its canonical path and the temp dir may sit behind a symlink (macOS's /var);
+// a path that no longer exists is compared as given.
 func within(root, path string) bool {
-	root, _ = filepath.EvalSymlinks(root)
-	path, _ = filepath.EvalSymlinks(path)
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != "." && !strings.HasPrefix(rel, "..")
 }
