@@ -145,7 +145,8 @@ jobs:
           echo "dir=$(scripts/lib/golangci-lint-cache.sh)" >> "$GITHUB_OUTPUT"
           echo "prefix=golangci-lint-${ImageOS}-${CONFIG_HASH}-" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache/restore@v6
+      - id: golangci-restore
+        uses: actions/cache/restore@v6
         with:
           path: ${{ steps.golangci-cache.outputs.dir }}
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}
@@ -166,7 +167,7 @@ jobs:
         run: make lint-evenerfuzz lint-eval
 
       - uses: actions/cache/save@v6
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.golangci-restore.outputs.cache-hit != 'true'
         with:
           path: ${{ steps.golangci-cache.outputs.dir }}
           key: ${{ steps.golangci-cache.outputs.prefix }}${{ github.sha }}

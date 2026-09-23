@@ -38,6 +38,7 @@ runs:
         } >> "$GITHUB_ENV"
 
     - name: Restore Go build and module caches
+      id: restore
       uses: actions/cache/restore@v6
       with:
         path: |
@@ -45,3 +46,13 @@ runs:
           ${{ steps.keys.outputs.mod-dir }}
         key: ${{ steps.keys.outputs.prefix }}${{ github.sha }}
         restore-keys: ${{ steps.keys.outputs.prefix }}
+
+    # A re-run on a main commit whose entry this kind already saved restores
+    # that exact key. go-cache-save then skips the save: actions/cache/save
+    # would archive the whole cache only to have the reservation refused and
+    # logged, without failing the job.
+    - name: Record exact cache hit
+      shell: bash
+      env:
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: echo "GO_CACHE_EXACT_HIT=$HIT" >> "$GITHUB_ENV"
