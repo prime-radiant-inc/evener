@@ -321,3 +321,25 @@ func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
 		t.Fatalf("presence resolve executed the credential command %d time(s)", runs)
 	}
 }
+
+// An empty instance names the default instance, the rule Resolve applies:
+// a legacy session recorded without a profile still resolves through the
+// default at facts depth, or it loses every hub-side read.
+func TestResolveInstanceModelFactsDefaultsEmptyInstance(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"anthropic\"\n" +
+		"api_key_env = [\"WORK_KEY\"]\n" +
+		"[providers.gw.models.\"claude-opus-4-5\"]\n"
+	r := fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config)
+	res, err := r.ResolveInstanceModelFacts("", "claude-opus-4-5")
+	if err != nil {
+		t.Fatalf("facts resolve with an empty instance: %v", err)
+	}
+	direct, err := r.ResolveInstanceModelFacts("gw", "claude-opus-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Instance != direct.Instance || res.Model.ID != direct.Model.ID {
+		t.Fatalf("defaulted resolve = %s/%s, want %s/%s", res.Instance, res.Model.ID, direct.Instance, direct.Model.ID)
+	}
+}

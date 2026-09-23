@@ -25,3 +25,11 @@ func Kill(pid int) {
 	}
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
+
+// KillGroupAfterReap cleans up the process group after the direct child
+// was reaped: the pid names no process the caller owns, but the group
+// may still hold descendants holding captured pipes. On this platform
+// that is the same group kill.
+func KillGroupAfterReap(pid int) {
+	Kill(pid)
+}

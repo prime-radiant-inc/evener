@@ -616,6 +616,12 @@ func TestPastEntryCostNeverMintsCommandCredential(t *testing.T) {
 	if runs != 0 {
 		t.Fatalf("the cost projection executed the credential command %d time(s); pricing a past session is a read, and the hub never runs credential commands (spec §10.1)", runs)
 	}
+	// A legacy session recorded without a profile prices through the
+	// default instance, the rule the full resolve always applied.
+	legacy := pastEntryCost(cfg, hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}})
+	if legacy == nil {
+		t.Fatal("a legacy session with an empty profile lost its cost; the default instance must price it")
+	}
 }
 
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {

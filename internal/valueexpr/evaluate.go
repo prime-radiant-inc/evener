@@ -253,7 +253,8 @@ func realRunCommand(command string) (string, error) {
 	// the process group and still holds the captured pipes cannot keep Wait
 	// — and with it a request or a session start — blocked past the budget.
 	// The drain grace stays a small fraction of the command budget, so the
-	// whole run costs about one timeout, not two.
+	// whole run costs about one timeout, not two: the caller's ceiling is
+	// the deadline plus the grace, never a second deadline.
 	cmd.WaitDelay = min(commandTimeout, drainGrace)
 	var stdout cappedBuffer
 	var stderr cappedBuffer
@@ -271,13 +272,16 @@ func realRunCommand(command string) (string, error) {
 	// Cancel never ran (os/exec calls it only from the Context's watcher,
 	// and no deadline may have fired) while os/exec reports the shell's
 	// own exit status in preference to the drain's ErrWaitDelay, so the
-	// kill cannot live on any one branch. The kill signals a raw pgid the
-	// reaped shell left named: the group holds the pgid while any member
+	// kill cannot live on any one branch. The post-reap cleanup is
+	// group-only: on platforms with groups it signals the raw pgid the
+	// reaped shell left named (the group holds the pgid while any member
 	// lives, and a recycled pid needs a full pid-space wrap inside one
-	// command run — the same microscopic race devtool's Stop documents
-	// and accepts, because closing it fully would need waitid(WNOWAIT),
-	// which pure Go doesn't expose.
-	procgroup.Kill(cmd.Process.Pid)
+	// command run — the microscopic race devtool's Stop documents and
+	// accepts, because closing it fully would need waitid(WNOWAIT),
+	// which pure Go doesn't expose); where no groups exist it is a
+	// no-op, because the direct child is gone and a pid the reaper
+	// released can name any process.
+	procgroup.KillGroupAfterReap(cmd.Process.Pid)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", &CommandError{Timeout: true}

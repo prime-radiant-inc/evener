@@ -509,9 +509,11 @@ func (r *Registry) credential(rec *record, t Transport) (Credential, []string) {
 // followed it would prune the cached live rows on every rollover and
 // force a re-fetch. It expands environment references only and never
 // executes a command; only the hex digest leaves this method, never the
-// material. The digest reads the provider-level slots (model-row plain
-// headers are display material: they do not affect where rows come
-// from).
+// material. The digest reads the provider-level slots, plus the default
+// row's own headers — the listing fetch resolves through that row and
+// sends its headers with the request, so they shape what the cached
+// live rows came through. Other rows' headers stay display material:
+// they never build a request.
 func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
@@ -611,6 +613,14 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 	for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
 		_, _ = fmt.Fprintf(sum, "%s\x01", k)
 		hashSlot(h.Headers[k])
+	}
+	if rec.head.DefaultModel != "" && !isGlob(rec.head.DefaultModel) {
+		if row, ok := rec.head.Models[rec.head.DefaultModel]; ok {
+			for _, k := range slices.Sorted(maps.Keys(row.Headers)) {
+				_, _ = fmt.Fprintf(sum, "row\x01%s\x01", k)
+				hashSlot(row.Headers[k])
+			}
+		}
 	}
 	return hex.EncodeToString(sum.Sum(nil)), true
 }

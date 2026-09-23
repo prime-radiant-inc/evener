@@ -455,12 +455,26 @@ func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
 // every advertised fact and the transport, with no credential stage —
 // a hub-side surface that must not mint reads its descriptors here (spec
 // §10.1: the child alone runs credential commands).
+// ResolveInstanceModelFacts resolves one model row's advertised facts —
+// every fact, no credential materialized (spec §10.1) — the depth the
+// hub's read-only views use. An empty instance names the default
+// instance, the rule Resolve applies: a legacy session recorded without
+// a profile still prices and lists through the default.
 func (r *Registry) ResolveInstanceModelFacts(instance, model string) (Resolved, error) {
+	var warnings []string
+	if instance == "" {
+		name, w, err := r.DefaultInstance()
+		if err != nil {
+			return Resolved{}, err
+		}
+		instance = name
+		warnings = append(warnings, w...)
+	}
 	rec, ok := r.recordFor(instance)
 	if !ok {
 		return Resolved{}, r.unknownInstance(instance)
 	}
-	return r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveFacts)
+	return r.resolveLayersMode(rec, Ref{Model: model}, warnings, resolveFacts)
 }
 
 // webSearchExplicit reports whether prov attributes Caps.WebSearch to a

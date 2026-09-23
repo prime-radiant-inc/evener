@@ -1878,7 +1878,11 @@ Evaluation. References and commands expand when the value's other
 expressions expand: at resolve time, per request on the agent path. A
 command runs through the host shell with the process environment, no TTY,
 a closed stdin (a prompting command reads EOF instead of hanging), and a
-30-second timeout that kills the whole process group. Results are cached
+30-second deadline that kills the whole process group; a bounded drain
+grace (at most five seconds) then closes captured pipes a straggler
+still holds, so the caller's worst-case wait is thirty-five seconds
+(amended 2026-09-23: the drain grace is part of the documented bound).
+Results are cached
 per command text — instances sharing a command share one mint — until a
 JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a
 five-minute TTL; concurrent callers single-flight onto one run.

@@ -63,6 +63,33 @@ func TestCommandTimeoutHardBoundDespiteEscapedDescendant(t *testing.T) {
 	}
 }
 
+// The wait the caller experiences is bounded by the deadline plus the
+// drain grace, the composition the spec documents: the group dies at the
+// deadline, and the drain closes the pipes a straggler still holds within
+// its own small budget — never a second deadline.
+func TestCommandWaitBoundedByDeadlinePlusDrain(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "escapee.pid")
+	t.Cleanup(func() {
+		if pid, err := os.ReadFile(marker); err == nil {
+			exec.Command("kill", "-9", strings.TrimSpace(string(pid))).Run()
+		}
+	})
+	commandTimeout = 500 * time.Millisecond
+	drainGrace = 200 * time.Millisecond
+
+	start := time.Now()
+	_, err := evaluate(`setsid sh -c 'sleep 10 & echo $! > ` + marker + `' & exec sleep 30`)
+	if cmdErr, ok := errors.AsType[*CommandError](err); !ok || !cmdErr.Timeout {
+		t.Fatalf("err = %v; want the command timeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > commandTimeout+drainGrace+time.Second {
+		t.Fatalf("evaluate blocked %v; the wait must close within the deadline plus the drain grace", elapsed)
+	}
+}
+
 // WaitDelay also bounds the drain when the shell itself exits cleanly and
 // only a descendant holds the captured pipes. On that path no deadline ever
 // fires, so Cancel — which os/exec calls only from the Context's watcher —

@@ -19,6 +19,12 @@ func Terminate(pid int) { killDirectProcess(pid) }
 
 func Kill(pid int) { killDirectProcess(pid) }
 
+// KillGroupAfterReap cleans up the process group after the direct child
+// was reaped — a no-op here: this platform has no groups, the direct
+// child is gone, and the pid is free for reuse, so killing by pid could
+// terminate an unrelated process. Cancel already killed the live child.
+func KillGroupAfterReap(int) {}
+
 func killDirectProcess(pid int) {
 	if pid <= 0 {
 		return

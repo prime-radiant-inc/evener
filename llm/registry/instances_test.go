@@ -1554,6 +1554,33 @@ func TestAuthFingerprintRotatesEmptySetDefaults(t *testing.T) {
 	}
 }
 
+// The listing fetch resolves through the default row and sends its
+// headers with the request, so the fingerprint — the identity's
+// request-and-credential digest — must rotate when those row headers
+// do, or cached live rows survive a change to the request that fetched
+// them.
+func TestAuthFingerprintRotatesListingRowHeaders(t *testing.T) {
+	mk := func(t *testing.T, rowHeaders string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"anthropic\"\n" +
+			"api_key_env = [\"WORK_KEY\"]\n" +
+			"default_model = \"claude-opus-4-5\"\n" +
+			"[providers.gw.models.\"claude-opus-4-5\"]\n" +
+			"[providers.gw.models.\"claude-opus-4-5\".headers]\n" +
+			rowHeaders
+		return fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config).AuthFingerprint("gw")
+	}
+	plain, ok := mk(t, "\"X-Beta\" = \"false\"\n")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "\"X-Beta\" = \"true\"\n")
+	if plain == rotated {
+		t.Fatal("fingerprint unchanged across a default-row header rotation; the listing request changed")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never
