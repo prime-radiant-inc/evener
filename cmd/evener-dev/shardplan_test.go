@@ -93,7 +93,7 @@ func TestPackShardsSpreadsTestsTheSurveyCalledFree(t *testing.T) {
 	for i := range 400 {
 		costs = append(costs, testCost{fmt.Sprintf("free%d", i), 0})
 	}
-	bins, _, err := packShards(costs, 4)
+	bins, _, err := packShards(costs, 4, "AGENT")
 	if err != nil {
 		t.Fatalf("packShards: %v", err)
 	}
