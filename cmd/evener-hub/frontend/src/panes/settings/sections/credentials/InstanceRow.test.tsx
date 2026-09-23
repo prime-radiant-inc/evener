@@ -277,3 +277,28 @@ describe("selection", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });
+
+// The host-scoped view of a remote host's own listing renders this row
+// read-only: the same identity and meta (dot, name, chips, meta line) with no
+// button and no chevron, because nothing on a remote host's row is actionable
+// from this browser.
+describe("the read-only variant", () => {
+  test("renders the same identity and meta with no button", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "on-host",
+          providerId: "anthropic",
+          isDefault: true,
+          hasStoredFile: true,
+          activeSource: "store",
+        })}
+        readOnly
+      />,
+    );
+    expect(screen.getByText("on-host")).toBeTruthy();
+    expect(screen.getByText(/default/i)).toBeTruthy();
+    expect(screen.getByText("openai-chat")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+});

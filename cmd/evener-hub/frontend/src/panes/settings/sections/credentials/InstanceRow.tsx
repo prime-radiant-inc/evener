@@ -1,11 +1,16 @@
-// InstanceRow.tsx: one provider instance's tappable list row for the
-// detail-sheet redesign - a single full-width button carrying identity and
-// status only (heading dot, name, ★ default / from environment chips, one
-// meta line, chevron).
+// InstanceRow.tsx: one provider instance's list row for the detail-sheet
+// redesign - a single full-width button carrying identity and status only
+// (heading dot, name, ★ default / from environment chips, one meta line,
+// chevron).
 // Every per-instance ACTION (test, set key, sign in, clear, remove, make
 // default) and the layered credential display moved into InstanceSheet,
 // so the list stays one-target-per-row on desktop and touch alike. Pure
 // presentational: the section owns selection.
+//
+// The read-only variant renders the same identity and meta with no button and
+// no chevron: the host-scoped view of a remote host's own listing uses it,
+// where nothing is actionable from this browser. One implementation keeps the
+// two surfaces from drifting.
 import type { InstanceEntry } from "@evener/appwire-client";
 import {
   credentialLayers,
@@ -29,10 +34,8 @@ const CLASS = {
 
 // The one meta line: the unconfigured label is the more important signal and
 // leads; style info (a gateway's base URL is the interesting part of "No key
-// set · optional") follows it. Exported so the read-only remote-host view
-// (CredentialsHostScope) labels a row exactly the way this pane's own row does
-// - one spelling per instance, whether the row is editable or not.
-export function instanceMetaText(instance: InstanceEntry): string {
+// set · optional") follows it.
+function metaText(instance: InstanceEntry): string {
   const unconfigured = unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
   return unconfigured === null ? styleInfo : `${unconfigured} · ${styleInfo}`;
@@ -40,23 +43,34 @@ export function instanceMetaText(instance: InstanceEntry): string {
 
 export interface InstanceRowProps {
   instance: InstanceEntry;
-  onSelect: () => void;
+  /** Read-only rendering: identity and meta only, no button and no chevron. */
+  readOnly?: boolean;
+  /** Required whenever readOnly is not set: selecting the row opens the sheet. */
+  onSelect?: () => void;
 }
 
-export function InstanceRow({ instance, onSelect }: InstanceRowProps) {
-  const meta = instanceMetaText(instance);
+export function InstanceRow({ instance, readOnly = false, onSelect }: InstanceRowProps) {
+  const meta = metaText(instance);
+  // Both variants render this node, so a read-only row states exactly what the
+  // tappable one does.
+  const body = (
+    <div className={CLASS.rowMain}>
+      <div className={CLASS.heading}>
+        <StatusDot state={credentialLayers(instance).length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
+        <span className={CLASS.name}>{instance.name}</span>
+        {instance.isDefault && <Chip>★ default</Chip>}
+        {fromEnvironment(instance) && <Chip>from environment</Chip>}
+      </div>
+      <div className={CLASS.meta}>{meta}</div>
+    </div>
+  );
+  if (readOnly) {
+    return <li>{body}</li>;
+  }
   return (
     <li>
       <button type="button" className={CLASS.rowButton} onClick={onSelect}>
-        <div className={CLASS.rowMain}>
-          <div className={CLASS.heading}>
-            <StatusDot state={credentialLayers(instance).length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
-            <span className={CLASS.name}>{instance.name}</span>
-            {instance.isDefault && <Chip>★ default</Chip>}
-            {fromEnvironment(instance) && <Chip>from environment</Chip>}
-          </div>
-          <div className={CLASS.meta}>{meta}</div>
-        </div>
+        {body}
         <span className={CLASS.chevron} aria-hidden="true">
           <Chevron direction="right" />
         </span>
