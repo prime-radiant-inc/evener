@@ -204,13 +204,29 @@ func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, c
 	}
 }
 
+// isTargetDeletedError reports whether err is the hub's typed deletion refusal:
+// a WireError whose data marks the target as deleted. The wire client decodes
+// Data as the typed appwire.ErrorData on some paths and as map[string]any on
+// others, so a shape that is not already typed is re-marshaled rather than
+// asserted — the convention app_retirement_resume.go's isLifecycleRetiringError
+// follows. Reading only the typed shape would let a real deletion be wrapped as
+// an unknown mutation outcome instead of reported as the deletion it is.
 func isTargetDeletedError(err error) bool {
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) {
+	wireErr, ok := wireErrorFromError(err)
+	if !ok || wireErr.Data == nil {
 		return false
 	}
 	data, ok := wireErr.Data.(appwire.ErrorData)
-	return ok && data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+	if !ok {
+		raw, merr := json.Marshal(wireErr.Data)
+		if merr != nil {
+			return false
+		}
+		if json.Unmarshal(raw, &data) != nil {
+			return false
+		}
+	}
+	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
 }
 
 func deletionThreadID(ref, threadID string) string {
