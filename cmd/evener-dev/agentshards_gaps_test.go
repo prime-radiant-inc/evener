@@ -214,7 +214,7 @@ func TestRunShardsScratchError(t *testing.T) {
 	isolateToolchainEnv(t)
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", pkgDir: fixtureModule(t),
 		count:    1,
 		parallel: 1,
 		stdout:   &stdout,

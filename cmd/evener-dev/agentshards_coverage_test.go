@@ -517,7 +517,7 @@ func TestCachedSurveyPathExplicit(t *testing.T) {
 
 // TestCachedSurveyPathEmptyGOCACHE covers the path where go env GOCACHE fails.
 func TestCachedSurveyPathEmptyGOCACHE(t *testing.T) {
-	cfg := shardsConfig{cacheDir: ""}
+	cfg := shardsConfig{label: "agent", cacheDir: ""}
 	// We can't easily make `go env GOCACHE` fail, but we can test with
 	// a cacheDir that cannot be created (a path under a file).
 	tmp := t.TempDir()

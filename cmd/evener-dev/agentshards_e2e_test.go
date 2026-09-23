@@ -56,7 +56,7 @@ func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string
 	}
 	var stdout, stderr bytes.Buffer
 	return shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", pkgDir: fixtureModule(t),
 		count:    2,
 		parallel: 1,
 		cacheDir: filepath.Join(t.TempDir(), "cache"),
@@ -579,7 +579,7 @@ func peakLiveShards(t *testing.T, dir string) int {
 
 func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	cfg, _, stderr, _ := e2eConfig(t)
-	cfg.agentDir = filepath.Join(t.TempDir(), "no-such-module")
+	cfg.pkgDir = filepath.Join(t.TempDir(), "no-such-module")
 	if rc := runShards(cfg); rc != 2 {
 		t.Fatalf("missing agent dir rc = %d, want 2", rc)
 	}
@@ -645,6 +645,54 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		}
 		if !strings.Contains(string(out), tc.name) {
 			t.Fatalf("%s=%s not named in error:\n%s", tc.name, tc.value, out)
+		}
+	}
+}
+
+// TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
+// it shards cmd/evener-hub under the repository root, reads HUB_SHARD_* rather
+// than the agent's variables, and names itself "hub" in its verdicts, so a gate
+// running both shard sets side by side can tell their lines apart.
+func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workRoot, "cmd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fixtureModule(t), filepath.Join(workRoot, "cmd", "evener-hub")); err != nil {
+		t.Fatalf("linking fixture: %v", err)
+	}
+	run := func(env ...string) (string, error) {
+		cmd := exec.Command(bin, "dev", "hub-shards")
+		cmd.Dir = workRoot
+		cmd.Env = append(os.Environ(), append([]string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir()}, env...)...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	for _, tc := range []struct{ name, value string }{
+		{"HUB_SHARD_COUNT", "banana"},
+		{"HUB_SHARD_PARALLEL", "-3"},
+		{"HUB_SHARD_CONCURRENCY", "-1"},
+	} {
+		out, err := run(tc.name + "=" + tc.value)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("%s=%s exit = %v, want 1", tc.name, tc.value, err)
+		}
+		if !strings.Contains(out, "hub-shards: ") || !strings.Contains(out, tc.name) {
+			t.Fatalf("%s=%s not refused by hub-shards by name:\n%s", tc.name, tc.value, out)
+		}
+	}
+
+	// The fixture's beta test fails on demand; HUB_SHARD_SKIP must keep it out.
+	out, err := run("HUB_SHARD_COUNT=2", "SHARD_FIXTURE_FAIL=beta", "HUB_SHARD_SKIP=^TestFixtureBeta$", "AGENT_SHARD_COUNT=banana")
+	if err != nil {
+		t.Fatalf("green hub-shards run failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"PASS  hub:0", "PASS  hub:1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
 		}
 	}
 }
