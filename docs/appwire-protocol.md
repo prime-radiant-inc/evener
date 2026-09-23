@@ -814,6 +814,15 @@ _(no fields)_
 | `features` | `*appwire.FeatureSet` | yes |  |
 
 
+### `HostCredentialPushResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `instance` | `string` |  |  |
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
+
+
 ### `HostEntry`
 
 | Field | Go type | Omitempty | Embedded |
