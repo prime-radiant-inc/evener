@@ -1,0 +1,193 @@
+/*
+ * Page chrome for the host-aware mockups page (mockups.html, entry at
+ * src/dev/mockups/mockups-entry.tsx).
+ *
+ * This page exists to review a design, not to ship it: everything under
+ * review — the real Spawn pane, the real Tree/RailRow rail rows, the real
+ * RadioGroup/Popover/SegmentedControl widgets — renders with the production
+ * components and their own stylesheets. This module frames only the page
+ * around them: section headings, captions, side-by-side strips, and the
+ * closeups. Every value comes from tokens.css; nothing here invents a new
+ * visual rule. Ink/space/radius tokens only — no semantic hue vars, which
+ * token-contract.test.ts reserves for widget and rail stylesheets.
+ */
+
+.page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6) 120px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.pageTitle {
+  margin: 0;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-page-title);
+  line-height: var(--line-height-title);
+  font-weight: var(--font-weight-semibold);
+}
+
+.intro {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sectionHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+}
+
+.note {
+  margin: 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-6);
+}
+
+.figure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.figureCaption {
+  margin: 0;
+  max-width: 560px;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+/* Frames the real Spawn pane like a workspace pane. PaneScaffold is
+ * height:100%, so the frame owns the height. */
+.spawnFrame {
+  flex: none;
+  width: min(560px, 100%);
+  height: 780px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+  overflow: hidden;
+}
+
+/* Gives the rail (height:100% of its own stylesheet) a sized parent. The
+ * rail's own .rail class carries its 280px width, border, and background. */
+.railFrame {
+  flex: none;
+  height: 780px;
+}
+
+/* The drawn host glyph on a host group row — same 13px box and ink the rail
+ * gives the watch row's drawn clock (RailRow.module.css's .watchGlyph). */
+.hostGlyph {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mid);
+}
+
+/* The organize-by switcher row: sits between the Live section and the
+ * Hosts/Projects section it controls. Chrome like the section headings
+ * around it — caption size, quiet, hover wash — so it reads as a toolbar
+ * for the section below, not a section of its own. */
+/* The organize-by switcher row: sits between the Live section and the
+ * Hosts/Projects section it controls. Icon-only and hard right, with the
+ * same right inset the pinned-section heading menus use
+ * (Rail.module.css's .sectionHeadingAction), so it lines up with that
+ * family of controls. */
+.organizeRow {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+}
+
+/* Closeup strips: control anatomy shown out of the rail, at rest. */
+.closeupStrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-8);
+}
+
+.closeup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* The popover panel class is position:fixed in its own stylesheet (it is a
+ * portal in real use); the closeup shows it in flow beside its trigger. */
+.closeupPanel {
+  position: static;
+}
+
+.closeupPanelPad {
+  padding: var(--space-3);
+}
+
+/* A section-heading-row mock for the always-visible SegmentedControl
+ * alternative: the rail's own uppercase section label + the control as it
+ * would actually render (the widget's visible "Group by" label and all). */
+.closeupHeadingRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Icon candidates: one drawn glyph per candidate with a one-line caption. */
+.candidateRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  align-items: flex-start;
+  padding-top: var(--space-2);
+}
+
+.candidate {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-width: 170px;
+}
+
+.candidateCaption {
+  margin: 0;
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.notesList {
+  margin: 0;
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}
