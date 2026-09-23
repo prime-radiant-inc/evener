@@ -259,6 +259,25 @@ Job j exhausted.
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
 });
 
+test("a delegate frame carrying a command-outcome status tones error even without an exit code", () => {
+  const block = `<delegate-notification delegate_id="dlg_42" event="command_exited_nonzero" status="command_exited_nonzero" reason="exit_nonzero">
+Delegate dlg_42 command_exited_nonzero.
+</delegate-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
+});
+
+test("a job frame carrying a watch-send diagnostic keeps the exit bit on its warning head", () => {
+  const block = `<job-notification job_id="job_d" event="completed" job_type="shell" status="completed" reason="watch send failed: rail error" exit_code="2">
+Job job_d completed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("warning");
+  // The exit bit is reachable: the send-rail diagnostic tones warning
+  // BEFORE the disposition arms, so a failure disposition can ride a
+  // warning head (RoboRev round-6 dead-code claim, disproven by this test).
+  expect(n.secondary).toContain("exit 2");
+});
+
 test("a nonzero exit code forces error tone even when the status is otherwise clean", () => {
   const block = `<job-notification job_id="j" event="completed" job_type="shell" status="completed" reason="" output_bytes="0" exit_code="1">
 Job j completed.

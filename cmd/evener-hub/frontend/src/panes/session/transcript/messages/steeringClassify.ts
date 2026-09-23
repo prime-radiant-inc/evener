@@ -289,6 +289,10 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   if (
     outerStatus.includes("fail") ||
     outerEvent.includes("fail") ||
+    outerStatus === "command_exited_nonzero" ||
+    outerEvent === "command_exited_nonzero" ||
+    outerStatus === "command_killed" ||
+    outerEvent === "command_killed" ||
     outerStatus === "error" ||
     outerEvent === "error" ||
     outerStatus === "exhausted" ||
