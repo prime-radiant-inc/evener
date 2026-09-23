@@ -111,11 +111,13 @@ func locateAcrossBuckets(buckets []bucket, stateRoot string, sel selector) (Path
 //     the single bucket, root is the base.
 func resolveBuckets(stateBase string) ([]bucket, string, error) {
 	// A project-bucket base sweeps its state root's buckets; every other
-	// base is enumerated as itself. The up-walk only counts when it lands on
-	// a real projects dir, so a phantom bucket-dir path keeps the override
-	// shape (an explicit error, never a silently empty sweep).
+	// base is enumerated as itself. The up-walk counts only when the base
+	// itself is an existing directory and the walk lands on a real projects
+	// dir, so a phantom bucket-dir spelling (<state>/evener/projects/missing)
+	// stays the ordinary single-bucket miss instead of sweeping siblings a
+	// nonexistent base cannot contain.
 	stateRoot := stateBase
-	if home := userdirs.StateHomeForBucketDir(stateBase); home != "" && isDir(filepath.Join(home, "evener", "projects")) {
+	if home := userdirs.StateHomeForBucketDir(stateBase); home != "" && isDir(stateBase) && isDir(filepath.Join(home, "evener", "projects")) {
 		stateRoot = home
 	}
 	projects := filepath.Join(stateRoot, "evener", "projects")

@@ -251,3 +251,25 @@ func TestLocate_TrailingSlashStateDirStillSweepsSiblings(t *testing.T) {
 		t.Errorf("ProjectID = %q, want %q", got.ProjectID, hash1)
 	}
 }
+
+// TestLocate_PhantomBucketDirPathIsSingleBucketMiss proves a nonexistent
+// bucket-dir spelling under a real projects dir is not promoted to the state
+// root: no sibling sweep, just the ordinary single-path miss. Sweeping
+// siblings from a path that never existed would report sessions a
+// nonexistent base cannot contain.
+func TestLocate_PhantomBucketDirPathIsSingleBucketMiss(t *testing.T) {
+	stateHome, bucketA, _ := newTwoBucketState(t)
+	writeSession(t, bucketA, sidA)
+	phantom := filepath.Join(stateHome, "evener", "projects", "missing")
+
+	_, err := Locate(phantom, sidA)
+	if err == nil {
+		t.Fatal("a session in a sibling bucket must not resolve from a phantom bucket-dir path")
+	}
+	if !strings.Contains(err.Error(), "under "+phantom) {
+		t.Errorf("miss should name the phantom path, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "(1 bucket scanned)") {
+		t.Errorf("miss should be the ordinary single-path miss, not a sibling sweep, got: %v", err)
+	}
+}

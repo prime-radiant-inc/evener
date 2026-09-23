@@ -572,6 +572,20 @@ type AuditResult struct {
 	Unreadable      []UnreadableSession `json:"unreadable"`
 }
 
+// followSelector returns the selector that re-addresses one session: its
+// emitted transcript ref, or the bare session id when no ref was emitted —
+// refFor omits the ref for buckets whose directory names the agent ref
+// grammar cannot consume, and a bare id still sweeps to every enumerated
+// bucket, including backslash-named ones an internal proj:<name>:<sid>
+// fallback could not address (the doctor's own selector grammar rejects
+// backslash). This keeps the audit set's coverage identical to the sweep's.
+func followSelector(ref, sessionID string) string {
+	if ref == "" {
+		return sessionID
+	}
+	return ref
+}
+
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
 // against each session's Task 2 health metrics (and apilog totals, only
 // decoded when a check needs them), and dedups tripped checks into Findings
@@ -599,7 +613,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			return AuditResult{}, err
 		}
 		for _, s := range sweep.Sessions {
-			refs = append(refs, s.TranscriptRef)
+			refs = append(refs, followSelector(s.TranscriptRef, s.SessionID))
 		}
 		res.Unreadable = append(res.Unreadable, sweep.Unreadable...)
 	}
@@ -617,14 +631,14 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: ref, TranscriptRef: ref, Error: err.Error()})
 			continue
 		}
-		health, err := TranscriptHealth(stateBase, paths.TranscriptRef)
+		health, err := TranscriptHealth(stateBase, followSelector(paths.TranscriptRef, paths.SessionID))
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 			continue
 		}
 		source := metricSource{health: health}
 		if needsAPILog {
-			apiRes, err := APILog(stateBase, paths.TranscriptRef, APILogOpts{SummaryOnly: true})
+			apiRes, err := APILog(stateBase, followSelector(paths.TranscriptRef, paths.SessionID), APILogOpts{SummaryOnly: true})
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue
@@ -633,7 +647,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			source.haveAPILog = true
 		}
 		if needsAPIHealth {
-			apiHealthRes, err := APIHealth(stateBase, paths.TranscriptRef)
+			apiHealthRes, err := APIHealth(stateBase, followSelector(paths.TranscriptRef, paths.SessionID))
 			if err != nil {
 				res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
 				continue

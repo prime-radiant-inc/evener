@@ -633,6 +633,37 @@ func TestRunAudit_RequiresSessionsOrSince(t *testing.T) {
 	}
 }
 
+// TestRunAudit_SinceAuditsLegacyNamedBuckets proves the --since audit set
+// covers buckets whose directory names the agent ref grammar cannot consume
+// (round 3's refFor emits no TranscriptRef for them): the session is audited
+// via its bare id — never recorded as a blank-identity unreadable with the
+// misleading "no session selector" error — so the operator keeps both the
+// coverage and the identity of every swept session.
+func TestRunAudit_SinceAuditsLegacyNamedBuckets(t *testing.T) {
+	base := t.TempDir()
+	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	writeSessionsFixtureSession(t, legacyBucket, sidA,
+		transcript.Header{CreatedAt: time.Now(), Model: "m"}, nil, schema.SessionMeta{Model: "m"}, nil, time.Now())
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the legacy-named bucket's session must be audited", res.SessionsChecked)
+	}
+	// Invariant: no Unreadable entry ever carries a blank identity.
+	for _, u := range res.Unreadable {
+		if u.SessionID == "" {
+			t.Errorf("Unreadable entry with a blank session_id: %+v", u)
+		}
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — a session with no emitted ref is audited, not skipped as unreadable", res.Unreadable)
+	}
+}
+
 func TestRunAudit_SessionsAndSinceMutuallyExclusive(t *testing.T) {
 	rb := mustParseFixtureRunbook(t)
 	if _, err := RunAudit(t.TempDir(), rb, AuditOpts{Sessions: []string{"x"}, Since: time.Hour}); err == nil {
