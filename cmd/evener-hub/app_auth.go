@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -747,10 +748,18 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 			return skipConditionalSet(&resp, fmt.Sprintf("%q is not a configured provider or instance on this host", name))
 		}
 		source := inst.CredentialSource
+		// One resolution of the instance answers both questions this section
+		// asks about the same generation of providers.toml: the revision the
+		// fence compares, and whether the instance's own auth header is already
+		// supplied by its authored credential_headers (the classification
+		// below). resolvedRowInstance is the same single-resolution helper the
+		// listing rows use, and CredentialConfigRevisionResolved contributes
+		// exactly what CredentialConfigRevision would for this resolution.
+		resolved, resolvedOK := resolvedRowInstance(c.registry(), inst)
 		// The fences are checked before the classification: a client whose
 		// observed state no longer describes the instance must be told so, not
 		// handed a skip it could mistake for a durable decision.
-		current := hubcore.CredentialConfigRevision(c.registry(), name)
+		current := hubcore.CredentialConfigRevisionResolved(resolved)
 		if params.ExpectedRevision != "" && params.ExpectedRevision != current {
 			return false, appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
 		}
@@ -768,6 +777,15 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 			return skipConditionalSet(&resp, fmt.Sprintf("%s resolves its credential from providers.toml (%s), which outranks the file layer", name, source))
 		case strings.HasPrefix(source, "env:"):
 			return skipConditionalSet(&resp, fmt.Sprintf("the host's environment supplies %s's credential (%s), which a stored key would silently replace", name, source))
+		// The source string names the Authorization entry alone
+		// (registry.credential reads that one key), so an instance whose own
+		// auth header is supplied by an authored credential_headers entry under
+		// any other name — or any other case — still resolves "store" or
+		// "none" here. But credentialHeaderWins makes that authored header win
+		// over any key the scheme would derive, so a key this set stores is one
+		// nothing ever sends: ask the predicate itself, not the source string.
+		case resolvedOK && llm.CredentialHeaderShadowsKey(resolved):
+			return skipConditionalSet(&resp, fmt.Sprintf("%s's own auth header is supplied by its authored credential_headers in providers.toml, which win over any key a push could store", name))
 		case source == "store":
 			resp.Action = appwire.ApiKeyConditionalSetActionUpdated
 		case source == "none":

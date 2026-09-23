@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // gcpADCInstanceToml is one instance on the Google application-default
@@ -51,6 +52,62 @@ base_url = "http://127.0.0.1:9/v1"
 
 [providers.gateway-hdr.credential_headers]
 Authorization = "Bearer $WORK_HDR_KEY"
+`
+
+// authoredAuthHeaderInstanceToml is one instance on the header scheme whose own
+// auth header is supplied by its authored credential_headers: `auth_header`
+// points the key at X-Custom-Key, and a credential_headers entry supplies that
+// very header. The registry resolves a credential source from the Authorization
+// entry alone (llm/registry/instances.go), so this instance resolves "none" —
+// or "store" once a key is stored — even though the authored header wins over
+// any key (llm/authenticators.go's credentialHeaderWins, spec §10): the key
+// such a push stores is one nothing ever sends.
+const authoredAuthHeaderInstanceToml = `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+X-Custom-Key = "hdr-token"
+`
+
+// authoredAuthHeaderCaseVariantInstanceToml is the same shape with the authored
+// header spelled in a different case: credentialHeaderWins compares
+// case-insensitively, so the header still wins, while the registry's
+// Authorization lookup (exact) still finds nothing.
+const authoredAuthHeaderCaseVariantInstanceToml = `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+
+[providers.gateway-key.credential_headers]
+x-custom-key = "hdr-token"
+`
+
+// bearerAuthoredAuthorizationInstanceToml is the bearer half of the same
+// exposure: the Authorization header is authored under a different case, which
+// the registry's exact Authorization lookup does not see (so the source is not
+// "credential_headers") but credentialHeaderWins does, so the bearer the scheme
+// would derive from a key is never sent.
+const bearerAuthoredAuthorizationInstanceToml = `[providers.gateway-bearer]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.gateway-bearer.credential_headers]
+AUTHORIZATION = "Bearer hdr-token"
+`
+
+// headerWithoutAuthoredHeaderInstanceToml is the control: the same header
+// scheme with no authored credential_headers entry at all, so the instance
+// really does read a stored key and the push must still add it.
+const headerWithoutAuthoredHeaderInstanceToml = `[providers.gateway-key]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
 `
 
 func loadStoredKey(t *testing.T, credsDir, name string) (string, bool) {
@@ -375,6 +432,111 @@ func TestAuth_ApiKeyConditionalSet_ClassifiesNonWritableSchemes(t *testing.T) {
 			}
 			if _, has := loadStoredKey(t, dir, tc.instance); has {
 				t.Fatalf("a key was stored for a skipped instance %q", tc.instance)
+			}
+		})
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey pins
+// the classification spec §10 needs and the source string alone cannot express:
+// the registry names only the Authorization entry, so an instance whose own
+// auth header is supplied by an authored credential_headers entry resolves
+// "none" or "store" — the two sources the conditional set treats as writable —
+// while the authored header wins over any key (credentialHeaderWins), so the
+// key such a set persists is one nothing ever sends. Reporting "added"/"updated"
+// here reports a live credential that is dead.
+func TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey(t *testing.T) {
+	cases := []struct {
+		name     string
+		toml     string
+		instance string
+		// stored is a key written through the auth surface before the
+		// conditional set, which makes the instance resolve from "store" rather
+		// than "none" — the other writable classification.
+		stored string
+		// wantScheme pins the auth scheme the fixture must actually resolve, so a
+		// case cannot pass by skipping for some reason other than the header it
+		// is about.
+		wantScheme string
+		wantSource string
+		// wantAction is skipped for a shadowed instance and added for the
+		// control, so the test cannot pass by skipping on the header scheme
+		// wholesale.
+		wantAction string
+	}{
+		{
+			name: "header-authored-header-exact", toml: authoredAuthHeaderInstanceToml, instance: "gateway-key",
+			wantScheme: registry.AuthHeader, wantSource: "none", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "header-authored-header-exact-over-store", toml: authoredAuthHeaderInstanceToml, instance: "gateway-key", stored: "sk-old",
+			wantScheme: registry.AuthHeader, wantSource: "store", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "header-authored-header-case-variant", toml: authoredAuthHeaderCaseVariantInstanceToml, instance: "gateway-key", stored: "sk-old",
+			wantScheme: registry.AuthHeader, wantSource: "store", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "bearer-authored-authorization-case-variant", toml: bearerAuthoredAuthorizationInstanceToml, instance: "gateway-bearer",
+			wantScheme: registry.AuthBearer, wantSource: "none", wantAction: appwire.ApiKeyConditionalSetActionSkipped,
+		},
+		{
+			name: "control-header-without-authored-header", toml: headerWithoutAuthoredHeaderInstanceToml, instance: "gateway-key",
+			wantScheme: registry.AuthHeader, wantSource: "none", wantAction: appwire.ApiKeyConditionalSetActionAdded,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := t.TempDir()
+			ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, tc.toml))
+			if tc.stored != "" {
+				if _, err := ctrl.ApiKeySet(appwire.AuthApiKeySetParams{Provider: tc.instance, Value: tc.stored}); err != nil {
+					t.Fatalf("seed %s: %v", tc.instance, err)
+				}
+			}
+			inst, ok := ctrl.registry().Instance(tc.instance)
+			if !ok {
+				t.Fatalf("%s does not resolve on this fixture", tc.instance)
+			}
+			if inst.Auth != tc.wantScheme {
+				t.Fatalf("%s resolves auth = %q, want %q: the fixture does not exercise the scheme this case is about", tc.instance, inst.Auth, tc.wantScheme)
+			}
+			if inst.CredentialSource != tc.wantSource {
+				t.Fatalf("%s resolves its credential source = %q, want %q", tc.instance, inst.CredentialSource, tc.wantSource)
+			}
+			before, err := ctrl.Status(appwire.AuthStatusParams{Provider: tc.instance})
+			if err != nil {
+				t.Fatalf("Status(%s): %v", tc.instance, err)
+			}
+			resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+				Provider:       tc.instance,
+				Value:          "sk-pushed",
+				ExpectedSource: before.ActiveSource,
+			})
+			if err != nil {
+				t.Fatalf("ApiKeyConditionalSet(%s): %v", tc.instance, err)
+			}
+			if resp.Action != tc.wantAction {
+				t.Fatalf("Action = %q, want %q (reason %q)", resp.Action, tc.wantAction, resp.Reason)
+			}
+			if tc.wantAction == appwire.ApiKeyConditionalSetActionSkipped && resp.Reason == "" {
+				t.Fatal("Reason is empty for a skip; the report cannot say why")
+			}
+			value, has := loadStoredKey(t, dir, tc.instance)
+			switch tc.wantAction {
+			case appwire.ApiKeyConditionalSetActionAdded:
+				if !has || value != "sk-pushed" {
+					t.Fatalf("stored key = %q present=%v, want the pushed value", value, has)
+				}
+			default:
+				if tc.stored == "" {
+					if has {
+						t.Fatalf("a key was stored for a skipped instance: %q", value)
+					}
+				} else if !has || value != tc.stored {
+					t.Fatalf("stored key = %q present=%v, want the pre-existing %q untouched", value, has, tc.stored)
+				}
 			}
 		})
 	}
