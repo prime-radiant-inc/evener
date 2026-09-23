@@ -87,20 +87,37 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 }
 
 // The daemon applies duplicate IDs sequentially but returns the authoritative
-// final state. Render one status touch per ID from the matching final argument;
-// ordering by final occurrence keeps distinct IDs in the order the batch ends.
+// final state. Render one status touch per ID from its last STATUS-BEARING
+// update - a trailing notes-only touch annotates the row instead of displacing
+// it, so a completion followed by a note cannot be erased into suppression.
+// Ordering by each ID's final occurrence keeps distinct IDs in the order the
+// batch ends.
 function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknown>[] {
-  const latestByID = new Map<number, { index: number; update: Record<string, unknown> }>();
+  type Entry = { index: number; update: Record<string, unknown> };
+  const latestByID = new Map<number, Entry>();
   const unmarked: { index: number; update: Record<string, unknown> }[] = [];
+  const annotating = new Map<number, Entry>();
   for (const [index, update] of updates.entries()) {
     const id = typeof update.id === "number" ? update.id : undefined;
     if (id === undefined) {
       unmarked.push({ index, update });
       continue;
     }
-    latestByID.set(id, { index, update });
+    if (TOUCH_BY_STATUS[str(update, "status") ?? ""]) {
+      latestByID.set(id, { index, update });
+      annotating.delete(id);
+    } else if (str(update, "notes")) {
+      annotating.set(id, { index, update });
+    }
   }
-  return [...latestByID.values(), ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
+  const marked: Entry[] = [];
+  for (const [id, entry] of latestByID) {
+    const note = annotating.get(id);
+    // The annotating touch came after the row it names, so the row carries
+    // its note and ends at the batch position the annotation gave it.
+    marked.push(note ? { index: note.index, update: { ...entry.update, notes: note.update.notes } } : entry);
+  }
+  return [...marked, ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
 }
 
 // A valid mutation is a current add/update batch or its historical

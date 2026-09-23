@@ -533,6 +533,93 @@ test("the settled slot orders by parsed time within the same millisecond", () =>
   expect(row.textContent).toContain("later sub-millisecond");
 });
 
+test("a trailing notes-only touch on the same id keeps the card's completion", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done" },
+          { id: 1, notes: "with a caveat" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+      { raw: [{ id: 1, type: "implement", description: "finish the thing", prompt: "", status: "done" }] },
+    ),
+  );
+  // The batch completed #1 and then annotated it; the per-id dedup must
+  // keep the completion, not let the statusless touch erase it into
+  // suppression.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ finish the thing");
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled"]);
+  // The trailing note this call added rides the row it annotated.
+  expect(within(rows[0]!).getByText("with a caveat")).toBeTruthy();
+});
+
+test("a trailing notes-only touch keeps the fallback row's completion and carries the note", () => {
+  // Same batch shape with no raw (old daemon / replayed transcript): the
+  // fallback row keeps the "#id" label, the done touch, and the note.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done" },
+          { id: 1, notes: "with a caveat" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+    ),
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ #1");
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.getAttribute("data-touch")).toBe("done");
+  expect(rows[0]!.textContent).toContain("with a caveat");
+});
+
+test("a cancelled task settles at its terminal stamp, not a later annotation's updated_at", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 2, status: "done" }] },
+      "Updated 2→done. Progress: 2/2 tasks complete.",
+      {
+        // #1 was cancelled at 14:00 and merely annotated at 15:30; #2
+        // genuinely settled at 14:59. The window must read the
+        // cancellation's terminal stamp, not its inflated updated_at, so
+        // the newer completion holds the settled slot.
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "stale cancellation",
+            prompt: "",
+            status: "cancelled",
+            completed_at: "2026-09-23T14:00:00Z",
+            updated_at: "2026-09-23T15:30:00Z",
+          },
+          {
+            id: 2,
+            type: "implement",
+            description: "newer completion",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:59:00Z",
+            updated_at: "2026-09-23T14:59:00Z",
+          },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled"]);
+  expect(rows[0]!.textContent).toContain("newer completion");
+});
+
 test("the status rides along visually-hidden on every window row", () => {
   renderItem(mainUpdate());
   openRow();

@@ -161,7 +161,10 @@ export function TasksSheet({
             {task.updatedAt && task.updatedAt !== task.createdAt ? (
               <Copy muted>{`Updated ${absoluteTime(task.updatedAt)}`}</Copy>
             ) : null}
-            {task.completedAt ? (
+            {/* The settle stamp now also rides cancelled tasks (the store
+                stamps every terminal transition); the "Completed" line
+                stays a done-row fact, matching the web pane's timestamps. */}
+            {task.completedAt && task.status === "done" ? (
               <Copy muted>{`Completed ${absoluteTime(task.completedAt)}`}</Copy>
             ) : null}
             {task.prompt.trim() ? (

@@ -760,11 +760,12 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 				if u.ReasoningEffort != "" {
 					s.tasks[i].ReasoningEffort = u.ReasoningEffort
 				}
-				// Mint timestamps: every update advances UpdatedAt; reaching done
-				// stamps CompletedAt, and reopening a done task clears it.
+				// Mint timestamps: every update advances UpdatedAt; reaching a
+				// terminal status (done or cancelled) stamps CompletedAt as the
+				// settle moment, and leaving the terminal state clears it.
 				ts := s.stamp()
 				s.tasks[i].UpdatedAt = ts
-				if u.Status == TaskDone {
+				if u.Status == TaskDone || u.Status == TaskCancelled {
 					s.tasks[i].CompletedAt = ts
 				} else if u.Status != "" {
 					s.tasks[i].CompletedAt = nil

@@ -186,6 +186,46 @@ func TestUpdate_StatusNotesTimestampsAndCompletion(t *testing.T) {
 	}
 }
 
+func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "a"}})
+	id := added[0].ID
+
+	// Reaching cancelled is a terminal settle like done: the stamp is the
+	// transition moment, so the transcript card's window can order the
+	// cancellation as most-recently-settled.
+	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled}}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := s.View()[0]
+	if cancelled.CompletedAt == nil {
+		t.Fatal("CompletedAt not stamped on cancel")
+	}
+	settle := *cancelled.CompletedAt
+
+	// A later notes-only edit advances UpdatedAt but must not move the
+	// settle moment forward with it - an old cancellation must not read as
+	// the plan's most recent settle just because someone annotated it.
+	if err := s.Update([]TaskUpdate{{ID: id, Notes: "not really dropping it"}}); err != nil {
+		t.Fatal(err)
+	}
+	annotated := s.View()[0]
+	if annotated.CompletedAt == nil || !annotated.CompletedAt.Equal(settle) {
+		t.Errorf("CompletedAt moved to %v after a notes-only edit, want %v", annotated.CompletedAt, settle)
+	}
+	if !annotated.UpdatedAt.After(settle) {
+		t.Errorf("UpdatedAt %v not after the settle %v", annotated.UpdatedAt, settle)
+	}
+
+	// Reopening clears the stamp exactly like a reopened done task.
+	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
+		t.Fatal(err)
+	}
+	if s.View()[0].CompletedAt != nil {
+		t.Error("CompletedAt not cleared on reopen")
+	}
+}
+
 func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
 	s := newTestStore(t)
 	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
