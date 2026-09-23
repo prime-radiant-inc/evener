@@ -30,10 +30,15 @@ export type LiveReadiness = () => boolean;
  * then makes the NEW callback usable, and the window never authorizes the old
  * one. The bump is the one render-phase write this hook allows, and it is
  * fail-closed by construction: a render React abandons midway leaves the
- * counter ahead of the settled snapshot, so every callback refuses (nothing
- * stale is ever authorized) until the next committed render's effect catches
- * up. The r21 ban on settling the STATE snapshot during render is untouched —
- * a generation bump carries no authorization data at all. */
+ * counter ahead of every callback memoized before it, so each of those
+ * refuses (nothing stale is ever authorized). Recovery is memoization, not
+ * the settle effect: the callback's dependency array carries the generation
+ * it was born at, so the first committed render after an abandoned bump —
+ * whose identity matches the last committed one, so no new bump happens —
+ * rebuilds the callback from the current counter instead of returning the
+ * stale one (round 29). The r21 ban on settling the STATE snapshot during
+ * render is untouched — a generation bump carries no authorization data at
+ * all. */
 /** Keeps a deferred request tied to the render that opened it: the current
  * state must still be ready for the same hub and client before it may run —
  * and in the re-key window, where the hub has moved while the connection
@@ -75,7 +80,7 @@ export function useLiveReadiness(
 			current.current.scope === scope &&
 			current.current.client === client &&
 			current.current.state === "ready",
-		[scope, client],
+		[scope, client, myGeneration],
 	);
 }
 

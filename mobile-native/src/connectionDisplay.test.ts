@@ -2,7 +2,7 @@
 // (`!client || state !== "ready"`), extracted so it is testable without
 // mounting a screen (mobile-native has no RTL harness yet - #1908).
 import { expect, it, vi } from "vitest";
-import { createElement, useLayoutEffect } from "react";
+import { createElement, Suspense, use, useLayoutEffect } from "react";
 import { act } from "react-test-renderer";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import {
@@ -13,7 +13,7 @@ import {
 	useRenderClient,
 	whenReady,
 } from "./connectionDisplay";
-import { render, renderHook } from "./renderNative.testkit";
+import { render, renderedText, renderHook } from "./renderNative.testkit";
 import type { LiveReadiness } from "./connectionDisplay";
 
 it("shows nothing once ready, regardless of history or a fatal flag", () => {
@@ -188,6 +188,65 @@ it("useLiveReadiness refuses a stale callback inside the commit-to-effect window
 	expect(windowVerdict).toBe(false);
 	// Once the effects settle, the world that actually moved is authorized
 	// again — the window closes without poisoning the next callback.
+	expect(current()).toBe(true);
+});
+
+it("useLiveReadiness recovers when React abandons an identity-changing render", async () => {
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	const state: ConnectionState = "ready";
+	// Sentinel default keeps the closure-assigned callback callable for the
+	// type checker; the first render overwrites it before any assertion.
+	let current: LiveReadiness = () => false;
+	const gate = { suspend: false };
+	let release!: () => void;
+	const parked = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	// A gated render parks on the Suspense boundary: the hook has already
+	// run (the generation counter bumped in render phase), but the render
+	// never commits and its settle effect never runs — the residue an
+	// abandoned identity-changing render leaves behind. Releasing the
+	// promise retries the parked render, which re-reads the closure: by
+	// then it carries the ORIGINAL identity again, so what commits is an
+	// unchanged-identity render over the abandoned bump.
+	function Owner() {
+		current = useLiveReadiness(hubId, client, state);
+		if (gate.suspend) {
+			use(parked);
+		}
+		return null;
+	}
+	const fallback = "connection-loading";
+	const boundary = () =>
+		createElement(Suspense, { fallback }, createElement(Owner));
+	const tree = render(boundary());
+	// hub-1's connection is genuinely ready: the settled predicate authorizes.
+	expect(current()).toBe(true);
+
+	// The identity-changing render is abandoned midway: its render-phase
+	// bump persists in the counter, but nothing commits and no effect runs.
+	gate.suspend = true;
+	hubId = "hub-2";
+	client = second;
+	await act(async () => {
+		tree.update(boundary());
+	});
+	expect(renderedText(tree)).toContain(fallback);
+
+	// The next committed render carries the original identity, matching the
+	// last committed one, so no new bump happens: the committed callback
+	// must be rebuilt from the current generation, or a callback memoized
+	// before the bump refuses forever.
+	gate.suspend = false;
+	hubId = "hub-1";
+	client = first;
+	await act(async () => {
+		release();
+	});
+	expect(renderedText(tree)).not.toContain(fallback);
 	expect(current()).toBe(true);
 });
 
