@@ -2836,6 +2836,21 @@ export function createConversationStore() {
         // applier to disagree with. The two display bounds run after the
         // projection.
         const applied = applyThreadNotification(state.conversation, n);
+        // An explicit reset is the wire's one frame that REMOVES a model
+        // item the window holds. The page-history layer keys on
+        // pageOwnedIds, and withPageHistory reads every page-owned
+        // identity the projection no longer carries as history to keep —
+        // without dropping the retracted row's page entry here, the
+        // publish would resurrect the very row the reset removed.
+        if (n.method === "item/agentMessage/reset") {
+          const params = n.params as { itemId: string };
+          const target = state.conversation.turns
+            .flatMap((turn) => turn.items)
+            .find((item) => item.id === params.itemId);
+          if (target) {
+            pageOwnedIds.delete(target.transcriptKey ?? target.id);
+          }
+        }
         if (applied !== state.conversation) {
           if (changesRows(state.conversation, applied)) {
             const projected = withPageHistory(

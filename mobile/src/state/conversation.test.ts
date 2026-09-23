@@ -3753,6 +3753,128 @@ describe("ConversationStore", () => {
       ).toHaveLength(0);
     });
 
+    // RoboRev finding on the restack (round 2): once an older page's turns
+    // are loaded, the rehydrate's turn-history merge folded the settled
+    // turn's live warning item back into the committed model — the settle
+    // reread cleared the ROW, but the next row-changing frame reprojected
+    // the model and the transient warning returned. The rehydrate must keep
+    // live-only warnings out of the retained turn history it merges.
+    it("the settle reread's warning cleanup sticks across later frames once page turns are loaded", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.turns.map((turn) => turn.id)).toEqual(["t0", "t1"]);
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter((row) => row.kind === "failure"),
+      ).toHaveLength(1);
+
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "", status: "completed" },
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.items.filter((row) => row.kind === "failure"),
+      ).toHaveLength(0);
+      // A later row-changing frame reprojects from the committed model:
+      // the transient warning must stay gone, not come back through the
+      // turn history the rehydrate retained.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter((row) => row.kind === "failure"),
+      ).toHaveLength(0);
+    });
+
+    it("a settle reread whose fresh window re-issues the turn's content under a new id still drops the transient warning", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
+      } as AnyNotification);
+
+      // The settle's reread serves the turn's transcript content under a
+      // NEW bare id with no items of its own: nothing matches the retained
+      // turn by item identity, so without the transient filter the merge
+      // would keep the warning item as unmatched retained history.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1-fresh", status: "completed", items: [] })],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "", status: "completed" },
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.items.filter((row) => row.kind === "failure"),
+      ).toHaveLength(0);
+      // Even the committed MODEL keeps no trace of the transient warning.
+      expect(
+        store.getState().conversation?.turns.flatMap((turn) => turn.items).filter((item) => item.type === "warning"),
+      ).toHaveLength(0);
+    });
+
     // A burst of unplaceable frames is one read, not a storm: requestRehydrate
     // goes through the drain scheduler keyed by the thread ref, which coalesces
     // same-key requests (overwriting the effect, merging waiters) and runs one
@@ -14978,6 +15100,60 @@ describe("ConversationStore", () => {
   // everything else is gone — including a row a live frame inserted before
   // the response, which the snapshot has already accounted for.
   describe("page history in front of the snapshot's rows", () => {
+    it("an explicit reset removes a page-owned row instead of letting page history resurrect it", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t2", items: [], status: "completed" })],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "assistant", id: "X", markdown: "page answer", streaming: false },
+        ],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "t1",
+              [
+                {
+                  id: "X",
+                  turnId: "t1",
+                  type: "agentMessage",
+                  text: "page answer",
+                  position: { entry: 10, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 5, outputTokens: 1 },
+            ),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).some((row) => row.id === "X")).toBe(true);
+
+      // The wire retracts X: an explicit reset removes its model item, so
+      // the page-history layer must not put the retracted row back on
+      // screen. (RoboRev finding on the restack: page ownership used to
+      // outlive the removal and resurrect the row.)
+      store.getState().applyNotification({
+        method: "item/agentMessage/reset",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "X",
+        },
+      } as AnyNotification);
+      expect(rows(store).some((row) => row.id === "X")).toBe(false);
+    });
+
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
