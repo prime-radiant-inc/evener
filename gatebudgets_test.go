@@ -209,8 +209,8 @@ printf 'resolved=%s\nbudget=%s\n' "$(command -v load_aware_workers)" "$(gate_bud
 
 // TestVitestRunArgsFollowTheLoadAwareBudget is the frontend half of the wiring:
 // the flags package.json hands `vitest run` carry the worker count sized to the
-// machine's spare capacity, and the pre-helper ceiling of four when the helper
-// is unavailable.
+// machine's spare capacity, floored at two, and the pre-helper ceiling of four
+// when the helper is unavailable.
 func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -220,6 +220,9 @@ func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	}{
 		{"idle machine keeps the ceiling", "0", "--maxWorkers=4"},
 		{"loaded machine backs off", "13.5", "--maxWorkers=2"},
+		// vitest runs a vm pool's files in ONE shared context when it has a
+		// single worker, so the budget never goes below two.
+		{"saturated machine keeps two workers", "40", "--maxWorkers=2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

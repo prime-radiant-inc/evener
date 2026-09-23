@@ -98,8 +98,13 @@ gate_module_flags() {
 
 # vitest_run_args — the flags the frontend gate hands `vitest run`: the worker
 # count sized to spare capacity, four on an idle machine, fewer as the load
-# average rises, and four again when the helper is unavailable. The caller
-# expands this unquoted, so it must stay free of glob characters.
+# average rises, and four again when the helper is unavailable. Never fewer
+# than two: the suite runs on vitest's vmThreads pool, and with one worker
+# vitest batches every file into a single shared VM context, so module
+# singletons, jsdom windows and prototype stubs leak from file to file. The
+# caller expands this unquoted, so it must stay free of glob characters.
 vitest_run_args() {
-	printf '%s' "--maxWorkers=$(gate_budget 4 4)"
+	_vra_workers=$(gate_budget 4 4)
+	[ "$_vra_workers" -ge 2 ] || _vra_workers=2
+	printf '%s' "--maxWorkers=$_vra_workers"
 }
