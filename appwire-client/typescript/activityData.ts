@@ -41,7 +41,6 @@ export function isActivityFailure(outcome: string | undefined, status: string | 
 }
 
 // The display word for a daemon job status. Rows state a job's status by
-// The display word for a daemon job status. Rows state a job's status by
 // design (the searchable, honest machine vocabulary) - EXCEPT the two
 // command-outcome statuses, whose 23-char snake_case form ellipsizes
 // mid-word in the rail's narrow column and disagrees with the words the

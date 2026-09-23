@@ -1048,6 +1048,15 @@ describe("job rows", () => {
     expect(screen.getByTestId("rail-row-job-status").textContent).toBe("completed");
   });
 
+  test("a legacy failed job row joins the display words by its reason", () => {
+    const node = {
+      ...jobRailNode({ status: "failed", reason: "exit_nonzero", command: "go test ./..." }),
+      active: false,
+    };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
+  });
+
   test("renders a separate completed-jobs disclosure", () => {
     const toggle = vi.fn();
     render(

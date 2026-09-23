@@ -95,6 +95,15 @@ test("job_status: summary states the command-outcome statuses under the card's d
   );
 });
 
+test("job_status: summary joins a legacy failed record to the display word by its reason", () => {
+  const d = toolRendererFor("job_status");
+  const args = JSON.stringify({ target: "job_44" });
+  const output = JSON.stringify({ id: "job_44", type: "shell", status: "failed", reason: "exit_nonzero" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe(
+    "Checked job_44 · Command failed",
+  );
+});
+
 test("job_status: falls back to the target arg with no status suffix when output isn't parseable yet", () => {
   const d = toolRendererFor("job_status");
   const args = JSON.stringify({ target: "job_43" });
@@ -572,6 +581,27 @@ test("job_list: rows state the command-outcome statuses under the card's display
   expect(exited?.textContent ?? "").not.toContain("command_exited_nonzero");
   expect(killed?.textContent ?? "").toContain("Command killed");
   expect(killed?.textContent ?? "").not.toContain("command_killed");
+});
+
+test("job_list: rows join a legacy failed record to the display word by its reason", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  render(
+    <TranscriptRenderProvider entities={jobEntityViews(["job_l1"])}>
+      <Body
+        item={item({
+          toolName: "job_list",
+          raw: {
+            items: [{ id: "job_l1", type: "shell", status: "failed", reason: "exit_nonzero" }],
+            count: 1,
+            total: 1,
+          },
+        })}
+        live={false}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.getAllByTestId("job-list-row")[0]?.textContent ?? "").toContain("Command failed");
 });
 
 // --- job_stop -----------------------------------------------------------

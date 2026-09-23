@@ -121,7 +121,7 @@ function delegateName(delegate: ActivityDelegate): string {
 // narrow column), a delegate its resolved state. The row view and both meta
 // grammars read it through here, so the two row kinds cannot drift.
 function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
-  return row.kind === "job" ? jobStatusDisplay(row.job.status) : delegateStatusText(row.delegate);
+  return row.kind === "job" ? jobStatusDisplay(row.job.status, row.job.reason) : delegateStatusText(row.delegate);
 }
 
 // The kind glyph ($/⌘) carries the status hue the StatusDot used to: working

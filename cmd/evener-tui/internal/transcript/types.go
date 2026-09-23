@@ -98,7 +98,6 @@ func SubagentDisplayStatus(run SubagentRunInfo) string {
 }
 
 // JobStatusDisplay returns the presentation word for a job status: the two
-// JobStatusDisplay returns the presentation word for a job status: the two
 // command-outcome statuses read "Command failed" / "Command killed" — the
 // words the notification card ruled — while every other status keeps its
 // raw machine value. A legacy pre-split "failed" record joins them when

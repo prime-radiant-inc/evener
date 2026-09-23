@@ -67,9 +67,10 @@ function JobListBody({ item, live }: ToolRenderProps) {
           const identity = textField(job, "id") ?? textField(job, "job_id");
           if (identity === undefined) return null;
           const rawStatus = textField(job, "status");
+          const reason = textField(job, "reason");
           const fields = [
             textField(job, "type"),
-            rawStatus === undefined ? undefined : jobStatusDisplay(rawStatus),
+            rawStatus === undefined ? undefined : jobStatusDisplay(rawStatus, reason),
             textField(job, "phase"),
           ].filter((field): field is string => field !== undefined);
           const description = textField(job, "description");
@@ -110,7 +111,8 @@ registerToolRenderer({
     const parsedOutput = parseJSONObject(item.output);
     const jobId = jobControlTarget(item);
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    return status ? `Checked ${jobId} · ${jobStatusDisplay(status)}` : `Checked ${jobId}`;
+    const reason = parsedOutput ? str(parsedOutput, "reason") : undefined;
+    return status ? `Checked ${jobId} · ${jobStatusDisplay(status, reason)}` : `Checked ${jobId}`;
   },
   body: DelegateStatusBody,
 });

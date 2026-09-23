@@ -888,7 +888,7 @@ function jobTitle(job: JobRailNode["job"], status: string): string {
 function JobRow({ node }: { node: JobRailNode }) {
   const active = node.active;
   const status = node.job.status.trim() || (active ? "running" : "completed");
-  const displayStatus = jobStatusDisplay(status);
+  const displayStatus = jobStatusDisplay(status, node.job.reason);
   return (
     <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
       <span className={CLASS.textCol}>
