@@ -2,12 +2,15 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/e2ecap"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -27,13 +30,12 @@ import (
 // provider and credentials. That is the point of the check — the controller can
 // spawn somewhere else and read the result back.
 //
-// Gated by EVENER_SSH_E2E=1, EVENER_SSH_E2E_HOST, EVENER_SSH_E2E_SESSION=1, and
-// EVENER_SSH_E2E_ROOT. The session gate is separate from the read-mostly
-// add/attach check beside this file because this test WRITES to the host: it
-// starts a session, and the hub spawns a daemon there that outlives the test hub.
-// EVENER_SSH_E2E_ROOT names a working directory that exists on the host (the
-// spawn's cwd) and EVENER_SSH_E2E_EVENER_PATH overrides the host's evener path
-// (default ~/.local/bin/evener).
+// Gated by EVENER_SSH_E2E=1, EVENER_SSH_E2E_HOST, and EVENER_SSH_E2E_SESSION=1.
+// The session gate is separate from the read-mostly add/attach check beside this
+// file because this test WRITES to the host: it creates its own directory there,
+// starts a session in it, and removes both when it finishes.
+// EVENER_SSH_E2E_EVENER_PATH overrides the host's evener path (default
+// ~/.local/bin/evener).
 func TestHostSpawnSessionE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live remote-session test: builds the live-stack binaries, dials a remote host, and starts a session on it")
@@ -51,10 +53,45 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	if dest == "" {
 		t.Skip("set EVENER_SSH_E2E_HOST to a disposable ssh destination to run the live remote-session test")
 	}
-	remoteRoot := os.Getenv("EVENER_SSH_E2E_ROOT")
-	if remoteRoot == "" {
-		t.Skip("set EVENER_SSH_E2E_ROOT to a directory that exists on the host to run the live remote-session test (the spawned session's working directory)")
+	// This check creates and removes its OWN directory on the host, and spawns the
+	// session with it as the working directory. That is what makes cleanup reliable:
+	// the daemon's argv carries `--dir <this path>`, so this run can stop exactly
+	// the process it started even when the start returned no ref, and it can never
+	// touch a directory it did not make. The name carries this run's pid and a
+	// timestamp for that reason.
+	host := newHostSSH(t, dest, os.Getenv("EVENER_SSH_E2E_USER"))
+	home := host.output(`printf '%s' "$HOME"`)
+	if !strings.HasPrefix(home, "/") {
+		t.Fatalf("host %s HOME = %q, want an absolute path for the session's working directory", host.target, home)
 	}
+	token := fmt.Sprintf("evener-session-e2e-%d-%d", os.Getpid(), time.Now().UnixNano())
+	hostDir := home + "/" + token
+	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
+		t.Fatalf("host %s already has %s; this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir)
+	}
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir))
+
+	// Two constraints on this pattern, both learned the hard way. It must not begin
+	// with a dash: macOS pkill reads a leading `--` as an option and refuses the
+	// whole invocation — which matches nothing and, because the verification below
+	// used the same pattern, fails in a way that looks like success. And it needs
+	// the bracket, so the remote shell running this very script, whose command line
+	// carries the pattern, cannot match itself.
+	daemonPattern := shellquote.RemoteWord("evene[r] serve.*" + token)
+	t.Cleanup(func() {
+		// Registered before the spawn, because a start whose response is lost still
+		// leaves a daemon holding this path. The host is asked directly because the
+		// controller cannot shut a remote session down yet (see the shutdown note
+		// below): stopping it here is the reliable half, and the deploy check's own
+		// directory removal is the precedent for reaching the host from a live check.
+		_ = host.tryRun("pkill -f " + daemonPattern)
+		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
+			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
+		}
+		if out, err := host.run("pgrep -f " + daemonPattern); err == nil {
+			t.Errorf("host %s still has a process serving %s after cleanup: %s", host.target, hostDir, strings.TrimSpace(string(out)))
+		}
+	})
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 
@@ -114,7 +151,7 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	started, err := clientRequest[appwire.ThreadStartResponse](sessionCtx, client, appwire.MethodThreadStart, appwire.ThreadStartParams{
 		Harness: "evener",
 		Source:  hostE2EName,
-		CWD:     remoteRoot,
+		CWD:     hostDir,
 	})
 	if err != nil {
 		t.Fatalf("step thread/start with source %q: %v (a host that cannot resolve a model from its own launch configuration refuses here)", hostE2EName, err)
