@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 )
@@ -46,6 +47,12 @@ func productEvenerEnvVars() []envvars.Var {
 // EVENER_PROVIDERS_CONFIG is cleared so a stray value in the dev shell cannot
 // leak in; tests that need specific provider config set it (and
 // OPENAI_BASE_URL / provider key envs) explicitly.
+//
+// Both throwaway roots live inside a private host temp that also collects the
+// session scratch and temp containers the sessions under test retain at close.
+// The self-exec helper children below inherit its TMPDIR, so the roots their own
+// TestMain creates land inside it too: several are killed by a signal or leave
+// through os.Exit on purpose and never reach their own cleanup.
 func TestMain(m *testing.M) {
 	// When evener dev cli-shards launches this binary as a shard, its
 	// -test.run regex arrives through a file (see shardrun). Apply it first:
@@ -55,6 +62,10 @@ func TestMain(m *testing.M) {
 	if err := shardrun.ConfigureRunFile(); err != nil {
 		fmt.Fprintf(os.Stderr, "evener TestMain: %v\n", err)
 		os.Exit(2)
+	}
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-cli-test-")
+	if err != nil {
+		panic(err)
 	}
 	stateDir, err := os.MkdirTemp("", "evener-cli-test-state-*")
 	if err != nil {
@@ -90,6 +101,12 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	os.RemoveAll(stateDir)
 	os.RemoveAll(envRoot)
+	if err := hostTemp.Discard(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
 }
 

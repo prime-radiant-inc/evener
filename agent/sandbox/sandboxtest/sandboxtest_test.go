@@ -1,0 +1,85 @@
+package sandboxtest
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"primeradiant.com/evener/agent/sandbox"
+)
+
+// TestRedirectHostTempContainsEverySessionTempAndIsRemoved proves the property a
+// TestMain relies on: while the redirect is in place, the temp dir and the
+// world-usable host temp a session temp container is minted in both sit under
+// one root, and Discard removes that root and puts TMPDIR and the host temp
+// bases back.
+func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	outerTemp := os.TempDir()
+	outerHostTemp := filepath.Join(t.TempDir(), "host-temp")
+	if err := os.Mkdir(outerHostTemp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(outerHostTemp, 0o777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting([]string{outerHostTemp}))
+
+	redirect, err := RedirectHostTemp("evener-sandboxtest-")
+	if err != nil {
+		t.Fatalf("RedirectHostTemp: %v", err)
+	}
+	root := redirect.Root()
+	if !within(outerTemp, root) {
+		t.Fatalf("root %q is not under the temp dir it was created in %q", root, outerTemp)
+	}
+	if !within(root, os.TempDir()) {
+		t.Fatalf("os.TempDir() = %q, want it under the redirect root %q", os.TempDir(), root)
+	}
+	scratch, err := os.MkdirTemp("", "leak-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	container, err := sandbox.NewSessionTmp()
+	if err != nil {
+		t.Fatalf("NewSessionTmp under the redirect: %v", err)
+	}
+	if !within(root, container.Dir) {
+		t.Fatalf("session temp container %q escaped the redirect root %q", container.Dir, root)
+	}
+	// Retained, exactly as a session close leaves it.
+	if err := container.Retain(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := redirect.Discard(); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	for _, leftover := range []string{root, scratch, container.Dir} {
+		if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+			t.Errorf("%q survived Discard: %v", leftover, err)
+		}
+	}
+	if got := os.TempDir(); got != outerTemp {
+		t.Errorf("TMPDIR after Discard = %q, want the original %q", got, outerTemp)
+	}
+	after, err := sandbox.NewSessionTmp()
+	if err != nil {
+		t.Fatalf("NewSessionTmp after Discard: %v", err)
+	}
+	t.Cleanup(func() { _ = after.Remove() })
+	if !within(outerHostTemp, after.Dir) {
+		t.Errorf("session temp container after Discard = %q, want it back in the host temp the redirect replaced, %q", after.Dir, outerHostTemp)
+	}
+}
+
+// within reports whether path lies strictly under root. Both are compared in
+// canonical form, because a session temp container reports its canonical path
+// and the temp dir may sit behind a symlink (macOS's /var).
+func within(root, path string) bool {
+	root, _ = filepath.EvalSymlinks(root)
+	path, _ = filepath.EvalSymlinks(path)
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, "..")
+}

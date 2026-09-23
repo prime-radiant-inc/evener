@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
@@ -39,6 +40,13 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
 		os.Exit(2)
 	}
+	// Collects the session scratch and temp containers that sessions under test
+	// retain at close; testEnv's root is created inside it.
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-hub-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		os.Exit(2)
+	}
 	testEnv = hubtestenv.Redirect("evener-hub-test-env-")
 	// Refuse to start when a default root still resolves outside the throwaway
 	// env: every test from here on would otherwise read and write the
@@ -48,11 +56,18 @@ func TestMain(m *testing.M) {
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
 		fmt.Fprintf(os.Stderr, "evener-hub test env: default roots resolve outside %s:\n  %s\n", testEnv.Root, strings.Join(escaped, "\n  "))
 		testEnv.Discard()
+		_ = hostTemp.Discard()
 		os.Exit(1)
 	}
 
 	code := m.Run()
 	testEnv.Discard()
+	if err := hostTemp.Discard(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
 }
 
