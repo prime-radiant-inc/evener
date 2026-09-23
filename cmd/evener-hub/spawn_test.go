@@ -1442,6 +1442,74 @@ exit 2
 	}
 }
 
+// A resume's credential gate judges the model the session persisted
+// (resumeRequestForConfig builds it from the session meta), not the
+// per-instance listing: a model row may override the auth scheme, so the
+// instance view can vouch for a launch the resumed session's own model
+// cannot authenticate — the mid-session 401 the gate exists to prevent.
+func TestHubSpawnerResumeJudgesThePersistedModel(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  mkdir -p "$EVENER_RUN_DIR"
+  cat > "$EVENER_RUN_DIR/$$.json" <<RENDEZVOUS
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+RENDEZVOUS
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	// The default row carries the credential (the instance view resolves
+	// one); the persisted session's own model resolves none.
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"K": "k-1"}, map[string]registry.Provider{
+		"gw": {
+			Base:     "openai-compatible",
+			Protocol: registry.ProtocolOpenAIChat,
+			Transport: registry.Transport{
+				BaseURL:    "https://gw.internal.example/v1",
+				Auth:       registry.AuthHeader,
+				AuthHeader: "X-Provider-Key",
+			},
+			CredentialHeaders: map[string]string{"Authorization": "$K"},
+			DefaultModel:      "house-model",
+			Models: map[string]registry.Model{
+				"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+				"bare-model":  {},
+			},
+		},
+	})
+	spawner := HubSpawner{
+		Cfg:                 DefaultConfig(),
+		EvenerBinary:        bin,
+		RunDir:              runDir,
+		HubToken:            "generated-token",
+		Registry:            reg,
+		ProvidersConfigPath: filepath.Join(dir, "providers.toml"),
+		CredentialsPath:     filepath.Join(dir, "credentials.toml"),
+	}
+	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID:  "01JRESUME2",
+		Provider:   "gw",
+		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "gw/bare-model"}},
+		WorkingDir: dir,
+	})
+	if err == nil {
+		t.Fatal("Resume succeeded behind a gate the instance view vouched for; the persisted model's own row resolves no credential")
+	}
+	if !strings.Contains(err.Error(), "gw/bare-model") {
+		t.Fatalf("Resume err = %v; want the refusal to name the persisted model", err)
+	}
+}
+
 func envFromMap(values map[string]string) []string {
 	env := make([]string, 0, len(values))
 	for k, v := range values {

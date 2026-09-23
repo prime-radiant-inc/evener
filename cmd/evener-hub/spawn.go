@@ -259,10 +259,14 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {
-		// The resumed session's persisted metadata, not ambient launch
-		// config, selects the model, so the gate judges the instance
-		// view here — the same contract the comment below pins.
-		if err := validateProviderCredentials(req.Provider, "", h.Registry); err != nil {
+		// The resume request carries the model the session persisted
+		// (resumeRequestForConfig builds it from the session meta), so the
+		// gate judges the very model the resumed session runs — a row may
+		// override the auth scheme, and the instance view can vouch for a
+		// launch that model cannot authenticate. The child's arguments stay
+		// model-stripped (buildResumeArgs) and the launch-contract check
+		// below stays model-blind; only the credential gate is model-aware.
+		if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}

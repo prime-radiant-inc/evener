@@ -519,7 +519,7 @@ func (r *Registry) listingTransport(rec *record) Transport {
 	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
 		return rec.head.Transport
 	}
-	if res, err := r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil); err == nil {
+	if res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, true); err == nil {
 		return res.Transport
 	}
 	return rec.head.Transport

@@ -1367,6 +1367,7 @@ func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
 		"auth = \"bearer\"\n" +
 		"api_key = '''$(stable-mint)'''\n" +
 		"credential_headers = { \"Authorization\" = '''$(flaky)''' }\n" +
+		"default_model = \"house-model\"\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
 	for _, inst := range r.Instances() {

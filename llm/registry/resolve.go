@@ -425,6 +425,16 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 // (a cross-provider alias resolves from a target whose own connection
 // disabled it).
 func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resolved, error) {
+	return r.resolveLayersMode(rec, ref, warnings, false)
+}
+
+// resolveLayersMode is resolveLayers with one switch: transportOnly stops
+// after the merged transport is built and skips credential resolution
+// entirely — the instance listing's seam. A listing runs for every
+// instance on every pane refresh and must not mint or stall on command
+// expressions the launch alone reads, and the credential stage is the
+// only part of the replay that expands them.
+func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, transportOnly bool) (Resolved, error) {
 	hit := r.lookupRow(rec, ref.Model)
 	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
 		return Resolved{}, fmt.Errorf("%s/%s: unknown model on the Codex transport (valid: %s)", rec.name, ref.Model, strings.Join(exactRowIDs(rec), ", "))
@@ -593,6 +603,9 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 	}
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
+	if transportOnly {
+		return Resolved{Instance: rec.name, Transport: transport}, nil
+	}
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
 	}
