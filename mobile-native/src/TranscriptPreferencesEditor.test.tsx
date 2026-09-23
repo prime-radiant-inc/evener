@@ -51,6 +51,9 @@ it("offers a discard action for an unreadable transcript draft record", async ()
 		.findAllByProps({ accessibilityRole: "button" })
 		.find((node) => node.props.accessibilityLabel === "Discard unreadable draft");
 	expect(action).toBeDefined();
+	// Enabled: a connected screen with an unreadable record must be able to
+	// press the one recovery the store permits.
+	expect(action?.props.accessibilityState).toMatchObject({ disabled: false });
 	await act(async () => action?.props.onPress());
 	expect(discard).toHaveBeenCalledTimes(1);
 });

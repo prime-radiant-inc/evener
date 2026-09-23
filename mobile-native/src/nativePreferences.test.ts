@@ -780,6 +780,38 @@ describe("transcriptMobile projection (A10)", () => {
 		});
 	});
 
+	it("keeps a readable legacy checkpoint visible when the migration write fails", async () => {
+		// The adoption write is best-effort: a failed write (quota, denied
+		// storage) must not make load() throw, which the shared store would map
+		// to storageUnavailable with no draft - hiding the readable legacy
+		// checkpoint the read just decoded.
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", {
+				...backend,
+				replaceIf: () => {
+					throw new Error("quota exceeded");
+				},
+			}),
+		);
+		await model.refresh();
+		expect(model.getSnapshot().transcriptMobile).toMatchObject({
+			draftUnreadable: false,
+			storageUnavailable: false,
+			draft: { revision: 4, config },
+		});
+	});
+
 	it("generation-aware staleness: a draft composed under generation N does not read current when a replacement hub reuses revision N", async () => {
 		const client = fakeClient();
 		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);

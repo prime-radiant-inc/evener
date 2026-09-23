@@ -324,10 +324,17 @@ export function nativeTranscriptDrafts(
 			// bytes the shared store classifies are the bytes its later
 			// removeIf/replaceIf compare against. A refusal means another writer
 			// replaced it meanwhile: report what is actually there now instead of
-			// the migration.
-			return backend.replaceIf(key, value, migrated)
-				? migrated
-				: (backend.get(key) ?? null);
+			// the migration. The adoption is BEST-EFFORT: a write failure
+			// (quota, denied storage) must not turn into a load() throw, which
+			// the shared store would map to storageUnavailable with no draft -
+			// hiding the readable legacy checkpoint this call just decoded.
+			try {
+				return backend.replaceIf(key, value, migrated)
+					? migrated
+					: (backend.get(key) ?? null);
+			} catch {
+				return migrated;
+			}
 		},
 		save: (checkpoint) => backend.set(key, checkpoint),
 		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
