@@ -328,10 +328,15 @@ typed refusal.
 stamped once at the hub's `/rpc` edge from the attach bridge marker
 (`X-Evener-Bridge`) by `cmd/evener-hub/host_routing_origin.go`; the value lives
 in `appsource.WithHostRoutingOrigin`/`HostRoutingOrigin` because the guard's
-shared dispatch seam reads it too. Both halves are in place and share one
-refusal body (`refuseRemoteOrigin`, typed `appwire.InvalidParams` naming the
-origin): the dial half (`guardRemoteHostDial`) and the dispatch half
-(`appsource.guardRemoteDispatch`).
+shared dispatch seam reads it too. Both halves are in place: the dial half
+(`guardRemoteHostDial`, `cmd/evener-hub/host_routing_origin.go`) and the
+dispatch half (`appsource.guardRemoteDispatch`,
+`cmd/evener-hub/internal/appsource/host_routing_origin.go`). They emit the
+same typed refusal shape - `appwire.InvalidParams` naming the origin and the
+action it may not take - but not from one shared function: `refuseRemoteOrigin`
+is unexported in package `hub` and formats a per-action phrase, while
+`guardRemoteDispatch` builds its own message in package `appsource`. Changing
+one does not change the other.
 
 **Coverage:** a scenario test that injects a remote-originated
 `evener/host/request` — and the credential push, the non-local force-stop, and
