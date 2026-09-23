@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,163 @@ func TestExecTool_RepairableMalformedArgsPreserveOriginalInEvents(t *testing.T) 
 	}
 	if starts[0].Description != "" {
 		t.Fatalf("Description = %q, want empty for invalid-JSON-original call (reload skips intent when RawArguments is set)", starts[0].Description)
+	}
+}
+
+// TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent is a regression
+// guard for finding A direction 1: invalid JSON with a valid leading member (a
+// missing comma after "intent"). Go's json.Unmarshal discards the map on any
+// syntax error (no partial population), so live does NOT show intent today --
+// which already agrees with reload (RawArguments is set, intent skipped). The
+// json.Valid gate the fix adds preserves this: it skips the unmarshal of
+// known-invalid bytes entirely, keeping the two paths semantically identical.
+func TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent(t *testing.T) {
+	// Missing comma between members: {"intent":"foo" "bar":"baz"}.
+	// json.Unmarshal stores "intent" then errors at the missing separator.
+	const originalArgs = `{"intent":"foo" "bar":"baz"}`
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+
+	s.RegisterTool("widget", "does a thing", map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"intent": map[string]any{"type": "string"},
+			"bar":    map[string]any{"type": "string"},
+		},
+		"required": []any{"intent"},
+	}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	startCh := drainToolCallStartEvents(s)
+
+	res := s.execTool(context.Background(), llm.ToolCallData{
+		ID:        "call_invalid_leading",
+		Name:      "widget",
+		Arguments: json.RawMessage(originalArgs),
+	}, "")
+	// The call is correctly rejected (invalid JSON is not repairable), but
+	// execTool still emits a ToolCallStart event before the PrevalErr dispatch.
+	// The divergence is in that start event's Description (intent).
+	_ = res
+	s.Close()
+
+	starts := <-startCh
+	if len(starts) != 1 {
+		t.Fatalf("got %d ToolCallStart events, want 1", len(starts))
+	}
+	// Reload keys intent off RawArguments != "" (set only when !json.Valid).
+	// These bytes are not valid JSON, so RawArguments is set on the durable
+	// record and reload shows NO intent. The live path must agree: a partial
+	// unmarshal that happens to populate "intent" before the syntax error
+	// must NOT surface it.
+	if starts[0].Description != "" {
+		t.Fatalf("Description = %q, want empty: invalid-JSON original must not show intent (reload shows none when RawArguments is set)", starts[0].Description)
+	}
+}
+
+// TestExecTool_OversizedValidJSONDivergesIntent proves finding A direction 2:
+// oversized VALID JSON sets RawArgumentsRejected (ValidateRawArguments rejects
+// on byte length) so the live path suppresses intent, but on the reload path
+// the oversized bytes never reach assistantHistoryMessage's !json.Valid branch,
+// so RawArguments stays "" and reload WOULD show intent. Both directions must be
+// gated consistently. This test pins the live safety suppression (no intent)
+// that the fix must preserve.
+func TestExecTool_OversizedValidJSONDivergesIntent(t *testing.T) {
+	// Valid JSON object but over the 2 MiB MaxToolArgumentBytes limit.
+	large := strings.Repeat("x", 2*1024*1024+10)
+	originalArgs := []byte(`{"intent":"a","bar":"` + large + `"}`)
+
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+
+	s.RegisterTool("widget", "does a thing", map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"intent": map[string]any{"type": "string"},
+			"bar":    map[string]any{"type": "string"},
+		},
+		"required": []any{"intent"},
+	}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	startCh := drainToolCallStartEvents(s)
+
+	res := s.execTool(context.Background(), llm.ToolCallData{
+		ID:        "call_oversized",
+		Name:      "widget",
+		Arguments: json.RawMessage(originalArgs),
+	}, "")
+	// Oversized bytes are rejected pre-validation; execTool returns an error result.
+	if !res.IsError {
+		t.Fatalf("expected oversized args to be rejected, got success: %s", res.FullOutput)
+	}
+	s.Close()
+
+	starts := <-startCh
+	if len(starts) != 1 {
+		t.Fatalf("got %d ToolCallStart events, want 1", len(starts))
+	}
+	// Live suppresses intent for rejected bytes (RawArgumentsRejected). The
+	// finding notes reload diverges (RawArguments == "" for oversized valid
+	// JSON, so reload shows intent). This assertion pins the live suppression
+	// the fix must preserve.
+	if starts[0].Description != "" {
+		t.Fatalf("Description = %q, want empty: RawArgumentsRejected must suppress intent", starts[0].Description)
+	}
+}
+
+// TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript proves finding B:
+// VALID but noncanonical arguments (extra whitespace, HTML-sensitive chars in a
+// string value) must render the same live as reload. The transcript persistence
+// path compacts and HTML-escapes valid JSON (json.Marshal of json.RawMessage),
+// so the live ArgumentsJSON must too -- emitting raw original bytes diverges.
+func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) {
+	// Valid JSON with extra whitespace and HTML-sensitive chars: < > &.
+	const originalArgs = `{  "intent" : "b<c & d" , "x" : 1  }`
+	// The canonical form is compact + HTML-escaped, exactly what
+	// json.Marshal(json.RawMessage(originalArgs)) produces.
+	canonical, err := json.Marshal(json.RawMessage(originalArgs))
+	if err != nil {
+		t.Fatalf("marshal canonical: %v", err)
+	}
+
+	s := newSession(t, withoutGitSnapshot())
+	s.stateDir = t.TempDir()
+
+	s.RegisterTool("widget", "does a thing", map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"intent": map[string]any{"type": "string"},
+			"x":      map[string]any{"type": "number"},
+		},
+		"required": []any{"intent"},
+	}, func(ctx context.Context, args any) (any, error) {
+		return "ok", nil
+	})
+
+	startCh := drainToolCallStartEvents(s)
+
+	res := s.execTool(context.Background(), llm.ToolCallData{
+		ID:        "call_noncanonical",
+		Name:      "widget",
+		Arguments: json.RawMessage(originalArgs),
+	}, "")
+	if res.IsError {
+		t.Fatalf("execTool failed: %s", res.FullOutput)
+	}
+	s.Close()
+
+	starts := <-startCh
+	if len(starts) != 1 {
+		t.Fatalf("got %d ToolCallStart events, want 1", len(starts))
+	}
+	if starts[0].ArgumentsJSON != string(canonical) {
+		t.Fatalf("ArgumentsJSON = %q\nwant canonical (matches reload transcript): %q", starts[0].ArgumentsJSON, string(canonical))
 	}
 }
 
