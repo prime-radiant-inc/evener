@@ -758,15 +758,21 @@ func skipConditionalSet(resp *appwire.ApiKeyConditionalSetResponse, reason strin
 //   - The instance is re-resolved under the lock (endpointInstanceFor), so a
 //     rename or removal that landed since the client's read is seen.
 //   - A non-empty ExpectedRevision that no longer equals the instance's
-//     effective-configuration revision, or a non-empty ExpectedSource that no
-//     longer equals its resolved source, is refused with a typed Conflict and
+//     effective-configuration revision is refused with a typed Conflict and
 //     nothing is written. This is the fence: a credential whose configuration
 //     changed underneath the client is never clobbered.
 //   - A scheme whose credential a file-layer key must not shadow — Codex
 //     OAuth, gcp-adc, auth-none — or a credential that now resolves from
-//     providers.toml (api_key/credential_headers) or the environment — comes
-//     back as a successful typed "skipped" with a reason, matching the design's
-//     classification table, so the push report shows a skip, not an error.
+//     providers.toml (api_key/credential_headers), the environment, or an
+//     authored header the instance's own scheme would otherwise derive —
+//     comes back as a successful typed "skipped" with a reason, matching the
+//     design's classification table, so the push report shows a skip, not an
+//     error. A non-key-capable scheme is classified before the ExpectedSource
+//     fence, which guards a layer such a scheme can never write (see the
+//     ordering note in the body).
+//   - A non-empty ExpectedSource that no longer equals the instance's resolved
+//     source is refused with a typed Conflict, for the schemes and sources the
+//     write could actually land in.
 //
 // Only a source of "store" (updated) or "none" on a key-capable scheme (added)
 // reaches c.setCredential; the response's Status is the post-write status read
@@ -791,16 +797,20 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		// listing rows use, and CredentialConfigRevisionResolved contributes
 		// exactly what CredentialConfigRevision would for this resolution.
 		resolved, resolvedOK := resolvedRowInstance(c.registry(), inst)
-		// The fences are checked before the classification: a client whose
-		// observed state no longer describes the instance must be told so, not
-		// handed a skip it could mistake for a durable decision.
 		current := hubcore.CredentialConfigRevisionResolved(resolved)
 		if params.ExpectedRevision != "" && params.ExpectedRevision != current {
 			return false, appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
 		}
-		if params.ExpectedSource != "" && params.ExpectedSource != source {
-			return false, appwire.Conflict(fmt.Sprintf("%s no longer resolves its credential from %q (it is now %q): re-read the instance and start the push again", name, params.ExpectedSource, source))
-		}
+		// The scheme is classified before the source fence, because that fence
+		// guards the credential layer the write would land in and a scheme that
+		// consumes no key has none: the two reads of such an instance's source
+		// legitimately differ, so fencing them would refuse a push that the
+		// design's table makes a skip. The Codex case is the live one — a
+		// corrupt auth/<name>.json is "none" to evener/auth/status, which treats
+		// an unreadable record as absent, and "oauth" to registry resolution,
+		// which asks only whether the record file exists — and the Conflict's
+		// own remedy ("re-read the instance and start the push again") is one
+		// re-reading cannot deliver, because every read reproduces the pair.
 		switch {
 		case inst.Auth == registry.AuthOAuthOpenAICodex:
 			return skipConditionalSet(&resp, name+" authenticates with an OAuth record; sign in on the host instead of pushing a key")
@@ -808,6 +818,14 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 			return skipConditionalSet(&resp, name+" authenticates with Google application-default credentials, which do not read an API key")
 		case inst.Auth == registry.AuthNone:
 			return skipConditionalSet(&resp, name+" authenticates without a credential; a stored key would be one nothing sends")
+		}
+		// The fences are checked before the classification below: a client whose
+		// observed state no longer describes the instance must be told so, not
+		// handed a skip it could mistake for a durable decision.
+		if params.ExpectedSource != "" && params.ExpectedSource != source {
+			return false, appwire.Conflict(fmt.Sprintf("%s no longer resolves its credential from %q (it is now %q): re-read the instance and start the push again", name, params.ExpectedSource, source))
+		}
+		switch {
 		case source == "api_key" || source == "credential_headers":
 			return skipConditionalSet(&resp, fmt.Sprintf("%s resolves its credential from providers.toml (%s), which outranks the file layer", name, source))
 		case strings.HasPrefix(source, "env:"):

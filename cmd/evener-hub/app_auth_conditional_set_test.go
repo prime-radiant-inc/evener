@@ -9,10 +9,12 @@ package hub
 // silently clobbering a credential that changed underneath the caller.
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
@@ -539,6 +541,71 @@ func TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey(t *te
 				}
 			}
 		})
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_SkipsACorruptCodexRecordInsteadOfConflicting
+// pins the one place the client's observed source legitimately differs from the
+// host's re-resolution, and the outcome the design's classification table gives
+// for it.
+//
+// A Codex instance whose auth/<name>.json is unreadable is "none" to
+// evener/auth/status — openAIInstanceStatus treats a corrupt record as absent,
+// the state the spawn gate refuses — and "oauth" to registry resolution, which
+// asks only whether the record file exists (registry.credential). The push
+// echoes that observed source back as ExpectedSource, so a source fence applied
+// to a scheme that consumes no key turns the documented skip into a Conflict:
+// "... no longer resolves its credential from \"none\" (it is now \"oauth\"):
+// re-read the instance and start the push again" — a remedy re-reading cannot
+// deliver, because every read reproduces the pair. The push reports "failed"
+// where the design says "skipped".
+func TestAuth_ApiKeyConditionalSet_SkipsACorruptCodexRecordInsteadOfConflicting(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, codexInstanceToml))
+	record := authopenai.AuthFilePath(stateDir, "work")
+	if err := os.MkdirAll(filepath.Dir(record), 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(record), err)
+	}
+	if err := os.WriteFile(record, []byte("{ not an auth record"), 0o600); err != nil {
+		t.Fatalf("write corrupt record: %v", err)
+	}
+
+	// The two reads of one instance that the push pairs: the status read it
+	// fences with, and the resolution the host classifies from.
+	status, err := ctrl.Status(appwire.AuthStatusParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("Status(work): %v", err)
+	}
+	if status.ActiveSource != "none" {
+		t.Fatalf("Status(work).ActiveSource = %q, want none: openAIInstanceStatus treats a corrupt record as absent", status.ActiveSource)
+	}
+	inst, ok := ctrl.registry().Instance("work")
+	if !ok {
+		t.Fatal("work does not resolve on this fixture")
+	}
+	if inst.CredentialSource != "oauth" {
+		t.Fatalf("registry CredentialSource = %q, want oauth: the record file exists and the scheme reads it", inst.CredentialSource)
+	}
+
+	resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+		Provider:         "work",
+		Value:            "sk-pushed",
+		ExpectedSource:   status.ActiveSource,
+		ExpectedRevision: status.ConfigRevision,
+	})
+	if err != nil {
+		t.Fatalf("ApiKeyConditionalSet(work) with the source evener/auth/status reported: %v", err)
+	}
+	if resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+		t.Fatalf("Action = %q, want skipped: a Codex instance consumes no key (reason %q)", resp.Action, resp.Reason)
+	}
+	if resp.Reason == "" {
+		t.Fatal("Reason is empty for a skip; the report cannot say why")
+	}
+	if _, has := loadStoredKey(t, dir, "work"); has {
+		t.Fatal("a key was stored for a Codex instance")
 	}
 }
 
