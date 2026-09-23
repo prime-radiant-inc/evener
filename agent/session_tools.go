@@ -673,6 +673,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
+	// Snapshot the model's original argument bytes before prepareToolCall may
+	// replace them with the repaired form. The live tool-call events carry
+	// these original bytes so they agree with the reload path, which uses
+	// SentArguments() (RawArguments when the original was invalid JSON, else
+	// the recorded Arguments). Well-formed calls have no repair, so this is
+	// byte-identical to the prior json.Marshal(call.Arguments).
+	originalArgs := call.Arguments
 	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	call = prep.Call
 	prevalidated := true
@@ -738,16 +745,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 
-	argsJSON, _ := json.Marshal(call.Arguments)
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
 		CallID:        call.ID,
-		ArgumentsJSON: string(argsJSON),
+		ArgumentsJSON: string(originalArgs),
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
-	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-		_ = json.Unmarshal(call.Arguments, &args)
+	if !prep.RawArgumentsRejected && len(originalArgs) > 0 {
+		_ = json.Unmarshal(originalArgs, &args)
 	}
 	if d := toolStartDescription(args); d != "" {
 		startData.Description = d
@@ -775,7 +781,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      res.ToolName,
 			CallID:        res.CallID,
-			ArgumentsJSON: string(call.Arguments),
+			ArgumentsJSON: string(originalArgs),
 			Error:         res.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -831,7 +837,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      call.Name,
 			CallID:        call.ID,
-			ArgumentsJSON: string(call.Arguments),
+			ArgumentsJSON: string(originalArgs),
 			Error:         skippedToolResult(call, err).FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -855,7 +861,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	endData := events.ToolCallEndData{
 		ToolName:      res.ToolName,
 		CallID:        res.CallID,
-		ArgumentsJSON: string(call.Arguments),
+		ArgumentsJSON: string(originalArgs),
 		ToolState:     res.ToolState,
 		OutputRef:     outputRef,
 	}

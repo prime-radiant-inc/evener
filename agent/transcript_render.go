@@ -1075,7 +1075,9 @@ func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData) {
 			}
 		}
 		// No "message" key or unparseable: render the raw arguments.
-		b.Write(args)
+		// Bound the raw fallback so one pathological line cannot dominate the
+		// card, mirroring the summary path's resultLineMaxRunes limit.
+		b.WriteString(oneLine(truncRunes(string(args), resultLineMaxRunes)))
 		b.WriteString("\n")
 	}
 }

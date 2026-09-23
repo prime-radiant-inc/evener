@@ -562,7 +562,16 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				}
 				toolNames[part.ToolCall.ID] = part.ToolCall.Name
 				if part.ToolCall.Name == "communicate" {
-					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && !EchoesAssistantText(lastAssistantText, text) {
+					text := CommunicateMessageFromArguments(part.ToolCall.Arguments)
+					// Rejected communicate (Arguments={}, RawArguments set):
+					// CommunicateMessageFromArguments returns "" for the {}
+					// placeholder, so without a fallback the call vanishes from
+					// the hub thread. Surface the model's raw bytes instead,
+					// mirroring the SentArguments precedence used elsewhere.
+					if text == "" && part.ToolCall.RawArguments != "" {
+						text = part.ToolCall.SentArguments()
+					}
+					if text != "" && !EchoesAssistantText(lastAssistantText, text) {
 						items = append(items, appwire.ThreadItem{
 							Type:   "agentMessage",
 							ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
