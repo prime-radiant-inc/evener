@@ -29,6 +29,7 @@ import {
   nativeModuleMock,
   render,
   renderedText,
+  screenConnection,
 } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({
@@ -85,12 +86,7 @@ function marketplaceClient(options: {
 }
 
 function readyConnection(client: ConversationClientLike) {
-  return {
-    activeProfile: { id: "hub-1", name: "Work hub" },
-    client,
-    state: "ready",
-    retry: () => {},
-  };
+  return screenConnection(client, "ready");
 }
 
 async function browseMarketplace(tree: ReturnType<typeof render>) {
@@ -323,12 +319,7 @@ it("does not confirm a removal a fresh read retired while the dialog was open", 
   // The connection flaps while the confirmation is open, and the recovery
   // read that lands once it is ready again no longer carries the name: the
   // marketplace another client removed is gone from the trusted list.
-  harness.connection = {
-    activeProfile: { id: "hub-1", name: "Work hub" },
-    client: hub.client,
-    state: "reconnecting",
-    retry: () => {},
-  };
+  harness.connection = screenConnection(hub.client, "reconnecting");
   await act(async () => {
     tree.update(<PluginsScreen {...props} />);
   });
@@ -2696,13 +2687,7 @@ const plugin: PluginEntry = {
 
 it("re-reads the installed list once the connection returns to ready after a flap", async () => {
 	const hub = pluginsClient([plugin]);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof PluginsScreen>;
@@ -2729,13 +2714,7 @@ it("re-reads the installed list once the connection returns to ready after a fla
 
 it("MarketplaceBrowser re-reads its list once the connection returns to ready after a flap", async () => {
 	const hub = pluginsClient([plugin]);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof PluginsScreen>;
@@ -2763,13 +2742,7 @@ it("MarketplaceBrowser re-reads its list once the connection returns to ready af
 it("keeps the marketplace draft and exposes reconnect inside its modal", async () => {
 	const hub = pluginsClient([plugin]);
 	const retry = vi.fn();
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry,
-	};
+	harness.connection = { ...screenConnection(hub.client, "ready"), retry };
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof PluginsScreen>;

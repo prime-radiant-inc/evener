@@ -241,12 +241,43 @@ describe("without a registry", () => {
 });
 
 describe("the checkpointed draft editor", () => {
-  test("decodeKeybindingDraftFields matches restoreDraft for valid and invalid records", () => {
-    expect(decodeKeybindingDraftFields({ id: "d1", baseRevision: 3, rules, writeUncertain: true })).toEqual({
-      draft: { version: 1, revision: 3, rules },
-      writeUncertain: true,
-    });
-    expect(decodeKeybindingDraftFields("{not json")).toEqual({ draft: null, writeUncertain: false });
+  // The decoder is the store-free twin of the live store's restoreDraft
+  // projection: both run the same stored value through the same checkpoint
+  // decode and must publish the same draft fields, so a host that classifies
+  // a record itself (the native provider's store-free discard path) decodes
+  // exactly what a live store would have restored. Every fixture is the raw
+  // value a port can hand back, run through BOTH paths: the decoder
+  // directly, and a store created over a port holding that same value,
+  // whose creation-time restore is the live projection. The draft fields
+  // must agree; the live store additionally owns the two signals the
+  // decoder's contract leaves to others - the unreadable-record
+  // classification and the port's own availability.
+  test.each<[string, unknown, boolean]>([
+    ["a valid checkpoint", { id: "d1", baseRevision: 3, rules, writeUncertain: true }, false],
+    ["no record at all", null, false],
+    ["an object that is not a checkpoint", { invalid: true }, true],
+    ["bytes no JSON parser accepts", "{not json", true],
+    // What a byte-aware port hands back for a stored JSON null: a present
+    // object whose only key is a symbol a JSON decode can never produce -
+    // present and unreadable, never the absent record above. The memory
+    // port clones it like any other present object, which is all the
+    // package-level conformance needs: present-but-unreadable.
+    ["a stored JSON null", { [Symbol("evener.nativePreferenceDrafts.storedNull")]: true }, true],
+  ])("decodeKeybindingDraftFields matches the live restore projection for %s", (_name, value, unreadable) => {
+    const decoded = decodeKeybindingDraftFields(value);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>(value);
+    const store = createKeybindingsStore({ client: new FakeClient("ready"), drafts: drafts.storage });
+    const state = store.getState();
+
+    expect({
+      draft:
+        state.draft === null
+          ? null
+          : { version: state.draft.version, revision: state.draft.revision, rules: state.draft.rules },
+      writeUncertain: state.writeUncertain,
+    }).toEqual(decoded);
+    expect(state.draftUnreadable).toBe(unreadable);
+    expect(state.storageUnavailable).toBe(unreadable);
   });
 
   test("restored drafts start unconfirmed and the first authoritative payload stamps the live generation", async () => {
@@ -1218,6 +1249,42 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshOverrides();
 
     expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+  });
+
+  test("a recovered port clears the storageUnavailable state its failed restore published", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>({
+      id: "d1",
+      baseRevision: 3,
+      rules,
+      writeUncertain: false,
+    });
+    drafts.failLoad();
+    const store = createKeybindingsStore({ client: clientServing(3), drafts: drafts.storage });
+
+    // The creation-time restore hit a dead port: the section is blocked on
+    // storageUnavailable, no draft was restored, and - unlike an unreadable
+    // RECORD's restore - nothing is claimed about the record either way.
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: true,
+      draft: null,
+      draftUnreadable: false,
+    });
+
+    // The port heals; the next refresh's recovery seam re-reads it, which
+    // both clears storageUnavailable and restores the draft the failed read
+    // hid, unblocking the editor.
+    drafts.failLoad(false);
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: false,
+      draft: { version: 1, revision: 3, rules },
+      writeUncertain: false,
+      loaded: true,
+    });
+    expect(() => store.getState().editDraft(rules)).not.toThrow();
   });
 
   test("a discard refuses and re-classifies when the record has been replaced", async () => {

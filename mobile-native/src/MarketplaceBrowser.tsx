@@ -220,15 +220,16 @@ export function MarketplaceBrowser({
       setSelected(null);
   }, [selected, state.marketplaces]);
   // Every write goes through the gate; a refusal reads as busy, a throw as
-  // failure. remove() runs its own copy of this shape below, because an
-  // applied removal must reach the parent's guard and warning rather than
-  // this view's error slot.
+  // failure. A not-ready press runs nothing and retires nothing - the copy
+  // the user was reading survives the no-op. remove() runs its own copy of
+  // this shape below, because an applied removal must reach the parent's
+  // guard and warning rather than this view's error slot.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
-    setError(null);
     const outcome = await runGatedMutation(gate, canUseConnection, action);
     if (revision.current !== version) return;
     if (outcome === "not-ready") return;
+    setError(null);
     if (outcome === "refused") setError(PLUGIN_MUTATION_BUSY);
     else if (outcome === "failed") setError(WRITE_FAILED);
   }
@@ -280,7 +281,6 @@ export function MarketplaceBrowser({
           // view's selection changes and remounts; only the browser-local
           // busy and write-failed displays stay behind the fence.
           void (async () => {
-            setError(null);
             let caught: unknown;
             const outcome = await runGatedMutation(gate, canUseConnection, () =>
               state.removeMarketplace(name).catch((error: unknown) => {
@@ -293,9 +293,11 @@ export function MarketplaceBrowser({
               // not one the hub confirmed, and reporting it would retire a
               // cleanup warning that still stands. The status copy the
               // connection banner already shows covers the reason nothing
-              // ran.
+              // ran, and the write-failed copy an earlier outcome left
+              // stays too - a press that ran nothing retires nothing.
               return;
             }
+            setError(null);
             if (outcome === "refused") {
               if (revision.current !== version) return;
               setError(PLUGIN_MUTATION_BUSY);

@@ -24,6 +24,7 @@ import {
 	alertRequests,
 	render,
 	renderedText,
+	screenConnection,
 	scriptedClient,
 } from "./renderNative.testkit";
 
@@ -97,13 +98,7 @@ function subtreeText(node: ReactTestInstance): string {
 
 it("mounts on a ready client and issues and publishes the listing read", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -121,13 +116,7 @@ it("mounts on a ready client and issues and publishes the listing read", async (
 
 it("ready -> reconnecting keeps the screen tree mounted and shows the banner", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -150,13 +139,7 @@ it("ready -> reconnecting keeps the screen tree mounted and shows the banner", a
 
 it("reconnecting -> ready removes the banner", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -179,13 +162,7 @@ it("reconnecting -> ready removes the banner", async () => {
 
 it("a fatal (protocol) close replaces the mounted list with the wall", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -209,13 +186,7 @@ it("a fatal (protocol) close replaces the mounted list with the wall", async () 
 it("keeps the provider wall through a fatal retry until the replacement is ready", async () => {
 	const hub = scriptedClient(rows);
 	const replacement = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -254,13 +225,7 @@ it("keeps the provider wall through a fatal retry until the replacement is ready
 it("keeps the provider editor draft and exposes reconnect inside its modal", async () => {
 	const hub = scriptedClient(rows);
 	const retry = vi.fn();
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry,
-	};
+	harness.connection = { ...screenConnection(hub.client, "ready"), retry };
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -293,13 +258,7 @@ it("keeps the provider editor draft and exposes reconnect inside its modal", asy
 
 it("a flap disables provider mutation controls, not only OAuth sign-in", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -381,12 +340,7 @@ it("reconciles an applied removal and warns instead of reporting a failure", asy
 		],
 		"evener/instance/list": [rows, emptied],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -422,12 +376,7 @@ it("keeps the generic failure path for an ordinary removal refusal", async () =>
 			}),
 		],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -461,12 +410,7 @@ it("asserts the row's endpoint on an edit and reconciles the conflict", async ()
 		],
 		"evener/instance/list": [rows, rows],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -520,12 +464,7 @@ it("reconciles an endpoint-conflict removal: clears, refreshes, and warns", asyn
 		],
 		"evener/instance/list": [rows, rows],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -573,6 +512,7 @@ it("keeps the create form for a name-collision conflict", async () => {
 			onCreate={create}
 			onEdit={vi.fn(async () => true)}
 			disabled={false}
+			canUseConnection={() => true}
 			onSaved={() => {}}
 			onEndpointConflict={onEndpointConflict}
 			onCancel={() => {}}
@@ -631,13 +571,7 @@ it("asserts the endpoint the editor was opened on across a flap's recovery", asy
 			),
 		],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -699,13 +633,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 		"evener/instance/list": [opened, opened],
 		"evener/instance/edit": [opened],
 	});
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -757,13 +685,7 @@ it("saves without a warning when a flap's recovery finds the endpoint unchanged"
 
 it("shows the connection status and reconnect inside an open editor modal", async () => {
 	const hub = scriptedClient(rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: hub.client,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(hub.client, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -809,13 +731,7 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 		intervalSeconds: 5,
 	}));
 	const setConnection = vi.spyOn(ProviderSignIn.prototype, "setConnection");
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: fake as unknown as ConversationClientLike,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -868,13 +784,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 	};
 	const first = new FakeClient("ready");
 	first.on("evener/instance/list", () => oauth);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: first as unknown as ConversationClientLike,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(first as unknown as ConversationClientLike, "ready");
 	const props = {
 		route: { params: { hubId: "hub-1" } },
 	} as unknown as ComponentProps<typeof ProvidersScreen>;
@@ -939,13 +849,7 @@ it("resumes a banner-started sign-in after a manual retry's listing read lands",
 it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	const fakeA = new FakeClient("ready");
 	fakeA.on("evener/instance/list", () => rows);
-	harness.connection = {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: fakeA as unknown as ConversationClientLike,
-		state: "ready",
-		fatal: false,
-		retry: () => {},
-	};
+	harness.connection = screenConnection(fakeA as unknown as ConversationClientLike, "ready");
 	const forHub = (hubId: string) =>
 		({ route: { params: { hubId } } }) as unknown as ComponentProps<
 			typeof ProvidersScreen

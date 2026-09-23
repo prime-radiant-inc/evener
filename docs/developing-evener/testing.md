@@ -422,7 +422,15 @@ splitting it across processes is what bounds its wall time (hub: ~80s serial,
 the package's TestMain applies with `shardrun.ConfigureRunFile` and then
 unsets, so a test that re-execs its own binary as a helper keeps its explicit
 `-test.run`. `AGENT_SHARDS=0`, `HUB_SHARDS=0` and `CLI_SHARDS=0` fall back to
-one `go test`.
+one `go test`. A TestMain that dropped that call would still pass: every
+shard would just run the whole package. One that made the call before
+`flag.Parse` would let any `-test.run` on the command line override the file.
+So each sharded package pins the wiring with a one-line test,
+`shardrun.RequireTestMainAppliesRunFile(t)`, which re-execs the binary with
+`-test.run=^$` on the command line and a run file naming only that test, and
+fails unless exactly that test ran: a dropped call runs nothing, and so does
+a misordered one, because the command line wins. A newly sharded package
+adds the same test.
 
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
@@ -455,10 +463,39 @@ same way it treats `/tmp`; sandbox tests therefore behave the same with
 alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
 their workspace under it.
 
+Tests clean up after themselves without the runner, too: a direct `go test`
+must leave nothing in the developer's temp dir or in `/tmp`. Sessions make
+that harder than it looks. A closing session retains its scratch directory and
+its world-usable temp container for the crashed-scratch sweep's 24h reclaim
+(`sandbox.SweepCrashedSessionScratch`), which a test binary never runs, and
+the container lives in `/tmp` or `/var/tmp`, which no `TMPDIR` moves. So a
+package whose tests run sessions routes its TestMain through
+`agent/sandbox/sandboxtest`: `Run`, or `RedirectHostTemp` and `Discard` in a
+TestMain that does more, point `TMPDIR` and the container bases into one root
+and remove it when the run ends. Self-exec helper children inherit that
+`TMPDIR`, so what they leave when they are killed on purpose goes with it.
+The container bases travel as `EVENER_HOST_TEMP_BASES`, so every `evener` and
+`evener serve` a test starts inherits them too. That matters beyond leftovers:
+each of those processes runs the crashed-scratch sweep at startup, and without
+the variable it reclaims other sessions' abandoned scratch from the
+developer's real `/tmp` and `/var/tmp`. A TestMain that clears every product
+`EVENER_*` variable after `RedirectHostTemp` keeps that one value
+(`sandboxtest.Redirected`), and a test that builds a child environment from
+scratch must pass it on. A test that sets the bases itself has to prove they
+are in force before it mints or sweeps anything, so a regression fails the
+test instead of reaching `/tmp`.
+
 A test that drives the crashed-scratch sweep itself confines it to scratch it
 owns (its own `TMPDIR` and user cache dir, no container bases; see
-`confineSessionScratchSweep` in agent), because the sweep deletes any aged, unleased scratch it can see,
-including another process's.
+`confineSessionScratchSweep` in agent), because the sweep deletes any aged,
+unleased scratch it can see, including another process's.
+
+A fixture built once and cached for the whole package run (a `sync.Once`
+repo, a built binary) belongs in the package's own fixture root, never in
+`os.MkdirTemp("", ...)`: tests point `TMPDIR` at their own `t.TempDir()`, so
+a cache made under whichever `TMPDIR` the first caller had is deleted by that
+test's cleanup, and every later user fails. In agent that root is
+`sharedAgentTempRoot` (`packageFixtureTempDir` for a helper with a `t`).
 
 The browser guards are deliberately not part of make lint or make test:
 those default gates remain usable without Chrome, while CI still requires the
@@ -516,6 +553,27 @@ workers, and src/testSetup.ts fails the second file that lands in a used
 context. Running one file with `--maxWorkers=1` is fine.
 Workers are recycled at `vmMemoryLimit` (512MB); VM contexts otherwise grow a
 worker's memory file after file, and the unbounded suite peaked at 8.3GB.
+
+A test that has to get past a real debounce or timer uses Vitest's fake
+timers rather than waiting it out, with two pieces of wiring so Testing
+Library keeps working: `vi.stubGlobal("jest", { advanceTimersByTime:
+vi.advanceTimersByTime })`, because `waitFor` and `findBy*` only advance a
+faked clock when they find a `jest` global, and `userEvent.setup({
+advanceTimers: vi.advanceTimersByTime })`, so typing delays advance it too.
+Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
+"setInterval", "clearInterval"]`); src/panes/spawn/Spawn.test.tsx is the
+worked example.
+
+`await user.click(...)` returns once the event is dispatched, not once the
+handler's async work finishes. An effect that sits behind an `await`, such as
+`threadsStore.forceStop`, which writes its cancellation durably before the
+RPC, has to be waited for with `waitFor` or a `findBy*` on the result, never
+asserted right after the click. The failure is worse than a flake in one
+test: the store calls `requireClient()` when the RPC finally goes out, which
+by then can be the next test's fake client, so the next test sees an extra
+call. For the same reason a suite resets every global store it renders
+against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
+toast from the previous test can satisfy this test's assertion.
 
 ### Whole-system residue audit
 
@@ -969,6 +1027,41 @@ cross-reference offsets from the bytes as they are written and
 attempt pasted an opaque blob whose comment claimed validity while three of its
 four offsets pointed at nothing; every `%PDF`/`xref`/`trailer`/`startxref`
 marker was present, which is why grepping for markers is not validation.
+
+## A Subprocess Can Outlive Its Context
+
+A context on `exec.CommandContext` bounds the child, not the pipes. Captured
+stdout and stderr are read until EOF, and EOF waits for every process holding
+the write end: a child that backgrounds anything (a wrapper script, a shell rc
+file, a hook, ssh's ProxyCommand) hands it to a grandchild the context never
+kills, and `Wait` lasts as long as that grandchild. So an Evener call that
+captures a child's output must set `cmd.WaitDelay`, which caps how long exec
+waits for the pipes once the context ends or the child exits, and passes the
+result through `orphanpipe.ChildErr`, which reads `exec.ErrWaitDelay` after a
+successful exit as the success it was.
+
+Prove the bound with `internal/orphanpipe/orphanpipetest` rather than a
+stopwatch. `New` stages the FIFOs, `WriteScript` writes the fake executable,
+`Spawn` is the shell fragment that backgrounds a grandchild holding the
+script's stdout and stderr, `AwaitStarted` waits until it holds them, and
+`Await` returns the call's result while the grandchild still does, failing
+the test if the call only returned once the grandchild was released.
+
+## Prove a Wait with a Signal, Not a Window
+
+"X does not happen while Y is held" is tempting to test by holding Y for a
+second or two and checking that X did not happen. That window is a guess: on
+a loaded host a broken implementation can take longer than the window to do
+the wrong thing, so the test passes anyway. Give the code a test-only seam
+that fires at the moment in question instead, nil in production, and let the
+test hold the work until the seam says the code is waiting:
+`SessionConfig.testOnly.closeAwaitingEnvWork` fires when a close blocks at its
+environment-work join; the shard runner's `shardsConfig.slotWait` fires when
+it holds a shard back for a free slot. A seam that fires just before the wait
+it reports needs its own test that the wait really follows: see
+`TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds`, which spends the
+join's budget from inside the seam and requires the warning only a parked
+join can produce.
 
 ## Real `git` in Worktree Tests
 

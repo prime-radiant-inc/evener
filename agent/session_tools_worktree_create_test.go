@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/internal/devtool/shardrun"
 )
 
@@ -181,10 +182,22 @@ func TestMain(m *testing.M) {
 	// macOS and whenever the fast path cannot be resolved safely.
 	fastGitDirForTest = prependFastGitToPath()
 
+	// Every root below is created inside this one, which also collects the
+	// scratch and temp containers the sessions under test retain at close.
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-agent-test-")
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		os.Exit(2)
+	}
+
 	testHome, err := os.MkdirTemp("", "evener-agent-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", testHome)
 		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(testHome, ".config"))
+		// The user cache dir is a session scratch base (sandbox.SweepCrashedSessionScratch
+		// walks it), and XDG_CACHE_HOME outranks HOME there, so a developer's own
+		// value would hand the tests the real cache.
+		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
 	}
 	sharedWorkspace, err := os.MkdirTemp("", "evener-agent-workspace-*")
 	if err == nil {
@@ -213,6 +226,12 @@ func TestMain(m *testing.M) {
 	}
 	if intgMCPServerDir != "" {
 		_ = os.RemoveAll(intgMCPServerDir)
+	}
+	if err := hostTemp.Discard(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
 	}
 	os.Exit(code)
 }
@@ -1237,4 +1256,10 @@ func branchExistsInRepo(t *testing.T, root, name string) bool {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	return cmd.Run() == nil
+}
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// agent-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
 }

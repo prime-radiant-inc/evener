@@ -53,6 +53,7 @@ function HubSettingsScreenBody({ route, navigation }: Props) {
 		activeProfile,
 		state,
 		retry,
+		error,
 		display,
 		canUseConnection,
 		renderClient,
@@ -64,6 +65,7 @@ function HubSettingsScreenBody({ route, navigation }: Props) {
 			<ConnectionWall
 				hubName={activeProfile.name}
 				purpose="view hub settings"
+				error={error}
 				onReconnect={retry}
 			/>
 		);

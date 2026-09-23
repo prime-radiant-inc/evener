@@ -5,7 +5,10 @@
 // the guard slot PluginsScreen wires around it in production, so the mount
 // carries that wiring too. Mirrors ProvidersScreen.recovery.test.tsx's
 // mocking: every native edge the screen reaches is mocked here, and the
-// stores are driven through the SDK's FakeClient.
+// stores are driven through the SDK's FakeClient. The install- and
+// removal-path tests beside them pin the write-gate posture every browser
+// mutation shares: a press the gate refuses on readiness runs nothing and
+// retires nothing.
 import { useMemo, useRef, useState } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -234,6 +237,126 @@ it("keeps the retryable write-failed copy for an ordinary failure", async () => 
   );
   expect(renderedText(tree)).toContain("Could not confirm the change");
   expect(listCalls()).toBe(1);
+});
+
+it("keeps the write-failed copy when a blocked install press never runs the action", async () => {
+	const fake = new FakeClient("ready");
+	fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+	fake.on("evener/marketplace/browse", () => ({
+		name: "acme",
+		plugins: [{ name: "tool", description: "A tool" }],
+	}));
+	fake.on("evener/plugin/list", () => ({ plugins: [] }));
+	let installs = 0;
+	fake.on("evener/plugin/install", () => {
+		installs += 1;
+		throw new Error("install failed");
+	});
+	const client = fake as unknown as ConversationClientLike;
+	let ready = true;
+	const tree = render(
+		<GuardedBrowser client={client} canUseConnection={() => ready} />,
+	);
+	await act(async () => {});
+	const row = tree.root.findAllByProps({ accessibilityLabel: "Browse acme" })[0];
+	if (!row) throw new Error("no acme row");
+	await act(async () => {
+		row.props.onPress();
+	});
+	await act(async () => {});
+	const install = tree.root.findByProps({
+		accessibilityLabel: "Install tool from acme",
+	});
+	await act(async () => {
+		install.props.onPress();
+	});
+	await act(async () => {});
+	expect(installs).toBe(1);
+	expect(renderedText(tree)).toContain("Could not confirm the change");
+
+	// Readiness is lost between the render and the gate's recheck, the
+	// sibling AddMarketplace not-ready test's driving pattern: the press is a
+	// no-op the gate refuses on readiness, so the write-failed copy from the
+	// install that DID run must survive - a press that ran nothing may not
+	// retire the copy the user was reading.
+	ready = false;
+	const again = tree.root.findByProps({
+		accessibilityLabel: "Install tool from acme",
+	});
+	act(() => again.props.onPress());
+	await act(async () => {});
+	expect(installs).toBe(1);
+	expect(renderedText(tree)).toContain("Could not confirm the change");
+});
+
+it("keeps the write-failed copy when a blocked removal press never runs the action", async () => {
+  const fake = new FakeClient("ready");
+  let removals = 0;
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  fake.on("evener/marketplace/browse", () => ({ name: "acme", plugins: [] }));
+  fake.on("evener/marketplace/remove", () => {
+    removals += 1;
+    throw new Error("remove failed");
+  });
+  // The confirm passed its own recheck; the gate rechecks the same
+  // predicate once more, after readiness was lost between the two - the
+  // sibling cleanup-warning not-ready test's counting pattern. The first
+  // removal consumes the first three checks (the action's guard, the
+  // confirmation's, the gate's recheck); the second press loses readiness
+  // on the gate's recheck, so nothing runs.
+  let readinessChecks = 0;
+  const client = fake as unknown as ConversationClientLike;
+  const tree = render(
+    <GuardedBrowser
+      client={client}
+      canUseConnection={() => ++readinessChecks <= 5}
+    />,
+  );
+  await act(async () => {});
+  const row = tree.root.findAllByProps({ accessibilityLabel: "Browse acme" })[0];
+  if (!row) throw new Error("no acme row");
+  await act(async () => {
+    row.props.onPress();
+  });
+  const remove = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  const removePress = remove?.props.onPress;
+  if (!removePress) throw new Error("no Remove marketplace action");
+  act(() => removePress());
+  const firstRequest = alertRequests.at(-1);
+  const firstConfirm = firstRequest?.buttons?.find(
+    (button) => button.text === "Remove",
+  )?.onPress;
+  if (!firstConfirm) throw new Error("no Remove confirm button");
+  await act(async () => {
+    firstConfirm();
+  });
+  await act(async () => {});
+  expect(removals).toBe(1);
+  expect(renderedText(tree)).toContain("Could not confirm the change");
+
+  // Readiness is lost at the gate's recheck, so the confirm runs nothing
+  // and the removal is a no-op: the write-failed copy from the removal
+  // that DID run must survive - a press that ran nothing may not retire
+  // the copy the user was reading.
+  const again = tree.root.findAllByProps({
+    accessibilityLabel: "Remove marketplace",
+  })[0];
+  if (!again || again.props.disabled)
+    throw new Error("Remove marketplace is not pressable");
+  act(() => again.props.onPress());
+  const secondRequest = alertRequests.at(-1);
+  const secondConfirm = secondRequest?.buttons?.find(
+    (button) => button.text === "Remove",
+  )?.onPress;
+  if (!secondConfirm) throw new Error("no Remove confirm button");
+  await act(async () => {
+    secondConfirm();
+  });
+  await act(async () => {});
+  expect(removals).toBe(1);
+  expect(renderedText(tree)).toContain("Could not confirm the change");
 });
 
 it("keeps the cleanup warning when a removal never runs (readiness lost at the gate)", async () => {
