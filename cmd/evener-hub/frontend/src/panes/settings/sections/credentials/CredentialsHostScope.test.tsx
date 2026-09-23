@@ -382,6 +382,40 @@ test("an error without a successful read shows no loading skeleton", async () =>
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
 });
 
+// M-1 (round 4): attachment is LIVE registry data, so it is deliberately not part
+// of the cache identity - but a read keyed on host/identity/connection alone never
+// retries, so an offline host that fails and later attaches stays failed with no
+// retry control. The attachment transition is the trigger; the identity is
+// unchanged by it (that is the point).
+test("an attachment transition retries a failed remote read", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: false })] }));
+  let attached = false;
+  fake.on("evener/host/request", () => {
+    if (!attached) throw new WireError('host "beta" is not attached', -32000);
+    return HOST_LIST;
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta (offline)" });
+  await user.selectOptions(select, "beta");
+  await screen.findByText(/host "beta" is not attached/);
+  const before = fake.calls.filter((call) => call.method === "evener/host/request").length;
+
+  // The host attaches: only live registry data changes; the entry (the identity)
+  // does not.
+  attached = true;
+  act(() => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
+  });
+
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(before + 1);
+});
+
 // Medium (roborev): the partition map is keyed by NAME alone, so a host removed
 // and re-registered under the same name could render the previous
 // registration's rows - here, while the new host's own read is still out.

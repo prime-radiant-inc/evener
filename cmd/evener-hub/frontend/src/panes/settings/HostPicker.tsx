@@ -42,18 +42,37 @@ export function hostIdentityFor(load: HostsLoadState, host: string): string | nu
   return row === undefined ? null : hostIdentity(row);
 }
 
-/** useHostIdentityFor is hostIdentityFor, remembering the last identity a READY
- * registry gave the name. A registry re-read that fails, or is still in flight,
- * cannot say the name now means another host - so it must not discard the
- * identity the last successful answer established, nor flap the remote reads
- * keyed on it (a flap re-issues the host's listing once per phase). Only a ready
- * answer replaces it, including with null when the name is gone. */
-export function useHostIdentityFor(load: HostsLoadState, host: string): string | null {
-  const known = useRef<{ host: string; identity: string | null }>({ host, identity: null });
+/** HostRegistryFacts is what a host-scoped pane needs from the registry, as of
+ * the last READY answer. */
+export interface HostRegistryFacts {
+  /** The identity the host's cached rows are keyed on - the configured entry, so
+   * live state cannot invalidate a good listing. */
+  identity: string | null;
+  /** The host's attachment state. LIVE data, deliberately kept OUT of the
+   * identity (folding it in would invalidate a listing on every detach) and used
+   * only to decide when a failed read is worth retrying. */
+  attached: boolean;
+}
+
+/** useHostRegistryFacts is the registry's identity and attachment state for
+ * `host`, remembering the last READY answer. A registry re-read that fails, or is
+ * still in flight, cannot say the name now means another host or that the host is
+ * gone - so it must not discard what the last successful answer established, nor
+ * flap the remote reads keyed on it (a flap re-issues the host's listing once per
+ * phase). Only a ready answer replaces it. */
+export function useHostRegistryFacts(load: HostsLoadState, host: string): HostRegistryFacts {
+  const known = useRef<{ host: string; facts: HostRegistryFacts }>({
+    host,
+    facts: { identity: null, attached: false },
+  });
   if (known.current.host !== host || load.phase === "ready") {
-    known.current = { host, identity: hostIdentityFor(load, host) };
+    const row = selectableHostRows(load).find((candidate) => candidate.name === host);
+    known.current = {
+      host,
+      facts: { identity: row === undefined ? null : hostIdentity(row), attached: row?.attached ?? false },
+    };
   }
-  return known.current.identity;
+  return known.current.facts;
 }
 
 export function HostPicker() {

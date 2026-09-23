@@ -7,14 +7,9 @@
 // today's URLs are unchanged), restored from the URL, and carried across every
 // app-built settings navigation (shell/routing.ts's navigate).
 import { useCallback, useEffect } from "react";
-import { navigate, paneToURL, urlToPane } from "../../shell/routing";
+import { HOST_QUERY_PARAM, navigate, paneToURL, urlToPane } from "../../shell/routing";
 import { isLocalHost } from "../../stores/hostRouting";
-import {
-  adoptSettingsHostFromURL,
-  HOST_QUERY_PARAM,
-  setSettingsHost,
-  useSettingsHostStore,
-} from "../../stores/settingsHost";
+import { adoptSettingsHostFromURL, setSettingsHost, useSettingsHostStore } from "../../stores/settingsHost";
 
 /** settingsURL is the settings route for `section` carrying `host`. `local`
  * adds nothing, so a user who never picks a host keeps today's URL. */
@@ -53,12 +48,6 @@ export function useSettingsHost(): SettingsHostSelection {
   return { host, selectHost };
 }
 
-// isSettingsRoute answers whether the address bar names a settings route - the
-// only route the selection belongs to, and so the only route that may adopt one.
-function isSettingsRoute(): boolean {
-  return urlToPane(window.location.pathname)?.type === "settings";
-}
-
 /** useSettingsHostURLSync makes the settings route the authority on the
  * selection - on mount (a deep link or reload) and on every popstate
  * (Back/Forward, and navigate()'s own dispatch, whose target already carries the
@@ -66,17 +55,15 @@ function isSettingsRoute(): boolean {
  * navigations never produce one by accident because routing.ts carries the host
  * onto them. Settings.tsx calls it once, as the settings route's shell.
  *
- * Only a settings route adopts: navigate() announces its own navigation with a
- * popstate, so without that check, navigating AWAY from settings to a hostless
+ * The adoption itself refuses to run off a settings route (stores/settingsHost.ts
+ * asks, so no caller can forget to): navigate() announces its own navigation with
+ * a popstate, and without that check, navigating AWAY from settings to a hostless
  * URL - or a non-settings URL that merely carries a `host` parameter - would
  * rewrite the stored selection from a route the selection does not belong to. */
 export function useSettingsHostURLSync(): void {
   useEffect(() => {
-    const adopt = () => {
-      if (isSettingsRoute()) adoptSettingsHostFromURL(window.location.search);
-    };
-    adopt();
-    window.addEventListener("popstate", adopt);
-    return () => window.removeEventListener("popstate", adopt);
+    adoptSettingsHostFromURL();
+    window.addEventListener("popstate", adoptSettingsHostFromURL);
+    return () => window.removeEventListener("popstate", adoptSettingsHostFromURL);
   }, []);
 }

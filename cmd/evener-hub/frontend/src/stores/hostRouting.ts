@@ -58,6 +58,15 @@ export function isLocalHost(host: string | null | undefined): boolean {
   return host == null || host === "" || host === LOCAL_HOST;
 }
 
+/** normalizeHost maps an absent, empty, or `local` spelling onto LOCAL_HOST - the
+ * hostless default - and leaves every real host name alone. This is the ONE
+ * spelling rule: the settings store's reading of its URL and shell/routing.ts's
+ * carry of the selected host both go through it (it lives here, beside
+ * isLocalHost, because those two modules must not import each other). */
+export function normalizeHost(raw: string | null): string {
+  return isLocalHost(raw) ? LOCAL_HOST : (raw as string);
+}
+
 /**
  * hostRequest issues `method` against the selected `host`.
  *

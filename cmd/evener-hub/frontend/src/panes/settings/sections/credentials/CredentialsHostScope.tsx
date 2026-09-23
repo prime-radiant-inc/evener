@@ -20,7 +20,7 @@ import { isLocalHost } from "../../../../stores/hostRouting";
 import { useHostsStore } from "../../../../stores/hosts";
 import { EmptyState, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { HostPicker, isConfiguredHost, useHostIdentityFor } from "../../HostPicker";
+import { HostPicker, isConfiguredHost, useHostRegistryFacts } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsHostScope.module.css";
@@ -44,9 +44,10 @@ export interface CredentialsHostScopeProps {
 export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
   const { host } = useSettingsHost();
   const load = useHostsStore((state) => state.load);
-  // The identity the registry gives the selected name, kept across a registry
-  // re-read that has not answered yet (see the hook's own note).
-  const identity = useHostIdentityFor(load, host);
+  // What the registry says about the selected name, kept across a registry
+  // re-read that has not answered yet (see the hook's own note): the identity its
+  // cached rows are keyed on, and its attachment state as the retry trigger.
+  const { identity, attached } = useHostRegistryFacts(load, host);
 
   // The scope's body is one of three states; computed here rather than as a
   // nested ternary in the JSX.
@@ -63,7 +64,7 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
       </p>
     );
   } else {
-    body = <RemoteHostInstances host={host} identity={identity} />;
+    body = <RemoteHostInstances host={host} identity={identity} attached={attached} />;
   }
 
   return (
@@ -80,7 +81,15 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
  * spawn form's useProviderSetup uses - whenever the selection, the registry's
  * identity for the name, or the CONNECTION changes. Nothing here writes: the
  * shared listing renders its read-only rows. */
-function RemoteHostInstances({ host, identity }: { host: string; identity: string | null }) {
+function RemoteHostInstances({
+  host,
+  identity,
+  attached,
+}: {
+  host: string;
+  identity: string | null;
+  attached: boolean;
+}) {
   const state = useHostInstances(host);
   const { client, state: connection } = useConnectionStore();
   // The connection belongs in the deps because useConnectedEffect's started flag
@@ -89,7 +98,14 @@ function RemoteHostInstances({ host, identity }: { host: string; identity: strin
   // empty listing and a reconnect kept pre-disconnect rows. The identity belongs
   // there too: a name re-registered as a different host is a different listing to
   // read, not the cached one.
-  useConnectedEffect(() => fetchHost(host, identity), [host, identity, client, connection]);
+  //
+  // The ATTACHMENT state belongs there as well, and only there: an offline host
+  // that fails and later attaches changes live registry data and nothing else, so
+  // without this trigger its failed listing would never be retried and would sit
+  // there with no retry control. It is deliberately NOT part of the identity the
+  // rows are keyed on (see hosts.ts's hostIdentity): folding live state in would
+  // invalidate a perfectly good listing on every detach.
+  useConnectedEffect(() => fetchHost(host, identity), [host, identity, attached, client, connection]);
 
   const title = `Providers on ${host}`;
   // Rows are this host's only when they were read under the identity the
