@@ -28,6 +28,20 @@ import (
 // operation was rejected -- the mutation may already have been applied before
 // the response was lost.
 //
+// No current caller can satisfy that whole-operation proof, and the not-accepted
+// outcome it guards is therefore forward-compatibility, not a live production
+// result. Reaching the retry at all requires shouldResumeAfterSessionUnavailable
+// to accept the original attempt's failure (see withSessionResume), which needs a
+// WireError carrying CodeUnavailable and ErrorSessionUnavailable; sourceForThread
+// (Registry.SourceForRef) can only return a ref parse error or a plain "source
+// not found", never that. So whenever a retry runs, the original attempt
+// necessarily resolved a source, firstAttemptPreDispatch is false, and a real
+// post-resume resolution failure is reported blocked-unknown -- pinned by
+// TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted. The rule is kept
+// deliberately so it states the invariant rather than being dropped: a future
+// source resolution that itself yields a session-unavailable error would make the
+// whole-operation proof reachable again and settle the mutation as rejected.
+//
 // Wrapped at the resolution source (the caller shapes'
 // sourceForThread calls) so the signal is exact: an arbitrary pre-dispatch
 // probe failure is not the same proof as a resolution failure, and this type is
@@ -91,6 +105,13 @@ func withSessionResume[R any](
 	// applied the mutation before failing. The retry's own pre-dispatch signal
 	// cannot stand in for that, so it is kept here for the not-accepted rule
 	// below.
+	//
+	// In practice this is always false here: the code below only reaches the
+	// retry when the first attempt failed with a session-unavailable WireError,
+	// and source resolution never produces one (see preDispatchRefusalError). So
+	// the not-accepted rule it feeds is forward-compatibility for a resolution
+	// that itself reports session-unavailable, not an outcome any caller gets
+	// today -- a real post-resume resolution failure stays blocked-unknown.
 	firstAttemptPreDispatch := isPreDispatchRefusal(err)
 	// Outside the retry rule the pre-dispatch signal carries no meaning: the
 	// first attempt's failure is returned exactly as it was raised.
@@ -115,6 +136,11 @@ func withSessionResume[R any](
 	// correlateRetryFailure). Only wrap when this request actually carries an
 	// id to correlate against.
 	resp, retryErr := attempt()
+	// The resumed daemon names the id it trimmed; rewrite it back to the
+	// caller's own id before anything compares or returns it, so a canonical
+	// match is recognized and the response still carries exactly the id the
+	// caller submitted.
+	retryErr = adoptCallerMutationID(retryErr, clientMutationID)
 	if retryErr == nil || clientMutationID == "" {
 		return resp, unwrapPreDispatchRefusal(retryErr)
 	}
@@ -132,6 +158,13 @@ func withSessionResume[R any](
 		// not-fully-proven operation stays blocked-unknown and the record is
 		// retained. A target deletion keeps its own meaning even here, as it does
 		// in turn/start's identical rule.
+		//
+		// firstAttemptPreDispatch cannot be true for any caller today (see its
+		// declaration and preDispatchRefusalError): reaching this retry means the
+		// first attempt resolved a source, so this branch is deliberate
+		// forward-compatibility for a source resolution that itself reports
+		// session-unavailable, not a production outcome. It is retained so the
+		// rule stays stated and stays correct if such a resolution ever appears.
 		if firstAttemptPreDispatch && isPreDispatchRefusal(retryErr) && !isTargetDeletedError(retryErr) {
 			return zero, appwire.MutationNotAccepted(clientMutationID, retryErr.Error())
 		}

@@ -371,6 +371,29 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 	}
 }
 
+// canonicalMutationID returns the form two clientMutationId values are compared
+// in.
+//
+// The hub does not trim the caller's id: it echoes exactly what the caller sent,
+// because every client correlates its outbox record by that id. The daemon does
+// trim it, at its own handler boundary, before a receipt or a refusal ever names
+// it (server/appwire_runtime.go's handleAppTurn*/handleAppThreadClear set
+// params.ClientMutationID = strings.TrimSpace(params.ClientMutationID), and
+// agent/session_notes_rpc.go does the same). A byte-exact hub comparison would
+// therefore fail to see a padded caller id (" mut-1 ") in the normalized id the
+// daemon named ("mut-1"), and treat a known rejection or deletion as if it
+// belonged to someone else.
+func canonicalMutationID(id string) string { return strings.TrimSpace(id) }
+
+// mutationIDsMatch reports whether a caller's clientMutationId and the id a
+// hub-visible error names refer to the same mutation, compared canonically (see
+// canonicalMutationID). Only a non-empty error id can match: an error that names
+// no mutation never names the caller's.
+func mutationIDsMatch(callerID, errorID string) bool {
+	canonical := canonicalMutationID(errorID)
+	return canonical != "" && canonical == canonicalMutationID(callerID)
+}
+
 // errorNamesClientMutation reports whether err already carries clientMutationID,
 // the id of the mutation the caller submitted.
 //
@@ -384,13 +407,12 @@ func blockedUnknownMutationError(clientMutationID string, err error) error {
 // that names none, and one that names none has to be wrapped before it leaves
 // the hub.
 //
-// The comparison is exact, like the client's: the web dispatcher compares the
-// id byte-for-byte, so treating an error that names "mutation " as if it named
-// "mutation" would mark the record correlated here while the client still
-// cannot match it and leaves the record submitting. The caller's own id arrives
-// already trimmed (the hub server trims clientMutationId on the way in), so
-// only the error's id is compared, exactly. An error that names no mutation
-// never names the caller's.
+// The comparison is canonical, not byte-exact (see mutationIDsMatch): the hub
+// does not trim the caller's id, but the daemon names the id it trimmed, so a
+// padded caller id would otherwise fail to recognize its own rejection. This is
+// a comparison-time canonicalization only -- an id the hub echoes back stays
+// exactly what the caller sent (see adoptCallerMutationID), because the client
+// correlates byte-for-byte.
 //
 // The wire client decodes ErrorData as a map on some paths and as the typed
 // struct on others, so both shapes are read -- the same convention
@@ -403,7 +425,51 @@ func errorNamesClientMutation(err error, clientMutationID string) bool {
 	if !ok {
 		return false
 	}
-	return clientMutationIDFromData(wire.Data) == clientMutationID
+	return mutationIDsMatch(clientMutationID, clientMutationIDFromData(wire.Data))
+}
+
+// adoptCallerMutationID hands err back with its clientMutationId rewritten to
+// the caller's own id when the error names the same mutation in canonical form
+// but not byte-for-byte -- the daemon trims the id before naming it, the caller
+// submitted it padded.
+//
+// The rewrite is what keeps the response echoable: every client correlates its
+// outbox record byte-for-byte against the id it submitted
+// (appwire-client/typescript/state/mutation/dispatcher.ts compares
+// data.clientMutationId !== record.clientMutationId), so a response carrying the
+// daemon's normalized id would never settle a record that submitted a padded
+// one. The id is never rewritten to a trimmed form -- the caller's own id is
+// always the one echoed.
+//
+// err is returned unchanged when there is nothing to rewrite: it is not a
+// WireError, it names no id, it already names the caller's id, or it names a
+// mutation that is not the caller's. The rewrite handles both decoded shapes
+// (typed ErrorData and map[string]any), the convention nameTargetDeletedFailure
+// follows.
+func adoptCallerMutationID(err error, clientMutationID string) error {
+	if clientMutationID == "" {
+		return err
+	}
+	wire, ok := wireErrorFromError(err)
+	if !ok || wire.Data == nil {
+		return err
+	}
+	named := clientMutationIDFromData(wire.Data)
+	if named == clientMutationID || !mutationIDsMatch(clientMutationID, named) {
+		return err
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		data.ClientMutationID = clientMutationID
+		wire.Data = data
+	case map[string]any:
+		updated := maps.Clone(data)
+		updated["clientMutationId"] = clientMutationID
+		wire.Data = updated
+	default:
+		return err
+	}
+	return wire
 }
 
 // isShapeRefusal reports whether err refuses the request's shape: appwire's
@@ -434,13 +500,19 @@ func isShapeRefusal(err error) bool {
 // that is not the caller's. The client dispatcher correlates by that id alone,
 // so such a refusal is unrelated to this caller's record and must not be
 // returned as the shape refusal it is.
+//
+// The comparison is canonical, like errorNamesClientMutation's: the daemon names
+// the trimmed id while the hub holds the caller's verbatim one, so a padded
+// caller id must still recognize its own shape refusal rather than have it
+// treated as another caller's.
 func shapeRefusalNamesOtherMutation(err error, clientMutationID string) bool {
 	wire, ok := wireErrorFromError(err)
 	if !ok || wire.Data == nil {
 		return false
 	}
 	id := clientMutationIDFromData(wire.Data)
-	return id != "" && id != clientMutationID
+	canonical := canonicalMutationID(id)
+	return canonical != "" && canonical != canonicalMutationID(clientMutationID)
 }
 
 // correlateRetryFailure decides what a retry that an earlier failure's resume
@@ -1234,6 +1306,11 @@ func registerThreadHandlers(
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return resp, err
 			}
+			// The resumed daemon names the id it trimmed; rewrite it back to the
+			// caller's own id before anything compares or returns it, so a
+			// canonical match is recognized and the response still carries exactly
+			// the id the caller submitted.
+			err = adoptCallerMutationID(err, params.ClientMutationID)
 			if wrapped := correlateRetryFailure(params.ClientMutationID, err); wrapped != nil {
 				// A target deletion keeps its own outcome even pre-dispatch: a
 				// deleted target never accepts the mutation, but the caller must

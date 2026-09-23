@@ -464,6 +464,7 @@ func TestCorrelateRetryFailureShapeRefusalMutationScope(t *testing.T) {
 
 	cases := []struct {
 		name                 string
+		callerID             string
 		refusalID            string
 		wantPreserved        bool
 		wantClientMutationID string
@@ -472,19 +473,41 @@ func TestCorrelateRetryFailureShapeRefusalMutationScope(t *testing.T) {
 	}{
 		{
 			name:                 "unnamed shape refusal is preserved",
+			callerID:             mutationID,
 			wantPreserved:        true,
 			wantClientMutationID: "",
 		},
 		{
 			name:                 "shape refusal naming this caller's mutation is preserved",
+			callerID:             mutationID,
 			refusalID:            mutationID,
 			wantPreserved:        true,
 			wantClientMutationID: mutationID,
 		},
 		{
 			name:                 "shape refusal naming a different mutation is blocked-unknown",
+			callerID:             mutationID,
 			refusalID:            "some-other-mutation",
 			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeUnknown,
+			wantDisposition:      appwire.RetryDispositionBlocked,
+		},
+		{
+			// The daemon trims the id before naming it, so the hub holds a padded
+			// caller id while the refusal names the normalized form. The
+			// comparison is canonical (see mutationIDsMatch), so the refusal is
+			// still recognized as this caller's rather than another caller's.
+			name:                 "padded caller id recognizes the daemon-normalized shape refusal",
+			callerID:             " " + mutationID + " ",
+			refusalID:            mutationID,
+			wantPreserved:        true,
+			wantClientMutationID: mutationID,
+		},
+		{
+			name:                 "padded caller id still blocks a genuinely different mutation",
+			callerID:             " " + mutationID + " ",
+			refusalID:            "some-other-mutation",
+			wantClientMutationID: " " + mutationID + " ",
 			wantOutcome:          appwire.MutationOutcomeUnknown,
 			wantDisposition:      appwire.RetryDispositionBlocked,
 		},
@@ -502,13 +525,13 @@ func TestCorrelateRetryFailureShapeRefusalMutationScope(t *testing.T) {
 			}
 			// A nil correlateRetryFailure return means the refusal keeps its own
 			// meaning; the finished failure is then the refusal itself.
-			preserved := correlateRetryFailure(mutationID, retryErr) == nil
+			preserved := correlateRetryFailure(tc.callerID, retryErr) == nil
 			if preserved != tc.wantPreserved {
 				t.Fatalf("preserved=%v, want %v (refusal names %q)", preserved, tc.wantPreserved, tc.refusalID)
 			}
 			var final error = retryErr
 			if !preserved {
-				final = correlateRetryFailure(mutationID, retryErr)
+				final = correlateRetryFailure(tc.callerID, retryErr)
 			}
 			var wire appwire.WireError
 			if !errors.As(final, &wire) {
@@ -569,13 +592,15 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 
 	cases := []struct {
 		name                 string
+		callerID             string
 		retryErr             error
 		wantClientMutationID string
 		wantOutcome          appwire.MutationOutcome
 		wantDisposition      appwire.RetryDisposition
 	}{
 		{
-			name: "uncorrelated relayed failure is wrapped blocked-unknown",
+			name:     "uncorrelated relayed failure is wrapped blocked-unknown",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeInternalError,
 				Message: "relayed retry failure names no mutation",
@@ -586,7 +611,8 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantDisposition:      appwire.RetryDispositionBlocked,
 		},
 		{
-			name: "already-correlated relayed refusal passes through",
+			name:     "already-correlated relayed refusal passes through",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeConflict,
 				Message: "relayed refusal names this caller's mutation",
@@ -602,7 +628,8 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantDisposition:      appwire.RetryDispositionNone,
 		},
 		{
-			name: "relayed target deletion naming no mutation is enriched",
+			name:     "relayed target deletion naming no mutation is enriched",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeUnavailable,
 				Message: "target has been deleted: local:th",
@@ -617,7 +644,8 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantDisposition:      appwire.RetryDispositionNone,
 		},
 		{
-			name: "relayed target deletion naming a different mutation is blocked-unknown",
+			name:     "relayed target deletion naming a different mutation is blocked-unknown",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeUnavailable,
 				Message: "target has been deleted: local:th",
@@ -633,7 +661,8 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantDisposition:      appwire.RetryDispositionBlocked,
 		},
 		{
-			name: "relayed shape refusal passes through",
+			name:     "relayed shape refusal passes through",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeInvalidParams,
 				Message: "relayed shape refusal",
@@ -644,7 +673,8 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantDisposition:      "",
 		},
 		{
-			name: "relayed shape refusal naming this caller's mutation passes through",
+			name:     "relayed shape refusal naming this caller's mutation passes through",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeInvalidParams,
 				Message: "relayed shape refusal for this caller",
@@ -658,7 +688,8 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantDisposition:      "",
 		},
 		{
-			name: "relayed shape refusal naming a different mutation is blocked-unknown",
+			name:     "relayed shape refusal naming a different mutation is blocked-unknown",
+			callerID: mutationID,
 			retryErr: appwire.WireError{
 				Code:    appwire.CodeInvalidParams,
 				Message: "relayed shape refusal for another caller",
@@ -671,6 +702,44 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			wantOutcome:          appwire.MutationOutcomeUnknown,
 			wantDisposition:      appwire.RetryDispositionBlocked,
 		},
+		{
+			// A padded caller id against a relayed refusal that names the
+			// daemon-normalized id: the canonical comparison recognizes it as this
+			// caller's, so the refusal keeps its own outcome instead of being
+			// wrapped blocked-unknown.
+			name:     "padded caller id recognizes a relayed refusal naming the normalized id",
+			callerID: " " + mutationID + " ",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeConflict,
+				Message: "relayed refusal names the normalized caller mutation",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorConflict),
+					"clientMutationId": mutationID,
+					"mutationOutcome":  string(appwire.MutationOutcomeNotAccepted),
+					"retryDisposition": string(appwire.RetryDispositionNone),
+				},
+			},
+			wantClientMutationID: mutationID,
+			wantOutcome:          appwire.MutationOutcomeNotAccepted,
+			wantDisposition:      appwire.RetryDispositionNone,
+		},
+		{
+			name:     "padded caller id still blocks a relayed refusal naming a different mutation",
+			callerID: " " + mutationID + " ",
+			retryErr: appwire.WireError{
+				Code:    appwire.CodeConflict,
+				Message: "relayed refusal names another mutation",
+				Data: map[string]any{
+					"evenerErrorInfo":  string(appwire.ErrorConflict),
+					"clientMutationId": "some-other-mutation",
+					"mutationOutcome":  string(appwire.MutationOutcomeNotAccepted),
+					"retryDisposition": string(appwire.RetryDispositionNone),
+				},
+			},
+			wantClientMutationID: " " + mutationID + " ",
+			wantOutcome:          appwire.MutationOutcomeUnknown,
+			wantDisposition:      appwire.RetryDispositionBlocked,
+		},
 	}
 
 	for _, tc := range cases {
@@ -678,7 +747,7 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			// A nil correlateRetryFailure return means the error keeps its own
 			// meaning; the finished failure is then the retry error itself.
 			final := tc.retryErr
-			if wrapped := correlateRetryFailure(mutationID, tc.retryErr); wrapped != nil {
+			if wrapped := correlateRetryFailure(tc.callerID, tc.retryErr); wrapped != nil {
 				final = wrapped
 			}
 			var wire appwire.WireError
@@ -692,6 +761,246 @@ func TestCorrelateRetryFailureReadsMapShapedWireData(t *testing.T) {
 			if gotID != tc.wantClientMutationID || gotOutcome != string(tc.wantOutcome) || gotDisposition != string(tc.wantDisposition) {
 				t.Fatalf("clientMutationId=%q mutationOutcome=%q retryDisposition=%q, want %q/%q/%q (wire=%+v data=%#v)",
 					gotID, gotOutcome, gotDisposition, tc.wantClientMutationID, tc.wantOutcome, tc.wantDisposition, wire, wire.Data)
+			}
+		})
+	}
+}
+
+// TestAdoptCallerMutationIDRestoresVerbatimCallerID pins that an error naming
+// the daemon's normalized id is handed back carrying the caller's own,
+// verbatim id, so the response echoes exactly what the caller submitted.
+//
+// The hub does not trim the caller's clientMutationId; the daemon trims it at
+// its own boundary before a refusal names it. Without this rewrite the known
+// outcome would be recognized (see mutationIDsMatch) but the response would
+// name the trimmed id, and the client -- which correlates its outbox record
+// byte-for-byte against the id it submitted -- could never settle it. The
+// rewrite is confined to an error that names the same mutation in canonical
+// form: an unrelated id, an absent id, or a non-WireError is returned
+// unchanged. Both decoded data shapes (typed ErrorData and map[string]any) are
+// rewritten.
+func TestAdoptCallerMutationIDRestoresVerbatimCallerID(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	cases := []struct {
+		name        string
+		callerID    string
+		err         error
+		wantID      string
+		wantOutcome appwire.MutationOutcome
+	}{
+		{
+			name:     "typed data naming the normalized caller id adopts the verbatim id",
+			callerID: verbatim,
+			err: appwire.WireError{Code: appwire.CodeConflict, Message: "refused", Data: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorConflict,
+				ClientMutationID: normalized,
+				MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+				RetryDisposition: appwire.RetryDispositionNone,
+			}},
+			wantID:      verbatim,
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+		{
+			name:     "map-shaped data naming the normalized caller id adopts the verbatim id",
+			callerID: verbatim,
+			err: appwire.WireError{Code: appwire.CodeConflict, Message: "refused", Data: map[string]any{
+				"evenerErrorInfo":  string(appwire.ErrorConflict),
+				"clientMutationId": normalized,
+				"mutationOutcome":  string(appwire.MutationOutcomeNotAccepted),
+				"retryDisposition": string(appwire.RetryDispositionNone),
+			}},
+			wantID:      verbatim,
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+		{
+			name:     "an id already verbatim is left alone",
+			callerID: verbatim,
+			err: appwire.WireError{Code: appwire.CodeConflict, Message: "refused", Data: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorConflict,
+				ClientMutationID: verbatim,
+				MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+			}},
+			wantID:      verbatim,
+			wantOutcome: appwire.MutationOutcomeNotAccepted,
+		},
+		{
+			name:     "another caller's id is not restamped",
+			callerID: verbatim,
+			err: appwire.WireError{Code: appwire.CodeConflict, Message: "refused", Data: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorConflict,
+				ClientMutationID: "some-other-mutation",
+			}},
+			wantID: "some-other-mutation",
+		},
+		{
+			name:     "an error naming no id is left alone",
+			callerID: verbatim,
+			err: appwire.WireError{Code: appwire.CodeConflict, Message: "refused", Data: appwire.ErrorData{
+				EvenerErrorInfo: appwire.ErrorConflict,
+			}},
+			wantID: "",
+		},
+		{
+			name:     "an empty caller id leaves the error alone",
+			callerID: "",
+			err: appwire.WireError{Code: appwire.CodeConflict, Message: "refused", Data: appwire.ErrorData{
+				EvenerErrorInfo:  appwire.ErrorConflict,
+				ClientMutationID: normalized,
+			}},
+			wantID: normalized,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adopted := adoptCallerMutationID(tc.err, tc.callerID)
+			wire, ok := wireErrorFromError(adopted)
+			if !ok {
+				t.Fatalf("adopted error %T=%v, want a WireError", adopted, adopted)
+			}
+			if got := clientMutationIDFromData(wire.Data); got != tc.wantID {
+				t.Fatalf("adopted id=%q, want %q", got, tc.wantID)
+			}
+			// The rewrite may change only the id: the outcome the error already
+			// carried must survive it.
+			raw := relayedWireDataMap(t, wire.Data)
+			gotOutcome, _ := raw["mutationOutcome"].(string)
+			if gotOutcome != string(tc.wantOutcome) {
+				t.Fatalf("mutationOutcome=%v, want %q: the rewrite must keep the error's own outcome (data=%#v)",
+					raw["mutationOutcome"], tc.wantOutcome, raw)
+			}
+		})
+	}
+
+	plain := errors.New("plain failure")
+	adoptedPlain := adoptCallerMutationID(plain, verbatim)
+	if _, isWire := wireErrorFromError(adoptedPlain); isWire {
+		t.Fatalf("a non-WireError must never be rewritten into a WireError, got %v", adoptedPlain)
+	}
+	if !errors.Is(adoptedPlain, plain) {
+		t.Fatalf("a non-WireError must be returned unchanged, got %v", adoptedPlain)
+	}
+	if got := adoptCallerMutationID(nil, verbatim); got != nil {
+		t.Fatalf("nil must stay nil, got %v", got)
+	}
+}
+
+// TestHubRPCTurnStartRetryKeepsPaddedCallerIDForDaemonNamedFailure drives the
+// padded-id normalization through the real turn/start retry path.
+//
+// The caller submits a padded clientMutationId (the hub does not trim it); the
+// resumed daemon names the id it trimmed. The hub must recognize that refusal as
+// this caller's -- not rewrite a known rejection as blocked-unknown -- and the
+// response must still carry the caller's own, verbatim id, because the client's
+// outbox correlates its record byte-for-byte. A refusal naming a genuinely
+// different mutation is still blocked-unknown, still carrying the caller's id.
+func TestHubRPCTurnStartRetryKeepsPaddedCallerIDForDaemonNamedFailure(t *testing.T) {
+	const verbatim = " mutation-padded "
+	const normalized = "mutation-padded"
+
+	cases := []struct {
+		name            string
+		daemonNamedID   string
+		wantOutcome     appwire.MutationOutcome
+		wantDisposition appwire.RetryDisposition
+	}{
+		{
+			name:            "refusal naming the normalized caller id keeps not-accepted",
+			daemonNamedID:   normalized,
+			wantOutcome:     appwire.MutationOutcomeNotAccepted,
+			wantDisposition: appwire.RetryDispositionNone,
+		},
+		{
+			name:            "refusal naming a different mutation is blocked-unknown",
+			daemonNamedID:   "some-other-mutation",
+			wantOutcome:     appwire.MutationOutcomeUnknown,
+			wantDisposition: appwire.RetryDispositionBlocked,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+			t.Cleanup(func() {
+				resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+			})
+
+			// The ref must be one the hub knows, or the handler returns the first
+			// failure unchanged and never resumes at all.
+			root := t.TempDir()
+			workingDir := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+			sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+			past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := past.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+			ref := "local:" + sessionID
+
+			startCalls := 0
+			source := &scriptedAppSource{
+				id: "local",
+				thread: appwire.Thread{
+					ID:        sessionID,
+					SessionID: sessionID,
+					Source:    "local",
+					Evener: appwire.EvenerThread{
+						Ref:          ref,
+						Capabilities: appwire.ThreadCapabilities{Send: true},
+					},
+				},
+				startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+					startCalls++
+					if startCalls == 1 {
+						// The first send finds the exited session and triggers the resume.
+						return appwire.TurnStartResponse{}, appwire.SessionUnavailable("session has exited")
+					}
+					// The resumed daemon names the id it normalized at its boundary.
+					return appwire.TurnStartResponse{}, appwire.MutationNotAccepted(tc.daemonNamedID, "the resumed session refused the retry")
+				},
+			}
+			resolveTurnStartSource = func(*appsource.Registry, string, string) (appsource.Source, error) {
+				return source, nil
+			}
+			resumeCalls := 0
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				resumeCalls++
+				return appwire.ThreadResumeResponse{Thread: source.thread}, nil
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: past}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				Ref:              ref,
+				ClientMutationID: verbatim,
+				Input:            []appwire.InputItem{{Type: "text", Text: "do the thing"}},
+			})
+			if err == nil {
+				t.Fatal("turn/start reported success although the retry was refused")
+			}
+			if startCalls != 2 {
+				t.Fatalf("start calls=%d, want 2 (the original and the post-resume retry)", startCalls)
+			}
+			if resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", resumeCalls)
+			}
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("turn/start error %T=%v, want a WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("wire data %#v is not appwire.ErrorData", wire.Data)
+			}
+			if data.ClientMutationID != verbatim {
+				t.Fatalf("response names clientMutationId %q, want the caller's verbatim %q: the client cannot settle its record (wire=%+v)",
+					data.ClientMutationID, verbatim, wire)
+			}
+			if data.MutationOutcome != tc.wantOutcome || data.RetryDisposition != tc.wantDisposition {
+				t.Fatalf("mutationOutcome=%q retryDisposition=%q, want %q/%q (wire=%+v)",
+					data.MutationOutcome, data.RetryDisposition, tc.wantOutcome, tc.wantDisposition, wire)
 			}
 		})
 	}

@@ -619,6 +619,15 @@ func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
 // every other surface can settle the record instead of leaving it submitting
 // forever.
 //
+// The whole-operation not-accepted case is constructed directly here, not
+// reached through a caller: no real caller can satisfy it, because reaching the
+// retry requires a session-unavailable first failure and source resolution never
+// produces one (see preDispatchRefusalError and firstAttemptPreDispatch in
+// app_session_resume.go). The case pins the rule's shape -- it keeps the rule
+// honest if a source resolution that reports session-unavailable ever appears --
+// while TestHubRPCResumeRetrySourceResolutionFailureIsNotAccepted pins the
+// blocked-unknown outcome every real caller gets today.
+//
 // The once closure is withSessionResume's own seam: it stands in for the
 // relayWithResume / setGoalWithResume / clearThreadWithResume shapes that wrap
 // their sourceForThread failure in preDispatchRefusalError. firstErr is the
@@ -642,7 +651,9 @@ func TestSessionResumeRetryCorrelation(t *testing.T) {
 			wantDisposition: appwire.RetryDispositionBlocked,
 		},
 		{
-			name:            "both attempts failed before reaching a source is not-accepted",
+			// Forward-compatibility shape, not a production outcome: both attempts
+			// are handed the pre-dispatch signal directly (see the doc comment).
+			name:            "forward-compat: a both-pre-dispatch operation is not-accepted",
 			firstErr:        preDispatchRefusalError{appwire.SessionUnavailable("session has exited")},
 			retryErr:        preDispatchRefusalError{errors.New("source registry unavailable")},
 			wantOutcome:     appwire.MutationOutcomeNotAccepted,
