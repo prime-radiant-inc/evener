@@ -1,26 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { installLocalStorage } from "../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { EXPANSION_LIMIT, EXPANSION_STORAGE_KEY, loadExpansion, saveExpansion } from "./railExpansion";
-
-// See stores/prefs.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global, so
-// every test file that touches localStorage needs this same small in-memory
-// stand-in. Scoped to this file only.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // A storage that rejects every access, the way a browser in a blocked-cookies
 // or over-quota state does. Installed only by the tests that want it.
@@ -38,7 +18,7 @@ class ThrowingStorage {
 }
 
 function useStorage(storage: unknown): void {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  // @ts-expect-error ThrowingStorage stubs only the methods railExpansion.ts calls
   installLocalStorage(storage);
 }
 

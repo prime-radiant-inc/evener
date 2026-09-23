@@ -4,7 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { installLocalStorage } from "../../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import {
   initTranscriptDisplay,
@@ -18,22 +18,6 @@ import { TranscriptSection } from "./transcript";
 const originalPatchHubDefault = transcriptDisplayStore.getState().patchHubDefault;
 const activeObservers = new Set<MutationObserver>();
 
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 class FailingStorage extends MemoryStorage {
   setItem(): void {
     throw new Error("storage blocked");
@@ -41,7 +25,6 @@ class FailingStorage extends MemoryStorage {
 }
 
 beforeAll(() => {
-  // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
   installLocalStorage(new MemoryStorage());
 });
 
