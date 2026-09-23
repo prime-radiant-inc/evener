@@ -454,8 +454,8 @@ alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
 their workspace under it.
 
 A test that drives the crashed-scratch sweep itself confines it to scratch it
-owns (its own `TMPDIR`, no container bases; see `confineSessionScratchSweep`
-in agent), because the sweep deletes any aged, unleased scratch it can see,
+owns (its own `TMPDIR` and user cache dir, no container bases; see
+`confineSessionScratchSweep` in agent), because the sweep deletes any aged, unleased scratch it can see,
 including another process's.
 
 The browser guards are deliberately not part of make lint or make test:

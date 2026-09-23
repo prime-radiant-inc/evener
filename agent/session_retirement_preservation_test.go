@@ -457,9 +457,9 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 	// This test asserts exact collection outcomes, so its sweep must see only the
 	// scratch the test itself minted.
-	decoy := plantAmbientScratchDecoy(t)
+	decoys := plantAmbientScratchDecoys(t)
 	confineSessionScratchSweep(t)
-	t.Cleanup(func() { requireAmbientScratchDecoyUntouched(t, decoy) })
+	t.Cleanup(func() { requireAmbientScratchDecoysUntouched(t, decoys) })
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	env, ok := root.env.(*execenv.LocalExecutionEnvironment)
@@ -537,52 +537,73 @@ func TestScratchRetentionTerminalReleaseAllowsCollection(t *testing.T) {
 // confineSessionScratchSweep gives the test a session scratch namespace of its
 // own, so the startup sweep it drives can neither see nor delete another
 // process's scratch, and its verdict cannot depend on what else is on the host.
-// The sweep walks three kinds of base: the temp dir (TMPDIR, pointed at a
-// directory this test owns), the user cache dir (under the HOME and
-// XDG_CACHE_HOME that TestMain points at its own directory), and the
-// world-usable host temps a session temp container lives in (/tmp and /var/tmp,
-// which no environment variable moves, so they are dropped). Call it after
-// plantAmbientScratchDecoy when a test proves the confinement.
+// The sweep walks three kinds of base: the temp dir (TMPDIR), the user cache
+// dir (os.UserCacheDir, from XDG_CACHE_HOME or HOME), both pointed at
+// directories this test owns, and the world-usable host temps a session temp
+// container lives in (/tmp and /var/tmp, which no environment variable moves,
+// so they are dropped). Call it after plantAmbientScratchDecoys when a test
+// proves the confinement.
 func confineSessionScratchSweep(t *testing.T) {
 	t.Helper()
 	t.Setenv("TMPDIR", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
 	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
 }
 
-// plantAmbientScratchDecoy stands in for the host's shared temp dir as another
-// process left it: it points TMPDIR at a directory this test owns and plants a
-// real session scratch there that some other session retained and abandoned a
-// day ago. That is exactly what the startup sweep is built to reclaim, so a
-// sweep that can see this directory will delete the decoy. The decoy's path is
-// returned for requireAmbientScratchDecoyUntouched.
-func plantAmbientScratchDecoy(t *testing.T) string {
+// plantAmbientScratchDecoys stands in for the host's shared scratch bases as
+// another process left them: it points TMPDIR, and HOME and XDG_CACHE_HOME
+// (which os.UserCacheDir derives from), at directories this test owns and
+// plants a real session scratch in both the temp dir and the user cache dir,
+// each retained and abandoned by some other session a day ago. That is exactly
+// what the startup sweep is built to reclaim, so a sweep that can see either
+// base will delete its decoy. The decoys' paths are returned for
+// requireAmbientScratchDecoysUntouched.
+func plantAmbientScratchDecoys(t *testing.T) []string {
 	t.Helper()
-	ambient := t.TempDir()
-	t.Setenv("TMPDIR", ambient)
-	other, err := sandbox.NewSessionScratch(ambient, t.TempDir())
+	ambientTemp := t.TempDir()
+	t.Setenv("TMPDIR", ambientTemp)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	ambientCache, err := os.UserCacheDir()
 	if err != nil {
-		t.Fatalf("plant ambient scratch decoy: %v", err)
+		t.Fatalf("user cache dir: %v", err)
 	}
-	if err := other.Retain(); err != nil {
-		t.Fatalf("release ambient scratch decoy lease: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(other.Dir, "other-session.bin"), []byte("not yours"), 0o600); err != nil {
+	if err := os.MkdirAll(ambientCache, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	aged := time.Now().Add(-48 * time.Hour)
-	if err := os.Chtimes(other.Dir, aged, aged); err != nil {
-		t.Fatal(err)
+	var decoys []string
+	for _, base := range []string{ambientTemp, ambientCache} {
+		other, err := sandbox.NewSessionScratch(base, t.TempDir())
+		if err != nil {
+			t.Fatalf("plant ambient scratch decoy in %s: %v", base, err)
+		}
+		if err := other.Retain(); err != nil {
+			t.Fatalf("release ambient scratch decoy lease: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(other.Dir, "other-session.bin"), []byte("not yours"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		aged := time.Now().Add(-48 * time.Hour)
+		if err := os.Chtimes(other.Dir, aged, aged); err != nil {
+			t.Fatal(err)
+		}
+		decoys = append(decoys, other.Dir)
 	}
-	return other.Dir
+	return decoys
 }
 
-// requireAmbientScratchDecoyUntouched fails when a sweep reached the decoy that
-// plantAmbientScratchDecoy left in the ambient temp dir.
-func requireAmbientScratchDecoyUntouched(t *testing.T, decoy string) {
+// requireAmbientScratchDecoysUntouched fails when a sweep reached a decoy that
+// plantAmbientScratchDecoys left in an ambient scratch base.
+func requireAmbientScratchDecoysUntouched(t *testing.T, decoys []string) {
 	t.Helper()
-	got, err := os.ReadFile(filepath.Join(decoy, "other-session.bin"))
-	if err != nil || string(got) != "not yours" {
-		t.Errorf("the sweep reached another session's scratch in the ambient temp dir %q: %q, %v", decoy, got, err)
+	for _, decoy := range decoys {
+		got, err := os.ReadFile(filepath.Join(decoy, "other-session.bin"))
+		if err != nil || string(got) != "not yours" {
+			t.Errorf("the sweep reached another session's scratch in the ambient base %q: %q, %v", decoy, got, err)
+		}
 	}
 }
 
@@ -1425,9 +1446,9 @@ func sharedChildRealMintOnRestored(t *testing.T, env *execenv.LocalExecutionEnvi
 func TestRetirementSharedChildScratchBindingsRestore(t *testing.T) {
 	// Same confinement as TestScratchRetentionTerminalReleaseAllowsCollection: this
 	// test asserts exact collection and restore outcomes.
-	decoy := plantAmbientScratchDecoy(t)
+	decoys := plantAmbientScratchDecoys(t)
 	confineSessionScratchSweep(t)
-	t.Cleanup(func() { requireAmbientScratchDecoyUntouched(t, decoy) })
+	t.Cleanup(func() { requireAmbientScratchDecoysUntouched(t, decoys) })
 	for _, tc := range []struct {
 		name      string
 		sandboxed bool
