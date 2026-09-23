@@ -1909,3 +1909,31 @@ func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
 		t.Fatalf("outstanding after the join = %q, want none", got)
 	}
 }
+
+// closeAwaitingEnvWork is the fence tests' signal that a close is waiting at
+// its environment-work join, so the join must actually wait once it has fired.
+// Spending the budget from inside the seam proves it: a join parked in its
+// select can only leave through the budget arm, which names the held work in a
+// warning, while a join that fired the seam and then walked on would return
+// with the work still held and say nothing.
+func TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	held, ok := s.beginEnvWork("held work")
+	if !ok {
+		t.Fatal("environment work was refused")
+	}
+	defer s.endEnvWork(held)
+	drainBufferedWarnings(s)
+	ctx, spendBudget := context.WithCancel(context.Background())
+	defer spendBudget()
+	s.cfg.testOnly.closeAwaitingEnvWork = spendBudget
+	s.joinEnvWorkWithinCloseBudget(ctx)
+	if ctx.Err() == nil {
+		t.Fatal("the join never signalled it was waiting on the held work")
+	}
+	warnings := fenceWarnings(drainBufferedWarnings(s))
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "held work") {
+		t.Fatalf("fence warnings = %q, want one naming the held work", warnings)
+	}
+}

@@ -602,7 +602,9 @@ type testConfig struct {
 	// spent. It is the positive signal a fence test holds admitted work
 	// against. A close that is missing the join never calls it and reaches
 	// environment cleanup instead; a join with nothing outstanding, or with its
-	// budget already spent, does not call it either. Nil in production.
+	// budget already spent, does not call it either.
+	// TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds pins that the join
+	// really waits once it has called it. Nil in production.
 	closeAwaitingEnvWork func()
 
 	// envCleanupObserved observes every environment Close() runs Cleanup on,
