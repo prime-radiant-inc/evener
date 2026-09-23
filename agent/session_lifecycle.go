@@ -365,6 +365,10 @@ func (s *Session) outstandingEnvWork() []string {
 // to reap the process table under whatever is still running, which must not
 // happen silently, so the warning names it.
 func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
+	// testOnly seam: see testConfig.closeAwaitingEnvWork. Nil in production.
+	if observe := s.cfg.testOnly.closeAwaitingEnvWork; observe != nil && len(s.outstandingEnvWork()) > 0 {
+		observe()
+	}
 	joined := make(chan struct{})
 	go func() {
 		defer close(joined)
