@@ -134,7 +134,7 @@ func TestPackShardsRefusesEmptyTestSet(t *testing.T) {
 func TestPackShardsRefusesEmptyBins(t *testing.T) {
 	costs := []testCost{{"a", 1}, {"b", 1}, {"c", 1}}
 	_, _, err := packShards(costs, 5)
-	want := "asked for 5 shards but only 3 are non-empty; lower the shard count"
+	want := "asked for 5 shards but only 3 are non-empty; lower AGENT_SHARD_COUNT"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("packShards err = %v, want %q", err, want)
 	}
