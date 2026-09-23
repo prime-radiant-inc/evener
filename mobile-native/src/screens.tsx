@@ -63,15 +63,15 @@ import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
-import { discardRecoveredMutation, MutationRecoveryPanel } from "./MutationRecoveryPanel";
+import {
+	MutationRecoveryPanel,
+	recoveryFailureMessage,
+	shouldOfferRecoveryEntry,
+	useRecoveryPanel,
+} from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
-import {
-	getNativeMutationRuntime,
-	type NativeMutationRuntime,
-	nativeMutationTargetKey,
-} from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -112,7 +112,6 @@ import { TimelineItem } from "./TimelineItem";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { useNativeMutationRecovery } from "./useNativeMutationRecovery";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NATIVE_ROSTER_PAGE_SIZE = 50;
@@ -951,22 +950,19 @@ export function ConversationScreen({
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
 	// The recovery surface: this exact hub/conversation target's durable
-	// recovery rows, mounted in the recovery modal below. The runtime is
-	// acquired lazily on first open, because the singleton opens the mutations
-	// database - a screen that never opens recovery never constructs one, which
-	// is what the landed render fence
+	// recovery rows, mounted in the recovery modal below. useRecoveryPanel
+	// acquires the runtime only once the conversation is connected (the
+	// singleton opens the mutations database), so a screen that never reaches a
+	// live conversation never constructs one - what the landed render fence
 	// (useNativeMutationRecovery.render.test.tsx) requires of this screen.
-	const recoveryTargetKey = nativeMutationTargetKey(
-		route.params.hubId,
-		route.params.ref,
+	const recovery = useRecoveryPanel({
+		connected,
+		hubId: route.params.hubId,
+		targetRef: route.params.ref,
+	});
+	const deliveryConcern = Boolean(
+		snapshot.error || actionError || unconfirmedSend !== null,
 	);
-	const [recoveryRuntime, setRecoveryRuntime] =
-		useState<NativeMutationRuntime | null>(null);
-	useEffect(() => {
-		if (recoveryOpen && recoveryRuntime === null)
-			setRecoveryRuntime(getNativeMutationRuntime());
-	}, [recoveryOpen, recoveryRuntime]);
-	const recovery = useNativeMutationRecovery(recoveryRuntime, recoveryTargetKey);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
@@ -2545,6 +2541,22 @@ export function ConversationScreen({
 												: "Review error"}
 									</Action>
 								) : null}
+								{shouldOfferRecoveryEntry({
+									connected,
+									deliveryConcern,
+									count: recovery.count,
+									failed: recovery.failure !== null,
+								}) ? (
+									<Action
+										tone="quiet"
+										onPress={() => {
+											Keyboard.dismiss();
+											setRecoveryOpen(true);
+										}}
+									>
+										Recovery
+									</Action>
+								) : null}
 								{permitted?.stop ? (
 									<Action
 										tone="quiet"
@@ -2586,17 +2598,25 @@ export function ConversationScreen({
 								</View>
 								<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 									<ConnectionStatus inset={0} />
+									{recovery.failure ? (
+										<View style={styles.row}>
+											<ErrorMessage
+												message={recoveryFailureMessage(recovery.failure)}
+											/>
+											<Action tone="quiet" onPress={recovery.retry}>
+												Retry
+											</Action>
+										</View>
+									) : null}
 									<MutationRecoveryPanel
-										targetKey={recoveryTargetKey}
+										targetKey={recovery.targetKey}
 										snapshot={recovery.snapshot}
-										error={recovery.error}
+										error={recovery.readError}
 										actions={{
 											onRestore: (row) => {
 												document.restoreRecoveredDraft(row.text);
 											},
-											onDiscard: (row) => {
-												void discardRecoveredMutation(recovery, row);
-											},
+											onDiscard: recovery.discard,
 										}}
 									/>
 									<ErrorMessage

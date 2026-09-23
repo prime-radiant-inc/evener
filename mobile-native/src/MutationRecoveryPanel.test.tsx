@@ -19,10 +19,22 @@ import {
 	nativeMutationRecoveryActions,
 	projectNativeMutationRecovery,
 	recoveredComposerText,
+	recoveryFailureMessage,
+	shouldOfferRecoveryEntry,
+	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
-import { render, renderedText } from "./renderNative.testkit";
+import { render, renderedText, renderHook } from "./renderNative.testkit";
+import type { NativeMutationRecoveryRuntime } from "./useNativeMutationRecovery";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
+// The consumer hook module reaches the runtime's native edges at import time;
+// the tests never acquire a real runtime (they inject `acquire`), so inert
+// mocks are enough to make the module load.
+vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => "test-uuid",
+	getRandomValues: (array: Uint8Array) => array,
+}));
 
 const TARGET_A = JSON.stringify(["hub-a", "ref-a"]);
 const TARGET_B = JSON.stringify(["hub-b", "ref-b"]);
@@ -216,4 +228,160 @@ it("surfaces a read error instead of a silent empty panel", () => {
 		/>,
 	);
 	expect(renderedText(tree)).toContain("recovery table unavailable");
+});
+
+function fakeRuntime(
+	overrides: Partial<NativeMutationRecoveryRuntime> = {},
+): NativeMutationRecoveryRuntime {
+	return {
+		read: async (targetKey) => ({
+			outbox: [],
+			optimistic: [],
+			recovery: [recovery(targetKey, "row-1", 1, "rejected")],
+		}),
+		subscribeStorage: () => () => {},
+		discardRecovery: async () => true,
+		...overrides,
+	};
+}
+
+async function flush() {
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+it("offers the recovery entry only to a connected, unconcerned conversation with rows or a failure", () => {
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: 1,
+			failed: false,
+		}),
+	).toBe(true);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: 0,
+			failed: true,
+		}),
+	).toBe(true);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: 0,
+			failed: false,
+		}),
+	).toBe(false);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: true,
+			count: 3,
+			failed: false,
+		}),
+	).toBe(false);
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: false,
+			deliveryConcern: false,
+			count: 3,
+			failed: false,
+		}),
+	).toBe(false);
+});
+
+it("surfaces a failed runtime acquisition and clears it on retry", async () => {
+	let mode: "fail" | "ok" = "fail";
+	const acquire = () => {
+		if (mode === "fail") throw new Error("mutations db unavailable");
+		return fakeRuntime();
+	};
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire,
+		}),
+	);
+	await flush();
+
+	expect(result.current.failure).toBeInstanceOf(Error);
+	expect(recoveryFailureMessage(result.current.failure)).toBe(
+		"mutations db unavailable",
+	);
+	expect(result.current.count).toBe(0);
+	// The failure is not invisible: the entry offers a way into the modal.
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: result.current.count,
+			failed: result.current.failure !== null,
+		}),
+	).toBe(true);
+
+	mode = "ok";
+	act(() => result.current.retry());
+	await flush();
+
+	expect(result.current.failure).toBeNull();
+	expect(result.current.count).toBe(1);
+});
+
+it("surfaces a rejected discard instead of leaving an unhandled rejection", async () => {
+	const runtime = fakeRuntime({
+		discardRecovery: async () => {
+			throw new Error("discard failed");
+		},
+	});
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	const row = projectNativeMutationRecovery(
+		result.current.targetKey,
+		result.current.snapshot,
+	)[0];
+
+	act(() => {
+		result.current.discard(row);
+	});
+	await flush();
+
+	expect(result.current.failure).toBeInstanceOf(Error);
+	expect(recoveryFailureMessage(result.current.failure)).toBe("discard failed");
+});
+
+it("leaves no failure after a successful discard", async () => {
+	const runtime = fakeRuntime();
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	const row = projectNativeMutationRecovery(
+		result.current.targetKey,
+		result.current.snapshot,
+	)[0];
+
+	act(() => {
+		result.current.discard(row);
+	});
+	await flush();
+
+	expect(result.current.failure).toBeNull();
 });

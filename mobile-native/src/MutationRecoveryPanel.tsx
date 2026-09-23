@@ -1,8 +1,8 @@
 // The native recovery surface's view of one target's durable recovery rows.
 // It is the panel half of the landed slice-4 hook: the hook owns the read,
 // the storage subscription and the one recovery write; this module is the
-// pure projection and the presentational list a screen mounts inside its
-// recovery modal.
+// pure projection, the presentational list a screen mounts inside its
+// recovery modal, and the consumer hook that owns the screen's recovery state.
 //
 // Two recovery offers, and only these two:
 // - restore: writes a rejected row's recovered text into the composer through
@@ -20,7 +20,13 @@ import type {
 	MutationRecoveryKind,
 	MutationRecoveryRecord,
 } from "@evener/appwire-client/state/mutation";
+import { useCallback, useEffect, useState } from "react";
 import { View } from "react-native";
+import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
+import {
+	type NativeMutationRecoveryRuntime,
+	useNativeMutationRecovery,
+} from "./useNativeMutationRecovery";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export type NativeMutationRecoveryStatus = MutationRecoveryKind;
@@ -131,6 +137,100 @@ export function discardRecoveredMutation(
 	return projection.discard(row.clientMutationId);
 }
 
+export function recoveryFailureMessage(error: unknown): string {
+	return error instanceof Error ? error.message : "Recovery is unavailable.";
+}
+
+// The recovery entry point: a healthy, connected conversation whose composer
+// has no error and no uncertain submission still needs a way into the recovery
+// modal when a target holds recoverable rows - a durable row outlives the
+// transient error that surfaced it. A failed acquisition also offers the entry,
+// so the failure can be retried in the modal instead of being invisible.
+export function shouldOfferRecoveryEntry({
+	connected,
+	deliveryConcern,
+	count,
+	failed,
+}: {
+	connected: boolean;
+	deliveryConcern: boolean;
+	count: number;
+	failed: boolean;
+}): boolean {
+	return connected && !deliveryConcern && (count > 0 || failed);
+}
+
+export interface RecoveryPanelSurface {
+	targetKey: string;
+	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null;
+	loading: boolean;
+	readError: unknown;
+	/** An acquisition or discard failure that the read projection cannot carry. */
+	failure: unknown;
+	count: number;
+	retry(): void;
+	discard(row: NativeMutationRecoveryRow): void;
+}
+
+// Owns the screen's recovery state: it acquires the runtime lazily (only once
+// connected, so a screen that never reaches a live conversation never opens the
+// mutations database), follows the landed hook's projection, and turns the two
+// failure paths the runtime deliberately propagates - a failed acquisition and
+// a rejected discard - into visible state a Retry can clear.
+export function useRecoveryPanel({
+	connected,
+	hubId,
+	targetRef,
+	acquire = getNativeMutationRuntime,
+}: {
+	connected: boolean;
+	hubId: string;
+	targetRef: string;
+	acquire?: () => NativeMutationRecoveryRuntime;
+}): RecoveryPanelSurface {
+	const targetKey = nativeMutationTargetKey(hubId, targetRef);
+	const [runtime, setRuntime] = useState<NativeMutationRecoveryRuntime | null>(
+		null,
+	);
+	const [failure, setFailure] = useState<unknown>(null);
+	const [attempt, setAttempt] = useState(0);
+
+	useEffect(() => {
+		if (!connected || runtime !== null) return;
+		try {
+			setRuntime(acquire());
+		} catch (error) {
+			setFailure(error);
+		}
+	}, [connected, runtime, acquire, attempt]);
+
+	const projection = useNativeMutationRecovery(runtime, targetKey);
+	const retry = useCallback(() => {
+		setFailure(null);
+		setAttempt((value) => value + 1);
+	}, []);
+	const discard = useCallback(
+		(row: NativeMutationRecoveryRow) => {
+			void discardRecoveredMutation(projection, row).then(
+				() => undefined,
+				(error) => setFailure(error),
+			);
+		},
+		[projection],
+	);
+
+	return {
+		targetKey,
+		snapshot: projection.snapshot,
+		loading: projection.loading,
+		readError: projection.error,
+		failure,
+		count: projection.snapshot?.recovery.length ?? 0,
+		retry,
+		discard,
+	};
+}
+
 export function MutationRecoveryPanel({
 	targetKey,
 	snapshot,
@@ -144,15 +244,7 @@ export function MutationRecoveryPanel({
 }) {
 	const colors = useColors();
 	if (error) {
-		return (
-			<ErrorMessage
-				message={
-					error instanceof Error
-						? error.message
-						: "Recovery status is unavailable."
-				}
-			/>
-		);
+		return <ErrorMessage message={recoveryFailureMessage(error)} />;
 	}
 	if (snapshot === null) return <Copy muted>Loading delivery status…</Copy>;
 	const rows = projectNativeMutationRecovery(targetKey, snapshot);
