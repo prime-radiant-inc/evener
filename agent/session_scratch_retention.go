@@ -392,6 +392,43 @@ func (s *Session) stageScratchSwapBinding(target, source *execenv.LocalExecution
 			}
 			continue
 		}
+		if err == nil {
+			return nil
+		}
+		// A write whose rename already committed can still report the
+		// post-rename failure class (writeScratchRetention's probe fires
+		// after atomicWritePrivateFile): the durable manifest then names
+		// the target's slots while the handles still live on the source,
+		// and returning the error would abort the caller before
+		// AdoptSessionScratch leaves the manifest and the environment
+		// disagreeing about who owns the allocation. Detect the committed
+		// transition by content — every moved kind landed on the target
+		// and the consumer names it — and report success so the caller
+		// completes the adoption. A write that did not commit leaves the
+		// target without the moved slots, and the error stands (round 43;
+		// the round 39 commit discriminator applied to the swap).
+		if fresh, rerr := sandbox.LoadScratchRetention(owner); rerr == nil {
+			if rec, ok := findScratchBinding(fresh, targetID); ok {
+				committed := true
+				for kind, slot := range moved {
+					if _, kept := keptKinds[kind]; kept {
+						continue
+					}
+					got, has := rec.Slots[kind]
+					if !has || filepath.Clean(got.Dir) != filepath.Clean(slot.Dir) {
+						committed = false
+						break
+					}
+				}
+				if committed {
+					for _, consumer := range fresh.Consumers {
+						if consumer.SessionID == sessionID && consumer.CurrentBindingID == targetID {
+							return nil
+						}
+					}
+				}
+			}
+		}
 		return err
 	}
 	return fmt.Errorf("scratch retention: swap binding for %q stayed stale", targetID)
@@ -1403,14 +1440,14 @@ func (s *Session) prepareRetainedScratch() error {
 				// runtime holds the lease). Leave it with its owner instead of
 				// contending; a real crash releases the lease before restore.
 				if dir, absErr := filepath.Abs(ref.Dir); absErr == nil {
-					pool.contended[filepath.Clean(dir)] = struct{}{}
+					pool.contended[canonicalScratchDir(dir)] = struct{}{}
 				}
 				continue
 			}
 			releaseRetainedScratchPool(pool)
 			return fmt.Errorf("retained scratch %q: %w", ref.Dir, err)
 		}
-		pool.handles[filepath.Clean(ref.Dir)] = handle
+		pool.handles[canonicalScratchDir(ref.Dir)] = handle
 	}
 	for _, binding := range manifest.Bindings {
 		if _, dup := pool.bindings[binding.BindingID]; dup {
@@ -1487,14 +1524,14 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// re-probe (it holds that lease itself), and marking there would
 			// defer every later publication off the allocation it already
 			// owns.
-			if slot.OwnsLease && pool.scratchSlotContended(filepath.Clean(slot.Dir)) &&
+			if slot.OwnsLease && pool.scratchSlotContended(canonicalScratchDir(slot.Dir)) &&
 				filepath.Clean(envScratchRefDir(env, kind)) != filepath.Clean(slot.Dir) {
 				env.MarkRetainedSlotPending(kind)
 				markedPending = true
 			}
 			continue
 		}
-		key := filepath.Clean(slot.Dir)
+		key := canonicalScratchDir(slot.Dir)
 		if !slot.OwnsLease {
 			// A wrapper-only slot points at a retained directory whose lease
 			// another binding owns. It never takes a second lease, so the borrow

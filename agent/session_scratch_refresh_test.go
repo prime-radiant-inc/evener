@@ -2243,6 +2243,140 @@ func TestSwapKeepsBorrowedSlotsNonOwning(t *testing.T) {
 	}
 }
 
+// TestSwapReportsACommittedWriteAsStaged pins round 43's first Medium: the
+// swap's manifest write can report the post-rename failure class — an error
+// for a transition the rename already committed — and the swap treated it
+// as uncommitted, returning before the caller's AdoptSessionScratch while
+// the durable manifest named the target's slots and the live environment
+// still owned the source scratch. The swap must detect the committed
+// transition by content and report success so the caller completes the
+// adoption; a write that did not commit keeps its error.
+func TestSwapReportsACommittedWriteAsStaged(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01SWAPCOMMIT1"
+	const bindingID = "b-swap-commit"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(retainedDir): slots[sandbox.ScratchKindSandbox]},
+	})
+
+	// The source genuinely adopts the owning slot, so the swap moves a live
+	// lease the caller must hand to the target on success.
+	source := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { source.Cleanup(); source.DisposeSandboxScratch() })
+	if _, _, err := s.adoptRetainedScratchFor(source, bindingID, consumerID); err != nil {
+		t.Fatalf("fixture: source adoption: %v", err)
+	}
+
+	target := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { target.Cleanup(); target.DisposeSandboxScratch() })
+
+	// Fail the swap's manifest write exactly once, after its rename has
+	// committed: the post-rename fsync failure class the write probe
+	// simulates.
+	var fired bool
+	restore := sandbox.SetScratchManifestWriteProbeForTesting(func() error {
+		if fired {
+			return nil
+		}
+		fired = true
+		return errors.New("probe: post-rename fsync failure")
+	})
+	defer restore()
+
+	err := s.stageScratchSwapBinding(target, source, consumerID)
+
+	// The committed-transition evidence first: the durable manifest must
+	// name the target with the moved slot. Only then does the swap's own
+	// report matter — a write that committed must not be reported as
+	// failed, or the caller aborts before AdoptSessionScratch and the
+	// manifest and the environment disagree about who owns the allocation.
+	targetBinding, terr := target.ScratchRetentionBinding()
+	if terr != nil {
+		t.Fatalf("fixture: target binding: %v", terr)
+	}
+	manifest, merr := sandbox.LoadScratchRetention(owner)
+	if merr != nil {
+		t.Fatalf("fixture: load manifest: %v", merr)
+	}
+	row, ok := findScratchBinding(manifest, targetBinding.BindingID)
+	if !ok {
+		t.Fatalf("fixture: the swap write did not commit: binding %q is absent from the manifest", targetBinding.BindingID)
+	}
+	got, hasSlot := row.Slots[sandbox.ScratchKindSandbox]
+	if !hasSlot || filepath.Clean(got.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("fixture: the swap write did not commit: target slots are %+v", row.Slots)
+	}
+	if err != nil {
+		t.Fatalf("the swap reported a committed transition as failed: %v", err)
+	}
+}
+
+// TestScratchClaimCanonicalizesRelativeSlotDirs pins round 43's Low: the
+// pool's handle keys are written canonically (the refresh install's
+// convention) while the adoption claim keyed slots with filepath.Clean, so
+// a slot spelled relative to the working directory missed the pooled handle
+// for the very directory it names — a false no-handle verdict. Every pool
+// key must be one normalization.
+func TestScratchClaimCanonicalizesRelativeSlotDirs(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RELSLOTKEY1"
+	const bindingID = "b-rel-slot"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	absDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(cwd, absDir)
+	if err != nil {
+		t.Fatalf("fixture: relative spelling of %q: %v", absDir, err)
+	}
+	relRow := bindingRow
+	relRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: rel, OwnsLease: true},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: relRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(absDir): slots[sandbox.ScratchKindSandbox]},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	installed, transferred, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("the claim missed the pooled handle for a slot spelled relative to the working directory: %v", err)
+	}
+	if !installed || !transferred[sandbox.ScratchKindSandbox] {
+		t.Fatalf("the claim did not transfer the pooled handle: installed=%v transferred=%v", installed, transferred)
+	}
+	if got := envScratchRefDir(env, sandbox.ScratchKindSandbox); filepath.Clean(got) != filepath.Clean(absDir) {
+		t.Fatalf("the environment did not end up on the retained directory: got %q want %q", got, absDir)
+	}
+}
+
 // TestScratchRefreshBacksOffLockContention pins the round-11 backoff gap: the
 // refresh's re-derive loop retried a fail-fast manifest-lock refusal
 // immediately, so five passes — microseconds each — could all lose to one

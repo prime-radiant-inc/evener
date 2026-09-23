@@ -215,6 +215,16 @@ func loadScratchRetention(owner ScratchOwner) (ScratchManifest, error) {
 // treat as committed.
 var scratchManifestWriteProbe func() error
 
+// SetScratchManifestWriteProbeForTesting installs the post-rename manifest
+// write probe and returns its restore. Cross-package tests use it to
+// simulate the post-rename fsync failure class for a caller that must treat
+// the reported failure as committed; the probe is nil in production.
+func SetScratchManifestWriteProbeForTesting(hook func() error) (restore func()) {
+	old := scratchManifestWriteProbe
+	scratchManifestWriteProbe = hook
+	return func() { scratchManifestWriteProbe = old }
+}
+
 func writeScratchRetention(owner ScratchOwner, manifest ScratchManifest) error {
 	manifest.Version = scratchRetentionVersion
 	manifest.Owner = owner

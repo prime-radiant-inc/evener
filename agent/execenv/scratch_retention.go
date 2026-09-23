@@ -244,7 +244,14 @@ func (e *LocalExecutionEnvironment) RestoreSessionScratch(bindingID string, ref 
 	if scratch == nil || strings.TrimSpace(scratch.Dir) == "" {
 		return errors.New("execenv: restore requires a scratch handle")
 	}
-	if filepath.Clean(ref.Dir) != filepath.Clean(scratch.Dir) {
+	// The restored directory may be spelled differently from the binding
+	// row's slot (a relative spelling canonicalizes to the handle's
+	// absolute path): compare canonically, the same normalization every
+	// pool key uses, or the same directory named two ways is refused as a
+	// mismatch (round 43).
+	refDir, refErr := filepath.Abs(ref.Dir)
+	scratchDir, scratchErr := filepath.Abs(scratch.Dir)
+	if refErr != nil || scratchErr != nil || filepath.Clean(refDir) != filepath.Clean(scratchDir) {
 		return fmt.Errorf("execenv: restored scratch %q does not match reference %q", scratch.Dir, ref.Dir)
 	}
 	e.scratchMu.Lock()
