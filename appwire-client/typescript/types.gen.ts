@@ -1009,6 +1009,20 @@ export interface HostAttachResponse {
   features?: FeatureSet;
 }
 
+export interface HostCredentialPushResult {
+  instance: string;
+  /**
+   * Action is "added" | "updated" | "skipped" | "failed". "added" and
+   * "updated" are the host's own conditional-set actions; "skipped" is either
+   * the host's classification (a source a pushed key must not shadow) or this
+   * controller's "no matching instance on the host"; "failed" is a per-instance
+   * failure (chiefly a refused or stale-revision conditional set) that does not
+   * abort the remaining entries.
+   */
+  action: string;
+  reason?: string;
+}
+
 export interface HostEntry {
   name?: string;
   address: string;
@@ -1031,6 +1045,15 @@ export interface HostNotificationParams {
   host: string;
   method: string;
   params?: unknown;
+}
+
+export interface HostPushCredentialsParams {
+  host: string;
+}
+
+export interface HostPushCredentialsResponse {
+  host: string;
+  results: HostCredentialPushResult[];
 }
 
 export interface HostRemoveParams {
@@ -3558,6 +3581,7 @@ export const METHOD_NAMES = [
   "evener/host/status",
   "evener/host/remove",
   "evener/host/update",
+  "evener/host/pushCredentials",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3769,6 +3793,7 @@ export interface MethodTypes {
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
+  "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
 }
 
 export interface NotificationTypes {

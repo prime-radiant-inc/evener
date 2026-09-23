@@ -434,14 +434,19 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// (add/list/status/remove/update), so they are never proxied calls. Denied
 		// deliberately — see TestHostManageNotForwarded, which pins the same
 		// requirement from the management side.
-		"evener/host/add":        false,
-		"evener/host/list":       false,
-		"evener/host/status":     false,
-		"evener/host/remove":     false,
-		"evener/host/update":     false,
-		"evener/instance/create": true,
-		"evener/instance/edit":   true,
-		"evener/instance/list":   true,
+		"evener/host/add":    false,
+		"evener/host/list":   false,
+		"evener/host/status": false,
+		"evener/host/remove": false,
+		"evener/host/update": false,
+		// The credential push is controller-LOCAL: it reads this controller's
+		// own store and dispatches to a host itself, like evener/host/request.
+		// It is never a proxied call, so a peer hub cannot make this hub push
+		// its local credentials by forwarding the method.
+		"evener/host/pushCredentials": false,
+		"evener/instance/create":      true,
+		"evener/instance/edit":        true,
+		"evener/instance/list":        true,
 		// Two instance methods landed on the catalog after this list was
 		// written (per-model enablement and its refresh). The proxy forwards the
 		// five instance handlers the settings panes drive remotely and nothing

@@ -175,6 +175,13 @@ const (
 	// channel. hub.toml-declared names are refused (edit the file). See
 	// HostUpdateParams.
 	MethodEvenerHostUpdate = "evener/host/update"
+	// MethodEvenerHostPushCredentials copies the controller's local
+	// provider-instance keys to one named remote host (component 07c). The unit
+	// of the push is the local credentials-store entry; each key is sent
+	// verbatim as the Provider value only to the two provider-keyed auth
+	// methods, and the host's own conditional set does the write. See
+	// HostPushCredentialsParams.
+	MethodEvenerHostPushCredentials = "evener/host/pushCredentials"
 )
 
 const (
@@ -4018,6 +4025,46 @@ type HostRequestParams struct {
 // not landed here. Read this marker as "an opaque JSON object the proxy passes
 // through", never as an empty result.
 type HostForwardedResult struct{}
+
+// HostPushCredentialsParams is the evener/host/pushCredentials payload
+// (component 07c): the component-03 source ID of one configured remote host to
+// copy the controller's local provider-instance keys to. The push reads the
+// controller's local store and writes only the host's; the unit of the push is
+// the local credentials-store entry, whose key is the instance name.
+type HostPushCredentialsParams struct {
+	Host string `json:"host"`
+}
+
+// HostPushCredentialsResponse is the per-instance report of one push: one
+// HostCredentialPushResult per local credentials-store entry, in the store's
+// sorted name order, plus the host the push targeted.
+type HostPushCredentialsResponse struct {
+	Host    string                     `json:"host"`
+	Results []HostCredentialPushResult `json:"results"`
+}
+
+// HostCredentialPushResult is one local entry's outcome. Action is one of the
+// HostCredentialPush* values; Reason explains a skip or names the failure and
+// is empty for a write that landed.
+type HostCredentialPushResult struct {
+	Instance string `json:"instance"`
+	// Action is "added" | "updated" | "skipped" | "failed". "added" and
+	// "updated" are the host's own conditional-set actions; "skipped" is either
+	// the host's classification (a source a pushed key must not shadow) or this
+	// controller's "no matching instance on the host"; "failed" is a per-instance
+	// failure (chiefly a refused or stale-revision conditional set) that does not
+	// abort the remaining entries.
+	Action string `json:"action"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// The Action values of HostCredentialPushResult.
+const (
+	HostCredentialPushAdded   = "added"
+	HostCredentialPushUpdated = "updated"
+	HostCredentialPushSkipped = "skipped"
+	HostCredentialPushFailed  = "failed"
+)
 
 // HostAttachParams is the evener/host/attach payload (component 06's Connect
 // action): the component-03 source ID of one configured remote host to attach.

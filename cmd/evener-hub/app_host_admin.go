@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/credentials"
 )
 
 // remoteHostAdminMethods is the exact set of hub-scoped admin RPCs the
@@ -299,7 +300,7 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 // an EventAttached wakes the navigation snapshot but not a fan-out sleeping in
 // backoff, which may then wait up to hostNotificationRetryMax before
 // subscribing while the new client's notification buffer fills.
-func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
+func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry, creds *credentials.Store) *hubHostAdminController {
 	// hosts is the one live registry the server constructor resolved — the
 	// same instance the attach and host-management handlers share — so the
 	// proxy's unknown-host authority covers a host added at runtime instead
@@ -307,6 +308,10 @@ func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, ho
 	// entries.
 	controller := newHubHostAdminController(server, hosts, sources)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRequest, controller.Request)
+	// The credential push shares this controller's host/source resolution, so its
+	// remote dispatch rides the same per-host client seam (and the same origin
+	// guard) as the proxy.
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPushCredentials, (&hubHostCredentialsPusher{admin: controller, creds: creds}).Push)
 	controller.start(ctx)
 	return controller
 }
