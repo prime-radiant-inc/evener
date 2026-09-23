@@ -18,7 +18,7 @@ import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { AgentsDocSection } from "./sections/agentsDoc";
-import { CredentialsSection } from "./sections/credentials/CredentialsSection";
+import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
 import { HostsSection } from "./sections/hosts";
@@ -68,7 +68,10 @@ const CLASS = {
 // SETTINGS_SECTIONS (sections.ts's own comment - no nav entry) but IS a
 // valid dispatch target here, reached via /settings/project?cwd=.
 const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> = {
-  credentials: CredentialsSection,
+  // CredentialsHostScope wraps CredentialsSection with the host picker: local
+  // (the default) renders CredentialsSection unchanged, a remote selection
+  // renders that host's own read-only listing.
+  credentials: CredentialsHostScope,
   agents: AgentsSection,
   "agents-md": AgentsDocSection,
   "launch-evener": LaunchServerSection,

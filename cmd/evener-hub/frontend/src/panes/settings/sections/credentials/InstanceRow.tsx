@@ -29,8 +29,10 @@ const CLASS = {
 
 // The one meta line: the unconfigured label is the more important signal and
 // leads; style info (a gateway's base URL is the interesting part of "No key
-// set · optional") follows it.
-function metaText(instance: InstanceEntry): string {
+// set · optional") follows it. Exported so the read-only remote-host view
+// (CredentialsHostScope) labels a row exactly the way this pane's own row does
+// - one spelling per instance, whether the row is editable or not.
+export function instanceMetaText(instance: InstanceEntry): string {
   const unconfigured = unconfiguredLabel(instance);
   const styleInfo = styleInfoText(instance);
   return unconfigured === null ? styleInfo : `${unconfigured} · ${styleInfo}`;
@@ -42,7 +44,7 @@ export interface InstanceRowProps {
 }
 
 export function InstanceRow({ instance, onSelect }: InstanceRowProps) {
-  const meta = metaText(instance);
+  const meta = instanceMetaText(instance);
   return (
     <li>
       <button type="button" className={CLASS.rowButton} onClick={onSelect}>
