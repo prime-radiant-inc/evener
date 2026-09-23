@@ -345,6 +345,33 @@ func CredentialConfigRevision(r *registry.Registry, name string) string {
 	return CredentialConfigRevisionResolved(res)
 }
 
+// DestinationIdentity is where a resolved instance's credential-bearing
+// requests go, as one string: the base URL it resolves, the protocol that
+// selects its request templates, and every request path those templates
+// contribute. A credential-bearing request is built from exactly these, so a
+// change to any of them moves where the secret is sent - and a change to the
+// protocol or a path template can leave the sanitized URL a listing displays
+// byte-identical, which is why neither consumer of this identity can work from
+// that URL alone. Nothing secret-bearing is here: not the credential, not
+// either header map, not vars.
+//
+// It has two consumers, and they must not drift: the listing's endpoint
+// fingerprint digests a keyed MAC of it (the hub's own destinationFingerprint),
+// and CredentialConfigRevisionResolved hashes it into the revision the
+// credential push fences against. Sharing this one function is what keeps the
+// revision covering every field the fingerprint covers.
+func DestinationIdentity(resolved registry.Resolved) string {
+	t := resolved.Transport
+	return strings.Join([]string{
+		strings.TrimSpace(t.BaseURL),
+		resolved.Protocol,
+		strings.TrimSpace(t.Endpoint),
+		strings.TrimSpace(t.StreamEndpoint),
+		strings.TrimSpace(t.ModelsEndpoint),
+		strings.TrimSpace(t.CountTokensEndpoint),
+	}, "\x00")
+}
+
 // CredentialConfigRevisionResolved is CredentialConfigRevision over an instance
 // the caller has already resolved, so a caller that resolved it for another
 // field of the same row - the instances listing's endpoint fingerprint, say -
@@ -354,6 +381,14 @@ func CredentialConfigRevision(r *registry.Registry, name string) string {
 // unresolved Resolved (no instance name) has no revision, matching the empty
 // string CredentialConfigRevision returns for a name the registry cannot
 // resolve.
+//
+// The revision is the credential push's only no-clobber fence: the conditional
+// set it calls checks no endpoint fingerprint of its own, so everything that
+// decides where a stored key is sent has to be in here. DestinationIdentity
+// carries the endpoint half of that (the same bytes the listing's fingerprint
+// digests) and AuthHeader the rest, because the header a scheme writes decides
+// both where the key goes and - when the instance authors that same header
+// through credential_headers - whether the scheme derives from it at all.
 func CredentialConfigRevisionResolved(res registry.Resolved) string {
 	if strings.TrimSpace(res.Instance) == "" {
 		return ""
@@ -364,8 +399,8 @@ func CredentialConfigRevisionResolved(res registry.Resolved) string {
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "protocol", res.Protocol)
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "surface", res.Surface)
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "auth", res.Transport.Auth)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "baseURL", res.Transport.BaseURL)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "modelsEndpoint", res.Transport.ModelsEndpoint)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "authHeader", res.Transport.AuthHeader)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "destination", DestinationIdentity(res))
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "source", res.Credential.Source)
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
 	return hex.EncodeToString(sum.Sum(nil))

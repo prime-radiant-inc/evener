@@ -384,26 +384,6 @@ func fingerprintWithKey(key []byte, identity string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// destinationIdentity is what destinationFingerprint digests: the base URL an
-// instance resolves, the protocol that selects its request templates, and every
-// request path those templates contribute. A credential-bearing request is
-// built from exactly these, so a change to any of them moves where the secret
-// is sent - and a change to the protocol or a path template can leave the
-// sanitized URL the listing displays byte-identical, which is why the digest
-// cannot be of that URL alone. Nothing secret-bearing is here: not the
-// credential, not either header map, not vars.
-func destinationIdentity(resolved registry.Resolved) string {
-	t := resolved.Transport
-	return strings.Join([]string{
-		strings.TrimSpace(t.BaseURL),
-		resolved.Protocol,
-		strings.TrimSpace(t.Endpoint),
-		strings.TrimSpace(t.StreamEndpoint),
-		strings.TrimSpace(t.ModelsEndpoint),
-		strings.TrimSpace(t.CountTokensEndpoint),
-	}, "\x00")
-}
-
 // destinationInstance reports the instance behind inst when it has a
 // destination this hub can name at all: not hidden, resolvable, and carrying a
 // base URL. Whether the hub can *key* that destination's fingerprint is a
@@ -476,7 +456,7 @@ func rowEndpointFingerprint(key []byte, inst registry.Instance, resolved registr
 	if !ok || !hasRowDestination(inst, resolved) {
 		return ""
 	}
-	return fingerprintWithKey(key, destinationIdentity(resolved))
+	return fingerprintWithKey(key, hubcore.DestinationIdentity(resolved))
 }
 
 // endpointFingerprintKeyFile is the key's name under the auth state root, the

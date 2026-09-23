@@ -11,6 +11,7 @@ package hub
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -134,6 +135,23 @@ func loadStoredKey(t *testing.T, credsDir, name string) (string, bool) {
 // Requirement 2: AuthStatusResponse / InstanceEntry carry ConfigRevision.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// credentialDestinationInstanceToml is one instance with every field
+// destinationIdentity fingerprints spelled out, plus the auth header, so a
+// revision test can vary one of them at a time and prove the revision covers
+// them all: a credential push prepared against one of these and applied after
+// the field moved would otherwise land a secret aimed somewhere the client
+// never reviewed.
+const credentialDestinationInstanceToml = `[providers.gateway]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "header"
+auth_header = "X-Custom-Key"
+endpoint = "/v1/chat/completions"
+stream_endpoint = "/v1/chat/stream"
+models_endpoint = "/v1/models"
+count_tokens_endpoint = "/v1/count-tokens"
+`
+
 // TestAuth_StatusExposesConfigRevision proves AuthStatusResponse carries a
 // non-empty ConfigRevision, that it is stable while the instance's credential
 // configuration is unchanged, and that it moves when the effective source
@@ -178,6 +196,92 @@ func TestAuth_StatusExposesConfigRevision(t *testing.T) {
 	}
 	if stored.ConfigRevision == credentialless.ConfigRevision {
 		t.Fatalf("ConfigRevision did not move when the effective credential source changed: %q", stored.ConfigRevision)
+	}
+}
+
+// TestAuth_ConfigRevisionCoversTheCredentialDestination proves the revision
+// fence covers every destination field the endpoint fingerprint covers - the
+// fields destinationIdentity digests - plus the instance's auth header, because
+// the revision is the push's only no-clobber fence: the conditional set checks
+// no endpoint fingerprint of its own. Changing any of them moves where the
+// secret is sent (or, for the auth header, whether it is sent at all), so a
+// revision that ignored one would let a stale push pass both fences and land a
+// credential at a destination the client never reviewed.
+func TestAuth_ConfigRevisionCoversTheCredentialDestination(t *testing.T) {
+	cases := []struct {
+		name  string
+		field string
+		want  string
+		toml  string
+	}{
+		{
+			name: "auth-header", field: "auth_header", want: "X-Other-Key",
+			toml: strings.Replace(credentialDestinationInstanceToml, "auth_header = \"X-Custom-Key\"", "auth_header = \"X-Other-Key\"", 1),
+		},
+		{
+			name: "base-url", field: "base_url", want: "http://127.0.0.1:9/v2",
+			toml: strings.Replace(credentialDestinationInstanceToml, "base_url = \"http://127.0.0.1:9/v1\"", "base_url = \"http://127.0.0.1:9/v2\"", 1),
+		},
+		{
+			name: "endpoint", field: "endpoint", want: "/v1/other-completions",
+			toml: strings.Replace(credentialDestinationInstanceToml, "endpoint = \"/v1/chat/completions\"", "endpoint = \"/v1/other-completions\"", 1),
+		},
+		{
+			name: "stream-endpoint", field: "stream_endpoint", want: "/v1/other-stream",
+			toml: strings.Replace(credentialDestinationInstanceToml, "stream_endpoint = \"/v1/chat/stream\"", "stream_endpoint = \"/v1/other-stream\"", 1),
+		},
+		{
+			name: "models-endpoint", field: "models_endpoint", want: "/v2/models",
+			toml: strings.Replace(credentialDestinationInstanceToml, "models_endpoint = \"/v1/models\"", "models_endpoint = \"/v2/models\"", 1),
+		},
+		{
+			name: "count-tokens-endpoint", field: "count_tokens_endpoint", want: "/v1/other-count-tokens",
+			toml: strings.Replace(credentialDestinationInstanceToml, "count_tokens_endpoint = \"/v1/count-tokens\"", "count_tokens_endpoint = \"/v1/other-count-tokens\"", 1),
+		},
+	}
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	writeProvidersToml(t, dir, credentialDestinationInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, filepath.Join(dir, "providers.toml"))
+	base, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+	if err != nil {
+		t.Fatalf("Status(gateway): %v", err)
+	}
+	if base.ConfigRevision == "" {
+		t.Fatal("ConfigRevision is empty; there is nothing to fence on")
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.toml == credentialDestinationInstanceToml {
+				t.Fatalf("the %s fixture does not differ from the base providers.toml", tc.field)
+			}
+			writeProvidersToml(t, dir, tc.toml)
+			if err := ctrl.reg.Reload(); err != nil {
+				t.Fatalf("reload after changing %s: %v", tc.field, err)
+			}
+			resolved, err := ctrl.registry().ResolveInstance("gateway")
+			if err != nil {
+				t.Fatalf("ResolveInstance(gateway): %v", err)
+			}
+			got := map[string]string{
+				"auth_header":           resolved.Transport.AuthHeader,
+				"base_url":              resolved.Transport.BaseURL,
+				"endpoint":              resolved.Transport.Endpoint,
+				"stream_endpoint":       resolved.Transport.StreamEndpoint,
+				"models_endpoint":       resolved.Transport.ModelsEndpoint,
+				"count_tokens_endpoint": resolved.Transport.CountTokensEndpoint,
+			}[tc.field]
+			if got != tc.want {
+				t.Fatalf("the fixture does not set %s: resolved %q, want %q", tc.field, got, tc.want)
+			}
+			changed, err := ctrl.Status(appwire.AuthStatusParams{Provider: "gateway"})
+			if err != nil {
+				t.Fatalf("Status(gateway) after changing %s: %v", tc.field, err)
+			}
+			if changed.ConfigRevision == base.ConfigRevision {
+				t.Fatalf("the revision did not move when %s changed (%q): a push prepared before the change would pass the fence and send the key to a destination the client never reviewed", tc.field, changed.ConfigRevision)
+			}
+		})
 	}
 }
 
