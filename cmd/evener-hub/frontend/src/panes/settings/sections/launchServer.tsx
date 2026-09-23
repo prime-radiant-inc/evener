@@ -7,8 +7,10 @@
 import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useState } from "react";
-import { launchConfigStore } from "../../../stores/launchConfig";
+import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -46,6 +48,9 @@ export interface LaunchServerSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The host whose own launch defaults this section edits (component 07b).
+   * Defaults to the local hub, so a direct render is today's local section. */
+  host?: string;
 }
 
 /**
@@ -56,7 +61,11 @@ export interface LaunchServerSectionProps {
  * Save re-derives diagnostics from setLayer's OWN returned resolved config,
  * not a fresh resolve() call.
  */
-export function LaunchServerSection(_props: LaunchServerSectionProps) {
+export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionProps) {
+  // The launch-config gateway for the selected host: the controller's own store
+  // for the local hub, a per-host instance (over evener/host/request) for a
+  // remote one. Resolved per render; the instance is stable per host.
+  const store = launchConfigStoreForHost(host);
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
   // The effective layer of the same resolve() that seeds the diagnostics
@@ -71,26 +80,35 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
   // connected client (throw otherwise) - see that hook's own doc comment.
   // isCancelled guards the same "component unmounted mid-load" case the
   // legacy local `cancelled` flag did.
-  useConnectedEffect(async (isCancelled) => {
-    try {
-      const [schema, current, resolved] = await Promise.all([
-        launchConfigStore.getState().schema(),
-        launchConfigStore.getState().getLayer("/", "global"),
-        launchConfigStore
-          .getState()
-          .resolve("/")
-          .catch(() => null),
-      ]);
-      if (isCancelled()) return;
-      setLoad({ phase: "ready", options: schema.options, current });
-      if (resolved && !isCancelled()) {
-        setDiagnostics(resolved.diagnostics ?? []);
-        setResolvedDefaults(resolved.effective);
+  useConnectedEffect(
+    async (isCancelled) => {
+      // A host switch reloads: the previous host's form must not stand while the
+      // new host's schema/layer are in flight. Clearing first is a no-op on the
+      // local mount, whose initial state is already "loading".
+      setLoad({ phase: "loading" });
+      setDiagnostics([]);
+      setResolvedDefaults(undefined);
+      try {
+        const [schema, current, resolved] = await Promise.all([
+          store.getState().schema(),
+          store.getState().getLayer("/", "global"),
+          store
+            .getState()
+            .resolve("/")
+            .catch(() => null),
+        ]);
+        if (isCancelled()) return;
+        setLoad({ phase: "ready", options: schema.options, current });
+        if (resolved && !isCancelled()) {
+          setDiagnostics(resolved.diagnostics ?? []);
+          setResolvedDefaults(resolved.effective);
+        }
+      } catch (err) {
+        if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
       }
-    } catch (err) {
-      if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
-    }
-  }, []);
+    },
+    [store],
+  );
 
   return (
     <div className={CLASS.root}>
@@ -109,8 +127,8 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
             current={load.current}
             resolvedDefaults={resolvedDefaults}
             successToast="Launch defaults saved"
-            validatePath={(path, kind) => launchConfigStore.getState().validatePath(path, kind)}
-            onSave={(config) => launchConfigStore.getState().setLayer("/", "global", config)}
+            validatePath={(path, kind) => store.getState().validatePath(path, kind)}
+            onSave={(config) => store.getState().setLayer("/", "global", config)}
             onSaved={(resolved) => {
               setDiagnostics(resolved.diagnostics ?? []);
               setResolvedDefaults(resolved.effective);
@@ -120,4 +138,13 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
       )}
     </div>
   );
+}
+
+/** LaunchServerHostScope is the launch-evener settings section scoped to the
+ * settings route's selected host (component 07b): the one shared HostPicker
+ * plus LaunchServerSection, which resolves its launch-config gateway from the
+ * host. Local renders today's section byte-for-byte; a remote host's schema,
+ * layers and path helpers all go through evener/host/request. */
+export function LaunchServerHostScope({ sectionId }: LaunchServerSectionProps) {
+  return <HostScopedSurface>{(host) => <LaunchServerSection sectionId={sectionId} host={host} />}</HostScopedSurface>;
 }

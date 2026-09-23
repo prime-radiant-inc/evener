@@ -17,7 +17,7 @@ import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
-import { AgentsDocSection } from "./sections/agentsDoc";
+import { AgentsDocHostScope } from "./sections/agentsDoc";
 import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
@@ -25,15 +25,15 @@ import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
-import { LaunchServerSection } from "./sections/launchServer";
+import { LaunchServerHostScope } from "./sections/launchServer";
 import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
 import { McpSection } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
-import { PluginsDirsSection } from "./sections/pluginsDirs";
+import { PluginsDirsHostScope } from "./sections/pluginsDirs";
 import { ProjectSection } from "./sections/project";
-import { SkillsDirsSection } from "./sections/skillsDirs";
+import { SkillsDirsHostScope } from "./sections/skillsDirs";
 import { StorageSection } from "./sections/storage";
 import { ThemeSection } from "./sections/theme";
 import { TranscriptSection } from "./sections/transcript";
@@ -74,13 +74,13 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   // renders that host's own read-only listing.
   credentials: CredentialsHostScope,
   agents: AgentsSection,
-  "agents-md": AgentsDocSection,
-  "launch-evener": LaunchServerSection,
+  "agents-md": AgentsDocHostScope,
+  "launch-evener": LaunchServerHostScope,
   inrepo: InRepoSection,
   project: ProjectSection,
   "plugins-manager": MarketplacesPluginsSection,
-  plugins: PluginsDirsSection,
-  skills: SkillsDirsSection,
+  plugins: PluginsDirsHostScope,
+  skills: SkillsDirsHostScope,
   mcp: McpSectionWired,
   general: GeneralSection,
   theme: ThemeSection,

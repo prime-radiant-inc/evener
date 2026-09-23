@@ -15,10 +15,12 @@
 
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { agentsDocStore, useAgentsDocStore } from "../../../stores/agentsDoc";
+import { agentsDocStoreForHost, useAgentsDocStoreForHost } from "../../../stores/agentsDoc";
+import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { Button, Skeleton, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agentsDoc.module.css";
+import { HostScopedSurface } from "./hostScopedSurface";
 import { Code } from "./settingsField";
 import { useConnectedEffect } from "./useConnectedEffect";
 
@@ -35,12 +37,19 @@ export interface AgentsDocSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The host whose own AGENTS.md this section edits (component 07b).
+   * Defaults to the local hub, so a direct render is today's local section. */
+  host?: string;
 }
 
-export function AgentsDocSection(_props: AgentsDocSectionProps) {
-  const doc = useAgentsDocStore((s) => s.doc);
-  const loading = useAgentsDocStore((s) => s.loading);
-  const error = useAgentsDocStore((s) => s.error);
+export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
+  // The AGENTS.md store for the selected host: the controller's own singleton
+  // for the local hub, a per-host instance whose reads/writes go through
+  // evener/host/request for a remote one.
+  const store = agentsDocStoreForHost(host);
+  const doc = useAgentsDocStoreForHost(host, (s) => s.doc);
+  const loading = useAgentsDocStoreForHost(host, (s) => s.loading);
+  const error = useAgentsDocStoreForHost(host, (s) => s.error);
   const [draft, setDraft] = useState("");
   const [baseline, setBaseline] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -51,7 +60,18 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
   // Reconnects are the store's business (stores/agentsDoc.ts refetches on
   // every one); this is the mount read. The content-keyed effect below is
   // what keeps either of them from taking a dirty draft with it.
-  useConnectedEffect(() => agentsDocStore.getState().fetch(), []);
+  useConnectedEffect(() => store.getState().fetch(), [store]);
+
+  // The editor's draft belongs to the host it was loaded from: switching hosts
+  // hands the section the new host's store, so the previous host's draft and
+  // baseline are dropped rather than shown against the new host's document.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the scoped store is a deliberate trigger-only dependency; switching hosts must reset the editor
+  useEffect(() => {
+    setDraft("");
+    setBaseline(null);
+    setStale(false);
+    setSaveError(null);
+  }, [store]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the only trigger; draft and baseline are read at that moment, not watched
   useEffect(() => {
@@ -79,7 +99,7 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
     setSaving(true);
     setSaveError(null);
     try {
-      const saved = await agentsDocStore.getState().save(sent);
+      const saved = await store.getState().save(sent);
       // The store resolves a save with whatever document is newer than the
       // write when one landed behind it, so a save that comes back holding
       // something other than what it sent was overwritten on its way in -
@@ -87,7 +107,7 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
       // reference is the store's own document rather than the resolved value:
       // a response from a client the store has since replaced never lands
       // there, so it can be older than what the replacement already fetched.
-      const authoritative = agentsDocStore.getState().doc?.content ?? saved.content;
+      const authoritative = store.getState().doc?.content ?? saved.content;
       setBaseline(authoritative);
       if (authoritative === sent) {
         setStale(false);
@@ -173,7 +193,7 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
             size="sm"
             variant="quiet"
             onClick={() =>
-              void agentsDocStore
+              void store
                 .getState()
                 .fetch()
                 .catch(() => {})
@@ -198,4 +218,12 @@ export function AgentsDocSection(_props: AgentsDocSectionProps) {
       </div>
     </div>
   );
+}
+
+/** AgentsDocHostScope is the AGENTS.md settings section scoped to the settings
+ * route's selected host (component 07b): the one shared HostPicker plus
+ * AgentsDocSection, which reads and writes that host's own file through
+ * evener/host/request. Local renders today's section byte-for-byte. */
+export function AgentsDocHostScope({ sectionId }: AgentsDocSectionProps) {
+  return <HostScopedSurface>{(host) => <AgentsDocSection sectionId={sectionId} host={host} />}</HostScopedSurface>;
 }
