@@ -77,6 +77,29 @@ describe("atomic recovery restore", () => {
 		});
 	});
 
+	it("reports whether the composer can accept a restore", () => {
+		const { document } = setup();
+		expect(document.canRestoreRecoveredDraft()).toBe(true);
+		document.edit("typed");
+		expect(document.canRestoreRecoveredDraft()).toBe(false);
+	});
+
+	it("reports not-restorable after a failed save, so a restore cannot be offered", () => {
+		const { repository, destination } = setup();
+		const failing = {
+			read: (to: typeof destination) => repository.read(to),
+			write: () => {
+				throw new Error("save failed");
+			},
+			imageInputs: (to: typeof destination, images: never[]) =>
+				repository.imageInputs(to, images),
+		};
+		const document = new DraftDocument(() => failing, destination);
+
+		expect(document.restoreRecoveredDraft("recovered text")).toBe(false);
+		expect(document.canRestoreRecoveredDraft()).toBe(false);
+	});
+
 	it("leaves the durable draft unchanged and surfaces an error when the write fails", () => {
 		const { repository, destination } = setup();
 		const failing = {

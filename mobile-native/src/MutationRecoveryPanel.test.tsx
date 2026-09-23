@@ -70,7 +70,11 @@ function snapshot(
 	return { outbox: [], optimistic: [], recovery: records };
 }
 
-const noActions = { onRestore: () => {}, onDiscard: () => {} };
+const noActions = {
+	canRestore: () => true,
+	onRestore: () => {},
+	onDiscard: () => {},
+};
 
 it("projects only the exact target's recovery rows, in intent order", () => {
 	const rows = projectNativeMutationRecovery(
@@ -151,7 +155,7 @@ it("invokes typed restore and discard callbacks for the rows they belong to", ()
 			recovery(TARGET_A, "orphaned", 2, "orphaned"),
 		]),
 		error: null as unknown,
-		actions: { onRestore, onDiscard },
+		actions: { canRestore: () => true, onRestore, onDiscard },
 	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
 	const tree = render(<MutationRecoveryPanel {...props} />);
 	const buttons = tree.root.findAllByProps({ accessibilityRole: "button" });
@@ -310,8 +314,9 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 	);
 	await flush();
 
-	expect(result.current.failure).toBeInstanceOf(Error);
-	expect(recoveryFailureMessage(result.current.failure)).toBe(
+	expect(result.current.error).toBeInstanceOf(Error);
+	expect(result.current.failed).toBe(true);
+	expect(recoveryFailureMessage(result.current.error)).toBe(
 		"mutations db unavailable",
 	);
 	expect(result.current.count).toBe(0);
@@ -321,7 +326,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 			connected: true,
 			deliveryConcern: false,
 			count: result.current.count,
-			failed: result.current.failure !== null,
+			failed: result.current.failed,
 		}),
 	).toBe(true);
 
@@ -329,7 +334,8 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 	act(() => result.current.retry());
 	await flush();
 
-	expect(result.current.failure).toBeNull();
+	expect(result.current.error).toBeNull();
+	expect(result.current.failed).toBe(false);
 	expect(result.current.count).toBe(1);
 });
 
@@ -358,8 +364,8 @@ it("surfaces a rejected discard instead of leaving an unhandled rejection", asyn
 	});
 	await flush();
 
-	expect(result.current.failure).toBeInstanceOf(Error);
-	expect(recoveryFailureMessage(result.current.failure)).toBe("discard failed");
+	expect(result.current.error).toBeInstanceOf(Error);
+	expect(recoveryFailureMessage(result.current.error)).toBe("discard failed");
 });
 
 it("leaves no failure after a successful discard", async () => {
@@ -383,5 +389,75 @@ it("leaves no failure after a successful discard", async () => {
 	});
 	await flush();
 
-	expect(result.current.failure).toBeNull();
+	expect(result.current.error).toBeNull();
+});
+
+it("disables restore with an explanation when the composer cannot accept it", () => {
+	const onRestore = vi.fn();
+	const props = {
+		targetKey: TARGET_A,
+		snapshot: snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
+		error: null as unknown,
+		actions: { canRestore: () => false, onRestore, onDiscard: () => {} },
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+	const restore = tree.root.findByProps({
+		accessibilityLabel: "Restore to draft",
+	});
+
+	expect(restore.props.accessibilityState).toMatchObject({ disabled: true });
+	expect(renderedText(tree)).toContain(
+		"Clear or send your current draft to restore this message.",
+	);
+	act(() => restore.props.onPress());
+	expect(onRestore).not.toHaveBeenCalled();
+});
+
+it("offers a retry beside a surfaced error", () => {
+	const onRetry = vi.fn();
+	const tree = render(
+		<MutationRecoveryPanel
+			targetKey={TARGET_A}
+			snapshot={null}
+			error={new Error("read failed")}
+			onRetry={onRetry}
+			actions={noActions}
+		/>,
+	);
+	const retry = tree.root.findByProps({ accessibilityLabel: "Retry" });
+	act(() => retry.props.onPress());
+	expect(onRetry).toHaveBeenCalledOnce();
+});
+
+it("refreshes a failed read on retry", async () => {
+	let failing = true;
+	const runtime = fakeRuntime({
+		read: async (targetKey) => {
+			if (failing) throw new Error("read failed");
+			return {
+				outbox: [],
+				optimistic: [],
+				recovery: [recovery(targetKey, "row-1", 1, "rejected")],
+			};
+		},
+	});
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	expect(result.current.error).toBeInstanceOf(Error);
+	expect(result.current.failed).toBe(true);
+	expect(result.current.count).toBe(0);
+
+	failing = false;
+	act(() => result.current.retry());
+	await flush();
+
+	expect(result.current.error).toBeNull();
+	expect(result.current.count).toBe(1);
 });

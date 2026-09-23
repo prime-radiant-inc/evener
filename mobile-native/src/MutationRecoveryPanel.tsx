@@ -118,6 +118,9 @@ export function projectNativeMutationRecovery(
 }
 
 export interface MutationRecoveryActions {
+	/** Whether the composer can accept a restore right now: recovery must not
+	 * silently do nothing when an existing draft or image would be clobbered. */
+	canRestore(row: NativeMutationRecoveryRow): boolean;
 	onRestore(row: NativeMutationRecoveryRow): void;
 	onDiscard(row: NativeMutationRecoveryRow): void;
 }
@@ -164,9 +167,10 @@ export interface RecoveryPanelSurface {
 	targetKey: string;
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null;
 	loading: boolean;
-	readError: unknown;
-	/** An acquisition or discard failure that the read projection cannot carry. */
-	failure: unknown;
+	/** A read, acquisition or discard failure: the projection's own read error,
+	 * or the acquisition/discard failure the read projection cannot carry. */
+	error: unknown;
+	failed: boolean;
 	count: number;
 	retry(): void;
 	discard(row: NativeMutationRecoveryRow): void;
@@ -205,8 +209,12 @@ export function useRecoveryPanel({
 	}, [connected, runtime, acquire, attempt]);
 
 	const projection = useNativeMutationRecovery(runtime, targetKey);
+	// Retry re-acquires: the landed hook re-reads whenever its runtime identity
+	// changes, so dropping to null and re-acquiring refreshes a failed read
+	// without the landed hook growing a refresh surface.
 	const retry = useCallback(() => {
 		setFailure(null);
+		setRuntime(null);
 		setAttempt((value) => value + 1);
 	}, []);
 	const discard = useCallback(
@@ -219,12 +227,13 @@ export function useRecoveryPanel({
 		[projection],
 	);
 
+	const error = failure ?? projection.error;
 	return {
 		targetKey,
 		snapshot: projection.snapshot,
 		loading: projection.loading,
-		readError: projection.error,
-		failure,
+		error,
+		failed: error !== null && error !== undefined,
 		count: projection.snapshot?.recovery.length ?? 0,
 		retry,
 		discard,
@@ -235,50 +244,71 @@ export function MutationRecoveryPanel({
 	targetKey,
 	snapshot,
 	error,
+	onRetry,
 	actions,
 }: {
 	targetKey: string;
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null;
 	error: unknown;
+	onRetry?: () => void;
 	actions: MutationRecoveryActions;
 }) {
 	const colors = useColors();
-	if (error) {
-		return <ErrorMessage message={recoveryFailureMessage(error)} />;
+	if (error !== null && error !== undefined) {
+		return (
+			<View style={{ gap: 8 }}>
+				<ErrorMessage message={recoveryFailureMessage(error)} />
+				{onRetry ? (
+					<Action tone="quiet" onPress={onRetry}>
+						Retry
+					</Action>
+				) : null}
+			</View>
+		);
 	}
 	if (snapshot === null) return <Copy muted>Loading delivery status…</Copy>;
 	const rows = projectNativeMutationRecovery(targetKey, snapshot);
 	if (rows.length === 0) return <Copy muted>No messages need recovery.</Copy>;
 	return (
 		<View style={{ gap: 12 }}>
-			{rows.map((row) => (
-				<View
-					key={row.clientMutationId}
-					style={[styles.card, { borderColor: colors.border }]}
-				>
-					<Copy>{row.label}</Copy>
-					{row.reason ? <Copy muted>{row.reason}</Copy> : null}
-					{row.text ? (
-						<Copy muted numberOfLines={3}>
-							{row.text}
-						</Copy>
-					) : null}
-					<View style={styles.row}>
-						{row.actions.map((action) => (
-							<Action
-								key={action}
-								onPress={() =>
-									action === "restore"
-										? actions.onRestore(row)
-										: actions.onDiscard(row)
-								}
-							>
-								{action === "restore" ? "Restore to draft" : "Discard"}
-							</Action>
-						))}
+			{rows.map((row) => {
+				const offersRestore = row.actions.includes("restore");
+				const restorable = offersRestore && actions.canRestore(row);
+				return (
+					<View
+						key={row.clientMutationId}
+						style={[styles.card, { borderColor: colors.border }]}
+					>
+						<Copy>{row.label}</Copy>
+						{row.reason ? <Copy muted>{row.reason}</Copy> : null}
+						{row.text ? (
+							<Copy muted numberOfLines={3}>
+								{row.text}
+							</Copy>
+						) : null}
+						<View style={styles.row}>
+							{row.actions.map((action) => (
+								<Action
+									key={action}
+									disabled={action === "restore" && !restorable}
+									onPress={() => {
+										if (action === "restore") {
+											if (restorable) actions.onRestore(row);
+										} else actions.onDiscard(row);
+									}}
+								>
+									{action === "restore" ? "Restore to draft" : "Discard"}
+								</Action>
+							))}
+						</View>
+						{offersRestore && !restorable ? (
+							<Copy muted>
+								Clear or send your current draft to restore this message.
+							</Copy>
+						) : null}
 					</View>
-				</View>
-			))}
+				);
+			})}
 		</View>
 	);
 }

@@ -306,6 +306,22 @@ export class DraftDocument {
 		}
 	}
 
+	// Whether the composer can accept a recovered restore right now. A recovery
+	// surface reads this before offering the action, so a restore is disabled
+	// with an explanation instead of silently doing nothing when the composer
+	// already holds a draft or an image.
+	canRestoreRecoveredDraft(): boolean {
+		const { record, loaded, submitting, error } = this.snapshot;
+		return (
+			!this.forgotten &&
+			loaded &&
+			!submitting &&
+			error === null &&
+			record.draft === "" &&
+			(record.images?.length ?? 0) === 0
+		);
+	}
+
 	// Restores a rejected mutation's recovered text into the composer in one
 	// savepointed repository write (DraftRepository.write), so a failed restore
 	// can never leave the draft half-written. It refuses to clobber a composer
@@ -314,17 +330,8 @@ export class DraftDocument {
 	// whether the text was written; a failed write leaves the stored draft
 	// untouched and surfaces through the snapshot's error.
 	restoreRecoveredDraft(text: string): boolean {
-		const { record, loaded, submitting, error } = this.snapshot;
-		if (
-			this.forgotten ||
-			!loaded ||
-			submitting ||
-			error !== null ||
-			text.length === 0 ||
-			record.draft !== "" ||
-			(record.images?.length ?? 0) > 0
-		)
-			return false;
+		if (text.length === 0 || !this.canRestoreRecoveredDraft()) return false;
+		const { record } = this.snapshot;
 		try {
 			this.persist(
 				{

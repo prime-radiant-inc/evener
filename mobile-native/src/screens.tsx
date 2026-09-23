@@ -65,7 +65,6 @@ import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
 import {
 	MutationRecoveryPanel,
-	recoveryFailureMessage,
 	shouldOfferRecoveryEntry,
 	useRecoveryPanel,
 } from "./MutationRecoveryPanel";
@@ -2545,7 +2544,7 @@ export function ConversationScreen({
 									connected,
 									deliveryConcern,
 									count: recovery.count,
-									failed: recovery.failure !== null,
+									failed: recovery.failed,
 								}) ? (
 									<Action
 										tone="quiet"
@@ -2598,21 +2597,13 @@ export function ConversationScreen({
 								</View>
 								<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 									<ConnectionStatus inset={0} />
-									{recovery.failure ? (
-										<View style={styles.row}>
-											<ErrorMessage
-												message={recoveryFailureMessage(recovery.failure)}
-											/>
-											<Action tone="quiet" onPress={recovery.retry}>
-												Retry
-											</Action>
-										</View>
-									) : null}
 									<MutationRecoveryPanel
 										targetKey={recovery.targetKey}
 										snapshot={recovery.snapshot}
-										error={recovery.readError}
+										error={recovery.error}
+										onRetry={recovery.retry}
 										actions={{
+											canRestore: () => document.canRestoreRecoveredDraft(),
 											onRestore: (row) => {
 												document.restoreRecoveredDraft(row.text);
 											},
