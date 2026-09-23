@@ -413,7 +413,11 @@ func resolvedRowInstance(r *registry.Registry, inst registry.Instance) (registry
 	if r == nil {
 		return registry.Resolved{}, false
 	}
-	resolved, err := r.ResolveInstance(inst.Name)
+	// The destination is transport identity only — nothing secret-bearing
+	// feeds the fingerprint — so the resolve carries no credential stage
+	// and executes no command expression (spec §10.1); the pane renders
+	// this on every refresh.
+	resolved, err := r.ResolveInstanceTransport(inst.Name)
 	if err != nil {
 		return registry.Resolved{}, false
 	}

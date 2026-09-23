@@ -333,6 +333,12 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		if inst.Hidden {
 			continue
 		}
+		if client.Registry().LaunchMintsCredentialCommand(inst.Name) {
+			// The hub never executes a credential command (spec §10.1):
+			// a command-credentialed instance's live listing is the
+			// child's to make; the picker serves its registry rows.
+			continue
+		}
 		// The listing is an authenticated request like every other hub
 		// fetch: bind this client's own registry root (see
 		// withScopedCodexAuth) so a custom root reads its own Codex

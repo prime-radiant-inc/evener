@@ -401,6 +401,28 @@ func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 	return r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil)
 }
 
+// ResolveInstanceTransport resolves an instance's bare-launch destination
+// without any credential work: the transport and protocol whose change
+// moves where a request goes (spec §8.1) — the same row-aware shape
+// ResolveInstanceListing fetches through, with no credential stage at
+// all, so a hub-side view that reads only the destination executes no
+// command expression (spec §10.1). A provider with no default model (or
+// a glob one) resolves the provider's own shape, like the listing seam.
+func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, r.unknownInstance(name)
+	}
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+		// The model-less shape ResolveInstance builds, minus its
+		// credential stage: buildTransport merges the protocol's default
+		// endpoint paths, which the raw head transport does not carry.
+		transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
+		return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
+	}
+	return r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport)
+}
+
 // webSearchExplicit reports whether prov attributes Caps.WebSearch to a
 // deliberate, individually considered choice in the record's own
 // providers.toml entry: an instance-wide setting (tag "config/provider")
@@ -681,7 +703,7 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
 	if depth == resolveTransport {
-		return Resolved{Instance: rec.name, Transport: transport}, nil
+		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport}, nil
 	}
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)

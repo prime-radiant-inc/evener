@@ -74,6 +74,41 @@ func TestPrefetchSkipsCommandCredentialedInstances(t *testing.T) {
 	}
 }
 
+// The instance-list RPC mints nothing: its destination fingerprints read
+// the transport identity alone, and the hub executes credential commands
+// never (spec §10.1) — opening the settings pane must not run a
+// password-manager command with no session launched.
+func TestInstanceListNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = '''$(gw-mint)'''\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if len(ctl.List().Instances) == 0 {
+		t.Fatal("no instances listed")
+	}
+	if runs != 0 {
+		t.Fatalf("the instance-list RPC executed the credential command %d time(s); the pane displays destinations, the child alone runs credential commands", runs)
+	}
+}
+
 func TestPrefetchLiveModelsBroadcastsOnCapabilityChange(t *testing.T) {
 	// Same id set, different advertised facts: the pass must still
 	// broadcast, or the picker's cached descriptors go stale.
