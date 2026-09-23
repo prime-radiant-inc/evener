@@ -5703,6 +5703,9 @@ test("a /model prompt wins over a matching Advanced Options model override on th
 
 test("a /model value from the previous cwd does not validate after switching directories", async () => {
   const user = setupUser();
+  // Held until the assertions below: the new scope's catalog must still be
+  // pending when the submit validates.
+  const otherCatalog = deferred<void>();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -5717,7 +5720,7 @@ test("a /model value from the previous cwd does not validate after switching dir
     // fail-closes before any load state matters.
     f.on("model/list", async (params) => {
       if ((params as { cwd?: string }).cwd === "/tmp/other") {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await otherCatalog.promise;
         return {
           data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
         };
@@ -5747,10 +5750,14 @@ test("a /model value from the previous cwd does not validate after switching dir
 
   await waitFor(() => expect(screen.getByText(/\/model: unknown value "openai\/gpt-5"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  otherCatalog.resolve();
 });
 
 test("a /reasoning-effort value from the previous cwd does not validate after switching directories", async () => {
   const user = setupUser();
+  // Held until the assertions below: the new scope's catalog must still be
+  // pending when the submit validates.
+  const otherCatalog = deferred<void>();
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
       effective: { model: "anthropic/claude-sonnet-4-5" },
@@ -5761,7 +5768,7 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
     // runs in the stale window deterministically.
     f.on("model/list", async (params) => {
       if ((params as { cwd?: string }).cwd === "/tmp/other") {
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await otherCatalog.promise;
       }
       return {
         data: [
@@ -5792,6 +5799,7 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
 
   await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "high"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  otherCatalog.resolve();
 });
 
 test("a model picked after a failed background load validates for /model", async () => {
