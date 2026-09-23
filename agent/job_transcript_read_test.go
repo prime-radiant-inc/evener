@@ -477,3 +477,33 @@ func TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound(t *test
 		t.Fatalf("error does not surface corruption: %v", err)
 	}
 }
+
+// TestLocateLocalJob_RejectsSymlinkedSessionsDir asserts that locateLocalJob
+// does not find a job through a symlinked sessions/ directory. Today
+// findLocalJobInProject builds jobsDir (stateDir/sessions/owner) and reads
+// jobs.jsonl through the symlink, so a job from outside the state root
+// surfaces via job:<id> reads.
+func TestLocateLocalJob_RejectsSymlinkedSessionsDir(t *testing.T) {
+	stateHome := t.TempDir()
+	bucket := localJobProjectBucket(t, stateHome, "test-0123456789")
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Seed a job in an outside dir.
+	outside := t.TempDir()
+	seedLocalJob(t, outside, owner, jobID, "/decoy/outside.log", "outside\n", false)
+
+	// Replace the bucket's sessions/ with a symlink to the outside dir.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sessions"), filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// locateLocalJob should NOT find the job through the symlinked sessions/.
+	_, err := locateLocalJob(bucket, jobID)
+	if err == nil {
+		t.Fatal("locateLocalJob found a job through a symlinked sessions/ dir; should reject")
+	}
+}

@@ -127,6 +127,11 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 
 func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLocation, bool, error) {
 	path := filepath.Join(jobsDir(stateDir, ownerSessionID), "jobs.jsonl")
+	// Reject symlinked sessions/ dirs before reading the job journal — a
+	// symlinked sessions/ could point outside the state root.
+	if err := symlinkErrorDeep(path, stateDir); err != nil {
+		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
+	}
 	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
@@ -173,10 +178,16 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	if err != nil {
 		return localJobRetainedTarget{}, err
 	}
+	outputPath := filepath.Join(jobsDir(location.StateDir, location.OwnerSessionID), "jobs", jobID+".log")
+	// Reject symlinked job output paths before reading — a symlinked
+	// sessions/ dir could expose output from outside the state root.
+	if err := symlinkErrorDeep(outputPath, location.StateDir); err != nil {
+		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: %w", jobID, err)
+	}
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
-		OutputPath: filepath.Join(jobsDir(location.StateDir, location.OwnerSessionID), "jobs", jobID+".log"),
+		OutputPath: outputPath,
 	}, nil
 }
 

@@ -33,7 +33,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 			return "", "", fmt.Errorf("invalid current session ID: %w", err)
 		}
 		p := transcriptPath(currentStateDir, currentSessionID)
-		if err := symlinkErrorDeep(p); err != nil {
+		if err := symlinkErrorDeep(p, currentStateDir); err != nil {
 			return "", "", fmt.Errorf("session %q: %w", selector, err)
 		}
 		return p, encodeRef("", currentSessionID), nil
@@ -68,7 +68,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 				return "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 			}
 			bucketDir = filepath.Join(sh, "evener", "projects", projectID)
-			if err := symlinkErrorDeep(bucketDir); err != nil {
+			if err := symlinkErrorDeep(bucketDir, sh); err != nil {
 				return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
 			}
 		}
@@ -76,7 +76,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		// Reject symlinked transcript files (and any symlinked path component,
 		// e.g. sessions/) on the read path — a symlink could point outside
 		// the state root.
-		if err := symlinkErrorDeep(p); err != nil {
+		if err := symlinkErrorDeep(p, bucketDir); err != nil {
 			return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
 		}
 		if _, statErr := os.Stat(p); statErr != nil {
@@ -125,7 +125,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 			selector, strings.Join(candidates, ", "))
 	case currentFound:
 		currentPath := transcriptPath(currentStateDir, selector)
-		if err := symlinkErrorDeep(currentPath); err != nil {
+		if err := symlinkErrorDeep(currentPath, currentStateDir); err != nil {
 			return "", "", fmt.Errorf("session %q: %w", selector, err)
 		}
 		return currentPath, encodeRef("", selector), nil
@@ -134,7 +134,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		bucket := otherMatches[0]
 		projectID := filepath.Base(bucket)
 		p := transcriptPath(bucket, selector)
-		if err := symlinkErrorDeep(p); err != nil {
+		if err := symlinkErrorDeep(p, sh); err != nil {
 			return "", "", fmt.Errorf("session %q: %w", selector, err)
 		}
 		return p, refFor(projectID, selector), nil
@@ -142,25 +142,37 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 }
 
 // symlinkErrorDeep returns an error if path or any of its existing path
-// components is a symlink, nil otherwise. A non-existent path returns nil —
-// the caller's own existence check (os.Stat) handles missing files.
-// Symlinked buckets, sessions/ directories, and transcript files are rejected
-// on the agent-side read paths: a symlink can point outside the state root and
-// expose transcripts from elsewhere. enumerateBuckets already skips symlinked
-// bucket dirs; this guards the explicit proj: branch (which resolves the
-// bucket dir directly, bypassing enumeration), the current-session fast-path,
-// and the transcript files (including symlinked intermediate sessions/ dirs).
+// components between root (exclusive) and path (inclusive) is a symlink, nil
+// otherwise. A non-existent path returns nil — the caller's own existence
+// check (os.Stat) handles missing files. Symlinked buckets, sessions/
+// directories, and transcript files are rejected on the agent-side read
+// paths: a symlink can point outside the state root and expose transcripts
+// from elsewhere. enumerateBuckets already skips symlinked bucket dirs;
+// this guards the explicit proj: branch (which resolves the bucket dir
+// directly, bypassing enumeration), the current-session fast-path, and the
+// transcript files (including symlinked intermediate sessions/ dirs).
+//
+// The walk is bounded by root: components at or above root are NOT checked.
+// root is the trusted ancestor — the state home (for sibling-bucket paths)
+// or the current bucket dir (for current-bucket paths). Checking ancestors
+// above the state root is a functional regression on hosts where the state
+// root lives under a symlinked path (macOS /var → /private/var, symlinked
+// $HOME or $XDG_STATE_HOME): every read would fail even though nothing
+// under the state root is a symlink. The threat model covers symlinks
+// *within* the state root, not ancestors of a runtime-configured path.
 //
 // os.Lstat on the final path reports whether that path itself is a symlink,
 // but does not detect a symlinked intermediate directory: Lstat follows every
 // path element except the last. A component walk that Lstats each prefix
 // catches symlinked sessions/ and other intermediate dirs.
-func symlinkErrorDeep(path string) error {
-	// Walk from the shortest prefix upward, Lstat each existing component.
-	// Start one level up from the path so we catch symlinked parent dirs
-	// (e.g. sessions/) before the final file.
+func symlinkErrorDeep(path, root string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	// Walk from the longest prefix downward, Lstat each existing component
+	// between root (exclusive) and the final path (exclusive). This catches
+	// symlinked parent dirs (e.g. sessions/) before the final file.
 	dir := filepath.Dir(path)
-	for dir != "" && dir != string(filepath.Separator) && dir != "." {
+	for dir != root && dir != "" && dir != string(filepath.Separator) && dir != "." {
 		info, _ := os.Lstat(dir)
 		if info != nil && info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("path %q traverses a symlink (%q): symlinks are not allowed on the transcript read path", path, dir)
@@ -227,16 +239,17 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 
 // findBareIDBuckets stats the current bucket and all sibling buckets (via
 // enumerateBuckets) for a bare session ID, returning which buckets contain the
-// transcript. Existence is checked via os.Lstat (not os.Stat) so symlinked
-// transcript files are skipped entirely — they never enter the match set.
-// This prevents a symlinked file in one bucket from producing a spurious
-// "ambiguous" error when a real file exists in another bucket. When stateHome
-// is empty (flat layout), no sibling search is performed and otherMatches is
-// nil. Callers apply their own policy for the zero-match case (resolveTranscript
-// returns "unknown session"; parentBucketAndID falls back to the current
-// bucket).
+// transcript. Existence is checked via symlinkErrorDeep + os.Lstat (not
+// os.Stat) so symlinked transcript files AND symlinked sessions/ dirs are
+// skipped entirely — they never enter the match set. This prevents a
+// symlinked sessions/ dir or a symlinked file in one bucket from producing a
+// spurious "ambiguous" error when a real file exists in another bucket. When
+// stateHome is empty (flat layout), no sibling search is performed and
+// otherMatches is nil. Callers apply their own policy for the zero-match case
+// (resolveTranscript returns "unknown session"; parentBucketAndID falls back
+// to the current bucket).
 func findBareIDBuckets(selector, currentStateDir, stateHome string) (currentFound bool, otherMatches []string, err error) {
-	if existsNonSymlink(transcriptPath(currentStateDir, selector)) {
+	if existsNonSymlink(transcriptPath(currentStateDir, selector), currentStateDir) {
 		currentFound = true
 	}
 	if stateHome == "" {
@@ -252,25 +265,27 @@ func findBareIDBuckets(selector, currentStateDir, stateHome string) (currentFoun
 		if bucketAbs == currentAbs {
 			continue // already checked above
 		}
-		if existsNonSymlink(transcriptPath(bucket, selector)) {
+		if existsNonSymlink(transcriptPath(bucket, selector), bucket) {
 			otherMatches = append(otherMatches, bucket)
 		}
 	}
 	return currentFound, otherMatches, nil
 }
 
-// existsNonSymlink returns true if path exists and is not a symlink. Uses
-// os.Lstat (not os.Stat) so symlinks are detected and skipped: a symlinked
-// transcript file must not count as a match in cross-bucket search.
-func existsNonSymlink(path string) bool {
+// existsNonSymlink returns true if the transcript file exists, is not a
+// symlink, and no intermediate component (sessions/) is a symlink. Uses
+// symlinkErrorDeep with the bucket dir as root so the sessions/ dir and the
+// file itself are both checked. A symlinked sessions/ dir containing a real
+// file must not count as a match — it points outside the state root.
+func existsNonSymlink(path, bucketDir string) bool {
+	if err := symlinkErrorDeep(path, bucketDir); err != nil {
+		return false
+	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return false
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	return true
+	return info.Mode()&os.ModeSymlink == 0
 }
 
 // ambiguityCandidates builds the context list for a bare-ID ambiguity error.
@@ -368,7 +383,7 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		// transcript, but the bucket dir it returns is used to search for
 		// children — a symlinked bucket would expose children outside the
 		// state root.
-		if err := symlinkErrorDeep(bucket); err != nil {
+		if err := symlinkErrorDeep(bucket, sh); err != nil {
 			return "", "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
 		}
 		return bucket, id, scopeAllProjects, nil

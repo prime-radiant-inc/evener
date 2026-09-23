@@ -776,7 +776,7 @@ func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, a
 		// symlink pointing outside the state root. symlinkErrorDeep returns
 		// nil for missing sidecars (legitimate), rejecting only real symlinks.
 		sidecar := apiLogPathForTranscript(path)
-		if err := symlinkErrorDeep(sidecar); err != nil {
+		if err := symlinkErrorDeep(sidecar, filepath.Dir(sidecar)); err != nil {
 			return nil, fmt.Errorf("api-log sidecar: %w", err)
 		}
 		if parsed.AttemptID != "" {

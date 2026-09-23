@@ -405,6 +405,15 @@ func collectCandidates(buckets []string, currentStateDir string) []findCandidate
 	currentAbs, _ := filepath.Abs(currentStateDir)
 	var out []findCandidate
 	for _, bucket := range buckets {
+		// Skip buckets whose sessions/ dir is a symlink pointing outside
+		// the state root: ListSessionMetas uses afero.ReadDir which follows
+		// symlinked directories, so metas from outside the state root would
+		// surface in find + children_of results while read_transcript
+		// rejects them.
+		sessDir := filepath.Join(bucket, sessionsSubdir)
+		if err := symlinkErrorDeep(sessDir, bucket); err != nil {
+			continue
+		}
 		metas, err := schema.ListSessionMetas(bucket)
 		if err != nil {
 			continue
@@ -476,6 +485,11 @@ func metaMatches(m schema.SessionMeta, needle string) bool {
 // actually opened, so the caller counts only real opens toward the scan budget.
 func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
 	path := transcriptPath(bucketDir, sessionID)
+	// Reject symlinked transcript files (and symlinked sessions/ dirs) before
+	// reading — a symlink could point outside the state root.
+	if err := symlinkErrorDeep(path, bucketDir); err != nil {
+		return nil, false
+	}
 	_, entries, _, err := readTranscript(path)
 	if err != nil {
 		return nil, false
@@ -503,9 +517,15 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 }
 
 // transcriptExists is a cheap stat of the transcript JSONL file (no parse).
+// Uses os.Lstat (not os.Stat) so symlinked transcript files are rejected: a
+// symlinked file would count as existing and surface in find results, but
+// read_transcript rejects it — find must not return refs read rejects.
 func transcriptExists(bucketDir, sessionID string) bool {
-	_, err := os.Stat(transcriptPath(bucketDir, sessionID))
-	return err == nil
+	info, err := os.Lstat(transcriptPath(bucketDir, sessionID))
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink == 0
 }
 
 // sessionKind derives the session classification (not a stored field):

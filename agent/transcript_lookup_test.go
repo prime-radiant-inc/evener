@@ -1092,3 +1092,139 @@ func TestReadAPILogSummary_SymlinkedSidecarRejected(t *testing.T) {
 		t.Fatalf("expected error mentioning symlink for sidecar, got: %v", err)
 	}
 }
+
+// --- roborev fix round 6: RED tests ---
+
+// TestSymlinkErrorDeep_SymlinkedAncestorAboveStateRootDoesNotBreakReads
+// asserts that a symlinked ancestor ABOVE the state root (e.g. a symlinked
+// $HOME or /tmp on macOS: /var -> /private/var) does not cause reads to fail.
+// Round 5's symlinkErrorDeep walks every ancestor up to /, Lstat-ing each
+// one. When the state root is under a symlinked path, every read fails with
+// "traverses a symlink" even though nothing under the state root is a
+// symlink. The walk must be bounded to the state root (or bucket dir).
+//
+// REGRESSION from round 5: this is a functional regression — the threat
+// model does not cover ancestors of a runtime-configured path.
+func TestSymlinkErrorDeep_SymlinkedAncestorAboveStateRootDoesNotBreakReads(t *testing.T) {
+	t.Parallel()
+	// Real state home with a bucket and transcript.
+	realHome := t.TempDir()
+	bucket := filepath.Join(realHome, "evener", "projects", "test-0123456789")
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+	writeTranscript(t, bucket, sid)
+
+	// Symlink the home, simulating a symlinked $HOME or /tmp.
+	linkedHome := filepath.Join(t.TempDir(), "linked-home")
+	if err := os.Symlink(realHome, linkedHome); err != nil {
+		t.Fatal(err)
+	}
+	linkedBucket := filepath.Join(linkedHome, "evener", "projects", "test-0123456789")
+
+	// A bare-ID read through the symlinked ancestor should succeed — the
+	// symlink is above the state root, not within it. Today this fails
+	// because symlinkErrorDeep walks to / and hits the linkedHome symlink.
+	_, _, err := resolveTranscript(sid, linkedBucket, sid)
+	if err != nil {
+		t.Fatalf("read through symlinked ancestor above state root failed: %v", err)
+	}
+}
+
+// TestCollectCandidates_SkipsSymlinkedSessionsDir asserts that
+// collectCandidates does not return metas from a bucket whose sessions/
+// directory is a symlink pointing outside the state root. ListSessionMetas
+// uses afero.ReadDir which follows symlinked directories, so metas from
+// outside the state root surface in find + children_of results while
+// read_transcript rejects them (find returns refs read_transcript rejects).
+func TestCollectCandidates_SkipsSymlinkedSessionsDir(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	bucket := newBucketUnder(t, sh)
+
+	// Write a real meta to an outside dir, then symlink sessions/ to it.
+	outside := t.TempDir()
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+	saveFindMeta(t, outside, findMetaSpec{id: sid})
+
+	// Replace the bucket's sessions/ with a symlink to the outside dir.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sessions"), filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// collectCandidates should return 0 candidates — the symlinked sessions/
+	// points outside the state root.
+	candidates := collectCandidates([]string{bucket}, bucket)
+	if len(candidates) != 0 {
+		t.Fatalf("collectCandidates returned %d candidates from symlinked sessions/; should skip", len(candidates))
+	}
+}
+
+// TestTranscriptExists_RejectsSymlinkedFile asserts that transcriptExists
+// returns false for a symlinked transcript file. Today it uses os.Stat
+// which follows symlinks, so a symlinked file counts as existing and is
+// returned in find results — but read_transcript rejects it.
+func TestTranscriptExists_RejectsSymlinkedFile(t *testing.T) {
+	t.Parallel()
+	bucket := newBucket(t)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+
+	// Write a real transcript outside the bucket and symlink it in.
+	outside := t.TempDir()
+	realPath := filepath.Join(outside, sid+".transcript.jsonl")
+	if err := os.WriteFile(realPath, []byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := transcriptPath(bucket, sid)
+	if err := os.Symlink(realPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// transcriptExists should return false — the file is a symlink.
+	if transcriptExists(bucket, sid) {
+		t.Fatal("transcriptExists returned true for a symlinked file; should reject symlinks")
+	}
+}
+
+// TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch asserts that
+// findBareIDBuckets does not count a bucket whose sessions/ is a symlink as
+// a match. Today existsNonSymlink Lstats only the full path (final
+// component), so a symlinked sessions/ containing the file counts as a
+// match — contradicting the helper's "never enter the match set" claim.
+func TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	bucket := newBucketUnder(t, sh)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+
+	// Write a real transcript in an outside sessions dir.
+	outside := t.TempDir()
+	outsideSessions := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(outsideSessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideSessions, sid+".transcript.jsonl"), []byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the bucket's sessions/ with a symlink to the outside dir.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSessions, filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// findBareIDBuckets should NOT count this as a match.
+	currentFound, _, err := findBareIDBuckets(sid, bucket, sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentFound {
+		t.Fatal("findBareIDBuckets counted a symlinked sessions/ dir as a match; should skip it")
+	}
+}
