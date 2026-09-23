@@ -76,6 +76,14 @@ gate_init_budgets() {
 	# starting every shard at once (unchanged) while a smaller or busier one
 	# starts fewer.
 	export AGENT_SHARD_CONCURRENCY=${AGENT_SHARD_CONCURRENCY-$(gate_budget 8 8)}
+	# cmd/evener-hub's shards (evener dev hub-shards), which run beside the rest
+	# of the root module. Eight balance its ~2100 mostly-serial tests to ~9s
+	# each; per-shard width, survey width and concurrency are budgeted exactly
+	# like the agent's, so a loaded or one-CPU host shrinks both runners.
+	export HUB_SHARD_COUNT=${HUB_SHARD_COUNT-8}
+	export HUB_SHARD_PARALLEL=${HUB_SHARD_PARALLEL-$(gate_budget 3 3)}
+	export HUB_SHARD_SURVEY_PARALLEL=${HUB_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}
+	export HUB_SHARD_CONCURRENCY=${HUB_SHARD_CONCURRENCY-$(gate_budget 8 8)}
 }
 
 # gate_module_flags MODULE — the -p/-parallel flags run-module-tests.sh hands
