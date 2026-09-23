@@ -11,7 +11,11 @@
    * intends. The row would then refuse to shrink and overflow its flex
    * container instead of letting the control's own ellipsis do its job
    * (kata p6g8: the overflowing row visually collided with the next field).
-   * No browser guard covers this declaration. */
+   * No layout the app renders today makes a FormRow a flex item of a row
+   * (every parent is a column or a block, and a column's items get their
+   * width from the cross axis, where this minimum does not apply), so no
+   * browser guard covers it: a case copying real markup stays green with it
+   * deleted. It keeps the widget safe to drop into a flex row. */
   min-width: 0;
 }
 
