@@ -18240,6 +18240,257 @@ describe("ConversationStore", () => {
       expect(failureRows()[0]?.id).toBe("failure:t1");
     });
 
+    // RoboRev round 33, self-rename poison: the rehydrate rename loop used
+    // to mutate page ownership WHILE collecting migrations, so a fold
+    // coalescing two retained turns under one survivor made the survivor
+    // look newly page-owned: processing the first member added
+    // failure:<survivor>, processing the second member then recorded a
+    // SELF-rename, and the reconciliation read the snapshot's own failure
+    // row as history — keeping the stale page failure and dropping the
+    // snapshot's authoritative error.
+    it("keeps the snapshot's own error when a fold bridges two retained turns onto it", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [
+                {
+                  id: "k2",
+                  transcriptKey: "k2",
+                  turnId: "t9",
+                  type: "agentMessage",
+                  text: "retained t9 text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
+          {
+            kind: "failure",
+            id: "failure:t0",
+            title: "page boom",
+            detail: "page boom",
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t0",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t0");
+
+      // The reread coalesces BOTH retained turns (the paged t0 through
+      // k1, the retained t9 through k2) into its own t9 — and that t9
+      // carries its OWN error. The snapshot's failure is authoritative;
+      // the stale page failure must reconcile away, not replace it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "failed",
+              error: { message: "fresh boom" },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t9",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+                {
+                  id: "k2",
+                  transcriptKey: "k2",
+                  turnId: "t9",
+                  type: "agentMessage",
+                  text: "retained t9 text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t9");
+      expect(failureRows()[0]?.title).toBe("fresh boom");
+    });
+
+    // RoboRev round 33, pagination bridge: a second page can BRIDGE two
+    // retained turns — its items chain a previously paged failed turn to
+    // another retained turn, and the merge names both as newer-side
+    // members under the surviving carrier. The paged turn's failure row
+    // and ownership must migrate to the carrier through newerTurnFolds,
+    // or the next row-changing frame projects the carrier's failure
+    // beside the obsolete row: the same failure twice.
+    it("migrates a previously paged failure when a later page bridges its turn with another retained turn", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "k2",
+                  transcriptKey: "k2",
+                  turnId: "t1",
+                  type: "agentMessage",
+                  text: "retained t1 text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
+          {
+            kind: "failure",
+            id: "failure:t0",
+            title: "page boom",
+            detail: "page boom",
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t0",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t0");
+
+      // The second page's turn bridges the paged t0 (k1) with the
+      // retained t1 (k2): the merge coalesces both under t1, and t1 now
+      // carries the failure — the committed row and its page ownership
+      // must follow.
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "tp",
+              itemsView: "fragment",
+              status: "completed",
+              usage: { inputTokens: 10, outputTokens: 1 },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "tp",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+                {
+                  id: "k2",
+                  transcriptKey: "k2",
+                  turnId: "tp",
+                  type: "agentMessage",
+                  text: "retained t1 text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t1");
+
+      // A row-changing frame projects the carrier's failure from the
+      // model — still one row, same identity.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t1");
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

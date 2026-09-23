@@ -2651,15 +2651,28 @@ export function createConversationStore() {
             // follows the content and the cap's ownership pruning reads
             // the surviving id, not the folded-away one.
             const failureRenames = new Map<string, string>();
+            // RoboRev round 33: decide every migration from the ORIGINAL
+            // ownership set, and never record an identity-preserving
+            // mapping. Mutating the set mid-loop made a later member of
+            // the same fold look newly page-owned — a fold coalescing two
+            // retained turns under one survivor recorded a SELF-rename for
+            // the second member, which the reconciliation then read as
+            // "the survivor's row is history", keeping the stale page
+            // failure and dropping the snapshot's own authoritative error.
             for (const [outputId, olderTurnIds] of history.olderTurnFolds) {
+              const survivorIdentity = failureRowIdentity(outputId);
               for (const olderTurnId of olderTurnIds) {
                 const olderIdentity = failureRowIdentity(olderTurnId);
+                if (olderIdentity === survivorIdentity) continue;
                 if (!pageOwnedIds.has(olderIdentity)) continue;
-                pageOwnedIds.delete(olderIdentity);
-                const survivorIdentity = failureRowIdentity(outputId);
-                pageOwnedIds.add(survivorIdentity);
                 failureRenames.set(olderIdentity, survivorIdentity);
               }
+            }
+            for (const olderIdentity of failureRenames.keys()) {
+              pageOwnedIds.delete(olderIdentity);
+            }
+            for (const survivorIdentity of new Set(failureRenames.values())) {
+              pageOwnedIds.add(survivorIdentity);
             }
             if (failureRenames.size > 0) foldedFailureRows = failureRenames;
             // #1919 follow-up: bound the merged result AFTER the merge, so
@@ -3021,15 +3034,36 @@ export function createConversationStore() {
               // by folds.olderTurnFolds (output id -> page turn ids);
               // newerTurnFolds names the retained side's own members.
               for (const [outputId, olderTurnIds] of pageMerge.folds.olderTurnFolds) {
+                const survivorIdentity = failureRowIdentity(outputId);
                 for (const olderTurnId of olderTurnIds) {
                   const olderTurn = pageTurnsById.get(olderTurnId);
                   if (!olderTurn?.error) continue;
                   const olderIdentity = failureRowIdentity(olderTurnId);
+                  // RoboRev round 33: an identity-preserving mapping
+                  // renames nothing and must stay out of the map — a
+                  // rename key reads as "history" in the reconciliation
+                  // below, which would misclassify the survivor's own
+                  // native row.
+                  if (olderIdentity === survivorIdentity) continue;
                   if (!pageOwnedIds.has(olderIdentity)) continue;
-                  pageFailureRenames.set(
-                    olderIdentity,
-                    failureRowIdentity(outputId),
-                  );
+                  pageFailureRenames.set(olderIdentity, survivorIdentity);
+                }
+              }
+              // RoboRev round 33: a page can BRIDGE two retained turns —
+              // its items chain a previously paged failed turn to another
+              // retained turn, and the merge names both as newer-side
+              // members under the surviving carrier. A paged turn folded
+              // through them keeps its obsolete failure id unless the
+              // pagination commit migrates it here too, and the next
+              // row-changing frame projects the carrier's failure beside
+              // the preserved obsolete row: the same failure twice.
+              for (const [outputId, newerTurnIds] of pageMerge.folds.newerTurnFolds) {
+                const survivorIdentity = failureRowIdentity(outputId);
+                for (const newerTurnId of newerTurnIds) {
+                  const memberIdentity = failureRowIdentity(newerTurnId);
+                  if (memberIdentity === survivorIdentity) continue;
+                  if (!pageOwnedIds.has(memberIdentity)) continue;
+                  pageFailureRenames.set(memberIdentity, survivorIdentity);
                 }
               }
               if (pageFailureRenames.size > 0) {
