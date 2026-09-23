@@ -315,6 +315,26 @@ test("a duplicate in_progress then done update folds to the final done touch", (
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ finish");
 });
 
+test("a batch that completes and reopens the same task renders nothing (net no status change)", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done" },
+          { id: 1, status: "open" },
+        ],
+      },
+      "Updated 1→done, 1→open. Progress: 0/1 tasks complete.",
+      { raw: [{ id: 1, type: "implement", description: "reopened", prompt: "", status: "open" }] },
+    ),
+  );
+  // done→open inside one call is a round trip: the task ends where it
+  // started, so the card has no update to name. The per-id dedup must treat
+  // the reopen as the latest update, not keep the touched-away completion.
+  expect(screen.queryByTestId("tool-call-item")).toBe(null);
+});
+
 test("distinct final occurrences retain their own order when an earlier duplicate moves later", () => {
   renderItem(
     taskItem(
@@ -609,6 +629,42 @@ test("a cancelled task settles at its terminal stamp, not a later annotation's u
             status: "done",
             completed_at: "2026-09-23T14:59:00Z",
             updated_at: "2026-09-23T14:59:00Z",
+          },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled"]);
+  expect(rows[0]!.textContent).toContain("newer completion");
+});
+
+test("a legacy cancelled row without a settle stamp never outranks a stamped settle", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 2, status: "done" }] },
+      "Updated 2→done. Progress: 1/1 tasks complete.",
+      {
+        // Task 1 was cancelled by a daemon that stamped no settle time and
+        // merely annotated later: its updated_at is not a settle moment,
+        // so the newer completion holds the settled slot.
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "old cancellation",
+            prompt: "",
+            status: "cancelled",
+            updated_at: "2026-09-23T15:30:00Z",
+          },
+          {
+            id: 2,
+            type: "implement",
+            description: "newer completion",
+            prompt: "",
+            status: "done",
+            completed_at: "2026-09-23T14:59:00Z",
           },
         ],
       },

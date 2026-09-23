@@ -48,7 +48,9 @@ export interface TaskRow {
   // Wire timestamps (agent/task/task_store.go), carried as ISO strings.
   // Optional: the parser never drops a row for lacking them, and views omit
   // time displays for absent fields. created_at/updated_at are always present
-  // on the real wire; completed_at exists only for done tasks.
+  // on the real wire; completed_at exists for settled tasks (done or
+  // cancelled) - the terminal transition's stamp, absent for rows persisted
+  // before terminal stamping.
   createdAt?: string;
   updatedAt?: string;
   completedAt?: string;

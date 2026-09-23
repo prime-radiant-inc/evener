@@ -76,7 +76,8 @@ type Task struct {
 	// never settable through the agent-facing tool (TaskInput/TaskUpdate carry
 	// no timestamp fields). CreatedAt is stamped once when the task is added;
 	// UpdatedAt advances on every mutation; CompletedAt is stamped when the task
-	// transitions to done and cleared if it is later reopened. Pointers so an
+	// transitions to a terminal status (done or cancelled) and cleared if it
+	// is later reopened. Pointers so an
 	// unset stamp (and tasks persisted before timestamps existed) omit cleanly.
 	CreatedAt   *time.Time `json:"created_at,omitempty"`
 	UpdatedAt   *time.Time `json:"updated_at,omitempty"`

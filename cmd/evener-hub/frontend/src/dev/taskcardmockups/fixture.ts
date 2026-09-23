@@ -239,6 +239,9 @@ export const CANCELLED: Scenario = {
       status: "cancelled",
       notes: ["Dropped: the store keeps one in-progress task by design; rebalancing is a non-goal."],
       created_at: T14H12,
+      // The terminal stamp the store mints on every settle (done or
+      // cancelled) - wire-true since the store began stamping settles.
+      completed_at: NOW,
       updated_at: NOW,
     },
     {

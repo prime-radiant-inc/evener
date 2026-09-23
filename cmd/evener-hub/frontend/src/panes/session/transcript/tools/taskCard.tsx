@@ -87,9 +87,12 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 }
 
 // The daemon applies duplicate IDs sequentially but returns the authoritative
-// final state. Render one status touch per ID from its last STATUS-BEARING
-// update - a trailing notes-only touch annotates the row instead of displacing
-// it, so a completion followed by a note cannot be erased into suppression.
+// final state. Render one status touch per ID from its last update that
+// carries ANY status: done followed by reopen must end at the reopen (the
+// card names the batch's final word, and a touched-away completion is not
+// it), while a trailing notes-only touch annotates the row instead of
+// displacing it, so a completion followed by a note cannot be erased into
+// suppression. Whether a status is RENDERABLE stays updateRows' own filter.
 // Ordering by each ID's final occurrence keeps distinct IDs in the order the
 // batch ends.
 function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknown>[] {
@@ -103,7 +106,7 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
       unmarked.push({ index, update });
       continue;
     }
-    if (TOUCH_BY_STATUS[str(update, "status") ?? ""]) {
+    if (str(update, "status")) {
       latestByID.set(id, { index, update });
       annotating.delete(id);
     } else if (str(update, "notes")) {
@@ -309,20 +312,23 @@ export interface TaskWindow {
 export function stateWindow(tasks: TaskRow[] | null): TaskWindow {
   if (!tasks) return {};
   const settledAll = tasks.filter((task) => task.status === "done" || task.status === "cancelled");
-  // Parse the stamps, never compare them as strings: RFC3339Nano trims
-  // trailing zeros, so same-second stamps arrive in different lengths
+  // Only the terminal stamp orders settles: updatedAt advances on any later
+  // edit (a note, an effort change), so it is not a settle moment - a
+  // merely-annotated old cancellation must not outrank a newer completion.
+  // The stamp itself is parsed, never compared as a string: RFC3339Nano
+  // trims trailing zeros, so same-second stamps arrive in different lengths
   // (".5Z" sorts after ".55Z" byte-wise even though it is the earlier
-  // instant), and mixed UTC offsets compare by wall-clock digits rather
-  // than instants. The fraction is split off BEFORE Date.parse - engines
-  // are free to differ on rounding more than three fractional digits, and
-  // one call can settle two tasks in the same batch microseconds apart, so
-  // the sub-millisecond digits must survive. The second-resolution base
-  // parses identically everywhere; the fraction folds back as whole
-  // milliseconds plus a sub-millisecond remainder. An absent or
-  // unparseable stamp reads as -Infinity, so any real timestamp wins over
-  // it.
+  // instant), and mixed UTC offsets compare by wall-clock digits rather than
+  // instants. The fraction is split off BEFORE Date.parse - engines are free
+  // to differ on rounding more than three fractional digits, and one call
+  // can settle two tasks in the same batch microseconds apart, so the
+  // sub-millisecond digits must survive; the second-resolution base parses
+  // identically everywhere, and the fraction folds back as whole
+  // milliseconds plus a remainder. An absent or unparseable stamp reads as
+  // -Infinity: unknown settles lose to any stamped one, and ties degrade to
+  // list order through the >= below.
   const settleKey = (task: TaskRow): number => {
-    const raw = task.completedAt ?? task.updatedAt ?? "";
+    const raw = task.completedAt ?? "";
     const parts = raw.match(/^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(\D.*)$/);
     const at = Date.parse(parts ? `${parts[1]}${parts[3]}` : raw);
     if (Number.isNaN(at)) return Number.NEGATIVE_INFINITY;
