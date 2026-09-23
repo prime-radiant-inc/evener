@@ -28,6 +28,14 @@ import (
 
 const evenerLaunchCheckTimeout = 30 * time.Second
 
+// evenerLaunchCheckWaitDelay bounds how long a launch-check's output pipe may
+// stay open after the check exits or its context ends. Killing the check does
+// not close a pipe a grandchild inherited (a wrapper script around evener is
+// enough), and without this the call would wait for that grandchild however
+// long it lives, turning evenerLaunchCheckTimeout into no bound at all. A
+// check with no stray children reaches EOF at exit and never waits on it.
+const evenerLaunchCheckWaitDelay = time.Second
+
 // daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
 // quoted back to the operator as the reason it would not start.
 const daemonLaunchOutputLimit = 64 * 1024
@@ -953,6 +961,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
+	cmd.WaitDelay = evenerLaunchCheckWaitDelay
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
 		return launchCheckWaitError(checkCtx)
@@ -988,6 +997,7 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
 	cmd.Env = env
+	cmd.WaitDelay = evenerLaunchCheckWaitDelay
 	out, err := cmd.CombinedOutput()
 	if checkCtx.Err() != nil {
 		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
