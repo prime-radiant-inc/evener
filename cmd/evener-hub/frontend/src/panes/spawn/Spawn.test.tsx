@@ -9293,3 +9293,15 @@ test("a ?host= prefill seeds the draft's launch host (the rail's project-copy sp
   expect(draft?.fields.getState().source).toBe("devbox");
   window.history.replaceState({}, "", "/");
 });
+
+test("a ?host=local prefill overrides the draft's last-chosen host for the same directory", () => {
+  window.history.replaceState({}, "", "/new?dir=/repo/x&host=devbox");
+  applySpawnURL();
+  expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("devbox");
+  // The same project's local copy launches with the same cwd; the prefill
+  // must retarget the draft, not leave the remote host sticky.
+  window.history.replaceState({}, "", "/new?dir=/repo/x&host=local");
+  applySpawnURL();
+  expect(spawnDraftsStore.getState().current?.fields.getState().source).toBe("local");
+  window.history.replaceState({}, "", "/");
+});

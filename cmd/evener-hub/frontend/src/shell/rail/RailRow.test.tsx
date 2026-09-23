@@ -2185,6 +2185,33 @@ describe("project row", () => {
     expect(screen.queryByRole("menuitem", { name: "New session" })).toBeNull();
   });
 
+  // A local copy's + must claim its host too: the same project's copies
+  // share one working_dir, so the draft's last-chosen host (say devbox)
+  // must not survive a launch from this hub's copy.
+  test("a local copy's New-session button names this hub, not the draft's last choice", async () => {
+    seedSources([{ id: "local", label: "this host", kind: "local", online: true }]);
+    const localCopy = {
+      ...projectRailNode(apiProject({ working_dir: "/repo/next" })),
+      id: "projectnode:p1@local",
+      spawnHost: "local",
+    } as ProjectRailNode;
+    render(<RailRow node={localCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=local");
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("a local copy's launch survives a manifest in flight (this hub is always launchable)", () => {
+    seedSources([], { loading: true });
+    const localCopy = {
+      ...projectRailNode(apiProject()),
+      id: "projectnode:p1@local",
+      spawnHost: "local",
+    } as ProjectRailNode;
+    render(<RailRow node={localCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.getByRole("button", { name: "New session in Proj" })).toBeTruthy();
+  });
+
   test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
     const observer = vi.fn();
     const firstInfo = info({ hasChildren: true });

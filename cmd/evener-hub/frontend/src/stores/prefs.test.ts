@@ -414,10 +414,6 @@ describe("stale sidebarMode key", () => {
   });
 });
 
-// The docked rail's dragged width. Unlike every other pref here it carries
-// real bounds, and a value outside them would render an unusable (or
-// unrecoverable) sidebar - so the clamp is asserted on BOTH the read and the
-// write path, not just once.
 // sidebarGrouping: how the rail's session tree groups - "host-project"
 // (hosts are the top groups) or "project-host" (today's shape, hosts nested
 // inside projects). Default "project-host" so nothing changes for anyone
@@ -446,6 +442,10 @@ describe("sidebarGrouping", () => {
   });
 });
 
+// The docked rail's dragged width. Unlike every other pref here it carries
+// real bounds, and a value outside them would render an unusable (or
+// unrecoverable) sidebar - so the clamp is asserted on BOTH the read and the
+// write path, not just once.
 describe("sidebarWidth", () => {
   test("defaults to SIDEBAR_WIDTH_DEFAULT with nothing persisted", () => {
     expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);

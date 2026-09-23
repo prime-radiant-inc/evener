@@ -386,16 +386,17 @@ const NO_PROJECT_KEY = "no-project";
 // prompt, and host off window.location.search (panes/spawn/urlPrefill.ts),
 // never pane params - the spawn pane's own params type is deliberately empty
 // (see panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
-// directory. A "Host, then project" copy passes the host it nests under so
-// the launch targets that host; this hub is Spawn's default and needs no
-// param. Falls back to a bare /new when a project has no working_dir
+// directory. A "Host, then project" copy passes the host it nests under -
+// this hub included, since the same project's copies share one working_dir
+// and the draft's last-chosen host must not survive a launch from another
+// copy. Falls back to a bare /new when a project has no working_dir
 // (shouldn't happen for a real project, but degrades gracefully rather than
 // silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
 // ever called, same as every other project-scoped action here.
 function spawnInProject(project: RailProject, host?: string): void {
   const params = new URLSearchParams();
   if (project.working_dir) params.set("dir", project.working_dir);
-  if (host && host !== LOCAL_HOST) params.set("host", host);
+  if (host) params.set("host", host);
   const query = params.toString();
   navigate(query ? `/new?${query}` : "/new");
 }
@@ -564,7 +565,10 @@ function useHostOnline(hostId: string | undefined): boolean {
 // working_dir.
 function useHostLaunchable(hostId: string | undefined): boolean {
   return useNavigationStore((state) => {
-    if (hostId === undefined) return true;
+    // This hub is always launchable, whatever the manifest's flight state:
+    // Spawn's own fallback IS local, so an in-flight read can never take
+    // this machine away.
+    if (hostId === undefined || hostId === LOCAL_HOST) return true;
     const source = selectSources(state).find((candidate) => candidate.id === hostId);
     return source ? source.online : false;
   });

@@ -748,4 +748,19 @@ describe("host grouping (organize by)", () => {
     const after = projectNodesWithHostBranches([evener], [local("this host"), devbox("renamed box")], closed);
     expect(devboxBranch(after[0]?.children ?? [])).toMatchObject({ host: { id: "devbox", label: "renamed box" } });
   });
+
+  test("an unchanged manifest refresh reuses the branch children it already built", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const local = (): Source => ({ id: "local", label: "this host", kind: "local", online: true });
+    const devbox = (): Source => ({ id: "devbox", label: "devbox", kind: "appwire", online: true });
+    const first = projectNodesWithHostBranches([evener], [local(), devbox()], closed);
+    // A revalidation hands back a NEW array carrying the SAME facts; the
+    // cache must reuse the children, not mint a variant per refresh.
+    const second = projectNodesWithHostBranches([evener], [local(), devbox()], closed);
+    expect(second[0]?.children).toBe(first[0]?.children);
+  });
 });

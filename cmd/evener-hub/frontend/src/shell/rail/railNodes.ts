@@ -1011,26 +1011,22 @@ export function projectNodesWithHostBranches(
   sources: readonly Source[],
   isExpanded: IsExpanded,
 ): ProjectRailNode[] {
-  return projectNodesWith(projects, isExpanded, `host-branches${sourcesToken(sources)}`, (p, id) =>
+  return projectNodesWith(projects, isExpanded, `host-branches:${sourcesSignature(sources)}`, (p, id) =>
     activeTierChildren(p, id, () => hostBranchNodes(p, id, sources, isExpanded)),
   );
 }
 
 // A manifest update swaps the sources ARRAY identity while the project
 // objects keep theirs, and the branches embed host facts (label, online)
-// read from that array - so the children cache must key on the snapshot
-// too, or the branches keep stale facts until the project object itself
-// changes. One token per array identity, minted on first sight.
-let sourcesTokenCounter = 0;
-const sourcesTokens = new WeakMap<readonly Source[], string>();
-function sourcesToken(sources: readonly Source[]): string {
-  let token = sourcesTokens.get(sources);
-  if (token === undefined) {
-    sourcesTokenCounter += 1;
-    token = `#${sourcesTokenCounter}`;
-    sourcesTokens.set(sources, token);
-  }
-  return token;
+// read from that array - so the children cache must key on the facts too,
+// or the branches keep stale facts until the project object itself changes.
+// The signature is exactly the content the branches embed (ids, labels,
+// online flags, in array order - which orders the branches): an unchanged
+// revalidation reuses the built children, a change mints a fresh variant.
+// Content-keyed, not identity-keyed - identity would grow a new cache
+// entry per revalidation with nothing ever evicting the old ones.
+function sourcesSignature(sources: readonly Source[]): string {
+  return JSON.stringify(sources.map((source) => [source.id, source.label, source.online]));
 }
 
 /** The per-host branches inside one loaded project (see
