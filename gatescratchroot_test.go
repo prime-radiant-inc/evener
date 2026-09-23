@@ -84,8 +84,11 @@ func TestGateScratchRootRefusesANoexecCandidate(t *testing.T) {
 		t.Skip("unshare not available")
 	}
 	ambient, candidate := t.TempDir(), t.TempDir()
-	if out, err := exec.Command("unshare", "-rm", "true").CombinedOutput(); err != nil {
-		t.Skipf("unprivileged user+mount namespaces unavailable: %v: %s", err, out)
+	// Probe the whole capability the test needs, a tmpfs mount inside the
+	// namespace, so a host that allows the namespace but blocks mount skips.
+	probe := exec.Command("unshare", "-rm", "sh", "-c", `mount -t tmpfs tmpfs "$1" && umount "$1"`, "sh", t.TempDir())
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("cannot mount a tmpfs in an unprivileged user+mount namespace: %v: %s", err, out)
 	}
 	script := `mount -t tmpfs -o noexec tmpfs "$1" && . "$2" && gate_scratch_root "$1" 1`
 	cmd := exec.Command("unshare", "-rm", "sh", "-c", script, "sh", candidate, gateScratchRootLib)

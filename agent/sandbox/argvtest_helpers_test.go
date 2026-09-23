@@ -81,7 +81,10 @@ func tmpMainCheckout(t *testing.T) string {
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	root = resolveCleanPath(root)
 	if !pathUnder(root, "/tmp") {
-		t.Fatalf("/tmp workspace resolved to %q, outside /tmp", root)
+		// /tmp is a symlink here (to /var/tmp, say): the sandbox's /tmp
+		// tmpfs does not shadow the resolved path, so there is no /tmp-based
+		// workspace this host can offer.
+		t.Skipf("/tmp resolves to %q on this host; no /tmp-based workspace exists", root)
 	}
 	contractGitRunnerFor(t)(t, root, "init", "-q")
 	return root
