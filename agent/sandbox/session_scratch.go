@@ -272,6 +272,13 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 // Tests use it to run a concurrent manifest reset inside that window.
 var scratchSweepBeforeRemove func()
 
+// scratchResetBeforeReclaimLock fires just before the manifest reset attempts
+// the reclamation lock, inside the retry closure and ahead of the lock's
+// blocking section. Tests use it to synchronize the reset's arrival at the
+// lock while the sweep holds it, instead of sleeping and hoping the goroutine
+// reached the window in time.
+var scratchResetBeforeReclaimLock func()
+
 // scratchReclamationMu serializes scratch reclamation with the manifest reset.
 // The sweep's retention check reads the Released tombstone without any lock the
 // reset's resurrection takes, and the reset's carry pass reclaims rows without

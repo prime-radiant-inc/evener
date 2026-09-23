@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,6 +170,7 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 
 	atWindow := make(chan struct{})
 	proceed := make(chan struct{})
+	resetAtLock := make(chan struct{})
 	resetDone := make(chan error, 1)
 	sweepDone := make(chan error, 1)
 	scratchSweepBeforeRemove = func() {
@@ -180,23 +182,51 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 	go func() { sweepDone <- SweepCrashedSessionScratch(workspace) }()
 	<-atWindow
 
+	// The reset announces its arrival at the reclamation lock through the
+	// test seam: the sweep holds the mutex from its retention read until the
+	// removal completes, so a signal here proves the reset attempted the
+	// lock inside that window — the serialization's whole subject — rather
+	// than a sleep hoping the goroutine got there in time (and sometimes
+	// passing with the window never entered).
+	var resetArrived sync.Once
+	scratchResetBeforeReclaimLock = func() {
+		resetArrived.Do(func() { close(resetAtLock) })
+	}
+	t.Cleanup(func() { scratchResetBeforeReclaimLock = nil })
+
 	go func() {
 		_, _, err := ResetScratchRetentionIfReleased(owner)
 		resetDone <- err
 	}()
-	// Give the reset time to finish inside the sweep's hold. Pre-fix it
-	// commits the carry in this window; post-fix it blocks on the
-	// reclamation serialization until the sweep has removed the directory.
-	time.Sleep(250 * time.Millisecond)
-	close(proceed)
-
+	<-resetAtLock
+	// Distinguish the two trees without a blind sleep: while the sweep parks
+	// in its hook the reclamation lock is held, so on the serialized tree the
+	// reset parks at the lock and resetDone cannot arrive yet; a reset that
+	// lost the serialization runs straight through and lands resetDone within
+	// the carry's few milliseconds. The wait-for-absence costs the green path
+	// nothing it depends on, and on a deserialized tree it orders the carry
+	// before the sweep's removal, so the harm the mutex exists to prevent is
+	// what the assertions see.
+	resetCompletedEarly := false
 	select {
 	case err := <-resetDone:
 		if err != nil {
 			t.Fatalf("reset: %v", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("reset did not finish")
+		resetCompletedEarly = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(proceed)
+
+	if !resetCompletedEarly {
+		select {
+		case err := <-resetDone:
+			if err != nil {
+				t.Fatalf("reset: %v", err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("reset did not finish")
+		}
 	}
 	select {
 	case err := <-sweepDone:

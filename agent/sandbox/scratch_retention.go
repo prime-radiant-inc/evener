@@ -1201,6 +1201,9 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		// reset's read and its commit. Taken per attempt inside the retry —
 		// the reset never holds it across a backoff, and a manifest-lock
 		// refusal releases it before the retry.
+		if scratchResetBeforeReclaimLock != nil {
+			scratchResetBeforeReclaimLock()
+		}
 		scratchReclamationMu.Lock()
 		defer scratchReclamationMu.Unlock()
 		lock, err := acquireScratchRetentionLock(owner)

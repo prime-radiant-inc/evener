@@ -917,6 +917,180 @@ func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing
 	if got := env.SessionScratchDir(); filepath.Clean(got) == filepath.Clean(retainedDir) {
 		t.Fatalf("the adoption borrowed the sealed %q", retainedDir)
 	}
+	// The declined kind must carry the pending mark, exactly like a dying
+	// claim's kind (round 38): the caller reprovisions fresh scratch on the
+	// not-installed report, and without the mark the reprovision's first mint
+	// publishes through the unmarked row and claims its slot — the durable
+	// row stops naming the retained directory and no later refresh ever
+	// re-probes it (round 10).
+	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the declined borrow left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
+	// End-to-end over the still-live manifest — the seal never tombstones
+	// (round 28) — the reprovision's publication must pin the mint bare and
+	// leave the binding row's slot naming the retained directory.
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the reprovisioned fresh sandbox scratch: %v", err)
+	}
+	freshSandbox := env.SessionScratchDir()
+	if freshSandbox == "" || filepath.Clean(freshSandbox) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", freshSandbox, retainedDir)
+	}
+	if err := env.PinOwnedScratch(); err != nil {
+		t.Fatalf("publish the reprovisioned allocation: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindSandbox]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the reprovision's fallback displaced the binding row's slot over the declined borrow: got %+v, want the retained %q — no later refresh will re-probe the original", slot, retainedDir)
+	}
+	pinned := false
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(freshSandbox) {
+			pinned = true
+		}
+	}
+	if !pinned {
+		t.Fatalf("the fallback sandbox mint %q was left unpinned: a protected allocation must publish a reference", freshSandbox)
+	}
+}
+
+// TestScratchBorrowDeclineKeepsTheKindPending pins round 48's Medium, the
+// wrapper-only half: a borrow that declines because the disk revalidation
+// read the directory collectible — with the pool still attached and unsealed
+// — used to fall through as a skip, so the adoption reported success with the
+// kind never provisioned and no pending mark to keep the reprovision's mint
+// from claiming the binding row's slot. The decline must take the same
+// treatment a dying claim's kind gets (round 38): mark the kind pending and
+// report the whole adoption not-installed so the caller reprovisions fresh
+// scratch.
+func TestScratchBorrowDeclineKeepsTheKindPending(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01BORROWDEC1"
+	const bindingID = "b-borrow-decline"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	// A wrapper-only slot: the binding borrows a directory whose lease another
+	// binding owns, so the adoption runs the borrow branch rather than a
+	// claim.
+	wrapperRow := bindingRow
+	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	// The manifest is tombstoned while the pool stays attached and unsealed:
+	// the mint's handle still holds the directory lease, so the pin survives
+	// the release (round 25) and the revalidation can only decline on the
+	// Released tombstone — the one decline arm that is neither a seal nor a
+	// detach.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("tombstone the manifest: %v", err)
+	}
+	if s.retainedScratchSealed.Load() {
+		t.Fatal("fixture: the pool must stay unsealed — the decline must come from the disk revalidation alone")
+	}
+	if s.retainedScratch.Load() == nil {
+		t.Fatal("fixture: the pool must stay attached")
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the wrapper binding over the collectible directory: %v", err)
+	}
+	if installed {
+		t.Fatal("the adoption reported success over a declined borrow: the caller continues without scratch and the reprovision's mint would claim the unmarked row's slot")
+	}
+	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the declined borrow left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
+	// The decline itself must not have disturbed the pool: still attached,
+	// still unsealed.
+	if s.retainedScratchSealed.Load() || s.retainedScratch.Load() == nil {
+		t.Fatal("fixture: the revalidation decline changed the pool state")
+	}
+}
+
+// TestScratchSharedBorrowDeclineKeepsTheKindPending pins round 48's Medium,
+// the already-taken half: a distinct consumer's borrow of a slot another
+// consumer adopted declines the same way when the revalidation reads the
+// directory collectible over an attached, unsealed pool — the decline used to
+// fall through the switch as a skip, with the same missing report and the
+// same missing pending mark.
+func TestScratchSharedBorrowDeclineKeepsTheKindPending(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01BORROWDEC2"
+	const sharerID = "01BORROWDEC2S"
+	const bindingID = "b-shared-decline"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	// The slot is already adopted by a distinct consumer, so this consumer's
+	// claim takes the lease-less borrow branch (round 22's sharing shape).
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{key: sharerID},
+		contended: map[string]struct{}{},
+	})
+
+	// Tombstone with the pool attached and unsealed: the sharer's claim is
+	// pool state and survives, but the disk revalidation declines the borrow.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("tombstone the manifest: %v", err)
+	}
+	if s.retainedScratchSealed.Load() {
+		t.Fatal("fixture: the pool must stay unsealed")
+	}
+	if s.retainedScratch.Load() == nil {
+		t.Fatal("fixture: the pool must stay attached")
+	}
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the shared binding over the collectible directory: %v", err)
+	}
+	if installed {
+		t.Fatal("the shared-borrow adoption reported success over a declined borrow: the caller continues without scratch and the reprovision's mint would claim the unmarked row's slot")
+	}
+	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the declined shared borrow left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
 }
 
 // TestScratchClaimDeclinesWhileThePoolIsSealedBeforeDetach pins round 34's

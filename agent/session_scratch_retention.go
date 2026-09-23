@@ -1564,16 +1564,20 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				// The borrow declined. A pool that sealed or detached
 				// mid-window is dying — the seal and the detach are separate
 				// pool-lock acquisitions in every release path, so the borrow
-				// can interleave between them — and the whole adoption's
-				// report becomes the not-installed one so the caller
-				// reprovisions fresh scratch instead of proceeding on the
-				// pre-seal snapshot with the allocation missing (rounds 18
-				// and 33). A directory the collector may take leaves this
-				// kind to fresh scratch with the row intact for a later
-				// refresh to re-probe.
-				if s.retainedScratchSealed.Load() || s.retainedScratch.Load() != pool {
-					return false, nil, nil
-				}
+				// can interleave between them (rounds 18 and 33) — and a
+				// directory the revalidation read collectible is gone for
+				// this cycle the same way. Every decline reports the whole
+				// adoption not-installed so the caller reprovisions fresh
+				// scratch instead of proceeding on the pre-seal snapshot with
+				// the allocation missing, and the declined kind must carry
+				// the pending mark first: the binding row is already installed
+				// with its slot naming the retained directory, and the
+				// reprovision's first mint publishes through the pending path
+				// — a bare protected reference — or its publication would
+				// claim the binding's slot and end the re-probe exactly like a
+				// contended slot's fallback (rounds 10, 37, and 38).
+				env.MarkRetainedSlotPending(kind)
+				return false, nil, nil
 			}
 			continue
 		}
@@ -1628,9 +1632,16 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				return false, nil, err
 			}
 			if !installed {
-				if s.retainedScratchSealed.Load() || s.retainedScratch.Load() != pool {
-					return false, nil, nil
-				}
+				// The distinct consumer's borrow declines for the same reasons
+				// a wrapper-only borrow can — the pool sealed or detached
+				// mid-window (rounds 32 and 33), or the revalidation read the
+				// directory collectible — and takes the same
+				// declined-adoption treatment: the pending mark keeps the
+				// reprovision's mint from claiming the binding row's slot
+				// (rounds 10, 37, and 38), and the not-installed report routes
+				// the caller to fresh scratch.
+				env.MarkRetainedSlotPending(kind)
+				return false, nil, nil
 			}
 		case handle != nil:
 			if hook := s.cfg.testOnly.scratchAdoptionAfterClaim; hook != nil {
