@@ -23,7 +23,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { resetNotificationsForTests } from "../../notifications";
-import { installLocalStorage } from "../../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -35,27 +35,11 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { HoldHints } from "./HoldHints";
 import { HARD_TIMEOUT_MS, HOLD_THRESHOLD_MS, holdHintsStore, resetHoldHintsForTests } from "./holdHintsController";
 
-// See AppShell.test.tsx for why both stubs are needed (jsdom has no
-// ResizeObserver; Node 26 shadows jsdom's localStorage accessor).
+// jsdom has no ResizeObserver - see AppShell.test.tsx.
 class StubResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
-}
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
 }
 
 // CheatsheetOverlay.test.tsx's installMobileViewport, verbatim: the mobile
@@ -111,8 +95,6 @@ function showHints(): void {
 
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
-  // @ts-expect-error MemoryStorage deliberately implements only the Storage
-  // methods the stores actually call - see AppShell.test.tsx's own stub.
   installLocalStorage(new MemoryStorage());
   // Await the lazy pane/dock modules once up front, then pay react-dom's
   // per-boundary fallback throttle in one warm render - see
@@ -131,7 +113,6 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetKeybindingsStoreForTests();
-  // @ts-expect-error see the beforeAll stub.
   installLocalStorage(new MemoryStorage());
   localStorage.clear();
   resetPrefsStoreForTests();

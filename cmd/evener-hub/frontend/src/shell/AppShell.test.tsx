@@ -19,7 +19,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
-import { installLocalStorage } from "../storageTestUtils";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
 import {
@@ -293,32 +293,11 @@ function installNeedsYouRows(): void {
 }
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
-// auto-resizing) and, separately, Node 26's own global `localStorage`
-// accessor shadows jsdom's real one without --localstorage-file - both
-// verified via a live probe, duplicated here rather than shared since this
-// project has no cross-test-file test-utils module (see stores/
-// threads.test.ts's own identical note on duplicating a helper for the same
-// reason). See DockHost.test.tsx's own comments for the full detail on
-// each.
+// auto-resizing), verified via a live probe.
 class StubResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
-}
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
 }
 
 const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
@@ -411,9 +390,6 @@ async function warmRoute(
 // with a widened findBy deadline.
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
-  // @ts-expect-error MemoryStorage deliberately implements only the Storage
-  // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
-  // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   installLocalStorage(new MemoryStorage());
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
@@ -440,7 +416,6 @@ beforeEach(() => {
   navigationStore.setState({ mode: "v2" });
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.
-  // @ts-expect-error MemoryStorage implements the subset used by DockHost.
   installLocalStorage(new MemoryStorage());
   localStorage.clear();
   // The settings pane's last-visited-section memory (prefs.ts's
