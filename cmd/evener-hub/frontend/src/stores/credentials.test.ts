@@ -2738,11 +2738,15 @@ test("an identity-less read does not survive a re-registration under the same na
   expect(partition.instances).toEqual([REMOTE_INSTANCE]);
   expect(partition.readIdentity).toBe(hostIdentity(first));
 
-  // The name now means a different host: an identity-less read must not keep the
-  // previous registration's rows on screen.
-  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] } });
+  // The name now means a different host: the previous registration's rows are
+  // dropped and the store re-reads the name under the registration it names now,
+  // so the rows never carry over even for an identity-less consumer.
+  const second = registryRow({ name: "buildbox", address: "b.example" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [second] } });
 
-  expect(hostInstancesStore.getState().hosts).toEqual({});
+  await vi.waitFor(() =>
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe(hostIdentity(second)),
+  );
   hostsStore.getState().resetForTests();
 });
 
@@ -2764,5 +2768,32 @@ test("an identity-less read survives two ready snapshots of the same registratio
 
   expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
   expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+  hostsStore.getState().resetForTests();
+});
+
+// M3 (round 6): a read issued while the registry was still unread recorded no
+// identity, and survivesRegistry treated "no identity" as proof of no mismatch -
+// so those rows survived every later registration, including a name re-registered
+// as a different host. A read is now tied to the registration it was issued
+// under, and an untied read does not survive the registry's first ready snapshot.
+test("a read issued while the registry was unread does not survive its first ready snapshot", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  expect(hostsStore.getState().load.phase).toBe("loading");
+
+  await fetchHost("buildbox"); // identity-less, registry unread
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBeNull();
+
+  // The registry answers, naming the host. The untied rows cannot be attributed
+  // to that registration, so they are dropped and re-read under it.
+  const row = registryRow({ name: "buildbox", address: "a.example" });
+  hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
+
+  await vi.waitFor(() =>
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").readIdentity).toBe(hostIdentity(row)),
+  );
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+  // The untied read plus the store's own re-read under the registration.
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(2);
   hostsStore.getState().resetForTests();
 });

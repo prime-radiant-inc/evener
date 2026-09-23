@@ -102,7 +102,7 @@ const ENDPOINT_CHANGED_CONFIRM_ERROR =
 // diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
 // component (this pane's sibling settings section), a flat unordered list
 // with no stable per-entry identity of its own.
-function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
+export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
   if (diagnostics.length === 0) return null;
   return (
     <div className={CLASS.diagnostics} role="status" aria-live="polite">

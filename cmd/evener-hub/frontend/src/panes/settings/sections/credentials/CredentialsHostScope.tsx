@@ -24,7 +24,7 @@ import { HostPicker, isConfiguredHost, useHostRegistryFacts } from "../../HostPi
 import { useSettingsHost } from "../../settingsHost";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsHostScope.module.css";
-import { CredentialsSection } from "./CredentialsSection";
+import { CredentialsSection, Diagnostics } from "./CredentialsSection";
 import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 
 const CLASS = {
@@ -98,9 +98,11 @@ function RemoteHostInstances({
   // The connection belongs in the deps because useConnectedEffect's started flag
   // is per-effect: with `host` alone, a transition released the in-flight read's
   // status and nothing ever re-issued it, so an unanswered read settled as an
-  // empty listing and a reconnect kept pre-disconnect rows. The identity belongs
-  // there too: a name re-registered as a different host is a different listing to
-  // read, not the cached one.
+  // empty listing and a reconnect kept pre-disconnect rows. The IDENTITY is
+  // deliberately NOT a dep: the store owns that refresh now
+  // (forgetPartitionsForRegistry drops a name the registry re-registers and
+  // re-reads it under the registration it names - see stores/credentials.ts), so
+  // this pane and every other consumer converge without keying on identity.
   //
   // The ATTACHMENT state belongs there as well, and only there: an offline host
   // that fails and later attaches changes live registry data and nothing else, so
@@ -123,7 +125,7 @@ function RemoteHostInstances({
   const registryUnread = phase === "loading" && identity === null;
   useConnectedEffect(
     () => (registryUnread ? Promise.resolve() : fetchHost(host, identity)),
-    [host, identity, attached, client, connection, registryUnread],
+    [host, attached, client, connection, registryUnread],
   );
 
   const title = `Providers on ${host}`;
@@ -135,16 +137,24 @@ function RemoteHostInstances({
   const verified = state.readIdentity !== null && (identity === null || state.readIdentity === identity);
   const empty = state.instances.length === 0;
   const pending = !verified || (state.loading && empty);
-  // The registry has settled on a FAILURE: no identity is coming, so nothing
-  // read here can ever pass `verified`. Rather than a permanent skeleton - which
-  // reads as "still working" - say what is and is not known, and offer the
-  // registry's own read to retry. (The picker also re-reads it on its own poll,
-  // so this is not the only way back.)
-  const unverifiable = phase === "error";
+  // The registry has settled on a FAILURE and never named this host: no identity
+  // is coming, so nothing read here can ever pass `verified`. The IDENTITY is the
+  // key, not the phase alone: useHostRegistryFacts retains the last ready identity
+  // across a later failure, and rows tied to that identity are still verified, so
+  // the banner must not sit beside them. Only when there is no identity at all is
+  // the registration genuinely unknown; then say so (rather than a permanent
+  // skeleton - which reads as "still working") and offer the registry's own read
+  // to retry. (The picker also re-reads it on its own poll, so this is not the
+  // only way back.) The listing branches below are gated on !unverifiable so the
+  // two states can never render together.
+  const unverifiable = phase === "error" && identity === null;
   return (
     <section className={CLASS.remote} aria-label={title}>
       <h3 className={CLASS.heading}>{title}</h3>
       <p className={CLASS.note}>Read-only. These are {host}'s own provider instances, not this hub's.</p>
+      {/* The host's own load warnings: a partial listing must say so rather than
+          read as a complete one. */}
+      {!unverifiable && verified && <Diagnostics diagnostics={state.diagnostics} />}
       {/* An error is an answer: the skeleton is for "nothing, and no failure,
           yet" - beside a refusal it would read as "still working". */}
       {state.error !== null && (
@@ -164,10 +174,10 @@ function RemoteHostInstances({
         />
       )}
       {state.error === null && !unverifiable && pending && <Skeleton />}
-      {verified && !pending && state.error === null && empty && (
+      {!unverifiable && verified && !pending && state.error === null && empty && (
         <EmptyState title={`No provider instances on ${host}.`} />
       )}
-      {verified && !empty && (
+      {!unverifiable && verified && !empty && (
         <ProviderInstanceGroups instances={state.instances} availableProviders={state.availableProviders} readOnly />
       )}
     </section>

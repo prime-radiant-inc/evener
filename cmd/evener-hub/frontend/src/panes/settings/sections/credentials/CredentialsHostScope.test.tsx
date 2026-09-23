@@ -540,3 +540,43 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
 
   expect(await screen.findByText("on-beta")).toBeTruthy();
 });
+
+// M4 (round 6): useHostRegistryFacts retains the last READY identity across a
+// later registry failure, so the phase alone is the wrong key for "unverifiable":
+// it can render the registration-unknown banner beside a listing that is in fact
+// verified. The state is keyed on the identity being absent, not the phase.
+test("a retained identity keeps a verified listing shown when the registry later fails", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  await screen.findByText("on-beta");
+
+  // The registry's next read fails. The last ready identity is retained, so the
+  // rows are still tied to a known registration.
+  act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
+
+  expect(screen.queryByText(/Couldn't check/)).toBeNull();
+  expect(screen.getByText("on-beta")).toBeTruthy();
+});
+
+// L1 (round 6): the remote listing's diagnostics were dropped, so a malformed or
+// partially loaded remote provider config read as a complete listing. They belong
+// on the host partition and on the read-only remote view.
+test("a remote answer's diagnostics are shown on the read-only remote view", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => ({
+    ...HOST_LIST,
+    diagnostics: ['providers.toml: unexpected key "type"'],
+  }));
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  expect(await screen.findByText('providers.toml: unexpected key "type"')).toBeTruthy();
+});

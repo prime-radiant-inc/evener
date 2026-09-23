@@ -21,6 +21,7 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
+import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
@@ -137,7 +138,17 @@ function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
 function usePathname(): string {
   const [pathname, setPathname] = useState(() => window.location.pathname);
   useEffect(() => {
-    const onPopState = () => setPathname(window.location.pathname);
+    const onPopState = () => {
+      // Synchronize the settings selection with the route the window just moved
+      // to, in THIS tick and before React re-renders. A Back/Forward into a
+      // host-scoped settings URL otherwise mounts the settings pane on the
+      // previous selection - rendering, and reading, for a host the route does
+      // not name - because the pane's own adoption runs only in a passive mount
+      // effect. navigate() mirrors the app's own navigations; this is the door
+      // the browser's Back/Forward comes through (M1, round 6).
+      syncSettingsHostToRoute(window.location.pathname, window.location.search);
+      setPathname(window.location.pathname);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);

@@ -69,7 +69,10 @@ export function useHostRegistryFacts(load: HostsLoadState, host: string): HostRe
     const row = selectableHostRows(load).find((candidate) => candidate.name === host);
     known.current = {
       host,
-      facts: { identity: row === undefined ? null : hostIdentity(row), attached: row?.attached ?? false },
+      // hostIdentityFor is the same identity query the picker's own isConfigured
+      // check resolves against, so the settings layer has ONE identity
+      // computation instead of two that could drift (L2, round 6).
+      facts: { identity: hostIdentityFor(load, host), attached: row?.attached ?? false },
     };
   }
   return known.current.facts;

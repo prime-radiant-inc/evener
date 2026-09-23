@@ -30,6 +30,7 @@ import {
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
+import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
@@ -416,6 +417,7 @@ beforeEach(() => {
   // storage: rehydrate against the cleared storage, or one test's settings
   // visit picks the next test's bare-/settings landing section.
   resetPrefsStoreForTests();
+  resetSettingsHostForTests();
 });
 
 afterEach(() => {
@@ -4313,4 +4315,33 @@ test("a second press adopts an in-flight demand whose guards went stale", async 
     resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// M1 (round 6): the settings selection must be synchronized with the route at the
+// popstate itself, before React mounts the settings pane. Otherwise a Back/Forward
+// into a host-scoped settings URL mounts that pane on the previous (local)
+// selection and renders - and reads - for a host the route does not name.
+test("a popstate into a host-scoped settings URL selects the host before the pane mounts", async () => {
+  window.history.pushState({}, "", "/");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  expect(settingsHostStore.getState().host).toBe("local");
+
+  // Read the selection during the popstate dispatch: after the shell's own route
+  // listener has run, but before React can mount the settings pane.
+  let hostAtDispatch: string | null = null;
+  const probe = () => {
+    hostAtDispatch = settingsHostStore.getState().host;
+  };
+  window.addEventListener("popstate", probe);
+  try {
+    act(() => {
+      window.history.pushState({}, "", "/settings/credentials?host=beta");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  } finally {
+    window.removeEventListener("popstate", probe);
+  }
+
+  expect(hostAtDispatch).toBe("beta");
 });
