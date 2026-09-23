@@ -574,17 +574,43 @@ type AuditResult struct {
 
 // followSelector returns the selector that re-addresses one session:
 // refFor's transcript ref (proj:<id>:<sid> or local:<sid>) when refFor
-// produced one, or the bare session id as a last resort. refFor is the sole
-// qualifier — it gates its proj: emission on identifier.ValidateProjectID's
-// alphabet ([A-Za-z0-9-]), which is comma-safe end to end (the CLI splits
-// --sessions on ','). Bucket names outside that alphabet — commas, spaces,
-// shell metacharacters, the backslash/NUL class — fall back to the bare
+// produced one, a bucket-qualified proj:<id>:<sid> selector when refFor
+// did not but the bucket name is safe for the comma-joined --sessions
+// reproduction line (safeTokenForRepro), or the bare session id as a last
+// resort. refFor gates its proj: emission on the canonical
+// identifier.ValidateProjectID alphabet ([A-Za-z0-9-]). followSelector's
+// middle branch widens that to every name that round-trips the CLI's
+// comma-joined --sessions grammar and is inert in a shell line — covering
+// shell-safe-but-non-canonical legacy names like hex-style bucket
+// directories (e.g. 0123456789abcdef) that ValidateProjectID rejects.
+// Names that fail even the reproduction-safety check — commas, whitespace,
+// shell metacharacters, path separators, NUL — fall back to the bare
 // session id, preserving pre-FU2 behavior for them.
 func followSelector(projectID, sessionID string) string {
 	if ref := refFor(projectID, sessionID); ref != "" {
 		return ref
 	}
+	if safeTokenForRepro(projectID) {
+		return projRef(projectID, sessionID)
+	}
 	return sessionID
+}
+
+// safeTokenForRepro reports whether a bucket name is safe to emit as a
+// proj:<name>:<sid> token in DoctorCommand's comma-joined --sessions
+// reproduction line. It is the emission-site constraint, deliberately
+// wider than the canonical identifier.ValidateProjectID grammar: hex-style
+// legacy bucket names (e.g. 0123456789abcdef) pass this check but fail
+// ValidateProjectID. The predicate rejects: empty, the dot components,
+// path separators, NUL (path-escape defense, same as projectTokenOK);
+// commas (the CLI splits --sessions on ','); whitespace (shell
+// word-break); and shell metacharacters that alter command behavior
+// ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ", ', {, }, =).
+func safeTokenForRepro(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, "/\\\x00, \t\r\n$`;|&()<>=!#~\"'{}")
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
@@ -633,11 +659,16 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			continue
 		}
 		// sel is the selector every read and evidence entry for this session
-		// uses: refFor's transcript ref when it produced one, or the bare id
-		// as a last resort. Computed once after Locate; reused at every
+		// uses. For explicit --sessions inputs, ref is the user-supplied
+		// selector that already round-tripped the CLI grammar and resolved
+		// via Locate — safe by construction, so preserve it rather than
+		// reconstructing (the reconstruction can turn a non-canonical
+		// proj:<legacy>:<sid> into a bare sid that re-ambiguates). For the
+		// --since sweep, ref is already followSelector output, so using it
+		// is equivalent. Computed once after Locate; reused at every
 		// read/evidence site below so the grammar scan and string build run
 		// once, not five times.
-		sel := followSelector(paths.ProjectID, paths.SessionID)
+		sel := ref
 		health, err := TranscriptHealth(stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})
@@ -686,12 +717,13 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				checkBySignature[sig] = check
 				signatureOrder = append(signatureOrder, sig)
 			}
-			// Evidence carries the same selector the reads used: a session in
-			// a bucket whose name the agent ref grammar rejects is named by a
-			// bucket-qualified proj:<id>:<sid> selector (or bare id when the
-			// doctor's own selector grammar also rejects the name), so the
-			// affected-session count, the --sessions reproduction line, and a
-			// re-run of that line all keep working.
+			// Evidence carries the same selector the reads used: the original
+			// ref for explicit --sessions inputs (already resolved by Locate),
+			// refFor's transcript ref for canonical names, a proj:<id>:<sid>
+			// for shell-safe non-canonical names (safeTokenForRepro), or the
+			// bare session id as a last resort — so the affected-session count,
+			// the --sessions reproduction line, and a re-run of that line all
+			// keep working.
 			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, sel)
 		}
 	}

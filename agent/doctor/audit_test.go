@@ -665,17 +665,17 @@ func TestRunAudit_SinceAuditsLegacyNamedBuckets(t *testing.T) {
 }
 
 // TestRunAudit_LegacyBucketEvidenceNamesSessions covers the evidence path for
-// buckets whose directory names BOTH ref grammars reject: refFor emits no
+// buckets whose directory names fail every qualifier: refFor emits no
 // TranscriptRef (identifier.ValidateProjectID rejects the backslash), and
-// the doctor's own selector grammar rejects the name too (projectTokenOK
-// rejects the backslash), so followSelector falls back to a bare id — the
-// round-4/5 behavior, now scoped to this grammar-rejected class only.
-// (Selector-safe legacy names like "0123456789abcdef" now get proj: refs —
-// see TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth.) A check tripping in
-// such sessions must name EVERY affected session by bare id — not collapse
-// them into one empty-string entry — so the affected-session count, the
-// --sessions reproduction line, and a re-run of that line against RunAudit
-// all keep working.
+// safeTokenForRepro also rejects the backslash (path separator), so
+// followSelector falls back to a bare id — the pre-FU2 behavior, now
+// scoped to this reproduction-unsafe class only. (Shell-safe legacy names
+// like "0123456789abcdef" now get proj: refs via safeTokenForRepro — see
+// TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs.) A check tripping
+// in such sessions must name EVERY affected session by bare id — not
+// collapse them into one empty-string entry — so the affected-session
+// count, the --sessions reproduction line, and a re-run of that line
+// against RunAudit all keep working.
 func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 	base := t.TempDir()
 	legacyBucket := stateHomeBucket(base, "back\\slash-bucket")
@@ -738,8 +738,9 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 // buckets) by failing if followSelector were changed to return bare ids:
 // SessionsChecked would drop to 0 (bare id ambiguous across two buckets).
 // The companion TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback guards
-// the other side of the boundary (ValidateProjectID-invalid names → bare
-// id → both Unreadable).
+// the other side of the boundary (safeTokenForRepro-unsafe names → bare
+// id → both Unreadable). TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs
+// guards the middle branch (shell-safe non-canonical names → proj: refs).
 func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	base := t.TempDir()
 	// Both names pass identifier.ValidateProjectID (readable-<10 base62>
@@ -814,21 +815,20 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 
 // TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback guards the feature
 // boundary: the same session id in two buckets whose names FAIL
-// ValidateProjectID (so refFor emits no ref and followSelector falls back
-// to the bare session id). The bare id is ambiguous across the two buckets,
-// so both rows land Unreadable and SessionsChecked=0 — the pre-FU2 behavior
-// this boundary preserves. This negative case contrasts with
-// TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth (ValidateProjectID-valid
+// safeTokenForRepro (so followSelector falls back to the bare session id).
+// The bare id is ambiguous across the two buckets, so both rows land
+// Unreadable and SessionsChecked=0 — the pre-FU2 behavior this boundary
+// preserves. This negative case contrasts with
+// TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs (shell-safe legacy
 // names → proj: refs → both audit). Together they guard both sides of the
-// feature: valid names get precise proj: refs, invalid names fall back to
+// feature: safe names get precise proj: refs, unsafe names fall back to
 // bare ids.
 func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
 	base := t.TempDir()
-	// Both names fail identifier.ValidateProjectID (no readable-<10 base62>
-	// structure), so refFor emits no ref and followSelector falls back to
-	// the bare session id.
-	bucketA := stateHomeBucket(base, "0123456789abcdef")
-	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	// Both names fail safeTokenForRepro: backslash is a path separator, so
+	// followSelector falls back to the bare session id.
+	bucketA := stateHomeBucket(base, "back\\slash-a")
+	bucketB := stateHomeBucket(base, "back\\slash-b")
 	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
 
@@ -839,7 +839,7 @@ func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
 	}
 	// The bare id is ambiguous across the two buckets: both rows Unreadable.
 	if res.SessionsChecked != 0 {
-		t.Fatalf("SessionsChecked = %d, want 0 — the bare id is ambiguous across two ValidateProjectID-invalid buckets, so both rows must land Unreadable", res.SessionsChecked)
+		t.Fatalf("SessionsChecked = %d, want 0 — the bare id is ambiguous across two safeTokenForRepro-unsafe buckets, so both rows must land Unreadable", res.SessionsChecked)
 	}
 	if len(res.Unreadable) != 2 {
 		t.Fatalf("Unreadable = %d rows, want 2 (one per bucket)", len(res.Unreadable))
@@ -853,10 +853,13 @@ func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
 // containing a comma breaks the reproduction line (it splits into two
 // invalid selectors), and a name with a space or shell metacharacter is a
 // shell injection vector. The fix narrows followSelector's proj: emission to
-// the ValidateProjectID alphabet ([A-Za-z0-9-]); everything else falls back
-// to the bare session id — the pre-FU2 behavior for those names. This test
-// exercises the comma-join + CLI-split layer (not the structured slice) and
-// must fail on current head (the comma-bucket ref enters DoctorCommand).
+// names that safely round-trip the comma-joined --sessions reproduction
+// line (safeTokenForRepro: comma-free, whitespace-free, free of shell
+// metacharacters, non-empty, not a path separator or NUL); everything else
+// falls back to the bare session id — the pre-FU2 behavior for those names.
+// This test exercises the comma-join + CLI-split layer (not the structured
+// slice) and must fail on current head (the comma-bucket ref enters
+// DoctorCommand).
 func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 	// Bucket names that pass projectTokenOK but are unsafe in a comma-joined
 	// --sessions reproduction line: a comma (CLI splits it), a space (shell
@@ -904,6 +907,119 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs is the roborev fix
+// round 3 item-1 RED case: hex-style legacy bucket names (e.g.
+// 0123456789abcdef) are shell- and comma-safe but fail
+// identifier.ValidateProjectID (no readable-<10 base62> structure), so
+// refFor emits no ref. The round-2 deletion left followSelector with no
+// middle branch, so these names fall back to the bare session id — and when
+// the same sid is in two such buckets, the bare id is ambiguous and both
+// rows land Unreadable (SessionsChecked=0). The fix restores a middle
+// branch gated on a comma/shell-safety predicate wider than
+// ValidateProjectID, so hex names get proj: refs and both rows audit.
+func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
+	base := t.TempDir()
+	// Hex-style legacy bucket names: shell- and comma-safe, but fail
+	// ValidateProjectID (no readable-<10 base62> structure).
+	bucketA := stateHomeBucket(base, "0123456789abcdef")
+	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both rows must audit — the hex names are safe enough for proj: refs.
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — hex-named legacy buckets should both audit via proj: refs", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
+	}
+	// Evidence must name each by its bucket-qualified proj: ref.
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	wantA := "proj:0123456789abcdef:" + sidA
+	wantB := "proj:fedcba9876543210:" + sidA
+	refs := map[string]bool{}
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		refs[ref] = true
+	}
+	if !refs[wantA] || !refs[wantB] {
+		t.Errorf("run-timeout SessionRefs = %v, want both %q and %q", runTimeout.Evidence.SessionRefs, wantA, wantB)
+	}
+	// The reproduction line must re-run: feeding the evidence refs back as
+	// --sessions audits both again, with no unreadable rows.
+	res2, err := RunAudit(base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
+	if err != nil {
+		t.Fatalf("re-running evidence refs: %v", err)
+	}
+	if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
+		t.Errorf("re-running evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", res2.SessionsChecked, res2.Unreadable)
+	}
+}
+
+// TestRunAudit_ExplicitProjSelectorForLegacyBucket is the roborev fix
+// round 3 item-2 RED case: after Locate resolves an explicit
+// --sessions proj:<legacy-name>:<sid> selector, RunAudit discards the
+// supplied selector and reconstructs via followSelector — which for a
+// non-canonical (non-ValidateProjectID) name returns a bare SID. If that
+// SID exists in multiple buckets, the bare id is ambiguous and the
+// explicitly selected session gets reported unreadable. The fix preserves
+// the original selector for explicit --sessions inputs.
+func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
+	base := t.TempDir()
+	// Hex-style legacy bucket name: shell- and comma-safe, but fails
+	// ValidateProjectID, so refFor emits no ref.
+	bucket := stateHomeBucket(base, "0123456789abcdef")
+	writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	// Also seed a second bucket with the same sid to make the bare id
+	// ambiguous — proving the discard bug.
+	bucket2 := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucket2, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	sel := "proj:0123456789abcdef:" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The explicitly selected session must audit — the selector already
+	// resolved via Locate, so RunAudit must not discard it.
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the explicit proj:<legacy>:<sid> selector should audit exactly that session", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — the explicitly selected session must not be reported unreadable", res.Unreadable)
+	}
+	// Evidence must carry the original proj: selector, not a bare id.
+	if len(res.Findings) == 0 {
+		t.Fatalf("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sel {
+		t.Errorf("run-timeout SessionRefs = %v, want [%q] — the original explicit selector must be preserved", runTimeout.Evidence.SessionRefs, sel)
 	}
 }
 
