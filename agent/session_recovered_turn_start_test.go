@@ -577,6 +577,97 @@ func TestRunnableStartNamesTheOldestReservedFollowUpLikeTheClaim(t *testing.T) {
 	}
 }
 
+// TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead pins the
+// fix for the failure path the review found. A follow-up is admitted once the
+// recovered turn is claimed (recoveredTurnRunning), but if that turn's run then
+// fails BEFORE its prompt is recorded -- a failure that is not a transcript
+// refusal -- ProcessClientMutationStart would leave it claimed. The claim
+// selection offers only accepted/incorporated starts, so the recovered turn
+// would be skipped, the follow-up would be claimed next, and ActiveTurnID would
+// move off the recovered turn; restart recovery would then replay the recovered
+// turn after the newer prompt. The recovered turn's claim is handed back
+// instead, so it is claimed again before the follow-up.
+func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *testing.T) {
+	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
+
+	// The follow-up is admitted the way the flow admits one: once the recovered
+	// turn is claimed and running. The announce seam is that instant -- the claim
+	// has committed and the turn is about to run.
+	var followUp appwire.TurnStartResponse
+	restored.cfg.testOnly.clientMutationStartAnnounced = func() {
+		restored.cfg.testOnly.clientMutationStartAnnounced = nil
+		followUp = acceptFollowUp(t, restored, "cm-follow-up", "the follow-up")
+	}
+	restored.cfg.testOnly.failTurnBeforeRecording = func() error { return errors.New("pre-turn failure") }
+	_, processed, runErr := restored.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {})
+	if runErr == nil {
+		t.Fatal("the recovered turn's run did not fail")
+	}
+	if !processed {
+		t.Fatalf("the recovered turn was never claimed: processed=%v err=%v", processed, runErr)
+	}
+	if followUp.Turn.ID == "" {
+		t.Fatal("the follow-up was not admitted behind the claimed recovered turn; the scenario was not reached")
+	}
+
+	// The claim is back as accepted: left claimed instead, the follow-up
+	// admitted behind it is claimed next and ActiveTurnID moves off the
+	// recovered turn, which restart recovery then replays out of order.
+	if got := restored.clientMutations.snapshot().PendingExecutions[deadMutationID].ExecutionState; got != "accepted" {
+		t.Fatalf("recovered pending after its prompt failed to record = %q, want it handed back as accepted; left claimed, the follow-up %q is claimed first", got, followUp.Turn.ID)
+	}
+	// The slot still names the recovered turn, and a later prompt is still
+	// refused with the design's accepted tradeoff: the recovered turn is only
+	// accepted, not running.
+	if got := restored.clientMutations.snapshot().ActiveTurnID; got != inheritedTurnID {
+		t.Fatalf("ActiveTurnID after the failed recovered turn = %q, want the recovered turn %q", got, inheritedTurnID)
+	}
+	if _, err := restored.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-refused-while-accepted",
+		Input:            []appwire.InputItem{{Type: "text", Text: "another prompt"}},
+	}); !isClientMutationConflict(err) {
+		t.Fatalf("a new prompt while the recovered turn is merely accepted = %v, want Conflict", err)
+	}
+
+	// The recovered-first ordering re-claims the recovered turn, not the
+	// follow-up admitted behind it.
+	claimed, ok, err := restored.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim after the failed recovered turn: ok=%v err=%v", ok, err)
+	}
+	if claimed.StableTurnID != inheritedTurnID {
+		t.Fatalf("claim after the failed recovered turn = %q, want the recovered turn %q before the follow-up %q",
+			claimed.StableTurnID, inheritedTurnID, followUp.Turn.ID)
+	}
+}
+
+// TestFailedOrdinaryTurnKeepsItsClaim pins what must NOT change: a turn this
+// process started, failing the same way before its prompt is recorded, keeps its
+// claim exactly as it does today. Only the inherited recovered turn's claim is
+// handed back.
+func TestFailedOrdinaryTurnKeepsItsClaim(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	t.Cleanup(sess.Close)
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-ordinary-turn",
+		Input:            []appwire.InputItem{{Type: "text", Text: "an ordinary prompt"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if sess.recoveredTurnID != "" {
+		t.Fatalf("fixture: recoveredTurnID = %q, want an ordinary session", sess.recoveredTurnID)
+	}
+
+	sess.cfg.testOnly.failTurnBeforeRecording = func() error { return errors.New("pre-turn failure") }
+	_, processed, runErr := sess.ProcessClientMutationStart(t.Context(), func(string, ClientMutationStartPhase) {})
+	if runErr == nil || !processed {
+		t.Fatalf("ordinary turn: processed=%v err=%v, want the claim committed and the run failed", processed, runErr)
+	}
+	if got := sess.clientMutations.snapshot().PendingExecutions["cm-ordinary-turn"].ExecutionState; got != "claimed" {
+		t.Fatalf("ordinary turn pending after the failure = %q, want it still claimed as today", got)
+	}
+}
+
 // TestAcceptBehindProcessLocalTurnStillRefused pins the other half of the rule:
 // a turn the session started in THIS process is not inherited work, so a
 // turn/start while it is active keeps today's refusal.

@@ -311,6 +311,12 @@ type testConfig struct {
 	// before the claim's own refusal -- the window a poisoning lands in. Nil in
 	// production.
 	clientMutationStartClaiming func()
+	// failTurnBeforeRecording, when set, makes a turn fail before its user entry
+	// is recorded. It is the one seam that reaches the pre-incorporation,
+	// non-transcript failure the start path's give-back keys on: an integration
+	// test cannot produce one without closing the session, which closes the
+	// claim path too. Nil in production.
+	failTurnBeforeRecording func() error
 	// clientMutationStartAnnounced observes a start that has claimed and
 	// announced, immediately before the turn runs -- the window a close lands in,
 	// where the post-run give-back decides whether the claim goes back. Nil in

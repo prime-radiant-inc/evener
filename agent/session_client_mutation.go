@@ -768,6 +768,30 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
 		}
 	}
+	// A run that failed before this turn's prompt was recorded leaves the claim
+	// with nothing to finish it in this process: only the transcript's own
+	// refusals are given back above, so any other such failure keeps the start
+	// claimed and the serve loop carries on to the next input. For the turn this
+	// session INHERITED from a dead process that is not survivable: the claim
+	// selection offers only accepted/incorporated starts, so the recovered turn
+	// is skipped, the follow-up admitted behind it is claimed next, and naming
+	// the slot unconditionally moves ActiveTurnID off the recovered turn -- which
+	// restart recovery then replays AFTER the newer prompt, out of order. Hand
+	// the recovered turn's claim back instead, so it returns to accepted and the
+	// recovered-first ordering in claimableClientMutationStartIDs re-claims it
+	// before the follow-up.
+	//
+	// Keyed on the RECOVERED turn and on its prompt not being recorded -- never
+	// on the error's type. Two things hold it shut: returnUnrunStartClaim
+	// refuses a claim whose transcript entry already landed (which is what would
+	// run a turn twice), and an ordinary turn this process started is not the
+	// recovered turn, so its claim is left exactly as it was.
+	if err != nil && claimed.StableTurnID == s.recoveredTurnID &&
+		!s.clientMutationUserTranscriptIncorporated(claimed.ClientMutationID, claimed.StableTurnID) {
+		if returnErr := s.returnUnrunStartClaim(claimed); returnErr != nil {
+			err = errors.Join(err, fmt.Errorf("return claimed input: %w", returnErr))
+		}
+	}
 	return result, true, err
 }
 
