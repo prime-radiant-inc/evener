@@ -175,6 +175,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerAuthList, EmptyParams{}, AuthListResponse{}, ScopeHub, "Lists auth status for all providers."},
 	{MethodEvenerAuthApiKeySet, AuthApiKeySetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a provider API key; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthApiKeyClear, AuthApiKeyClearParams{}, AuthStatusResponse{}, ScopeHub, "Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated."},
+	{MethodEvenerAuthApiKeyConditionalSet, ApiKeyConditionalSetParams{}, ApiKeyConditionalSetResponse{}, ScopeHub, "Conditionally stores a provider API key: re-resolves the instance's credential source and configuration revision under the credential write lock and refuses a stale revision or a non-writable scheme; broadcasts evener/auth/updated when it writes."},
 	{MethodEvenerAuthCredentialJsonSet, AuthCredentialJsonSetParams{}, AuthStatusResponse{}, ScopeHub, "Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated."},
 	{MethodEvenerAuthDeviceStart, AuthDeviceStartParams{}, AuthDeviceStartResponse{}, ScopeHub, "Begins a device-code auth flow (or signals fallback)."},
 	{MethodEvenerAuthDevicePoll, AuthDevicePollParams{}, AuthDevicePollResponse{}, ScopeHub, "Polls a device-code flow; broadcasts evener/auth/updated when authorized."},

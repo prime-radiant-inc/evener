@@ -150,6 +150,7 @@ no router (reserved).
 | `evener/auth/list` | hub | `EmptyParams` | `AuthListResponse` | Lists auth status for all providers. |
 | `evener/auth/apiKey/set` | hub | `AuthApiKeySetParams` | `AuthStatusResponse` | Stores a provider API key; broadcasts evener/auth/updated. |
 | `evener/auth/apiKey/clear` | hub | `AuthApiKeyClearParams` | `AuthStatusResponse` | Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated. |
+| `evener/auth/apiKey/conditionalSet` | hub | `ApiKeyConditionalSetParams` | `ApiKeyConditionalSetResponse` | Conditionally stores a provider API key: re-resolves the instance's credential source and configuration revision under the credential write lock and refuses a stale revision or a non-writable scheme; broadcasts evener/auth/updated when it writes. |
 | `evener/auth/credentialJson/set` | hub | `AuthCredentialJsonSetParams` | `AuthStatusResponse` | Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated. |
 | `evener/auth/device/start` | hub | `AuthDeviceStartParams` | `AuthDeviceStartResponse` | Begins a device-code auth flow (or signals fallback). |
 | `evener/auth/device/poll` | hub | `AuthDevicePollParams` | `AuthDevicePollResponse` | Polls a device-code flow; broadcasts evener/auth/updated when authorized. |
@@ -288,6 +289,26 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `content` | `string` |  |  |
+
+
+### `ApiKeyConditionalSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` |  |  |
+| `value` | `string` |  |  |
+| `expectedSource` | `string` | yes |  |
+| `expectedRevision` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
+
+
+### `ApiKeyConditionalSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
+| `status` | `appwire.AuthStatusResponse` |  |  |
 
 
 ### `ArchiveParams`
@@ -466,6 +487,7 @@ An embedded type contributes its own fields inline.
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
 | `error` | `string` | yes |  |
+| `configRevision` | `string` | yes |  |
 
 
 ### `AuthTestParams`
@@ -984,6 +1006,7 @@ _(no fields)_
 | `shadowedEnvVar` | `string` | yes |  |
 | `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
+| `configRevision` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
 | `models` | `[]appwire.InstanceModelEntry` | yes |  |

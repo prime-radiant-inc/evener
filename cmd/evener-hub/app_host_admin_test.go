@@ -395,19 +395,20 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
 	policy := map[string]bool{
-		"evener/archive/set":             false,
-		"evener/auth/apiKey/clear":       true,
-		"evener/auth/apiKey/set":         true,
-		"evener/auth/credentialJson/set": true,
-		"evener/auth/device/poll":        true,
-		"evener/auth/device/start":       true,
-		"evener/auth/list":               true,
-		"evener/auth/login/complete":     true,
-		"evener/auth/login/start":        true,
-		"evener/auth/logout":             true,
-		"evener/auth/status":             true,
-		"evener/auth/test":               true,
-		"evener/command/list":            false,
+		"evener/archive/set":                false,
+		"evener/auth/apiKey/clear":          true,
+		"evener/auth/apiKey/conditionalSet": true,
+		"evener/auth/apiKey/set":            true,
+		"evener/auth/credentialJson/set":    true,
+		"evener/auth/device/poll":           true,
+		"evener/auth/device/start":          true,
+		"evener/auth/list":                  true,
+		"evener/auth/login/complete":        true,
+		"evener/auth/login/start":           true,
+		"evener/auth/logout":                true,
+		"evener/auth/status":                true,
+		"evener/auth/test":                  true,
+		"evener/command/list":               false,
 		// The resident-process controls are a LOCAL operator surface: the
 		// inventory reads this host's live processes and rendezvous records, and
 		// retirement stops a daemon after verifying its kernel-serialized
@@ -631,6 +632,7 @@ func TestHostAdminAllowListNamesEverySettingsPaneMethod(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthApiKeySet,
 		appwire.MethodEvenerAuthApiKeyClear,
+		appwire.MethodEvenerAuthApiKeyConditionalSet,
 		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,

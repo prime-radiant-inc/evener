@@ -25,6 +25,42 @@ export interface AgentsDocSetParams {
   content: string;
 }
 
+export interface ApiKeyConditionalSetParams {
+  provider: string;
+  value: string;
+  /**
+   * ExpectedSource is the ActiveSource the client observed for Provider when
+   * it prepared this write (AuthStatusResponse.ActiveSource /
+   * InstanceEntry.ActiveSource). The host re-resolves the source under its
+   * credential write lock and refuses a non-empty value that no longer
+   * matches; empty asserts no source fence. The resolved source also decides
+   * the classification (see AuthApiKeyConditionalSetResponse.Action).
+   */
+  expectedSource?: string;
+  /**
+   * ExpectedRevision is the ConfigRevision the client observed for Provider.
+   * The host re-resolves it under the same lock and refuses a non-empty value
+   * that no longer matches, so a write prepared against a configuration that
+   * changed underneath it is never applied. Empty asserts no revision fence;
+   * the source fence still applies.
+   */
+  expectedRevision?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast a landed write triggers, so the originator
+   * can recognize its own echo by id instead of by provider plus timing.
+   * Optional: empty (an older build, the TUI) leaves the broadcast without an
+   * id and consumers on the provider-plus-timing fallback.
+   */
+  originClientId?: string;
+}
+
+export interface ApiKeyConditionalSetResponse {
+  action: string;
+  reason?: string;
+  status: AuthStatusResponse;
+}
+
 export interface ArchiveParams {
   kind: string;
   id: string;
@@ -248,6 +284,19 @@ export interface AuthStatusResponse {
   needsRefresh?: boolean;
   needsLogin?: boolean;
   error?: string;
+  /**
+   * ConfigRevision is this instance's effective credential-configuration
+   * revision: a stable, non-reversible digest the host re-resolves from the
+   * same state a credential write lands in (cmd/evener-hub/app_auth.go +
+   * hubcore.CredentialConfigRevision). The remote credential push captures it
+   * from this read and echoes it as
+   * ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
+   * write prepared against a configuration that has since changed. It is
+   * deliberately empty (JSON-omitted) when the host cannot resolve the
+   * instance: the zero value asserts no revision fence, and the source fence
+   * still applies.
+   */
+  configRevision?: string;
 }
 
 export interface AuthTestParams {
@@ -1186,6 +1235,15 @@ export interface InstanceEntry {
    */
   renameLeavesRow?: boolean;
   storedEmail?: string;
+  /**
+   * ConfigRevision is the same effective credential-configuration revision
+   * AuthStatusResponse.ConfigRevision carries for this instance (see its doc).
+   * The remote credential push can capture it from an evener/instance/list
+   * entry instead of a separate evener/auth/status read (the
+   * implicit-provider fallback) and echo it as
+   * ApiKeyConditionalSetParams.ExpectedRevision.
+   */
+  configRevision?: string;
   /**
    * CredentialRequired is false when this instance has no credential to
    * look for at all — auth = none or optional-bearer — so an absent
@@ -3451,6 +3509,7 @@ export const METHOD_NAMES = [
   "evener/auth/list",
   "evener/auth/apiKey/set",
   "evener/auth/apiKey/clear",
+  "evener/auth/apiKey/conditionalSet",
   "evener/auth/credentialJson/set",
   "evener/auth/device/start",
   "evener/auth/device/poll",
@@ -3661,6 +3720,7 @@ export interface MethodTypes {
   "evener/auth/list": { params: EmptyParams; result: AuthListResponse };
   "evener/auth/apiKey/set": { params: AuthApiKeySetParams; result: AuthStatusResponse };
   "evener/auth/apiKey/clear": { params: AuthApiKeyClearParams; result: AuthStatusResponse };
+  "evener/auth/apiKey/conditionalSet": { params: ApiKeyConditionalSetParams; result: ApiKeyConditionalSetResponse };
   "evener/auth/credentialJson/set": { params: AuthCredentialJsonSetParams; result: AuthStatusResponse };
   "evener/auth/device/start": { params: AuthDeviceStartParams; result: AuthDeviceStartResponse };
   "evener/auth/device/poll": { params: AuthDevicePollParams; result: AuthDevicePollResponse };

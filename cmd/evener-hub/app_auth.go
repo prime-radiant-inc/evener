@@ -685,6 +685,96 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	return c.statusAfterWrite(name, applied, c.statusByProvider)
 }
 
+// ApiKeyConditionalSet is the host-side conditional (compare-and-set) credential
+// write the remote credential push calls instead of the read-evenser/auth/status,
+// classify, then evener/auth/apiKey/set pair the design rejects (07 "credential
+// push"). All of the decision and the write happen inside one credentialWrite
+// critical section against the state the host resolves right there, so no
+// concurrent change can slip between the check and the write:
+//
+//   - The instance is re-resolved under the lock (endpointInstanceFor), so a
+//     rename or removal that landed since the client's read is seen.
+//   - A non-empty ExpectedRevision that no longer equals the instance's
+//     effective-configuration revision, or a non-empty ExpectedSource that no
+//     longer equals its resolved source, is refused with a typed Conflict and
+//     nothing is written. This is the fence: a credential whose configuration
+//     changed underneath the client is never clobbered.
+//   - A scheme whose credential a file-layer key must not shadow — Codex
+//     OAuth, gcp-adc, auth-none — or a credential that now resolves from
+//     providers.toml (api_key/credential_headers) or the environment — comes
+//     back as a successful typed "skipped" with a reason, matching the design's
+//     classification table, so the push report shows a skip, not an error.
+//
+// Only a source of "store" (updated) or "none" on a key-capable scheme (added)
+// reaches c.setCredential; the response's Status is the post-write status read
+// the same way every other credential write reports one.
+func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditionalSetParams) (appwire.ApiKeyConditionalSetResponse, error) {
+	name := normalizeAuthProvider(params.Provider)
+	if strings.TrimSpace(params.Value) == "" {
+		return appwire.ApiKeyConditionalSetResponse{}, appwire.InvalidParams("value is required")
+	}
+	resp := appwire.ApiKeyConditionalSetResponse{}
+	applied, err := c.credentialWrite(func() error {
+		_, inst, ok := c.endpointInstanceFor(name)
+		if !ok {
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = fmt.Sprintf("%q is not a configured provider or instance on this host", name)
+			return nil
+		}
+		source := inst.CredentialSource
+		// The fences are checked before the classification: a client whose
+		// observed state no longer describes the instance must be told so, not
+		// handed a skip it could mistake for a durable decision.
+		current := hubcore.CredentialConfigRevision(c.registry(), name)
+		if params.ExpectedRevision != "" && params.ExpectedRevision != current {
+			return appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
+		}
+		if params.ExpectedSource != "" && params.ExpectedSource != source {
+			return appwire.Conflict(fmt.Sprintf("%s no longer resolves its credential from %q (it is now %q): re-read the instance and start the push again", name, params.ExpectedSource, source))
+		}
+		switch {
+		case inst.Auth == registry.AuthOAuthOpenAICodex:
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = name + " authenticates with an OAuth record; sign in on the host instead of pushing a key"
+			return nil
+		case inst.Auth == registry.AuthGCPADC:
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = name + " authenticates with Google application-default credentials, which do not read an API key"
+			return nil
+		case inst.Auth == registry.AuthNone:
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = name + " authenticates without a credential; a stored key would be one nothing sends"
+			return nil
+		case source == "api_key" || source == "credential_headers":
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = fmt.Sprintf("%s resolves its credential from providers.toml (%s), which outranks the file layer", name, source)
+			return nil
+		case strings.HasPrefix(source, "env:"):
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = fmt.Sprintf("the host's environment supplies %s's credential (%s), which a stored key would silently replace", name, source)
+			return nil
+		case source == "store":
+			resp.Action = appwire.ApiKeyConditionalSetActionUpdated
+		case source == "none":
+			resp.Action = appwire.ApiKeyConditionalSetActionAdded
+		default:
+			resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+			resp.Reason = fmt.Sprintf("%s resolves its credential from %s, which the credential push does not manage", name, source)
+			return nil
+		}
+		return c.setCredential(name, params.Value)
+	})
+	if err != nil {
+		return appwire.ApiKeyConditionalSetResponse{}, err
+	}
+	status, err := c.statusAfterWrite(name, applied, c.statusByProvider)
+	if err != nil {
+		return appwire.ApiKeyConditionalSetResponse{}, err
+	}
+	resp.Status = status
+	return resp, nil
+}
+
 // ApiKeyClear removes a stored file-layer key without touching any other
 // credential layer - the counterpart to ApiKeySet, and the instance sheet's
 // affordance for a stray stored key sitting shadowed behind an active
@@ -1256,6 +1346,10 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthS
 		HasStoredFile:  hasFile,
 		EnvVar:         envVar,
 		ShadowedEnvVar: inst.ShadowedEnvVar,
+		// The revision the credential push fences its conditional set against,
+		// resolved here from the same snapshot instanceStatus answers the source
+		// from (see hubcore.CredentialConfigRevision).
+		ConfigRevision: hubcore.CredentialConfigRevision(c.registry(), inst.Name),
 	}
 }
 
@@ -1307,6 +1401,9 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		NeedsRefresh:  active.NeedsRefresh,
 		NeedsLogin:    active.NeedsLogin,
 		HasStoredFile: hasFile,
+		// An OAuth record is this instance's credential configuration; the
+		// revision is resolved here as it is for every other scheme.
+		ConfigRevision: hubcore.CredentialConfigRevision(c.registry(), name),
 	}
 	if hasRecord {
 		status.HasStoredOAuth = true

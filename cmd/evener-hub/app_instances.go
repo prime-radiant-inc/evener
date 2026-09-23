@@ -276,6 +276,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		HasStoredOAuth:      status.HasStoredOAuth,
 		EnvVar:              status.EnvVar,
 		ShadowedEnvVar:      status.ShadowedEnvVar,
+		ConfigRevision:      status.ConfigRevision,
 		RenameLeavesRow:     c.renameLeavesRow(r, inst),
 		StoredEmail:         status.StoredEmail,
 		CredentialRequired:  !keylessScheme(inst.Auth),

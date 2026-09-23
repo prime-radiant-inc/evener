@@ -78,18 +78,23 @@ var remoteHostAdminMethods = map[string]struct{}{
 
 	// Auth and credentials (hubAuthController, app_auth.go). The host's own
 	// refusals (a stored key under a Codex or gcp-adc instance) pass through
-	// unchanged; 07c's credential push uses apiKey/set through this same list.
-	appwire.MethodEvenerAuthStatus:            {},
-	appwire.MethodEvenerAuthTest:              {},
-	appwire.MethodEvenerAuthList:              {},
-	appwire.MethodEvenerAuthLoginStart:        {},
-	appwire.MethodEvenerAuthLoginComplete:     {},
-	appwire.MethodEvenerAuthLogout:            {},
-	appwire.MethodEvenerAuthApiKeySet:         {},
-	appwire.MethodEvenerAuthApiKeyClear:       {},
-	appwire.MethodEvenerAuthCredentialJsonSet: {},
-	appwire.MethodEvenerAuthDeviceStart:       {},
-	appwire.MethodEvenerAuthDevicePoll:        {},
+	// unchanged; 07c's credential push uses apiKey/conditionalSet through this
+	// same list (apiKey/set remains the unconditional path).
+	appwire.MethodEvenerAuthStatus:        {},
+	appwire.MethodEvenerAuthTest:          {},
+	appwire.MethodEvenerAuthList:          {},
+	appwire.MethodEvenerAuthLoginStart:    {},
+	appwire.MethodEvenerAuthLoginComplete: {},
+	appwire.MethodEvenerAuthLogout:        {},
+	appwire.MethodEvenerAuthApiKeySet:     {},
+	appwire.MethodEvenerAuthApiKeyClear:   {},
+	// 07c's credential push calls the conditional set (the atomic replacement
+	// for the racy status-then-set pair), so it is forwarded through this same
+	// list.
+	appwire.MethodEvenerAuthApiKeyConditionalSet: {},
+	appwire.MethodEvenerAuthCredentialJsonSet:    {},
+	appwire.MethodEvenerAuthDeviceStart:          {},
+	appwire.MethodEvenerAuthDevicePoll:           {},
 
 	// Personal AGENTS.md (registerAgentsDocHandlers, app_rpc_agents_doc.go).
 	appwire.MethodEvenerSettingsAgentsDocGet: {},
@@ -186,14 +191,15 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	// Auth and credentials: a login flow, a logout, or a credential write
 	// changes what the host can authenticate as. device/poll can complete the
 	// device flow and store credentials, so it is a mutation too.
-	appwire.MethodEvenerAuthLoginStart:        {},
-	appwire.MethodEvenerAuthLoginComplete:     {},
-	appwire.MethodEvenerAuthLogout:            {},
-	appwire.MethodEvenerAuthApiKeySet:         {},
-	appwire.MethodEvenerAuthApiKeyClear:       {},
-	appwire.MethodEvenerAuthCredentialJsonSet: {},
-	appwire.MethodEvenerAuthDeviceStart:       {},
-	appwire.MethodEvenerAuthDevicePoll:        {},
+	appwire.MethodEvenerAuthLoginStart:           {},
+	appwire.MethodEvenerAuthLoginComplete:        {},
+	appwire.MethodEvenerAuthLogout:               {},
+	appwire.MethodEvenerAuthApiKeySet:            {},
+	appwire.MethodEvenerAuthApiKeyClear:          {},
+	appwire.MethodEvenerAuthApiKeyConditionalSet: {},
+	appwire.MethodEvenerAuthCredentialJsonSet:    {},
+	appwire.MethodEvenerAuthDeviceStart:          {},
+	appwire.MethodEvenerAuthDevicePoll:           {},
 
 	// The personal AGENTS.md, and the spawn form's directory creation.
 	appwire.MethodEvenerSettingsAgentsDocSet: {},

@@ -317,6 +317,49 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
+// CredentialConfigRevision returns name's effective credential-configuration
+// revision: a stable, non-reversible digest over the configuration a
+// conditional credential write is fenced against (design §07 "credential
+// push"). It is derived from the same registry snapshot a credential write
+// re-resolves under the credential lock, so a client that captured it from a
+// read-only evener/auth/status or evener/instance/list answer can echo it back
+// as ApiKeyConditionalSetParams.ExpectedRevision and have the host refuse the
+// write when anything it covers has changed since. It covers the instance's
+// structural identity (provider, protocol, surface), the endpoint it routes to
+// (base URL and models endpoint), the credential source that resolves, and the
+// credential-header names in force. It deliberately does NOT hash the secret
+// value: it must not let a reader tell one stored key from another (design's
+// "Honest limitation"), and every source transition it needs to fence — none
+// to store, providers.toml, or the environment — is already a change to the
+// resolved source. Empty for a name the registry cannot resolve: there is
+// nothing to fence, and the empty value is what a client reads as "no revision
+// fence".
+func CredentialConfigRevision(r *registry.Registry, name string) string {
+	if r == nil || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	res, err := r.ResolveInstance(name)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.New()
+	fields := []string{
+		"instance", res.Instance,
+		"provider", res.ProviderID,
+		"protocol", res.Protocol,
+		"surface", res.Surface,
+		"auth", res.Transport.Auth,
+		"baseURL", res.Transport.BaseURL,
+		"modelsEndpoint", res.Transport.ModelsEndpoint,
+		"source", res.Credential.Source,
+		"credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","),
+	}
+	for i := 0; i+1 < len(fields); i += 2 {
+		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", fields[i], fields[i+1])
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
 // authFingerprint hashes the resolved authentication material
 // non-reversibly (SHA-256 over the actual secret bytes and the stable
 // account-identity fields, never the lengths alone): a same-length key
