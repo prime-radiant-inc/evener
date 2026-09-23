@@ -3841,18 +3841,41 @@ describe("ConversationStore", () => {
       };
       await store.getState().loadOlder(service);
 
+      // The warned turn also carries real content the transcript persists:
+      // the turn stays inside the keep-window through it, so compaction
+      // alone cannot be what clears the warning (RoboRev round 3).
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "userMessage",
+            id: "real-1",
+            text: "the real message",
+            transcriptEntryIndex: 3,
+          },
+        },
+      } as AnyNotification);
       store.getState().applyNotification({
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
       } as AnyNotification);
 
       // The settle's reread serves the turn's transcript content under a
-      // NEW bare id with no items of its own: nothing matches the retained
-      // turn by item identity, so without the transient filter the merge
-      // would keep the warning item as unmatched retained history.
+      // NEW bare id, carrying the real message the transcript persisted:
+      // the retained turn folds into it by item identity, and only the
+      // transient warning is unmatched. The merge must not keep it.
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
-          turns: [makeTurn({ id: "t1-fresh", status: "completed", items: [] })],
+          turns: [
+            makeTurn({
+              id: "t1-fresh",
+              status: "completed",
+              items: [userMessageItem("real-1", "the real message")],
+            }),
+          ],
         }),
       );
       store.getState().applyNotification({
@@ -3872,6 +3895,20 @@ describe("ConversationStore", () => {
       // Even the committed MODEL keeps no trace of the transient warning.
       expect(
         store.getState().conversation?.turns.flatMap((turn) => turn.items).filter((item) => item.type === "warning"),
+      ).toHaveLength(0);
+
+      // And a later row-changing frame reprojects from that model: the
+      // real message stays, the transient warning never returns.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(
+        store.getState().conversation?.items.filter((row) => row.kind === "failure"),
       ).toHaveLength(0);
     });
 
@@ -15152,6 +15189,121 @@ describe("ConversationStore", () => {
         },
       } as AnyNotification);
       expect(rows(store).some((row) => row.id === "X")).toBe(false);
+    });
+
+    it("a rebuilt page cluster keeps only its page-owned members, not live history the snapshot dropped", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "L",
+                  transcriptKey: "kl",
+                  toolName: "shell",
+                  status: "completed",
+                  callId: "c2",
+                  output: "live tool",
+                  position: { entry: 20, item: 0 },
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "P",
+            transcriptKey: "kp",
+            family: "tool",
+            label: "shell",
+            state: "completed",
+            detail: { description: "page tool" },
+          },
+        ],
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "t0",
+              [
+                {
+                  id: "P",
+                  transcriptKey: "kp",
+                  turnId: "t0",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  status: "completed",
+                  callId: "c1",
+                  output: "page tool",
+                  position: { entry: 10, item: 0 },
+                },
+              ],
+              { inputTokens: 5, outputTokens: 1 },
+            ),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // A row-changing frame reprojects from the model: the paged tool and
+      // the live tool sit adjacent and same-family, so the projection
+      // clusters them into one row whose first (own-identity) member is the
+      // page-owned tool.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "active" },
+          askPending: true,
+        },
+      } as AnyNotification);
+      const activityRows = rows(store).filter(
+        (row): row is Extract<MobileTimelineItem, { kind: "activity" }> =>
+          row.kind === "activity",
+      );
+      const cluster = activityRows.find((row) => row.members !== undefined);
+      expect(cluster).toBeDefined();
+      expect(
+        (cluster?.members ?? []).map((member) => member.transcriptKey ?? member.id),
+      ).toEqual(["kp", "kl"]);
+
+      // The authoritative read drops both tools from its window: page
+      // history may keep the paged one, but the live one must not ride the
+      // rebuilt cluster back on screen. (RoboRev round 3: retention used to
+      // keep every member once the row's own identity was page-owned.)
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const activityIdentities = rows(store).flatMap((row) =>
+        row.kind === "activity"
+          ? (row.members ?? [row]).map((member) => member.transcriptKey ?? member.id)
+          : [],
+      );
+      expect(activityIdentities).toContain("kp");
+      expect(activityIdentities).not.toContain("kl");
     });
 
     it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {

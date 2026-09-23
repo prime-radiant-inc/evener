@@ -905,8 +905,17 @@ export function createConversationStore() {
     if (item.kind !== "activity" || item.members === undefined) {
       return duplicates(item) ? null : item;
     }
+    // Each member is judged on its own page ownership, not the row's: a
+    // cluster that grew across the page/live boundary would otherwise let
+    // its page-owned first member carry a live member the authoritative
+    // snapshot just dropped back onto the screen as "history". Every page
+    // cluster member is recorded individually (loadOlder unions
+    // ownTimelineIdentities per row), so real page clusters keep their
+    // members; only the non-page riders drop.
     const members = item.members.filter(
-      (member) => !identities.has(activityIdentity(member)),
+      (member) =>
+        !identities.has(activityIdentity(member)) &&
+        pageOwnedIds.has(activityIdentity(member)),
     );
     if (members.length === item.members.length) return duplicates(item) ? null : item;
     const first = members[0];
@@ -1958,6 +1967,32 @@ export function createConversationStore() {
           let wireOlderCursor = conversation.olderCursor;
           const rehydrateCapped = capItems(merged.items);
           if (preserveTurnHistory && currentConvForMerge !== null) {
+            // The retained side's LIVE warning items are transients: the
+            // transcript never persists warnings, so no authoritative read
+            // can ever justify keeping one, while the merge would otherwise
+            // fold an unmatched retained warning back into the committed
+            // model — and the next row-changing frame would project it onto
+            // the screen again. A warning whose failure row the PAGE owns
+            // is retained history like any other page row (the round-31
+            // coverage rule reads exactly that), so only the non-page
+            // warnings drop.
+            const retainedTurnsForMerge = currentConvForMerge.turns.map(
+              (turn) =>
+                turn.items.some(
+                  (item) =>
+                    item.type === "warning" &&
+                    !pageOwnedIds.has(item.transcriptKey ?? item.id),
+                )
+                  ? {
+                      ...turn,
+                      items: turn.items.filter(
+                        (item) =>
+                          item.type !== "warning" ||
+                          pageOwnedIds.has(item.transcriptKey ?? item.id),
+                      ),
+                    }
+                  : turn,
+            );
             // The public merge folds accumulated page turns into the fresh
             // read with fresh-defined fields winning and older fragments
             // supplying omitted fields/items. Coverage is separate from the
@@ -1977,7 +2012,7 @@ export function createConversationStore() {
               }
             }
             const injectedFresh = injectCompactedSkeletons(
-              currentConvForMerge.turns,
+              retainedTurnsForMerge,
               compactedTurnsCollidingWith(freshIdentities, freshToolCallIds),
             );
             const history = mergeTurnHistoryWithFolds(injectedFresh.turns, conversation.turns);
@@ -2087,14 +2122,14 @@ export function createConversationStore() {
               }
               return true;
             };
-            const coverageOlderTurns = currentConvForMerge.turns.filter(
+            const coverageOlderTurns = retainedTurnsForMerge.filter(
               (turn) =>
                 !(turn.items.length === 0 && compactedTurnItems.has(turn.id)) &&
                 !coverageAliasConsumed(turn),
             );
             const coverage =
               injectedFresh.injected.length > 0 ||
-              coverageOlderTurns.length !== currentConvForMerge.turns.length
+              coverageOlderTurns.length !== retainedTurnsForMerge.length
                 ? mergeTurnHistory(coverageOlderTurns, conversation.turns)
                 : history;
             if (coverage.olderCoverage && coverage.transcriptOverlap) {
@@ -2109,7 +2144,7 @@ export function createConversationStore() {
             // matching none of them by the package's rule can only be
             // remembered memory, never content.
             const rehydrateRealSources = [
-              ...currentConvForMerge.turns.flatMap((turn) => turn.items),
+              ...retainedTurnsForMerge.flatMap((turn) => turn.items),
               ...conversation.turns.flatMap((turn) => turn.items),
             ];
             mergedTurns = stripInjectedSkeletons(
@@ -2124,7 +2159,7 @@ export function createConversationStore() {
             // silently drop the ancestry the retained items they replace
             // carried: re-key it to the identity-matching fresh items
             // before recording (review round 23).
-            carryFoldIdentities(currentConvForMerge.turns, mergedTurns);
+            carryFoldIdentities(retainedTurnsForMerge, mergedTurns);
             recordItemFoldSources(mergedTurns, history.itemFoldSources, history.toolResultFoldSources);
             transferFoldedCompactedEntries(mergedTurns, history.olderTurnFolds);
             // #1919 follow-up: bound the merged result AFTER the merge, so
