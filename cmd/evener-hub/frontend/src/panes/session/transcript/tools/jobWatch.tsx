@@ -222,9 +222,14 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
         ? `Watch on ${source} fired on terminal scan — ${jobStatusDisplay(status)}`
         : `Watch on ${source} fired`;
     }
-    return status
-      ? `Watch on ${source} ended — ${jobStatusDisplay(status)} before it could fire`
-      : `Watch on ${source} ended — job ended before it could fire`;
+    if (status) {
+      // Machine statuses keep the "job <status>" subject ("job completed");
+      // the command-outcome display words already name the subject.
+      const display = jobStatusDisplay(status);
+      const subject = display === status ? `job ${status}` : display;
+      return `Watch on ${source} ended — ${subject} before it could fire`;
+    }
+    return `Watch on ${source} ended — job ended before it could fire`;
   }
   const timer = timerSpec(raw);
   if (timer) {

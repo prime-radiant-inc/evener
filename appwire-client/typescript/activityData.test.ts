@@ -9,9 +9,23 @@ import {
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,
+  jobStatusDisplay,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
+
+describe("jobStatusDisplay", () => {
+  it("states machine statuses raw", () => {
+    for (const status of ["running", "completed", "failed", "cancelled", "stopped", "exhausted"]) {
+      expect(jobStatusDisplay(status)).toBe(status);
+    }
+  });
+
+  it("renders the command-outcome statuses under the card's display words", () => {
+    expect(jobStatusDisplay("command_exited_nonzero")).toBe("Command failed");
+    expect(jobStatusDisplay("command_killed")).toBe("Command killed");
+  });
+});
 
 function branch(overrides: Partial<ActivityBranchState> = {}): ActivityBranchState {
   return { ...overrides };

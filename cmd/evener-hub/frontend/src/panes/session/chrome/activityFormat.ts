@@ -61,20 +61,6 @@ export function jobStatusDotState(
   return "idle";
 }
 
-// The display word for a daemon job status. Rows state a job's status by
-// design (the searchable, honest machine vocabulary) - EXCEPT the two
-// command-outcome statuses, whose 23-char snake_case form ellipsizes
-// mid-word in the rail's narrow column and disagrees with the words the
-// notification card already ruled for them ("Command failed" /
-// "Command killed", steeringClassify's terminalJobTitle). Those two, and
-// only those, render under the card's display words.
-export function jobStatusDisplay(status: string): string {
-  switch (status) {
-    case "command_exited_nonzero":
-      return "Command failed";
-    case "command_killed":
-      return "Command killed";
-    default:
-      return status;
-  }
-}
+// The shared package owns the job-status display words; re-export keeps the
+// web importers (rail, activity tree, job tools) on their existing path.
+export { jobStatusDisplay } from "@evener/appwire-client";
