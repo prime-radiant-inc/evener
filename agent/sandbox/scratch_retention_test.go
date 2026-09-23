@@ -1524,3 +1524,65 @@ func TestResetReleasedAbortsWhenOrphanedPinRemovalFails(t *testing.T) {
 		t.Fatal("the aborted reset committed an unreleased manifest over an unremovable orphan pin")
 	}
 }
+
+// TestRemoveDyingReferencePin pins the death branch's pin contract: a
+// reference whose owning pair died with the tombstoned manifest takes only
+// this owner's pin with it, a foreign pin stays for its own manifest, and a
+// pin that cannot be read aborts the death — the same contract the contended
+// and free-lease branches enforce on their own reads (round 19). The death
+// branch's read is the second one the reset takes on the directory, so a
+// cross-process writer is what can flip it between the two; the contract is
+// pinned here directly.
+func TestRemoveDyingReferencePin(t *testing.T) {
+	owner := retentionOwner(t)
+	other := retentionOwner(t)
+
+	// A pin that is already absent has nothing to remove.
+	bare := t.TempDir()
+	if err := removeDyingReferencePin(owner, bare); err != nil {
+		t.Fatalf("absent pin: %v", err)
+	}
+
+	// This owner's pin is removed so the directory becomes ordinary.
+	ours := t.TempDir()
+	if err := writeScratchDirectoryPin(ours, owner, ScratchReference{Dir: ours, Kind: ScratchKindSandbox}); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDyingReferencePin(owner, ours); err != nil {
+		t.Fatalf("our own pin: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ours, scratchPinName)); !os.IsNotExist(err) {
+		t.Fatalf("our own pin was not removed: %v", err)
+	}
+
+	// A foreign pin belongs to its own manifest and is left alone.
+	foreign := t.TempDir()
+	if err := writeScratchDirectoryPin(foreign, other, ScratchReference{Dir: foreign, Kind: ScratchKindSandbox}); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDyingReferencePin(owner, foreign); err != nil {
+		t.Fatalf("foreign pin: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(foreign, scratchPinName)); err != nil {
+		t.Fatalf("the foreign pin was disturbed: %v", err)
+	}
+
+	// A pin that cannot be read aborts the death: committing the reference
+	// away past an unreadable pin strands an orphan the collector retains
+	// forever under an unreleased manifest, with no later reset left to
+	// retry.
+	if os.Geteuid() == 0 {
+		t.Skip("the unreadable-pin fixture cannot make the read fail for root")
+	}
+	unreadable := t.TempDir()
+	if err := writeScratchDirectoryPin(unreadable, owner, ScratchReference{Dir: unreadable, Kind: ScratchKindSandbox}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(unreadable, scratchPinName), 0o600) })
+	if err := os.Chmod(filepath.Join(unreadable, scratchPinName), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeDyingReferencePin(owner, unreadable); err == nil {
+		t.Fatal("an unreadable pin must abort the death, not let the reference drop silently")
+	}
+}

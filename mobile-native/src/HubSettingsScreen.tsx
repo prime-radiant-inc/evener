@@ -208,10 +208,13 @@ function HubSettings({
 	// remounting under the new hub's fresh client) sees its focus read
 	// refused with no ready transition ever coming after it, so the
 	// transition arm below reads exactly when the predicate it shares with
-	// the focus read refuses - authorized here means the focus read is
-	// coming in this same commit, refused here means it refuses there too.
-	// The render gates that let this screen mount are the trust authority
-	// for that arm, not the deferred-request predicate.
+	// the focus read refuses - while the screen is focused, authorized here
+	// means the focus read is coming in this same commit and refused here
+	// means it refuses there too. An unfocused screen has no focus read
+	// coming at all: an authorization it holds is not a read anyone owes, so
+	// the arm reads for it (round 23). The render gates that let this screen
+	// mount are the trust authority for that arm, not the deferred-request
+	// predicate.
 	useEffect(() => {
 		if (connectionState !== "ready") {
 			refreshedAtReady.current = false;
@@ -219,7 +222,10 @@ function HubSettings({
 		}
 		if (refreshedAtReady.current) return;
 		refreshedAtReady.current = true;
-		if (canUseConnection()) return;
+		// Only a focused screen's authorization means the focus effect is
+		// about to read in this same commit; an unfocused screen's is a
+		// pairing nothing else will use until the user comes back.
+		if (canUseConnection() && focused) return;
 		// A transition the screen is focused through owes the focus path's
 		// read too: the client replacement that re-runs the focus effect
 		// makes both effects fire in this one commit, and the note is what

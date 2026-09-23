@@ -1783,12 +1783,15 @@ func reprovisionUnclaimedSandboxScratch(env *execenv.LocalExecutionEnvironment) 
 	if env == nil || env.Sandbox == nil {
 		return nil
 	}
-	env.Wrapper = nil
 	// A wrapper naming the retained directory is not ownership: when the
 	// adoption installed nothing — the pool detached between the slot read
 	// and the claim — that wrapper points at a directory this session holds
 	// no lease on, and running there would straddle the live in-process
 	// holder (round 17).
+	// The ownership check runs before anything clears the wrapper: an
+	// environment that already holds a sandbox scratch is preserved by the
+	// early return below, and clearing its wrapper first would leave a live
+	// scratch with no kernel sandbox to run commands through (round 23).
 	if refs, refsErr := env.ScratchRetentionReferences(); refsErr == nil {
 		for _, ref := range refs {
 			if ref.Kind == sandbox.ScratchKindSandbox {
@@ -1796,6 +1799,7 @@ func reprovisionUnclaimedSandboxScratch(env *execenv.LocalExecutionEnvironment) 
 			}
 		}
 	}
+	env.Wrapper = nil
 	if err := env.EnableSandbox(env.Sandbox); err != nil {
 		return fmt.Errorf("re-provision sandbox scratch after an unclaimed retained-scratch adoption: %w", err)
 	}

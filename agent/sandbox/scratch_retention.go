@@ -1145,12 +1145,7 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 				// again means no later reset comes back for it (round 18) —
 				// abort instead, leaving the tombstone for a retry once the
 				// filesystem failure clears.
-				if pin, pinErr := readScratchDirectoryPin(dir); pinErr == nil && pin.Owner == owner {
-					if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
-						return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
-					}
-				}
-				return nil
+				return removeDyingReferencePin(owner, dir)
 			}
 			fresh.References = append(fresh.References, ScratchReference{Dir: dir, Kind: kind})
 			// The binding narrows to the slots whose directories carried: its
@@ -1339,6 +1334,31 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		return ScratchManifest{}, false, err
 	}
 	return out, reset, nil
+}
+
+// removeDyingReferencePin finishes the death of a reference whose owning
+// pair died with the tombstoned manifest: this owner's pin is removed so the
+// directory becomes ordinary, a foreign pin is left for its own manifest, and
+// a pin that is already absent has nothing to remove. A pin that cannot be
+// READ aborts the death — committing the reference away past an unreadable
+// pin strands an orphan the collector conservatively retains forever under
+// an unreleased manifest, with no later reset left to retry (round 23) — the
+// same contract the contended and free-lease branches enforce on their own
+// reads (round 19).
+func removeDyingReferencePin(owner ScratchOwner, dir string) error {
+	pin, pinErr := readScratchDirectoryPin(dir)
+	switch {
+	case os.IsNotExist(pinErr):
+		return nil
+	case pinErr != nil:
+		return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
+	case pin.Owner != owner:
+		return nil
+	}
+	if rmErr := os.Remove(filepath.Join(dir, scratchPinName)); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("sandbox: remove retention pin for %q: %w", dir, rmErr)
+	}
+	return nil
 }
 
 // BorrowRetainedSessionScratch returns a lease-less handle to an already

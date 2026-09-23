@@ -2530,6 +2530,33 @@ func TestScratchReinstallAdoptsWhenAReleaseRacesTheInstall(t *testing.T) {
 	}
 }
 
+// TestReprovisionKeepsTheWrapperForAnOwnedSandboxScratch pins the ordering
+// the round-23 Low flags: the ownership check that preserves an environment
+// already holding a sandbox scratch must run before anything clears the
+// kernel wrapper, or a preserved environment is left with a live scratch and
+// no wrapper to run commands through. Both production call sites pre-check
+// the fact this test exercises directly.
+func TestReprovisionKeepsTheWrapperForAnOwnedSandboxScratch(t *testing.T) {
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	if env.Wrapper == nil {
+		t.Fatal("fixture environment has no kernel wrapper to preserve")
+	}
+	if err := reprovisionUnclaimedSandboxScratch(env); err != nil {
+		t.Fatalf("reprovision beside an owned scratch: %v", err)
+	}
+	if env.Wrapper == nil {
+		t.Fatal("the ownership-preserving early return cleared the kernel wrapper beside a live owned scratch")
+	}
+	if owned := envScratchRefDir(env, sandbox.ScratchKindSandbox); owned == "" {
+		t.Fatal("the owned sandbox scratch did not survive the reprovision call")
+	}
+}
+
 // TestScratchOwnClaimReadsContentionAtomically pins the round-16 snapshot gap:
 // the own-claim branch read contention with a second pool lookup after the
 // claim's own hold, so a concurrent refresh fold flipping the mark between
