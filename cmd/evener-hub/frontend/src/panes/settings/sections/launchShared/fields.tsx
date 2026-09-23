@@ -37,6 +37,7 @@ import {
 } from "@evener/appwire-client";
 import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import {
+  type DirectoryActions,
   FormRow,
   Input,
   PathField,
@@ -86,14 +87,24 @@ function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefi
   return BROWSABLE_PATH_KINDS[pathKind ?? ""];
 }
 
-/** The completion loader every path picker on this page shares. Imported off
- * the store the way the sibling modelPicker branch imports fetchModelCatalog
- * directly, rather than threading a prop down from LaunchConfigForm: launch
- * defaults are not scoped to a live session, so there is nothing per-caller to
- * inject. */
-function completePaths(prefix: string, includeFiles: boolean): Promise<string[]> {
-  return extensionsStore.getState().completePaths(prefix, includeFiles);
+/** LaunchFormPaths is the path picker's helper pair (component 07b): the
+ * directory validate/create actions AND the completion loader. A host-scoped
+ * pane passes the gateway bound to ITS selected host, so browsing lists that
+ * host's own filesystem; omitted, the controller's helpers are used - today's
+ * behavior for a caller that is not host-scoped. */
+export interface LaunchFormPaths {
+  directory: DirectoryActions;
+  complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
 }
+
+/** controllerLaunchFormPaths is the default binding: the controller's own
+ * extensions store (whose path helpers are the launch-config gateway's own).
+ * It is what an unscoped caller - a direct LaunchConfigForm render, or a pane
+ * that has not been host-scoped - still gets, byte-for-byte. */
+export const controllerLaunchFormPaths: LaunchFormPaths = {
+  directory: directoryActions,
+  complete: (prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles),
+};
 
 /** A path field: PathField in a FormRow, so the row's label, help, error, and
  * default hint all behave exactly as the plain-Input rows around it do. The
@@ -110,6 +121,7 @@ function PathFieldRow({
   error,
   placeholder,
   globalDefaultHint,
+  paths,
 }: {
   fieldId: string;
   label: string;
@@ -120,17 +132,18 @@ function PathFieldRow({
   error?: string;
   placeholder: string;
   globalDefaultHint?: string;
+  paths: LaunchFormPaths;
 }) {
   return (
     <FormRow label={label} htmlFor={fieldId} help={help} error={error}>
       <PathField
         ariaLabel={label}
-        directory={directoryActions}
+        directory={paths.directory}
         id={fieldId}
         value={value}
         onChange={onChange}
         kind={kind}
-        complete={completePaths}
+        complete={paths.complete}
         placeholder={placeholder}
       />
       <DefaultHint text={globalDefaultHint} />
@@ -157,6 +170,9 @@ export interface ScalarFieldProps {
    * here - "true (default)", "high (use global default)" - so the marker
    * names what a session started now would inherit. */
   resolvedDefaults?: LaunchConfigLayer;
+  /** The path picker's helpers for the host whose layer is being edited
+   * (component 07b). Omitted = controllerLaunchFormPaths (today's behavior). */
+  paths?: LaunchFormPaths;
 }
 
 /** Renders one non-collection LaunchOption per its `kind`. */
@@ -168,8 +184,10 @@ export function ScalarField({
   globalDefaultHint,
   error,
   resolvedDefaults,
+  paths,
 }: ScalarFieldProps) {
   const fieldId = `launch-field-${option.field}`;
+  const formPaths = paths ?? controllerLaunchFormPaths;
   // The resolved-default label for this field's empty marker, or undefined
   // when there is nothing to name (resolvedDefaultLabel owns the rules; the
   // custom-wording markers stay exactly as they were).
@@ -246,6 +264,7 @@ export function ScalarField({
           error={error}
           placeholder={emptyChoiceLabel(layer)}
           globalDefaultHint={globalDefaultHint}
+          paths={formPaths}
         />
       );
     }
@@ -284,6 +303,9 @@ export interface PromptCompositeFieldProps {
   /** Submit-time evener/path/validate failure for the file sub-field, same
    * contract as ScalarField's own `error` prop. */
   fileError?: string;
+  /** The path picker's helpers for the host whose layer is being edited
+   * (component 07b). Omitted = controllerLaunchFormPaths (today's behavior). */
+  paths?: LaunchFormPaths;
 }
 
 /**
@@ -311,8 +333,10 @@ export function PromptCompositeField({
   fileGlobalDefaultHint,
   textGlobalDefaultHint,
   fileError,
+  paths,
 }: PromptCompositeFieldProps) {
   const spec = PROMPT_COMPOSITE_SPECS[option.wireField];
+  const formPaths = paths ?? controllerLaunchFormPaths;
   if (!spec) throw new Error(`PromptCompositeField: "${option.wireField}" is not a known prompt-composite wire field`);
   const modeOptions: RadioGroupOption[] = [resolvedEmptyChoice(option, layer), ...nonEmptyChoices(option)];
   const fileFieldId = `launch-field-${option.field}-file`;
@@ -336,6 +360,7 @@ export function PromptCompositeField({
           error={fileError}
           placeholder={emptyChoiceLabel(layer)}
           globalDefaultHint={fileGlobalDefaultHint}
+          paths={formPaths}
         />
         <FormRow label={spec.textLabel} htmlFor={textFieldId}>
           <Textarea id={textFieldId} value={textValue} onChange={(e) => onTextChange(e.target.value)} autoGrow />

@@ -41,7 +41,7 @@ import { useMemo, useRef, useState } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
-import { PromptCompositeField, ScalarField } from "./fields";
+import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
 import styles from "./LaunchConfigForm.module.css";
 
 const CLASS = {
@@ -69,6 +69,10 @@ export interface LaunchConfigFormProps {
   resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
+  /** The browse-assisted path fields' helpers for the host whose layer is being
+   * edited (component 07b). A host-scoped pane passes the store bound to its
+   * selected host; omitted = the controller's own helpers (today's behavior). */
+  paths?: LaunchFormPaths;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   onSaved?: (resolved: LaunchConfigResolved) => void;
 }
@@ -92,6 +96,7 @@ export function LaunchConfigForm({
   resolvedDefaults,
   successToast,
   validatePath,
+  paths,
   onSave,
   onSaved,
 }: LaunchConfigFormProps) {
@@ -194,6 +199,7 @@ export function LaunchConfigForm({
           fileGlobalDefaultHint={globalDefaultHint(spec.fileWire, layer, globalDefaults)}
           textGlobalDefaultHint={globalDefaultHint(spec.textWire, layer, globalDefaults)}
           fileError={fieldErrors[spec.fileWire]}
+          paths={paths}
         />
       );
     }
@@ -208,6 +214,7 @@ export function LaunchConfigForm({
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
+              paths={paths}
               inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
@@ -256,6 +263,7 @@ export function LaunchConfigForm({
         globalDefaultHint={globalDefaultHint(opt.wireField, layer, globalDefaults)}
         error={fieldErrors[opt.wireField]}
         resolvedDefaults={resolvedDefaults}
+        paths={paths}
       />
     );
   }

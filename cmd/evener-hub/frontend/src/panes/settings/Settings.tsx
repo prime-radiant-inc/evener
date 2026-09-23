@@ -23,7 +23,7 @@ import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
 import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
-import { InRepoSection } from "./sections/inrepo";
+import { InRepoHostScope } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
 import { LaunchServerHostScope } from "./sections/launchServer";
 import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
@@ -32,7 +32,7 @@ import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
 import { PluginsDirsHostScope } from "./sections/pluginsDirs";
-import { ProjectSection } from "./sections/project";
+import { ProjectHostScope } from "./sections/project";
 import { SkillsDirsHostScope } from "./sections/skillsDirs";
 import { StorageSection } from "./sections/storage";
 import { ThemeSection } from "./sections/theme";
@@ -76,8 +76,8 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   agents: AgentsSection,
   "agents-md": AgentsDocHostScope,
   "launch-evener": LaunchServerHostScope,
-  inrepo: InRepoSection,
-  project: ProjectSection,
+  inrepo: InRepoHostScope,
+  project: ProjectHostScope,
   "plugins-manager": MarketplacesPluginsHostScope,
   plugins: PluginsDirsHostScope,
   skills: SkillsDirsHostScope,

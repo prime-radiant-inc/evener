@@ -12,6 +12,7 @@ import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
+import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import { useConnectedEffect } from "./useConnectedEffect";
 
@@ -66,6 +67,18 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // for the local hub, a per-host instance (over evener/host/request) for a
   // remote one. Resolved per render; the instance is stable per host.
   const store = launchConfigStoreForHost(host);
+  // The browse-assisted path fields the shared form renders (path scalars, the
+  // prompt file sub-fields, and pathList add rows) list THIS host's filesystem,
+  // not the controller's: same store, same seam as the validate/save calls
+  // above (component 07b). evener/paths/complete and evener/path/validate are
+  // both on the proxy allow-list.
+  const paths: LaunchFormPaths = {
+    directory: {
+      validatePath: (path, kind) => store.getState().validatePath(path, kind),
+      createDirectory: (path) => store.getState().createDirectory(path),
+    },
+    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+  };
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
   // The effective layer of the same resolve() that seeds the diagnostics
@@ -128,6 +141,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
             resolvedDefaults={resolvedDefaults}
             successToast="Launch defaults saved"
             validatePath={(path, kind) => store.getState().validatePath(path, kind)}
+            paths={paths}
             onSave={(config) => store.getState().setLayer("/", "global", config)}
             onSaved={(resolved) => {
               setDiagnostics(resolved.diagnostics ?? []);
