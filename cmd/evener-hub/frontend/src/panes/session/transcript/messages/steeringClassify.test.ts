@@ -131,6 +131,21 @@ Job job_f failed.
   expect(n.description).toContain("git rev-parse");
 });
 
+test("an error head with an explicit empty intent shows the description gloss", () => {
+  // Post-split wire shape: the producer always stamps intent, so an empty
+  // value marks a real gloss in the description, never the old command
+  // fallback (which has no intent attr at all).
+  const block = `<job-notification job_id="job_g" event="failed" job_type="shell" description="Run the repository gates" intent="" status="failed" reason="exit_nonzero" exit_code="1">
+Job job_g failed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("error");
+  // The parsed object keeps its empty-to-undefined normalization; the head
+  // grammar is where the empty intent's meaning shows.
+  expect(n.intent).toBeUndefined();
+  expect(n.secondary).toBe("Run the repository gates");
+});
+
 // The title keeps the three failure vocabularies apart: "Command failed" /
 // "Command killed" name the supervised command's outcome (the job ran it
 // fine — the daemon's command_exited_nonzero / command_killed statuses),

@@ -252,9 +252,12 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt, 
 		notificationAttr("status", n.Status),
 		notificationAttr("reason", n.Reason),
 	}
-	if n.Intent != "" {
-		attrs = append(attrs, notificationAttr("intent", n.Intent))
-	}
+	// The intent attribute is always present, even empty: an explicit empty
+	// value marks a post-split block whose caller gave no rationale, so the
+	// parser can trust the description attr as a producer gloss and never
+	// as the old display-label fallback (which shipped the raw command and
+	// has no intent attr at all).
+	attrs = append(attrs, notificationAttr("intent", n.Intent))
 	attrs = append(attrs, notificationAttr("output_bytes", strconv.FormatInt(n.OutputBytes, 10)))
 	if n.Status == string(jobstore.StatusExhausted) {
 		attrs = append(attrs,
