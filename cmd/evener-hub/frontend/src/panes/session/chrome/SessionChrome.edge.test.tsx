@@ -19,6 +19,7 @@ import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../../sessionPanels";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
@@ -140,6 +141,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
   resetNavigationStoreForTests();
+  resetToastStoreForTests();
 });
 
 afterEach(() => {
@@ -521,13 +523,11 @@ test.each(["subagent", "fork"])("a nested %s session still offers Force stop and
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  // The refused stop has settled once the confirm button is usable again. The
-  // toast alone cannot say so: one from an earlier variant can still be up.
+  // The refused stop has settled once the confirm button is usable again.
   await waitFor(() =>
     expect(
       (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
     ).toBe(false),
   );
-  const toasts = screen.getAllByText("Couldn't force stop session: no direct daemon ownership claim");
-  expect(toasts.length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText("Couldn't force stop session: no direct daemon ownership claim")).toHaveLength(1);
 });
