@@ -2190,6 +2190,22 @@ export function createConversationStore() {
                 stripped ??= copyItemTextPresence(item, { ...item });
                 (stripped as unknown as Record<string, unknown>)[field] = undefined;
               }
+              // The lifecycle is the snapshot's to settle too: a retained
+              // inProgress claim cannot outlive a fresh copy the activity
+              // rule reads as settled — the rank merge would keep the
+              // stale claim and every later frame would reproject
+              // "Writing…" on the finished response (RoboRev round 16).
+              if (
+                item.status === "inProgress" &&
+                !isActiveItem(
+                  fresh,
+                  freshTurnStatusByKey.get(item.transcriptKey ?? item.id) ??
+                    freshTurnStatusById.get(item.id),
+                )
+              ) {
+                stripped ??= copyItemTextPresence(item, { ...item });
+                (stripped as unknown as Record<string, unknown>).status = undefined;
+              }
               return stripped ?? item;
             };
             const retainedTurnsForMerge = currentConvForMerge.turns.map(

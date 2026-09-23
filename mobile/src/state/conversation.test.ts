@@ -16561,6 +16561,18 @@ describe("ConversationStore", () => {
         kind: "assistant",
         markdown: "Hello.",
       });
+      // And no later row-changing frame restores "Writing…" either.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(
+        (rowById(store, "item-a") as { streaming?: boolean } | undefined)?.streaming,
+      ).toBe(false);
     });
 
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
