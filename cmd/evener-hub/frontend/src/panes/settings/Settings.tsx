@@ -26,7 +26,7 @@ import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
 import { LaunchServerHostScope } from "./sections/launchServer";
-import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
+import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
 import { McpSection } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
@@ -78,7 +78,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   "launch-evener": LaunchServerHostScope,
   inrepo: InRepoSection,
   project: ProjectSection,
-  "plugins-manager": MarketplacesPluginsSection,
+  "plugins-manager": MarketplacesPluginsHostScope,
   plugins: PluginsDirsHostScope,
   skills: SkillsDirsHostScope,
   mcp: McpSectionWired,

@@ -16,10 +16,12 @@ import type { AppwireClientLike } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
-import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
+import { LOCAL_HOST } from "../../../../stores/hostRouting";
 import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { HostScopedSurface } from "../hostScopedSurface";
 import { BrowseSection } from "./BrowseSection";
+import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
 import { MarketplacesSection } from "./MarketplacesSection";
@@ -44,14 +46,18 @@ const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
  * straight through stores/extensions.ts (each RPC response already carries
  * the updated list - see that store's own doc comment).
  */
-export function MarketplacesPluginsSection() {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces);
-  const marketplacesLoading = useExtensionsStore((s) => s.marketplacesLoading);
-  const marketplacesError = useExtensionsStore((s) => s.marketplacesError);
-  const plugins = useExtensionsStore((s) => s.plugins);
-  const pluginsLoading = useExtensionsStore((s) => s.pluginsLoading);
-  const pluginsError = useExtensionsStore((s) => s.pluginsError);
-  const marketplacesPublicationVersion = useExtensionsStore((s) => s.marketplacesPublicationVersion);
+function MarketplacesPluginsBody() {
+  // The selected host's extensions store, supplied by MarketplacesPluginsSection
+  // below (component 07b): the controller's own for the local hub, a per-host
+  // instance over evener/host/request for a remote one.
+  const store = useExtensionsHostStore();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces);
+  const marketplacesLoading = useExtensionsHostState((s) => s.marketplacesLoading);
+  const marketplacesError = useExtensionsHostState((s) => s.marketplacesError);
+  const plugins = useExtensionsHostState((s) => s.plugins);
+  const pluginsLoading = useExtensionsHostState((s) => s.pluginsLoading);
+  const pluginsError = useExtensionsHostState((s) => s.pluginsError);
+  const marketplacesPublicationVersion = useExtensionsHostState((s) => s.marketplacesPublicationVersion);
   const connectionClient = useConnectionStore((s) => s.client);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
@@ -103,12 +109,12 @@ export function MarketplacesPluginsSection() {
     function tryStart() {
       if (started || connectionStore.getState().state !== "ready") return;
       started = true;
-      void extensionsStore.getState().fetchMarketplaces();
-      void extensionsStore.getState().fetchPlugins();
+      void store.getState().fetchMarketplaces();
+      void store.getState().fetchPlugins();
     }
     tryStart();
     return connectionStore.subscribe(tryStart);
-  }, []);
+  }, [store]);
 
   function handleSegmentChange(segment: SegmentId) {
     setActiveSegment(segment);
@@ -172,4 +178,28 @@ export function MarketplacesPluginsSection() {
       />
     </section>
   );
+}
+
+export interface MarketplacesPluginsSectionProps {
+  /** The host whose own marketplaces and plugins this section edits (component
+   * 07b). Defaults to the local hub, so a direct render is today's section. */
+  host?: string;
+}
+
+/** MarketplacesPluginsSection provides the selected host's extensions store to
+ * the whole subtree, so a remote host's marketplaces and plugins are both shown
+ * and changed from here - never this hub's. */
+export function MarketplacesPluginsSection({ host = LOCAL_HOST }: MarketplacesPluginsSectionProps) {
+  return (
+    <ExtensionsStoreProvider host={host}>
+      <MarketplacesPluginsBody />
+    </ExtensionsStoreProvider>
+  );
+}
+
+/** MarketplacesPluginsHostScope is the "Marketplaces & Plugins" settings section
+ * scoped to the settings route's selected host: the one shared HostPicker plus
+ * MarketplacesPluginsSection. */
+export function MarketplacesPluginsHostScope() {
+  return <HostScopedSurface>{(host) => <MarketplacesPluginsSection host={host} />}</HostScopedSurface>;
 }
