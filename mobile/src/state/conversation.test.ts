@@ -17844,6 +17844,97 @@ describe("ConversationStore", () => {
       expect(rowById(store, "reply-1")).toBeDefined();
     });
 
+    it("a page-owned failure keeps its model error against a clean covering reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // The page carries a turn that FAILED, error and all: its projected
+      // failure row is page-owned history.
+      service.olderItems = {
+        items: [
+          { kind: "user", id: "m1", text: "page text" } as MobileTimelineItem,
+          {
+            kind: "failure",
+            id: "failure:t0",
+            title: "page boom",
+            detail: "page boom",
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [
+                {
+                  id: "m1",
+                  turnId: "t0",
+                  type: "userMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      expect(store.getState().conversation?.olderCursor).toBe("c9");
+      expect(
+        store.getState().conversation?.turns.find((turn) => turn.id === "t0")
+          ?.error,
+      ).toEqual({ message: "page boom" });
+
+      // The reread covers the turn and carries NO error: the page owns
+      // the failure CONTENT, so the model must keep the error beside the
+      // retained failure row (RoboRev round 29 — the exemption read the
+      // bare turn id while the failure row's recorded identity is
+      // failure:<turn id>).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              status: "completed",
+              items: [userMessageItem("m1", "page text")],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        store.getState().conversation?.turns.find((turn) => turn.id === "t0")
+          ?.error,
+      ).toEqual({ message: "page boom" });
+      // The retained failure row stays beside it...
+      expect(
+        rows(store).some((row) => row.kind === "failure"),
+      ).toBe(true);
+      // ...and the page-established wire cursor keeps its retained claim.
+      expect(store.getState().conversation?.olderCursor).toBe("c9");
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

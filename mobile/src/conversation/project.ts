@@ -786,6 +786,15 @@ export function projectTimeline(
   return items;
 }
 
+// The identity a turn's failure row carries — the turn id under the
+// failure: prefix. Exported because the store's page-ownership checks read
+// the same identity loadOlder recorded for a paginated failure row (the
+// failure row is the turn's, not an item's, so this is the one spelling
+// both sides must agree on).
+export function failureRowIdentity(turnID: string): string {
+  return `failure:${turnID}`;
+}
+
 function failureItem(
   error: NonNullable<Turn["error"]>,
   turnID: string,
@@ -802,7 +811,7 @@ function failureItem(
     // cuts title/detail but not id — an id built from unbounded prose would
     // stay oversized forever in timelineIdentity, page-ownership sets, list
     // keys and this row's own JSON serialization.
-    id: `failure:${turnID}`,
+    id: failureRowIdentity(turnID),
     title,
     detail: parts.join("\n"),
   };

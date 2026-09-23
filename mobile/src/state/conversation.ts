@@ -57,6 +57,7 @@ import {
   attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
+  failureRowIdentity,
   liveAsksFor,
   MAX_ITEM_BYTES,
   ownTimelineIdentities,
@@ -2454,13 +2455,17 @@ export function createConversationStore() {
                 // memory), the error is a ghost the next row-changing
                 // frame would reproject from an emptied turn (round 25).
                 // The exemption keys on ownership of the failure CONTENT,
-                // not of the turn: the failure row's identity IS the turn
-                // id (failureItem), so a page that carried the failure
-                // owns it as retained history (the round-31 rule) — but
-                // a page that loaded only a usage FRAGMENT of the turn
-                // owns nothing of a failure the turn acquired live, and
-                // shielding it would resurrect the failure the snapshot
-                // removed (RoboRev round 24).
+                // not of the turn: the failure row's identity is the turn
+                // id under the failure: prefix (failureRowIdentity — the
+                // spelling loadOlder records for a paginated failure
+                // row), so a page that carried the failure owns it as
+                // retained history (the round-31 rule) — but a page that
+                // loaded only a usage FRAGMENT of the turn owns nothing
+                // of a failure the turn acquired live, and shielding it
+                // would resurrect the failure the snapshot removed
+                // (RoboRev round 24; round 29 fixed the identity read —
+                // the bare turn id never matched a genuinely page-owned
+                // failure).
                 const covering =
                   turnCoveredBySnapshot(turn) === false
                     ? undefined
@@ -2472,7 +2477,7 @@ export function createConversationStore() {
                 if (
                   turn.error !== undefined &&
                   !keepWholesale &&
-                  !pageOwnedIds.has(turn.id) &&
+                  !pageOwnedIds.has(failureRowIdentity(turn.id)) &&
                   (covering === undefined || covering.error === undefined)
                 ) {
                   return { ...reconciled, error: undefined };
