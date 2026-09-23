@@ -11,8 +11,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"testing"
 )
 
 // RunFileEnv names the file holding this shard's -test.run regex.
@@ -50,4 +53,43 @@ func ConfigureRunFile() error {
 		return fmt.Errorf("%s %q: setting test.run failed: %w", RunFileEnv, runFile, err)
 	}
 	return nil
+}
+
+// probeChildEnv marks the re-exec'd child of RequireTestMainAppliesRunFile. It
+// is deliberately not an EVENER_* name: a sharded package's TestMain may clear
+// those, and a child that lost the mark would re-exec itself again.
+const probeChildEnv = "SHARDRUN_PROBE_CHILD"
+
+// RequireTestMainAppliesRunFile proves the calling package's TestMain wires
+// ConfigureRunFile in correctly. Without that wiring every shard silently runs
+// the whole package, which still passes, so nothing else would notice.
+//
+// It re-execs the test binary with -test.run=^$ on the command line and a run
+// file naming only the calling test. A TestMain that applies the file after
+// flag.Parse runs exactly that one test; one that never applies it, or
+// applies it before flag.Parse lets the command line win, runs nothing.
+func RequireTestMainAppliesRunFile(t *testing.T) {
+	t.Helper()
+	if os.Getenv(probeChildEnv) != "" {
+		return
+	}
+	runFile := filepath.Join(t.TempDir(), "probe.run")
+	if err := os.WriteFile(runFile, []byte("^"+regexp.QuoteMeta(t.Name())+"$"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^$", "-test.v=true", "-test.count=1")
+	cmd.Env = append(os.Environ(), RunFileEnv+"="+runFile, probeChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe child failed: %v\n%s", err, out)
+	}
+	var ran []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if name, ok := strings.CutPrefix(line, "=== RUN   "); ok {
+			ran = append(ran, name)
+		}
+	}
+	if len(ran) != 1 || ran[0] != t.Name() {
+		t.Fatalf("with %s naming only %s, the test binary ran %q; TestMain must call ConfigureRunFile after flag.Parse\n%s", RunFileEnv, t.Name(), ran, out)
+	}
 }
