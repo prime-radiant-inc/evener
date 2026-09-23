@@ -1526,6 +1526,34 @@ func TestAuthFingerprintRotatesMixedValues(t *testing.T) {
 	}
 }
 
+// A set-but-empty environment value is the `:-` case (spec §10.1): the
+// effective credential is the default, so the fingerprint hashes the
+// default the expansion uses. Hashing the empty value instead would hide
+// a default rotation behind an identical fingerprint and churn an
+// unset-to-empty transition that changes no credential.
+func TestAuthFingerprintRotatesEmptySetDefaults(t *testing.T) {
+	mk := func(t *testing.T, env map[string]string, def string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"api_key = '''${ROT_KEY:-" + def + "}'''\n"
+		return fixtureLoad(t, env, config).AuthFingerprint("gw")
+	}
+	setEmpty, ok := mk(t, map[string]string{"ROT_KEY": ""}, "sk-old")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, map[string]string{"ROT_KEY": ""}, "sk-new")
+	if setEmpty == rotated {
+		t.Fatal("fingerprint unchanged across a default rotation under a set-but-empty env value; the effective credential changed")
+	}
+	unset, _ := mk(t, nil, "sk-old")
+	if unset != setEmpty {
+		t.Fatal("fingerprint differs between an unset env value and a set-but-empty one with the same default; the effective credential is the same")
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never

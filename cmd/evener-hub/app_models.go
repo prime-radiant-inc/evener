@@ -348,7 +348,10 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 					continue
 				}
 				res, err := client.Registry().ResolveInstanceModelFacts(inst.Name, row.ID)
-				if err != nil {
+				if err != nil || res.Model.Hidden || llm.LiveSaysNoTools(res) {
+					// The same §5 visibility filter the child's own
+					// listing applies (resolveListing): a hidden row
+					// never reaches the picker either.
 					continue
 				}
 				out = append(out, cmdutil.ModelDescriptorFromResolved(res))

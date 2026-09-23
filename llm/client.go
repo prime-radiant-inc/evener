@@ -550,7 +550,7 @@ func (c *Client) resolveListing(instance string, live bool) (ModelListing, error
 	out := make([]registry.Resolved, 0, len(ids))
 	for _, id := range ids {
 		row, err := r.Resolve(instance + "/" + id)
-		if err != nil || row.Model.Hidden || liveSaysNoTools(row) {
+		if err != nil || row.Model.Hidden || LiveSaysNoTools(row) {
 			continue
 		}
 		out = append(out, row)
@@ -558,11 +558,13 @@ func (c *Client) resolveListing(instance string, live bool) (ModelListing, error
 	return ModelListing{Live: live, Models: out}, nil
 }
 
-// liveSaysNoTools reports the §5 visibility rule: a row is hidden when the
+// LiveSaysNoTools reports the §5 visibility rule: a row is hidden when the
 // live layer is the one that set Tools = false. A catalog row that declares
 // no tool support stays listed — the registry, not the provider's current
-// listing, is what said so.
-func liveSaysNoTools(row registry.Resolved) bool {
+// listing, is what said so. Exported for the hub picker, whose
+// command-credentialed fallback resolves registry rows through the same
+// filter the child's own listing applies.
+func LiveSaysNoTools(row registry.Resolved) bool {
 	return row.Caps.Tools != nil && !*row.Caps.Tools && row.Provenance["Tools"] == registry.LayerLive
 }
 

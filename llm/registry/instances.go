@@ -540,8 +540,11 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 			case valueexpr.PieceRef:
 				// The expanded value hashes: literals and environment
 				// references are mint-free, and a rotation of this half
-				// changes the effective credential.
-				if v, ok := r.env(p.Ref.Name); ok {
+				// changes the effective credential. A set-but-empty value
+				// is the `:-` case — the default is the effective
+				// credential, mirroring Expand, so hash that: the empty
+				// string never reaches the wire.
+				if v, ok := r.env(p.Ref.Name); ok && v != "" {
 					b.WriteString(v)
 					continue
 				}

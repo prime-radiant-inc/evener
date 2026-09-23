@@ -1888,7 +1888,11 @@ a command-bearing credential as present — or, for a fingerprint, as its
 authored text — and never execute it, and the hub's live-model prefetch
 is refused outright for a command-credentialed instance, whose listing
 the hub cannot fetch without spending the mint — the last-known rows
-stay.
+stay. (Amended 2026-09-23: the pane's credential-test probe is the one
+deliberate exception — the user asks the hub to exercise the credential,
+so the probe resolves the command once, on demand, and carries the mint
+on its one model-list request; every other hub-side resolution is
+automatic and refused.)
 The child alone runs credential commands, so a hub-side execution would
 mint a second token for stateful or one-time commands and prompt the
 user's password manager with no session launched, a transient failure

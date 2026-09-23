@@ -616,6 +616,32 @@ func TestDiscoverPluginMCPConfigs_ExpandsRoot(t *testing.T) {
 	}
 }
 
+// A plugin directory whose own path carries a $ is substituted into MCP
+// config text the $-expression parser reads next: the substituted dollars
+// must arrive escaped, so the parser emits the literal path instead of
+// reading "$..." as an environment reference the config never set.
+func TestDiscoverPluginMCPConfigs_RootWithDollarInPath(t *testing.T) {
+	base := t.TempDir()
+	base, _ = filepath.EvalSymlinks(base)
+	pluginDir := filepath.Join(base, "pl$ugin")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(pluginDir, ".mcp.json"),
+		[]byte(`{"mcpServers": {"srv": {"command": "${CLAUDE_PLUGIN_ROOT}/server"}}}`), 0644)
+
+	configs, warnings, err := discoverPluginMCPConfigs(pluginDir, nil, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("got %d configs, want 1 (warnings: %v)", len(configs), warnings)
+	}
+	if configs[0].Command != pluginDir+"/server" {
+		t.Errorf("Command = %q, want the literal %q", configs[0].Command, pluginDir+"/server")
+	}
+}
+
 func TestDiscoverPluginMCPConfigs_InlineManifest(t *testing.T) {
 	pluginDir := t.TempDir()
 	pluginDir, _ = filepath.EvalSymlinks(pluginDir)

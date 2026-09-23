@@ -124,7 +124,8 @@ func TestFetchLiveModels_CarriesListingCapabilitiesUnchanged(t *testing.T) {
 // instance: the hub executes credential commands never (spec §10.1), so
 // the picker serves that instance's registry rows — every advertised
 // fact, no credential materialized — and leaves its live listing to the
-// child.
+// child. Those rows pass the same §5 visibility filter the child's own
+// listing applies, so nothing the child hides reaches the picker.
 func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
@@ -142,7 +143,13 @@ func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
-	cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key = '''$(gw-mint)'''\n" +
+	// The instance bases on a curated provider whose catalog carries
+	// hidden rows (bedrock's non-anthropic ids, §9.3), so its registry
+	// rows include some the child's own listing drops. The base_url
+	// override keeps a misbehaving fetch on the local server, not the
+	// real mantle.
+	cfg := "[providers.gw]\nbase = \"amazon-bedrock\"\nbase_url = \"" + srv.URL + "/anthropic/v1\"\napi_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.vars]\n\"AWS_REGION\" = \"eu-west-1\"\n" +
 		"[providers.gw.models.\"house-model\"]\n"
 	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -155,6 +162,22 @@ func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("registry: %v", err)
+	}
+	// The rows the child's own listing would hide, for the assertion
+	// below: resolved at the facts depth the picker itself resolves,
+	// so the fixture mints nothing either.
+	ids, err := r.ModelIDs("gw")
+	if err != nil {
+		t.Fatalf("model ids: %v", err)
+	}
+	hidden := make(map[string]bool)
+	for _, id := range ids {
+		if row, err := r.ResolveInstanceModelFacts("gw", id); err == nil && row.Model.Hidden {
+			hidden[id] = true
+		}
+	}
+	if len(hidden) == 0 {
+		t.Fatal("fixture setup: the bedrock-based instance carries no hidden rows, so this test guards nothing")
 	}
 	client := llm.NewClient(llm.WithRegistry(r))
 	// Every other instance the registry knows gets a mute lister so no
@@ -178,6 +201,11 @@ func TestFetchLiveModelsSkipsCommandCredentialedInstances(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the picker dropped the command-credentialed instance's registry rows; skipping the live fetch must skip the mint, not the models")
+	}
+	for _, m := range models {
+		if m.Provider == "gw" && hidden[m.Model] {
+			t.Fatalf("the picker served %q, a row the child's own listing hides (spec §5)", m.Model)
+		}
 	}
 	if runs != 0 {
 		t.Fatalf("the model picker executed the credential command %d time(s); the hub never runs credential commands", runs)
