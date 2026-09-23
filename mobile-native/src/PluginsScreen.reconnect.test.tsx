@@ -28,7 +28,12 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { MarketplaceBrowser } from "./MarketplaceBrowser";
 import { PluginsScreen } from "./PluginsScreen";
 import { createPluginMutationGate } from "./pluginMutationGate";
-import { nativeModuleMock, render, renderedText } from "./renderNative.testkit";
+import {
+	nativeModuleMock,
+	render,
+	renderedText,
+	screenConnection as connection,
+} from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -67,16 +72,6 @@ function plugin(name: string): PluginEntry {
 		installPath: "/plugins",
 		installedAt: 1,
 		lastUpdated: 1,
-	};
-}
-
-function connection(client: unknown, state: ConnectionState) {
-	return {
-		activeProfile: { id: "hub-1", name: "Work hub" },
-		client,
-		state,
-		fatal: false,
-		retry: () => {},
 	};
 }
 
