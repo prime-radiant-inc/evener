@@ -2816,11 +2816,40 @@ func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	}
 }
 
+// retirementHeldAttentionAdapter holds every provider call at the LLM boundary
+// until release closes, signalling started on the first one, so a test can
+// keep a delegate's attention generation in flight for as long as it asserts.
+type retirementHeldAttentionAdapter struct {
+	retirementDelegateAdapter
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (a *retirementHeldAttentionAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.startOnce.Do(func() { close(a.started) })
+	select {
+	case <-a.release:
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
 // TestRetirementSafetyNotificationPinsDelegateResident documents the cold
 // notification boundary: a delegate child's shell completion is delivered
 // through the durable stable-attention stream at finalize, and production
-// reclamation refuses to make a child with pending attention cold, so the
-// obligation stays on the resident evidence path.
+// reclamation refuses to make a child that still owes that attention cold,
+// so the obligation stays on the resident evidence path.
+//
+// Arming the attention drives the child synchronously inside finalize: the
+// parent reserves and commits an attention generation and launches its run
+// before finalize returns. The obligation then lives on the child only until
+// that run finishes and its outcome is delivered to the root, after which the
+// child is quiescent and legitimately reclaimable. The provider holds the
+// attention generation in flight so the pin is asserted while the child
+// provably owns the obligation, not at whatever settlement stage the run
+// happens to have reached.
 func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
@@ -2829,6 +2858,18 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	if child == nil || child.jobManager == nil {
 		t.Fatal("original idle runtime or its job manager missing")
 	}
+	held := &retirementHeldAttentionAdapter{
+		retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter{name: "openai"}},
+		started:                   make(chan struct{}),
+		release:                   make(chan struct{}),
+	}
+	root.client.Register(held)
+	released := false
+	defer func() {
+		if !released {
+			close(held.release)
+		}
+	}()
 	rec, err := child.jobManager.createShell(createShellOpts{Command: "original-pinned-shell"})
 	if err != nil {
 		t.Fatal(err)
@@ -2843,6 +2884,14 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	if recs[rec.JobID] == nil || recs[rec.JobID].NotifyState != jobstore.NotifyDelivered || recs[rec.JobID].TerminalGen == "" {
 		t.Fatalf("original shell completion not stably delivered: %+v", recs[rec.JobID])
 	}
+	retirementAwait(t, held.started)
+	sub := root.subagents.get(d.ChildSessionID)
+	if sub == nil {
+		t.Fatal("original child missing from root manager while its attention generation runs")
+	}
+	sub.mu.Lock()
+	attentionRunDone := sub.done
+	sub.mu.Unlock()
 	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
 		t.Fatal(err)
 	}
@@ -2854,26 +2903,40 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	// version moved mid-collection (delegate_tree_retirement.go:193); that is
 	// a retry signal, never an escape. The pin holds when every attempt
 	// refuses and a settled attempt still names the original owner.
-	var state RetirementSnapshot
-	// TRIPWIRE: hang guard only; the durable attention stream settles in
-	// milliseconds once finalize's delivery lands.
-	waitForCondition(t, 5*time.Second, "pinned shell attention refusal settles", func() bool {
-		claim, got, err := c.TryClaim(true)
-		if claim != nil {
-			if abortErr := c.Abort(claim, ""); abortErr != nil {
-				t.Fatal(abortErr)
+	settledRefusal := func(stage string) RetirementSnapshot {
+		t.Helper()
+		var state RetirementSnapshot
+		// TRIPWIRE: hang guard only; a refusal settles in milliseconds.
+		waitForCondition(t, 5*time.Second, stage+" refusal settles", func() bool {
+			claim, got, err := c.TryClaim(true)
+			if claim != nil {
+				if abortErr := c.Abort(claim, ""); abortErr != nil {
+					t.Fatal(abortErr)
+				}
+				t.Fatalf("%s: pinned shell attention escaped: %+v", stage, got)
 			}
-			t.Fatalf("pinned shell attention escaped: %+v", got)
-		}
-		state = got
-		return err == nil
-	})
-	// The obligation's owner at the settled instant is timing-dependent:
-	// still-pending child attention blocks with the original DelegateID,
-	// while attention already delivered blocks with the session actually
-	// driving it (a turn on the original child, or root-owned work). All
-	// name the original root/child pair; an empty or foreign-owned refusal
-	// would mean the obligation was lost.
+			state = got
+			return err == nil
+		})
+		return state
+	}
+	// While the attention generation is held, the obligation belongs to the
+	// original delegate child and nothing else.
+	state := settledRefusal("held attention generation")
+	if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.DelegateID == d.DelegateID || b.SessionID == d.ChildSessionID
+	}) {
+		t.Fatalf("held attention generation lost its original owner: %+v", state)
+	}
+	close(held.release)
+	released = true
+	retirementAwait(t, attentionRunDone)
+	state = settledRefusal("finished attention generation")
+	// Once the run finishes, the obligation's owner at the settled instant
+	// is timing-dependent: an outcome still being delivered blocks with the
+	// original DelegateID, while an outcome already delivered blocks with
+	// root-owned work. All name the original root/child pair; an empty or
+	// foreign-owned refusal would mean the obligation was lost.
 	if len(state.Blockers) == 0 {
 		t.Fatalf("pinned shell attention escaped with empty blockers: %+v", state)
 	}
