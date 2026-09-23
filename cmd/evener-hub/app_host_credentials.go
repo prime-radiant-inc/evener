@@ -52,11 +52,16 @@ type hubHostCredentialsPusher struct {
 // Every entry Names() returned gets exactly one result row, including one whose
 // value was cleared before it could be read (a skip, not a failure).
 //
-// Two entries never reach the wire as a Value, both decided here rather than by
-// the host: one whose value is not an API key at all (the store also holds
-// Google credential JSON, see credentialPushValueIsKey), and one whose host
-// entry cannot consume a key (InstanceEntry.Auth says so, see
-// credentialPushKeyCapableScheme). Both are skips in the report.
+// One entry never reaches the wire as a Value, decided here rather than by the
+// host: one whose value is not an API key at all (the store also holds Google
+// credential JSON, see credentialPushValueIsKey). It is a skip in the report.
+// Every other matched entry is sent: the host's locked conditional set is the
+// authority on what a key may do - including on a scheme that reads no key,
+// which comes back as the host's own typed "skipped" - so the controller never
+// judges a scheme's capability from the instance-list snapshot. The accepted
+// cost of that is a key reaching an instance whose current scheme reads none,
+// where the host skips it after the value has left this controller; the loop
+// below states the tradeoff and why the alternative was rejected.
 //
 // Per matched entry the status read captures ActiveSource and ConfigRevision,
 // which are echoed into the conditional set's ExpectedSource/ExpectedRevision so
@@ -141,11 +146,12 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	// is the host's answer to resolve separately.
 	//
 	// matched carries, per key that has a counterpart on the host, the host's own
-	// entry for it: the name the host spells and the scheme that entry
-	// authenticates with (the listing already says both, InstanceEntry.Auth /
-	// ProviderDescriptor.Auth). A scheme that cannot consume an API key is then a
-	// skip this controller can make before the entry's value crosses the wire at
-	// all.
+	// spelling of the entry, which is what travels as the wire Provider (the host
+	// resolves that value). The scheme the entry authenticates with is deliberately
+	// NOT read here: the host's locked conditional set is the authority on what a
+	// key may do, and this listing is a snapshot a concurrent provider edit can
+	// outdate, so a scheme judged here could skip a write the host would have
+	// made.
 	//
 	// The key is case-folded, and only for the lookup: the local store lowercases
 	// the keys it holds (Store.Set/Get), while the host spells its instances as
@@ -156,11 +162,10 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	// local store key it accounts for.
 	type hostEntry struct {
 		name string
-		auth string
 	}
 	matched := make(map[string]hostEntry, len(listing.Instances)+len(listing.AvailableProviders))
 	for _, inst := range listing.Instances {
-		matched[strings.ToLower(inst.Name)] = hostEntry{name: inst.Name, auth: inst.Auth}
+		matched[strings.ToLower(inst.Name)] = hostEntry{name: inst.Name}
 	}
 	for _, provider := range listing.AvailableProviders {
 		if !provider.Implicit {
@@ -170,7 +175,7 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 		// the row is the more specific answer, and its spelling is the one the
 		// host's own listing uses for that instance.
 		if key := strings.ToLower(provider.ID); matched[key].name == "" {
-			matched[key] = hostEntry{name: provider.ID, auth: provider.Auth}
+			matched[key] = hostEntry{name: provider.ID}
 		}
 	}
 
@@ -213,18 +218,23 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 			})
 			continue
 		}
-		// The host's listing already says the host's entry cannot read a key, so
-		// the skip is made here rather than by sending the value and letting the
-		// host refuse it: a gcp-adc or Codex instance would otherwise receive the
-		// secret on the wire before answering "skipped".
-		if credentialPushKeylessScheme(entry.auth) {
-			response.Results = append(response.Results, appwire.HostCredentialPushResult{
-				Instance: name,
-				Action:   appwire.HostCredentialPushSkipped,
-				Reason:   fmt.Sprintf("the host's %s authenticates with %s, which does not read an API key", entry.name, entry.auth),
-			})
-			continue
-		}
+		// The scheme is deliberately not consulted here. Classification belongs to
+		// the host's conditional set, which runs under its own lock against the
+		// current configuration; a decision here would be made from the
+		// instance/list snapshot above, and that reading is stale by construction -
+		// an entry that was gcp-adc when it was taken can be key-capable by the time
+		// the push lands, so a controller-side skip would silently refuse a write
+		// the host would have made.
+		//
+		// The cost of leaving it to the host is that a key can reach an instance
+		// whose CURRENT scheme reads none: the host answers "skipped" with its own
+		// reason, but the value it will not use has already left this controller.
+		// That is accepted, because the host is the authority on what a key may do
+		// and because the other choice is wrong in the other direction too -
+		// refusing a valid push from a snapshot that no longer describes the host.
+		// The value-kind skip above is a different question and stays: a credential
+		// DOCUMENT must never leave this controller whatever the host's current
+		// scheme is, which is not a staleness question at all.
 		response.Results = append(response.Results, p.pushOne(ctx, remote, name, entry.name, value))
 	}
 	return response, nil
@@ -244,26 +254,6 @@ func credentialPushActionKnown(action string) bool {
 	return false
 }
 
-// credentialPushKeylessScheme reports whether the host's entry authenticates in
-// a way that reads no API key at all: a Codex OAuth record, Google
-// application-default credentials, or nothing. Those three are exactly the
-// schemes the host's own conditional set skips (its switch, and spec 07's
-// classification table), so the push can make the same skip from the listing and
-// never put the value on the wire: a gcp-adc host would receive the secret
-// before answering "skipped".
-//
-// Every other value - including one this build does not know - is left to the
-// host. The host classifies those by credential source, so skipping one here
-// would refuse a write the host would have made, which is not this controller's
-// decision to make.
-func credentialPushKeylessScheme(auth string) bool {
-	switch auth {
-	case registry.AuthOAuthOpenAICodex, registry.AuthGCPADC, registry.AuthNone:
-		return true
-	}
-	return false
-}
-
 // credentialPushValueIsKey reports whether a credentials-store entry may be sent
 // as a Value. The store holds two kinds of secret under one namespace of
 // instance names: API keys (evener/auth/apiKey/set) and Google credential JSON
@@ -275,17 +265,22 @@ func credentialPushKeylessScheme(auth string) bool {
 //     not a key. That gate is registry.CheckCredentialJSON, the predicate the
 //     gcp-adc resolution path runs over a store entry, so the two agree on what
 //     a credential document is.
-//   - Any other JSON object or array is not a key either. No api key is a JSON
-//     document - they are opaque tokens - while a document this gate refuses by
-//     name (an external_account file, or a truncated service-account key, both
-//     of which a hand-edited credentials.toml can hold) is still a pasted
-//     credential whose private material must not be copied to another host.
+//   - A trimmed value whose first character is "{" or "[" is not a key either,
+//     whether or not its body parses. The SHAPE is the guard rather than
+//     json.Valid: a TRUNCATED document - {"type":"service_account", - fails
+//     the gate above and json.Valid alike, so a validity test answers "this is a
+//     key" for exactly the pasted-credential case this rule exists to catch, and
+//     the push would hand a service-account key to another host as an API key.
+//     No api key begins with either character - they are opaque tokens - while
+//     every JSON document does, so the shape alone decides, and an unparseable
+//     body is still a pasted credential whose private material must not be
+//     copied to another host.
 func credentialPushValueIsKey(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	if registry.CheckCredentialJSON([]byte(trimmed)) == nil {
 		return false
 	}
-	if json.Valid([]byte(trimmed)) && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return false
 	}
 	return true

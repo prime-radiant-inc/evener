@@ -441,6 +441,14 @@ const pushLeakMarker = "PUSHLEAK-9f3"
 // evener/auth/credentialJson/set stores for a gcp-adc instance.
 const googleCredentialJSONForPush = `{"type":"authorized_user","client_id":"cid","client_secret":"` + pushLeakMarker + `","refresh_token":"rtoken-` + pushLeakMarker + `"}`
 
+// truncatedCredentialJSONForPush is the same kind of credential document cut off
+// mid-object: it parses no better than it gates (json.Valid and
+// registry.CheckCredentialJSON both refuse it), which is exactly the shape a
+// hand-edited credentials.toml holds. A validity test therefore answers "this is
+// a key" for it, and the push would hand a pasted service-account key to another
+// host as an API key; the first-character shape rule is what refuses it.
+const truncatedCredentialJSONForPush = `{"type":"service_account","private_key":"` + pushLeakMarker + ``
+
 // TestHostPushCredentials_MatchesAHostInstanceSpelledInAnotherCase pins the join
 // against spelling. The local store lowercases the keys it holds (Store.Set and
 // Store.Get), while the host spells its instances as its own providers.toml
@@ -504,11 +512,12 @@ func TestHostPushCredentials_MatchesAHostInstanceSpelledInAnotherCase(t *testing
 // another host, which stores it as an api key even when the instance there can
 // never use it.
 //
-// Two rules, both asserted against every outgoing request rather than against
-// the reported action: a value that is not an API key is never sent, and an
-// instance the host's own listing says cannot consume a key is skipped before
-// any status read or conditional set - so the bytes never leave this controller
-// even to be refused on the other side.
+// One rule now, asserted against every outgoing request rather than against the
+// reported action: a value that is not an API key is never sent, so the bytes
+// never leave this controller even to be refused on the other side. A host
+// entry's scheme is deliberately NOT a controller-side skip any more - the
+// host's locked conditional set classifies that (see
+// TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost).
 func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
 	store := newTestCredentialsStore(t)
 	if err := store.Set("key-only", "sk-real-key"); err != nil {
@@ -519,9 +528,16 @@ func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
 	if err := store.Set("json-to-keyed", googleCredentialJSONForPush); err != nil {
 		t.Fatal(err)
 	}
-	// A gcp-adc instance on the host: it cannot consume an API key at all, and
-	// the host's listing says so.
+	// A keyless-scheme entry on the host: its value is a credential document, so
+	// the value-kind skip refuses it whatever the host's scheme is - the scheme
+	// itself is no longer a controller-side decision.
 	if err := store.Set("json-to-adc", googleCredentialJSONForPush); err != nil {
+		t.Fatal(err)
+	}
+	// A TRUNCATED credential document under a key-capable host entry: neither gate
+	// accepts it and it is not valid JSON, so only the shape rule keeps its private
+	// material off the wire.
+	if err := store.Set("json-truncated", truncatedCredentialJSONForPush); err != nil {
 		t.Fatal(err)
 	}
 
@@ -532,6 +548,7 @@ func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
 				{Name: "key-only", Auth: "bearer"},
 				{Name: "json-to-keyed", Auth: "bearer"},
 				{Name: "json-to-adc", Auth: "gcp-adc"},
+				{Name: "json-truncated", Auth: "bearer"},
 			}}}
 		case appwire.MethodEvenerAuthStatus:
 			return statusReply("none", "rev")
@@ -555,8 +572,8 @@ func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
 		}
 	}
 
-	// Neither non-key entry was even asked about: no status read, no
-	// conditional set, so the bytes never reached a host to be refused.
+	// No non-key entry was even asked about: no status read, no conditional set,
+	// so the bytes never reached a host to be refused.
 	var asked []string
 	for _, method := range []string{appwire.MethodEvenerAuthStatus, appwire.MethodEvenerAuthApiKeyConditionalSet} {
 		for _, params := range countedMethod(t, h.calls(), method) {
@@ -576,7 +593,7 @@ func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
 	if key.Action != appwire.HostCredentialPushAdded {
 		t.Fatalf("key-only result = %+v, want added: the entry that is an api key must still be pushed", key)
 	}
-	for _, name := range []string{"json-to-keyed", "json-to-adc"} {
+	for _, name := range []string{"json-to-keyed", "json-to-adc", "json-truncated"} {
 		result := resultFor(t, resp, name)
 		if result.Action != appwire.HostCredentialPushSkipped {
 			t.Fatalf("%s result = %+v, want skipped", name, result)
@@ -588,6 +605,113 @@ func TestHostPushCredentials_NeverSendsAGoogleCredentialJSON(t *testing.T) {
 	// The local store still holds both documents: the push never writes here.
 	if got, ok := store.Get("json-to-adc"); !ok || got != googleCredentialJSONForPush {
 		t.Fatalf("local entry json-to-adc = %q present=%v, want it untouched", got, ok)
+	}
+	if got, ok := store.Get("json-truncated"); !ok || got != truncatedCredentialJSONForPush {
+		t.Fatalf("local entry json-truncated = %q present=%v, want it untouched", got, ok)
+	}
+}
+
+// TestCredentialPushValueIsKeyRefusesAJSONShapedValue pins the shape rule
+// directly, which is the High finding's fix. The rule used to require json.Valid
+// as well, so a TRUNCATED document - one cut off mid-object, the shape a
+// hand-edited credentials.toml holds - failed the registry gate and json.Valid
+// alike and was answered "this is an API key": the push then handed a pasted
+// service-account key to another host as a key. The first non-whitespace
+// character decides now, whether or not the body parses, and leading whitespace
+// must not hide it.
+func TestCredentialPushValueIsKeyRefusesAJSONShapedValue(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "an ordinary api key", value: "sk-live-abc123", want: true},
+		{name: "an opaque bearer-style token", value: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0", want: true},
+		{name: "an empty value", value: "", want: true},
+		{name: "a key that merely contains braces", value: "sk-a{b}c", want: true},
+		{name: "a google credential json the gate accepts", value: googleCredentialJSONForPush, want: false},
+		{name: "a truncated service-account json", value: truncatedCredentialJSONForPush, want: false},
+		{name: "a truncated array", value: `[{"type":"service_account"`, want: false},
+		{name: "an object with nothing in it", value: "{}", want: false},
+		{name: "an empty array", value: "[]", want: false},
+		{name: "an object with leading whitespace", value: "  \n\t{\"type\":\"service_account\",", want: false},
+		{name: "an array with leading whitespace", value: " [1,", want: false},
+		{name: "a brace-led value that is not json at all", value: "{not json", want: false},
+		{name: "a bracket-led value that is not json at all", value: "[not json", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := credentialPushValueIsKey(tc.value); got != tc.want {
+				t.Fatalf("credentialPushValueIsKey(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost pins the Medium
+// fix: the controller no longer decides a keyless scheme's capability from the
+// instance-list snapshot. That snapshot is stale by construction - the host's
+// providers.toml can change between the listing and the push, turning a gcp-adc
+// row into a key-capable one - and the design puts the classification on the
+// host's locked conditional set (spec 07: "The policy must be applied atomically
+// on the host"). So an entry the listing says is gcp-adc still goes through
+// auth/status + apiKey/conditionalSet, and the host's own typed "skipped" with
+// its reason is what the report carries.
+func TestHostPushCredentials_KeylessSchemeIsClassifiedByTheHost(t *testing.T) {
+	store := newTestCredentialsStore(t)
+	if err := store.Set("vertexish", "sk-real-key"); err != nil {
+		t.Fatal(err)
+	}
+	const hostReason = "vertexish authenticates with Google application-default credentials, which do not read an API key"
+	var setValue string
+	var statusCalls int
+	h := newCredentialPushHarness(t, store, true, func(method string, params json.RawMessage) hostAdminReply {
+		switch method {
+		case appwire.MethodEvenerInstanceList:
+			return hostAdminReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "vertexish", Auth: "gcp-adc"}}}}
+		case appwire.MethodEvenerAuthStatus:
+			statusCalls++
+			return statusReply("none", "rev-vertexish")
+		case appwire.MethodEvenerAuthApiKeyConditionalSet:
+			var decoded appwire.ApiKeyConditionalSetParams
+			if err := json.Unmarshal(params, &decoded); err != nil {
+				t.Fatalf("decode conditionalSet params: %v", err)
+			}
+			setValue = decoded.Value
+			return hostAdminReply{result: appwire.ApiKeyConditionalSetResponse{
+				Action: appwire.ApiKeyConditionalSetActionSkipped,
+				Reason: hostReason,
+				Status: appwire.AuthStatusResponse{Provider: "vertexish"},
+			}}
+		default:
+			return hostAdminReply{result: appwire.EmptyResponse{}}
+		}
+	})
+
+	resp, err := h.pusher.Push(context.Background(), appwire.HostPushCredentialsParams{Host: "m4"})
+	if err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	result := resultFor(t, resp, "vertexish")
+	if result.Action != appwire.HostCredentialPushSkipped {
+		t.Fatalf("result = %+v, want the host's typed skip", result)
+	}
+	if result.Reason != hostReason {
+		t.Fatalf("reason = %q, want the host's own reason %q verbatim: the controller must not classify a scheme from the listing snapshot", result.Reason, hostReason)
+	}
+	// The entry reached the host: one status read and one conditional set, with
+	// the key as the Value. The host, not the controller, decides a keyless scheme.
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthStatus)); n != 1 {
+		t.Fatalf("auth/status calls = %d, want 1: a keyless-scheme entry is classified by the host now", n)
+	}
+	if n := len(countedMethod(t, h.calls(), appwire.MethodEvenerAuthApiKeyConditionalSet)); n != 1 {
+		t.Fatalf("conditionalSet calls = %d, want 1: the host's classification is the authority", n)
+	}
+	if setValue != "sk-real-key" {
+		t.Fatalf("conditionalSet Value = %q, want the local key: the controller no longer withholds it for a keyless scheme", setValue)
+	}
+	if statusCalls != 1 {
+		t.Fatalf("scripted status reads = %d, want 1", statusCalls)
 	}
 }
 
