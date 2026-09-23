@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
-	"primeradiant.com/evener/identifier"
 )
 
 // Finding is the atomic output of a doctor audit, per
@@ -573,39 +572,17 @@ type AuditResult struct {
 	Unreadable      []UnreadableSession `json:"unreadable"`
 }
 
-// followSelector returns the selector that re-addresses one session: its
-// emitted transcript ref when refFor produced one, a bucket-qualified
-// proj:<projectID>:<sessionID> selector when it did not but the bucket name
-// passes the same ValidateProjectID alphabet refFor uses ([A-Za-z0-9-]), or
-// the bare session id as a last resort.
-//
-// refFor emits a ref (proj:<id>:<sid> or local:<sid>) for every bucket whose
-// directory name passes identifier.ValidateProjectID; for the rest — legacy-
-// or foreign-named buckets the agent ref grammar rejects — it emits nothing,
-// and a bare id is the only handle left. The doctor's own selector grammar
-// (projectTokenOK) is looser than ValidateProjectID — it accepts any
-// traversal-safe name — but that alphabet includes commas, spaces, and shell
-// metacharacters that break DoctorCommand's comma-joined --sessions
-// reproduction line (the CLI splits --sessions on ','). So followSelector
-// gates its proj: emission on the same ValidateProjectID alphabet refFor
-// uses, not the looser projectTokenOK: the names in the gap between the two
-// (selector-safe but not ValidateProjectID-safe) get proj: refs only when
-// their alphabet is inert in the reproduction line. Names outside even that
-// alphabet — including commas, spaces, shell metacharacters, and the
-// backslash/NUL class — fall back to the bare session id, preserving the
-// pre-FU2 behavior for those names. The forensic collision case (the same
-// session id in two ValidateProjectID-safe legacy buckets) is still
-// resolved: both get proj: refs that address precisely via locateInBucket,
-// so both rows audit and the audit set's coverage matches the sweep's.
-// The --sessions reproduction line keeps working for every ref
-// followSelector emits; names that fall back to bare id keep the
-// pre-FU2 ambiguous-across-buckets behavior the brief's Do-not preserves.
-func followSelector(ref, projectID, sessionID string) string {
-	if ref != "" {
+// followSelector returns the selector that re-addresses one session:
+// refFor's transcript ref (proj:<id>:<sid> or local:<sid>) when refFor
+// produced one, or the bare session id as a last resort. refFor is the sole
+// qualifier — it gates its proj: emission on identifier.ValidateProjectID's
+// alphabet ([A-Za-z0-9-]), which is comma-safe end to end (the CLI splits
+// --sessions on ','). Bucket names outside that alphabet — commas, spaces,
+// shell metacharacters, the backslash/NUL class — fall back to the bare
+// session id, preserving pre-FU2 behavior for them.
+func followSelector(projectID, sessionID string) string {
+	if ref := refFor(projectID, sessionID); ref != "" {
 		return ref
-	}
-	if identifier.ValidateProjectID(projectID) == nil {
-		return projRef(projectID, sessionID)
 	}
 	return sessionID
 }
@@ -637,7 +614,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			return AuditResult{}, err
 		}
 		for _, s := range sweep.Sessions {
-			refs = append(refs, followSelector(s.TranscriptRef, s.Bucket, s.SessionID))
+			refs = append(refs, followSelector(s.Bucket, s.SessionID))
 		}
 		res.Unreadable = append(res.Unreadable, sweep.Unreadable...)
 	}
@@ -656,11 +633,11 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			continue
 		}
 		// sel is the selector every read and evidence entry for this session
-		// uses: the transcript ref when refFor produced one, a bucket-qualified
-		// proj:<id>:<sid> for a selector-safe legacy bucket, or the bare id as a
-		// last resort. Computed once after Locate; reused at every read/evidence
-		// site below so the grammar scan and string build run once, not five times.
-		sel := followSelector(paths.TranscriptRef, paths.ProjectID, paths.SessionID)
+		// uses: refFor's transcript ref when it produced one, or the bare id
+		// as a last resort. Computed once after Locate; reused at every
+		// read/evidence site below so the grammar scan and string build run
+		// once, not five times.
+		sel := followSelector(paths.ProjectID, paths.SessionID)
 		health, err := TranscriptHealth(stateBase, sel)
 		if err != nil {
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: paths.SessionID, TranscriptRef: paths.TranscriptRef, Error: err.Error()})

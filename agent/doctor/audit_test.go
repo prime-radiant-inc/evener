@@ -727,16 +727,19 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 // TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth is the FU2 RED case: when
 // the SAME session id is present in two different project buckets whose
 // directory names pass identifier.ValidateProjectID (so refFor emits proj:
-// refs and followSelector returns them), the pre-FU2 code's bare-id
-// fallback made locateAcrossBuckets find the sid in BOTH buckets and
-// report it as ambiguous, so RunAudit recorded BOTH rows as Unreadable and
-// audited neither. The audit set's coverage then no longer matched the
-// sweep's own enumeration. followSelector must instead address each row
-// precisely via proj:<bucket>:<sid>, so both rows audit and evidence names
-// each.
-// ListSessions coverage (two rows, one per bucket) must match audit coverage
-// (two checked). This test fails on pre-FU2 code (both rows land Unreadable,
-// SessionsChecked=0).
+// refs and followSelector returns them), each row is addressed precisely
+// via locateInBucket, so both audit and evidence names each by its proj:
+// ref. ListSessions coverage (two rows, one per bucket) must match audit
+// coverage (two checked).
+//
+// Note: refFor already emitted proj: refs for ValidateProjectID-valid names
+// before FU2, so this test is base-immune — it passes on pre-FU2 code. It
+// guards the feature (proj: ref routing for duplicate SIDs across valid
+// buckets) by failing if followSelector were changed to return bare ids:
+// SessionsChecked would drop to 0 (bare id ambiguous across two buckets).
+// The companion TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback guards
+// the other side of the boundary (ValidateProjectID-invalid names → bare
+// id → both Unreadable).
 func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	base := t.TempDir()
 	// Both names pass identifier.ValidateProjectID (readable-<10 base62>
@@ -806,6 +809,40 @@ func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
 	}
 	if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
 		t.Errorf("re-running evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", res2.SessionsChecked, res2.Unreadable)
+	}
+}
+
+// TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback guards the feature
+// boundary: the same session id in two buckets whose names FAIL
+// ValidateProjectID (so refFor emits no ref and followSelector falls back
+// to the bare session id). The bare id is ambiguous across the two buckets,
+// so both rows land Unreadable and SessionsChecked=0 — the pre-FU2 behavior
+// this boundary preserves. This negative case contrasts with
+// TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth (ValidateProjectID-valid
+// names → proj: refs → both audit). Together they guard both sides of the
+// feature: valid names get precise proj: refs, invalid names fall back to
+// bare ids.
+func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
+	base := t.TempDir()
+	// Both names fail identifier.ValidateProjectID (no readable-<10 base62>
+	// structure), so refFor emits no ref and followSelector falls back to
+	// the bare session id.
+	bucketA := stateHomeBucket(base, "0123456789abcdef")
+	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bare id is ambiguous across the two buckets: both rows Unreadable.
+	if res.SessionsChecked != 0 {
+		t.Fatalf("SessionsChecked = %d, want 0 — the bare id is ambiguous across two ValidateProjectID-invalid buckets, so both rows must land Unreadable", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 2 {
+		t.Fatalf("Unreadable = %d rows, want 2 (one per bucket)", len(res.Unreadable))
 	}
 }
 
