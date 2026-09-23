@@ -204,6 +204,49 @@ func plantMergeMarker(t *testing.T, m *Manager, from, to string) {
 	}
 }
 
+// plantInterruptedMerge leaves the store where an interrupted merge stopped:
+// the longer alias "a/./b" renamed to "a-b", taking the one clone and the one
+// cache both records derive, with both store files recording that, the other
+// record still under its alias, and the merge's marker left on disk for the
+// next lock holder. The two records install a plugin apiece (widget, gadget),
+// which is what the merge folds together.
+func plantInterruptedMerge(t *testing.T, m *Manager, duplicate string) {
+	t.Helper()
+	plantLegacyMarketplace(t, m, "a/./b", "widget")
+	plantLegacyMarketplace(t, m, duplicate, "gadget")
+	if err := os.Rename(m.marketplaceDir(duplicate), m.marketplaceDir("a-b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(m.cacheDir(), duplicate), filepath.Join(m.cacheDir(), "a-b")); err != nil {
+		t.Fatal(err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := mk["a/./b"]
+	ref.InstallLocation = m.marketplaceDir("a-b")
+	delete(mk, "a/./b")
+	mk["a-b"] = ref
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, moved := range []struct{ recorded, plugin string }{{"a/./b", "widget"}, {duplicate, "gadget"}} {
+		entry := installedAt(t, reg, registryKey(moved.plugin, moved.recorded))
+		entry.InstallPath = m.pluginCacheDir("a-b", moved.plugin, "sha1")
+		delete(reg.Plugins, registryKey(moved.plugin, moved.recorded))
+		reg.Plugins[registryKey(moved.plugin, "a-b")] = []InstallEntry{entry}
+	}
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+	plantMergeMarker(t, m, duplicate, "a-b")
+}
+
 // The name a refused one is renamed to follows one rule, so a user can tell
 // from the old name what the new one will be: separators split it and the
 // traversal components go, '@' becomes '-', a scratch name loses its dot, and
@@ -3696,44 +3739,9 @@ func TestMarketplaceNameMigration_CompletesAMergeItsMarkerNames(t *testing.T) {
 	const duplicate = "a/b"
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
-	plantLegacyMarketplace(t, m, "a/./b", "widget")
-	plantLegacyMarketplace(t, m, duplicate, "gadget")
-	// Where the run stopped: the longer alias renamed to a-b, taking the one
-	// clone and the one cache both records derive, and the merge's registry
-	// write made.
-	if err := os.Rename(m.marketplaceDir(duplicate), m.marketplaceDir("a-b")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(filepath.Join(m.cacheDir(), duplicate), filepath.Join(m.cacheDir(), "a-b")); err != nil {
-		t.Fatal(err)
-	}
-	mk, err := m.loadMarketplaces()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := mk["a/./b"]
-	ref.InstallLocation = m.marketplaceDir("a-b")
-	delete(mk, "a/./b")
-	mk["a-b"] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		t.Fatal(err)
-	}
-	reg, err := m.loadRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, moved := range []struct{ recorded, plugin string }{{"a/./b", "widget"}, {duplicate, "gadget"}} {
-		entry := installedAt(t, reg, registryKey(moved.plugin, moved.recorded))
-		entry.InstallPath = m.pluginCacheDir("a-b", moved.plugin, "sha1")
-		delete(reg.Plugins, registryKey(moved.plugin, moved.recorded))
-		reg.Plugins[registryKey(moved.plugin, "a-b")] = []InstallEntry{entry}
-	}
-	if err := m.saveRegistry(reg); err != nil {
-		t.Fatal(err)
-	}
-	plantMergeMarker(t, m, duplicate, "a-b")
+	plantInterruptedMerge(t, m, duplicate)
 
-	mk, err = m.ListMarketplaces(context.Background())
+	mk, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3745,7 +3753,7 @@ func TestMarketplaceNameMigration_CompletesAMergeItsMarkerNames(t *testing.T) {
 		t.Fatalf("InstallLocation = %q, want the clone at %q", got.InstallLocation, want)
 	}
 	mustNotExist(t, renameMarkerFile(m))
-	reg, err = m.loadRegistry()
+	reg, err := m.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3773,47 +3781,14 @@ func TestMarketplaceNameMigration_CompletesAMergeItsMarkerNames(t *testing.T) {
 }
 
 // The merge above completes when its own save succeeds; when that save fails
-// instead, the marker stays for the next lock holder, and the error names it
-// (markerLeftForRecovery) - reached over ListMarketplaces/List just as
-// directly as any marketplace write failure, so it must not carry this
-// machine's absolute plugin-store path either.
+// instead, the marker stays for the next lock holder - reached over
+// ListMarketplaces/List just as directly as any marketplace write failure, so
+// the failure must not carry this machine's absolute plugin-store path either.
 func TestMarketplaceNameMigration_MergeSaveFailureKeepsTheMarkerNamesNoPath(t *testing.T) {
 	const duplicate = "a/b"
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
-	plantLegacyMarketplace(t, m, "a/./b", "widget")
-	plantLegacyMarketplace(t, m, duplicate, "gadget")
-	if err := os.Rename(m.marketplaceDir(duplicate), m.marketplaceDir("a-b")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(filepath.Join(m.cacheDir(), duplicate), filepath.Join(m.cacheDir(), "a-b")); err != nil {
-		t.Fatal(err)
-	}
-	mk, err := m.loadMarketplaces()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := mk["a/./b"]
-	ref.InstallLocation = m.marketplaceDir("a-b")
-	delete(mk, "a/./b")
-	mk["a-b"] = ref
-	if err := m.saveMarketplaces(mk); err != nil {
-		t.Fatal(err)
-	}
-	reg, err := m.loadRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, moved := range []struct{ recorded, plugin string }{{"a/./b", "widget"}, {duplicate, "gadget"}} {
-		entry := installedAt(t, reg, registryKey(moved.plugin, moved.recorded))
-		entry.InstallPath = m.pluginCacheDir("a-b", moved.plugin, "sha1")
-		delete(reg.Plugins, registryKey(moved.plugin, moved.recorded))
-		reg.Plugins[registryKey(moved.plugin, "a-b")] = []InstallEntry{entry}
-	}
-	if err := m.saveRegistry(reg); err != nil {
-		t.Fatal(err)
-	}
-	plantMergeMarker(t, m, duplicate, "a-b")
+	plantInterruptedMerge(t, m, duplicate)
 
 	origWrite := marketplaceAtomicWriteFile
 	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
@@ -3824,7 +3799,7 @@ func TestMarketplaceNameMigration_MergeSaveFailureKeepsTheMarkerNamesNoPath(t *t
 		return origWrite(path, data, perm)
 	}
 
-	_, err = m.ListMarketplaces(context.Background())
+	_, err := m.ListMarketplaces(context.Background())
 	if err == nil {
 		t.Fatal("expected the merge's completing save to fail")
 	}
