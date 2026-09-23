@@ -294,10 +294,13 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, new
 // an instance changes its identity, and rows fetched from the old
 // transport must not publish into the new one. Display fields
 // (default, warnings, vars) do not affect where rows come from and
-// are not part of it. The fingerprint hashes the secret bytes
-// themselves (SHA-256, in-memory only), so even a same-length rotation
-// changes the identity; only the digest enters the identity string,
-// never the secrets.
+// are not part of it. The fingerprint hashes stable material (SHA-256,
+// in-memory only) so even a same-length rotation changes the identity,
+// while command-bearing material contributes its authored text — the
+// minted value rotates with the cache TTL, and an identity that
+// followed it would prune the cached live rows on every rollover and
+// force a re-fetch. Only the digest enters the identity string, never
+// the secrets.
 func instanceIdentity(r *registry.Registry, name string) string {
 	inst, ok := r.Instance(name)
 	if !ok {
@@ -305,9 +308,11 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	}
 	endpoint := ""
 	authprint := ""
-	if res, err := r.ResolveInstance(name); err == nil {
+	if res, err := r.ResolveGateCredential(name, ""); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
-		authprint = authFingerprint(res)
+		if fp, ok := r.AuthFingerprint(name); ok {
+			authprint = fp
+		}
 		if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
 			authprint += "\x00" + oauthAccountFingerprint(r.StateRoot(), name)
 		}
@@ -433,28 +438,6 @@ func CredentialConfigRevisionResolved(key []byte, res registry.Resolved) string 
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// authFingerprint hashes the resolved authentication material
-// non-reversibly (SHA-256 over the actual secret bytes and the stable
-// account-identity fields, never the lengths alone): a same-length key
-// rotation, an OAuth account swap, or a header change alters the
-// fingerprint, so rows fetched under the old credential never publish
-// into the newly-credentialed instance. The digest never leaves the
-// process — it lives only in identity strings compared in-memory — so a
-// strong hash of the value is safe where a length was not sufficient.
-func authFingerprint(res registry.Resolved) string {
-	sum := sha256.New()
-	cred := res.Credential
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", cred.Source, cred.Value)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", res.Transport.Auth, res.Transport.AuthHeader)
-	for _, k := range slices.Sorted(maps.Keys(res.CredentialHeaders)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.CredentialHeaders[k])
-	}
-	for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.Headers[k])
-	}
-	return hex.EncodeToString(sum.Sum(nil))
-}
-
 // oauthAccountFingerprint folds the Codex OAuth record's stable
 // account-identity claims (email, account and workspace ids) into the
 // fingerprint: swapping the signed-in account behind an unchanged record
@@ -510,8 +493,8 @@ func oauthAccountFingerprint(stateRoot, instance string) string {
 // file behind a stable source label ("adc", no credential value in the
 // resolution), so without it rows fetched under the old account publish
 // into the newly-credentialed instance. A stored credential JSON
-// outranks the file (spec §4.2) and already feeds authFingerprint
-// through the resolved value; the file hash covers only the ADC branch.
+// outranks the file (spec §4.2) and already feeds the registry's
+// AuthFingerprint directly; the file hash covers only the ADC branch.
 // Missing/unreadable contributes nothing: the source label already
 // distinguishes "no ADC" from "ADC".
 func adcFingerprint(r *registry.Registry, res registry.Resolved) string {

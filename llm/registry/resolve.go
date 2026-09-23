@@ -425,16 +425,33 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 // (a cross-provider alias resolves from a target whose own connection
 // disabled it).
 func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resolved, error) {
-	return r.resolveLayersMode(rec, ref, warnings, false)
+	return r.resolveLayersMode(rec, ref, warnings, resolveFull)
 }
 
-// resolveLayersMode is resolveLayers with one switch: transportOnly stops
-// after the merged transport is built and skips credential resolution
-// entirely — the instance listing's seam. A listing runs for every
-// instance on every pane refresh and must not mint or stall on command
-// expressions the launch alone reads, and the credential stage is the
-// only part of the replay that expands them.
-func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, transportOnly bool) (Resolved, error) {
+// resolveDepth names how far a replay goes. resolveFull materializes the
+// credential stage — the only depth that expands $(command) expressions, so
+// the launch path alone runs it. resolveFacts runs the whole replay except
+// that stage: the alias-target seam, where a row seeds from its target's
+// facts and transport and the target's own credential commands are not the
+// alias row's to run. resolveTransport stops right after the merged
+// transport — the listing's seam. A listing runs for every instance on
+// every pane refresh, and the hub fingerprints at load, before any session
+// exists; neither may mint (or stall on) a command expression the launch
+// alone reads.
+type resolveDepth int
+
+const (
+	resolveFull resolveDepth = iota
+	resolveFacts
+	resolveTransport
+)
+
+// resolveLayersMode is resolveLayers with one switch: how far the replay
+// goes, per resolveDepth. The credential stage is the only part of the
+// replay that expands command expressions, so the shallower depths keep
+// the hub-side views — listings, fingerprints, alias seeding — free of
+// the launches' mints.
+func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, depth resolveDepth) (Resolved, error) {
 	hit := r.lookupRow(rec, ref.Model)
 	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
 		return Resolved{}, fmt.Errorf("%s/%s: unknown model on the Codex transport (valid: %s)", rec.name, ref.Model, strings.Join(exactRowIDs(rec), ", "))
@@ -603,15 +620,20 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, tr
 	}
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
-	if transportOnly {
+	if depth == resolveTransport {
 		return Resolved{Instance: rec.name, Transport: transport}, nil
 	}
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
-	cred, credHeaders, cw := r.resolveCredentials(rec, transport)
-	warnings = append(warnings, cw...)
+	var cred Credential
+	var credHeaders map[string]string
+	if depth == resolveFull {
+		var cw []string
+		cred, credHeaders, cw = r.resolveCredentials(rec, transport)
+		warnings = append(warnings, cw...)
+	}
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
 
@@ -646,13 +668,19 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, tr
 	}, nil
 }
 
-// resolveAliasTarget resolves an alias target through the same machinery:
-// a same-provider row on rec, else "provider-id/id" on the target's
-// instance record when one exists (so user-layer flags like Disabled
-// apply), else the curated record. aliasTargetRow applies the
-// alias-target acceptance rules both resolve paths share: an exact
-// non-alias row on the record, else a provider-id/id reference. A glob
-// pattern never names a target, on either side of the slash.
+// resolveAliasTarget resolves an alias target through the same machinery
+// at facts depth: the replay hands back the target's caps, surface,
+// family, and transport — everything an alias row seeds from — without
+// materializing the target's credentials, whose command expressions are
+// not the alias row's to run: the launch sends the alias's own credential,
+// and the hub-side contract executes command expressions only on the
+// agent path (spec §10.1). A same-provider row on rec, else
+// "provider-id/id" on the target's instance record when one exists (so
+// user-layer flags like Disabled apply), else the curated record.
+// aliasTargetRow applies the alias-target acceptance rules both resolve
+// paths share: an exact non-alias row on the record, else a provider-id/id
+// reference. A glob pattern never names a target, on either side of the
+// slash.
 func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string, bool) {
 	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
 		return rec, aliasOf, true
@@ -688,7 +716,7 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bo
 	// The replay hands back the target's facts even when the target's own
 	// flag disables it: a cross-provider alias seeds from that target either
 	// way, and the caller refuses a same-provider one.
-	res, err := r.resolveLayers(target, Ref{Instance: target.name, Model: id}, nil)
+	res, err := r.resolveLayersMode(target, Ref{Instance: target.name, Model: id}, nil, resolveFacts)
 	return res, target == rec, err
 }
 

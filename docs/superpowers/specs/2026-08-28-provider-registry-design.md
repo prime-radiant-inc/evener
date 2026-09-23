@@ -1882,11 +1882,17 @@ a closed stdin (a prompting command reads EOF instead of hanging), and a
 per command text — instances sharing a command share one mint — until a
 JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a
 five-minute TTL; concurrent callers single-flight onto one run.
-The hub's launch preflight counts a command-bearing credential as present
-and never executes it — the child alone runs credential commands, so a
-preflight execution would mint a second token for stateful or one-time
-commands and a transient failure there would block a launch the child's
-own retry would survive.
+The hub resolves command expressions only on the agent path: the launch
+preflight, the instance listings, and the load-time fingerprints all count
+a command-bearing credential as present — or, for a fingerprint, as its
+authored text — and never execute it. The child alone runs credential
+commands, so a hub-side execution would mint a second token for stateful
+or one-time commands and prompt the user's password manager with no
+session launched, a transient failure there would block a launch the
+child's own retry would survive, and a fingerprint keyed on the minted
+value would rotate with the cache TTL and prune the cached live rows on
+every rollover (amended 2026-09-22: the contract now covers the listings
+and the fingerprints, not only the preflight).
 
 Failure. A failed command behaves like an unset variable: the value
 resolves to nothing and the warning carries the command's exit status and
@@ -1932,7 +1938,11 @@ the row-merged credential slot):
 - MCP config: a bare `$NAME` used to pass through as literal text and now
   expands; an unterminated `${` used to pass through as literal text and
   is a load error now; a `:-` default filled only an unset variable and
-  now fills an empty one too (POSIX `:-`).
+  now fills an empty one too (POSIX `:-`); and the contents of a
+  `${...}` used to be looked up verbatim, so a brace text outside
+  `[A-Za-z_][A-Za-z0-9_]*` — `${MY-VAR}`, `${MY.VAR}` — used to expand
+  (or fill its default) and is a load error now: the shared parser
+  validates reference names (added 2026-09-22).
 - Both files gain the `$$` escape.
 - The credential slot used to read `credential_headers.Authorization`
   unconditionally; it now comes from the header the row-merged transport

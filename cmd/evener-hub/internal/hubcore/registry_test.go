@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -314,6 +316,53 @@ func TestInstanceIdentityChangesOnSameLengthRotation(t *testing.T) {
 	r2 := mkRegistry(t, "sk-bbbb")
 	if instanceIdentity(r1, "gw") == instanceIdentity(r2, "gw") {
 		t.Fatal("identity unchanged across same-length credential rotation")
+	}
+}
+
+// The identity fingerprint never executes a credential command: the hub
+// fingerprints at load, before any session exists, so running one would
+// prompt the user's password manager with no session launched and spend
+// one-time mints. Command-bearing material contributes its authored text
+// instead, so a rotating mint must not churn the identity — every TTL
+// rollover would otherwise prune the cached live rows and force a re-fetch.
+func TestInstanceIdentityNeverMintsAndIsStableAcrossRotations(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return fmt.Sprintf("token-%d", runs), nil
+	}
+	mkRegistry := func(t *testing.T) *registry.Registry {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "providers.toml")
+		cfg := "[providers.gw]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = '''$(gw-mint)'''\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := registry.Load(
+			registry.WithConfigPath(path),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithOffline(true),
+			registry.WithoutCache(),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	r := mkRegistry(t)
+	first := instanceIdentity(r, "gw")
+	if runs != 0 {
+		t.Fatalf("the identity fingerprint executed the credential command %d time(s) with no session launched", runs)
+	}
+	// A TTL rollover re-mints a different token; the identity must not
+	// move with it.
+	valueexpr.ResetForTest()
+	valueexpr.RunCommand = func(string) (string, error) { return "token-rotated", nil }
+	if second := instanceIdentity(r, "gw"); second != first {
+		t.Fatalf("identity changed across a re-mint (%q vs %q); a rotating token must not churn the live-row cache", first, second)
 	}
 }
 

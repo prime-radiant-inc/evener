@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -471,34 +473,26 @@ func (r *Registry) shadowedEnvVar(rec *record, t Transport, cred Credential) str
 	return ""
 }
 
-// credential resolves an instance's credential in spec §10's order and
-// returns the "no credential" warnings (none for the none/optional-bearer
-// schemes). It performs no I/O beyond a file-existence check and the
-// $(command) expressions an api_key or credential-header value carries,
-// which the shared evaluator resolves against the process environment with
-// its process-wide cache (spec §10). The Authorization header expands only
+// credential resolves an instance's credential in spec §10's order under
+// the transport a hub-side view reads — the listing passes the default
+// row's, the spawn gate the named model's — and returns the "no
+// credential" warnings (none for the none/optional-bearer schemes). It is
+// the hub's judgment, not the agent's: it performs no I/O beyond a
+// file-existence check and never executes a $(command) expression —
+// command-bearing material counts as present, and its outcome belongs to
+// the child's first request (spec §10.1: commands expand at resolve time,
+// per request, on the agent path). The listing runs this for every
+// instance on every pane refresh, and the hub fingerprints at load, before
+// any session exists; an executed command there would prompt the user's
+// password manager with no session launched and spend one-time mints the
+// spec says the hub must not spend. The Authorization header expands only
 // when this record's credential can actually come from it — the oauth and
-// adc schemes return before the header branch, and an api_key outranks it —
-// because the listing calls credential for every instance and must not
-// mint (or stall on) a command that resolution alone reads; the resolution
-// path passes the one expansion it already made through credentialWithAuth
+// adc schemes return before the header branch, and an api_key outranks it
+// — so a header's command does not mint (or stall on) until a resolution
+// actually reads it for the wire; the resolution path passes the one
+// expansion it already made through credentialWithAuth
 // (resolveCredentials), so there the header runs once per resolution.
-func (r *Registry) credential(rec *record) (Credential, []string) {
-	h := rec.head
-	// The listing reads the default row's transport, the launch a bare
-	// instance name makes; the guard and the branches below read the same
-	// one, so the oauth and adc terminals and the header's own name agree.
-	t := r.listingTransport(rec)
-	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || h.APIKey != "" {
-		return r.credentialWithAuth(rec, authExpansion{}, t, false, false)
-	}
-	return r.credentialWithAuth(rec, r.authorization(rec, t), t, false, false)
-}
-
-// credentialPresence is the gate's judgment of credential: the same
-// precedence under the same transport, with command expressions counted as
-// present and never executed.
-func (r *Registry) credentialPresence(rec *record, t Transport) (Credential, []string) {
+func (r *Registry) credential(rec *record, t Transport) (Credential, []string) {
 	h := rec.head
 	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || h.APIKey != "" {
 		return r.credentialWithAuth(rec, authExpansion{}, t, false, true)
@@ -506,16 +500,94 @@ func (r *Registry) credentialPresence(rec *record, t Transport) (Credential, []s
 	return r.credentialWithAuth(rec, r.authorizationMode(rec, t, true), t, false, true)
 }
 
+// AuthFingerprint is the hub's mint-free digest of the credential
+// material its views of one instance carry: the same transport and slots
+// the listing and the spawn gate read, hashed so a rotation of stable
+// material (a literal, an environment value, a stored key) changes the
+// digest while command-bearing material contributes its authored text —
+// the minted value rotates with the cache TTL, and an identity that
+// followed it would prune the cached live rows on every rollover and
+// force a re-fetch. It expands environment references only and never
+// executes a command; only the hex digest leaves this method, never the
+// material. The digest reads the provider-level slots (model-row plain
+// headers are display material: they do not affect where rows come
+// from).
+func (r *Registry) AuthFingerprint(instance string) (string, bool) {
+	name := strings.ToLower(strings.TrimSpace(instance))
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return "", false
+	}
+	h := rec.head
+	t := r.listingTransport(rec)
+	sum := sha256.New()
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", t.Auth, t.AuthHeader)
+	hashSlot := func(raw string) {
+		if hasCommandMaterial(raw) {
+			// Key on the authored text, not the mint: the value rotates
+			// with the cache TTL and must not churn the identity.
+			_, _ = fmt.Fprintf(sum, "cmd\x01%s\x01", raw)
+			return
+		}
+		v, _ := expandEnv(raw, r.env)
+		_, _ = fmt.Fprintf(sum, "%s\x01", v)
+	}
+	switch t.Auth {
+	case AuthOAuthOpenAICodex:
+		// Terminal scheme with no inline material here: the record's
+		// account claims are the hub's separate fingerprint, and the
+		// source label already distinguishes "no record" from "record".
+	case AuthGCPADC:
+		// A stored credential JSON outranks the ADC file (spec §4.2) and
+		// is the material that can rotate; the ADC file itself is the
+		// hub's separate fingerprint.
+		if r.creds != nil {
+			if v, ok := r.creds.Lookup(rec.name); ok && v != "" && CheckCredentialJSON([]byte(v)) == nil {
+				_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
+			}
+		}
+	default:
+		switch {
+		case h.APIKey != "":
+			hashSlot(h.APIKey)
+		case authHeaderKey(h.CredentialHeaders, authHeaderName(t)) != "":
+			key := authHeaderKey(h.CredentialHeaders, authHeaderName(t))
+			_, _ = fmt.Fprintf(sum, "%s\x01", key)
+			hashSlot(h.CredentialHeaders[key])
+		case r.creds != nil:
+			if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
+				_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
+			}
+		default:
+			for _, envName := range r.envCandidates(rec) {
+				if v, ok := r.env(envName); ok && v != "" {
+					_, _ = fmt.Fprintf(sum, "env\x01%s\x01%s\x01", envName, v)
+					break
+				}
+			}
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(h.CredentialHeaders)) {
+		_, _ = fmt.Fprintf(sum, "%s\x01", k)
+		hashSlot(h.CredentialHeaders[k])
+	}
+	for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
+		_, _ = fmt.Fprintf(sum, "%s\x01", k)
+		hashSlot(h.Headers[k])
+	}
+	return hex.EncodeToString(sum.Sum(nil)), true
+}
+
 // ResolveGateCredential is the spawn gate's judgment of one launch: the
 // transport the launch resolves — the named model's, the default model's
-// for a bare instance name — with a structural credential presence under
-// it. Command expressions are presence, never execution: the hub's
-// preflight must not mint a token the child alone uses (the evaluation
-// contract: commands expand at resolve time, per request, on the agent
-// path), so a command-bearing credential slot counts as present and its
-// outcome belongs to the child's first request. A provider-qualified model
-// is accepted and stripped of this instance's own prefix. The credential
-// value is never materialized.
+// for a bare instance name — with the same structural credential
+// judgment the listing makes. Command expressions are presence, never
+// execution: the hub's preflight must not mint a token the child alone
+// uses (the evaluation contract: commands expand at resolve time, per
+// request, on the agent path), so a command-bearing credential slot
+// counts as present and its outcome belongs to the child's first request.
+// A provider-qualified model is accepted and stripped of this instance's
+// own prefix. The credential value is never materialized.
 func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, error) {
 	name := strings.ToLower(strings.TrimSpace(instance))
 	rec, ok := r.recordFor(name)
@@ -527,11 +599,11 @@ func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, erro
 	}
 	t := r.listingTransport(rec)
 	if model != "" {
-		if res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, true); err == nil {
+		if res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveTransport); err == nil {
 			t = res.Transport
 		}
 	}
-	cred, warnings := r.credentialPresence(rec, t)
+	cred, warnings := r.credential(rec, t)
 	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
 }
 
@@ -559,7 +631,7 @@ func (r *Registry) listingTransport(rec *record) Transport {
 	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
 		return rec.head.Transport
 	}
-	if res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, true); err == nil {
+	if res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport); err == nil {
 		return res.Transport
 	}
 	return rec.head.Transport
@@ -606,20 +678,16 @@ type authExpansion struct {
 	commandBorne bool
 }
 
-// authorization expands the record's auth credential header once,
-// shared by credential() and resolveCredentials so its command expressions
-// run once per resolution, and reports which header key it expanded so the
-// header map and the credential always read the same entry.
-// The transport a launch resolves names the header: the resolve paths pass
-// their row-merged transport, the listing the default row's.
-func (r *Registry) authorization(rec *record, t Transport) authExpansion {
-	return r.authorizationMode(rec, t, false)
-}
-
-// authorizationMode is authorization with the spawn gate's switch:
-// presence counts a command-bearing credential header as present without
-// expanding it — the hub's preflight executes no command expression, so
-// the value and its failures belong to the launch the child makes.
+// authorizationMode expands the record's auth credential header once,
+// shared by the hub's credential() and the resolution path so its command
+// expressions run once per resolution, and reports which header key it
+// expanded so the header map and the credential always read the same
+// entry. The transport a launch resolves names the header: the resolve
+// paths pass their row-merged transport, the hub-side views the default
+// row's or the named model's. presence is the hub-side switch: it counts
+// a command-bearing credential header as present without expanding it —
+// the hub's views execute no command expression, so the value and its
+// failures belong to the launch the child makes.
 func (r *Registry) authorizationMode(rec *record, t Transport, presence bool) authExpansion {
 	key := authHeaderKey(rec.head.CredentialHeaders, authHeaderName(t))
 	if key == "" {
@@ -811,9 +879,10 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 
 // computeInstances derives the instance set (spec §5.1): every explicit
 // entry, plus every curated implicit provider that is not shadowed, not
-// hidden, and whose credential resolves without the network. The curated
-// layers author no $(command) expressions, so a derived row never runs one
-// here; explicit rows are listed whatever their credential resolves to.
+// hidden, and whose credential resolves without the network. The
+// credential judgment counts command expressions as present and never
+// executes one, so no row runs one here; explicit rows are listed
+// whatever their credential resolves to.
 func (r *Registry) computeInstances() {
 	rank := map[string]int{}
 	for i, id := range r.defaultOrder {
@@ -835,8 +904,8 @@ func (r *Registry) computeInstances() {
 		if _, shadowed := r.explicit[id]; shadowed {
 			continue
 		}
-		auth := r.listingTransport(rec).Auth
-		if cred, _ := r.credential(rec); cred.Source == "none" && auth != AuthNone && auth != AuthOptionalBearer {
+		t := r.listingTransport(rec)
+		if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
 			continue
 		}
 		pos, ok := rank[id]
@@ -935,8 +1004,8 @@ func (r *Registry) Instances() []Instance {
 	def, _, _ := r.DefaultInstance()
 	var out []Instance
 	for _, inst := range r.rankedInstances() {
-		cred, warns := r.credential(inst.rec)
 		t := r.listingTransport(inst.rec)
+		cred, warns := r.credential(inst.rec, t)
 		h := inst.rec.head
 		base := ""
 		if !inst.rec.curated && inst.rec.providerID != inst.name {

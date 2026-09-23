@@ -136,6 +136,10 @@ The rules that matter in practice:
 
 - A variable that is unset or empty counts as missing, and `${NAME:-default}`
   fills a missing one (POSIX `:-` semantics); `$$` writes a literal `$`.
+  A `${...}` reference name must match `[A-Za-z_][A-Za-z0-9_]*` — anything
+  else is a load error. MCP config used to look such brace texts up
+  verbatim, so `${MY-VAR}` or `${MY.VAR}` used to expand; the shared
+  grammar now refuses them.
 - Commands run with the process environment, no TTY, a closed stdin, and a
   30-second timeout; results are cached per command (until a token's JWT
   `exp` is a minute away, else five minutes), so an agent loop mints once

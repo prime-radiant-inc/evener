@@ -221,7 +221,8 @@ base_url = "https://proxy/v1"
 		"viaproxy":  {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
 	}
 	for name, w := range want {
-		got, warns := r.credential(r.explicit[name])
+		rec := r.explicit[name]
+		got, warns := r.credential(rec, r.listingTransport(rec))
 		if got != w {
 			t.Errorf("%s: credential = %+v, want %+v", name, got, w)
 		}
@@ -232,14 +233,17 @@ base_url = "https://proxy/v1"
 			t.Errorf("%s: unexpected warnings %v", name, warns)
 		}
 	}
-	if _, warns := r.credential(r.explicit["envref"]); !strings.Contains(strings.Join(warns, " "), "MY_KEY unset") {
+	rec := r.explicit["envref"]
+	if _, warns := r.credential(rec, r.listingTransport(rec)); !strings.Contains(strings.Join(warns, " "), "MY_KEY unset") {
 		t.Fatalf("unset $VAR must be named: %v", warns)
 	}
-	if got, warns := r.credential(r.curated["ollama"]); got.Source != "none" || len(warns) != 0 {
+	curated := r.curated["ollama"]
+	if got, warns := r.credential(curated, r.listingTransport(curated)); got.Source != "none" || len(warns) != 0 {
 		t.Fatalf("optional-bearer without a key must not warn: %+v %v", got, warns)
 	}
 	r = fixtureLoad(t, map[string]string{"OLLAMA_API_KEY": "ok"}, "")
-	if got, _ := r.credential(r.curated["ollama"]); got.Source != "env:OLLAMA_API_KEY" {
+	curated = r.curated["ollama"]
+	if got, _ := r.credential(curated, r.listingTransport(curated)); got.Source != "env:OLLAMA_API_KEY" {
 		t.Fatalf("optional-bearer with a key: %+v", got)
 	}
 }
@@ -334,7 +338,7 @@ api_key_env = ["FAKE_VERTEX_KEY"]
 	if rec.head.Transport.Auth != AuthGCPADC {
 		t.Fatalf("myvertex must inherit gcp-adc from google-vertex, got %q", rec.head.Transport.Auth)
 	}
-	cred, _ := r.credential(rec)
+	cred, _ := r.credential(rec, r.listingTransport(rec))
 	if cred.Source != "none" {
 		t.Fatalf("gcp-adc with no ADC reachable must resolve none, got %q", cred.Source)
 	}
@@ -1382,11 +1386,13 @@ func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	flakyRuns := 0
+	stableRuns := 0
 	valueexpr.RunCommand = func(cmd string) (string, error) {
 		if cmd == "flaky" {
 			flakyRuns++
 			return "", errors.New("command timed out")
 		}
+		stableRuns++
 		return "stable-token", nil
 	}
 	const config = "[providers.gw]\n" +
@@ -1407,6 +1413,9 @@ func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
 	if flakyRuns != 0 {
 		t.Fatalf("the listing ran the unused Authorization command %d time(s); want 0", flakyRuns)
 	}
+	if stableRuns != 0 {
+		t.Fatalf("the listing ran the api_key command %d time(s); the pane displays the credential's presence, the child alone executes it", stableRuns)
+	}
 	res, err := r.Resolve("gw/house-model")
 	if err != nil {
 		t.Fatal(err)
@@ -1416,6 +1425,46 @@ func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
 	}
 	if flakyRuns != 1 {
 		t.Fatalf("the Authorization command ran %d time(s) across listing+resolution; want 1 (the resolution reads it for the wire)", flakyRuns)
+	}
+}
+
+// An alias row seeds from its target's facts and transport; the target's
+// own credential commands are not the alias row's to run — resolving the
+// alias must not execute a credential the launch it is resolving never
+// sends.
+func TestAliasResolutionSkipsTargetCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const config = "[providers.mine]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://mine.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"sk-mine\"\n" +
+		"[providers.mine.models.\"house-model\"]\n" +
+		"alias_of = \"tgt/tgt-model\"\n"
+	// The target rides in the curated overlay, not the user layer: an
+	// overlay provider is not an instance, so nothing but the alias replay
+	// itself can resolve its credential.
+	overlay := overlayWith("[providers.tgt]\n" +
+		"implicit = true\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://tgt.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(tgt-mint)'''\n" +
+		"[providers.tgt.models.\"tgt-model\"]\n")
+	r := fixtureLoad(t, nil, config, WithOverlay(overlay))
+	if _, err := r.Resolve("mine/house-model"); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("alias resolution ran the target's credential command %d time(s); the alias seeds facts and transport, not the target's credential", runs)
 	}
 }
 
