@@ -523,14 +523,39 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 	sum := sha256.New()
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", t.Auth, t.AuthHeader)
 	hashSlot := func(raw string) {
-		if hasCommandMaterial(raw) {
-			// Key on the authored text, not the mint: the value rotates
-			// with the cache TTL and must not churn the identity.
-			_, _ = fmt.Fprintf(sum, "cmd\x01%s\x01", raw)
+		pieces, err := valueexpr.Pieces(raw)
+		if err != nil {
+			// A malformed value owns no rotation signal the scanner can
+			// read; the expansion paths report it. The authored text
+			// still hashes, so edits stay visible.
+			_, _ = fmt.Fprintf(sum, "raw\x01%s\x01", raw)
 			return
 		}
-		v, _ := expandEnv(raw, r.env)
-		_, _ = fmt.Fprintf(sum, "%s\x01", v)
+		var b strings.Builder
+		b.WriteString("cmd\x01")
+		for _, p := range pieces {
+			switch p.Kind {
+			case valueexpr.PieceLit:
+				b.WriteString(p.Lit)
+			case valueexpr.PieceRef:
+				// The expanded value hashes: literals and environment
+				// references are mint-free, and a rotation of this half
+				// changes the effective credential.
+				if v, ok := r.env(p.Ref.Name); ok {
+					b.WriteString(v)
+					continue
+				}
+				if p.Ref.HasDefault {
+					b.WriteString(p.Ref.Default)
+				}
+			case valueexpr.PieceCommand:
+				// The mint rotates with the cache TTL and must not churn
+				// the identity; the authored text is the material's
+				// stable identity.
+				b.WriteString("\x02cmd\x02" + p.Command + "\x03")
+			}
+		}
+		_, _ = fmt.Fprintf(sum, "%s\x01", b.String())
 	}
 	switch t.Auth {
 	case AuthOAuthOpenAICodex:

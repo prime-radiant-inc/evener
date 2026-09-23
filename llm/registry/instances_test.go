@@ -1491,6 +1491,41 @@ func TestAuthFingerprintRotatesEnvValuesWithStoreWired(t *testing.T) {
 	}
 }
 
+// A mixed credential value — an environment reference and a command
+// together — is rotation-sensitive in its environment half: the command
+// piece contributes its authored text (the mint rotates with the TTL),
+// but a rotated env value changes the effective credential and must
+// change the fingerprint, or the previous credential's cached live rows
+// survive the rotation.
+func TestAuthFingerprintRotatesMixedValues(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"api_key = '''$ROT_KEY-$(gw-mint)'''\n"
+	mk := func(t *testing.T, key string) *Registry {
+		t.Helper()
+		return fixtureLoad(t, map[string]string{"ROT_KEY": key}, config, WithCredentials(fakeCreds{}))
+	}
+	first, ok := mk(t, "sk-aaaa").AuthFingerprint("gw")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	second, _ := mk(t, "sk-bbbb").AuthFingerprint("gw")
+	if first == second {
+		t.Fatal("fingerprint unchanged across an env rotation inside a mixed value; the env half must stay rotation-sensitive")
+	}
+	if runs != 0 {
+		t.Fatalf("fingerprinting executed the command %d time(s)", runs)
+	}
+}
+
 // The none scheme never sends a credential, so its resolution never
 // expands the api_key slot: a command there is authored for a scheme the
 // instance does not use, and running it would spend a mint the wire never
