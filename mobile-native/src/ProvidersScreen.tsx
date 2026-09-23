@@ -94,8 +94,15 @@ export function ProvidersScreen(
 function ProvidersScreenBody({
   route,
 }: NativeStackScreenProps<Routes, "Providers">) {
-  const { activeProfile, client, state, retry, display, canUseConnection } =
-    useRetainedScreenConnection(route.params.hubId);
+  const {
+    activeProfile,
+    client,
+    state,
+    retry,
+    error,
+    display,
+    canUseConnection,
+  } = useRetainedScreenConnection(route.params.hubId);
   const ready = isReady(state);
   const [signIn, setSignIn] = useState<{
     hubId: string;
@@ -147,6 +154,7 @@ function ProvidersScreenBody({
       <ConnectionWall
         hubName={activeProfile.name}
         purpose="manage providers"
+        error={error}
         onReconnect={retry}
       />
     );

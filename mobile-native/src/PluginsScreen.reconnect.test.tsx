@@ -233,6 +233,39 @@ it("keeps the last action's notice when a disconnected press never runs the acti
 	).toContain("Checked for upgrades.");
 });
 
+it("walls a fatal close with the reason its retry cannot clear yet", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/plugin/list", () => ({ plugins: [plugin("kept")] }));
+	harness.connection = connection(hub, "ready");
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("kept");
+
+	// The connection closes fatally - a protocol mismatch. The wall that
+	// replaces the screen must say WHY: without the compatibility copy the
+	// connection carries, the wall's own reconnect reads as ineffective -
+	// nothing says why pressing it changes nothing. With it, the action is
+	// the copy's own last word ("...then reconnect"), the way back once the
+	// app and hub are updated together.
+	harness.connection = {
+		...connection(hub, "closed"),
+		fatal: true,
+		error:
+			"This app and hub need compatible versions. Update them together, then reconnect.",
+	};
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	const walled = renderedText(tree);
+	expect(walled).toContain("Connect to Work hub to manage plugins.");
+	expect(walled).toContain(
+		"This app and hub need compatible versions. Update them together, then reconnect.",
+	);
+	expect(
+		tree.root.findAllByProps({ accessibilityLabel: "Reconnect" }),
+	).toHaveLength(1);
+});
+
 it("shows the connection status and reconnect inside the add-marketplace modal", async () => {
 	const hub = new FakeClient("ready");
 	hub.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));

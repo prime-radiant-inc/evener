@@ -106,6 +106,7 @@ function PluginsScreenBody({
     client,
     state,
     retry,
+    error,
     display,
     canUseConnection,
     renderClient,
@@ -304,6 +305,7 @@ function PluginsScreenBody({
       <ConnectionWall
         hubName={activeProfile.name}
         purpose="manage plugins"
+        error={error}
         onReconnect={retry}
       />
     );
