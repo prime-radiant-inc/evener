@@ -574,6 +574,39 @@ it("useConnectionDisplay: a hub move that lands with a genuine ready transition 
 	expect(display.result.current).toBe("banner");
 });
 
+// Round 41's retention Low: a scope that moves from hub A to B while ready and
+// returns to A before another ready transition never re-arms retention — both
+// moves reset everReady and no transition occurs to earn it back — even though
+// the return to A lands on a still-trusted scope whose screen shows. The next
+// reconnect must banner that shown content, not wall it.
+it("useConnectionDisplay: returning to a still-trusted hub re-arms the retention it showed under", () => {
+	let hubId = "hub-1";
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay(hubId, state, false));
+	// Mount-already-ready: the settle earns trust and retention for hub-1.
+	display.rerender();
+	expect(display.result.current).toBe("none");
+
+	// The re-key to hub-2 while the connection still reports hub-1 ready:
+	// hub-2 never showed anything, so the moved renders wall.
+	hubId = "hub-2";
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+
+	// The scope returns to hub-1 before any ready transition: the trust
+	// never moved, so hub-1's ready state still vouches for it and the
+	// screen shows again.
+	hubId = "hub-1";
+	display.rerender();
+	expect(display.result.current).toBe("none");
+
+	// The reconnect: hub-1 showed its screen, so the flap retains it behind
+	// a banner instead of walling.
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("banner");
+});
+
 it("whenReady: not ready is a no-op, ready calls through with its arguments", () => {
 	const handler = vi.fn();
 	whenReady(() => false, handler)("a", 1);

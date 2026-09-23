@@ -192,17 +192,24 @@ export function useConnectionDisplay(
 			}
 			lastState.current = state;
 		}
-		if (state === "ready" && (!scopeMoved || transitionedIntoReady)) {
+		if (
+			state === "ready" &&
+			(!scopeMoved || transitionedIntoReady || trustedScope === hubId)
+		) {
 			// The retention arm is gated on the same render's scopeMoved: in
 			// the re-key window the moved render still carries the previous
 			// hub's ready state, and re-arming on it would retain content for
 			// a hub that has never been ready — the reset above would be
-			// undone by the very effect run that performed it (round 32). The
-			// one exception is a transition INTO ready arriving in the moved
+			// undone by the very effect run that performed it (round 32). One
+			// exception is a transition INTO ready arriving in the moved
 			// commit itself: the connection re-pointed and became ready
 			// together, and that readiness is the new hub's own — the screen
 			// it shows must retain through the next flap like any other
-			// genuinely-ready hub (round 33).
+			// genuinely-ready hub (round 33). The other is a return to a
+			// still-trusted scope: a scope that moved away and came back
+			// before any transition lands on a hub whose ready state still
+			// vouches for it, so the content it shows retains exactly as it
+			// would had the move never happened (round 41).
 			everReady.current = true;
 			fatalRecovery.current = false;
 		} else if (fatal) {

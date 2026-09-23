@@ -1905,13 +1905,43 @@ func envScratchRefDir(env *execenv.LocalExecutionEnvironment, kind string) strin
 // replacement. A failed adoption refuses the restore, and the failure path
 // settles the environment by what the durable manifest names — a mid-failure
 // mint would pin fresh durable state the next attempt's refusal semantics do
-// not expect — so the environment keeps whatever it reports, and only one
-// with nothing to report (no kernel wrapper was rebuilt: a host that cannot
-// wrap never reached the disposal) gets a usable scratch re-provisioned.
+// not expect — so an environment that already owns a sandbox scratch keeps
+// it, and only one that owns none gets a usable scratch re-provisioned. The
+// rebuilt wrapper does not count: after the disposal it names the retained
+// directory the failed adoption never transferred, and reading its report
+// (SessionScratchDir) would skip the reprovision and leave every retry
+// running lease-less on that directory. The ownership check reads the
+// retained references instead — the same fact the no-op heal trusts, checked
+// before anything clears the wrapper — and a wrapper over an unowned
+// directory is dropped before the mint, exactly as the no-op heal drops it
+// (round 41).
+//
+// The mint is itself a mid-failure publication: EnableSandbox's allocation
+// pins through the environment's post-mint hook against the binding row the
+// failed adoption installed, whose sandbox slot still names the retained
+// directory. Without a pending marker that publication claims the slot for
+// the mint and displaces the retained allocation in the durable manifest
+// exactly when the restore is being refused — the next attempt would then
+// adopt the mint's directory instead of refusing. Marking the kind pending
+// keeps the mint's publication bare and the slot naming the retained
+// directory (the round 21 lazy-mint shape, same as the dying-claim mark of
+// round 38).
 func reprovisionAfterFailedAdoption(env *execenv.LocalExecutionEnvironment, cause error) error {
-	if env == nil || env.SessionScratchDir() != "" || env.Sandbox == nil {
+	if env == nil || env.Sandbox == nil {
 		return cause
 	}
+	if envScratchRefDir(env, sandbox.ScratchKindSandbox) != "" {
+		return cause
+	}
+	// The installed row's sandbox slot names a directory this environment
+	// does not own (the guard above passed), so the mint's publication must
+	// not claim it.
+	if binding, err := env.ScratchRetentionBinding(); err == nil {
+		if slot, ok := binding.Slots[sandbox.ScratchKindSandbox]; ok && slot.OwnsLease {
+			env.MarkRetainedSlotPending(sandbox.ScratchKindSandbox)
+		}
+	}
+	env.Wrapper = nil
 	if err := env.EnableSandbox(env.Sandbox); err != nil {
 		return errors.Join(cause, fmt.Errorf("re-provision sandbox scratch after a failed retained-scratch adoption: %w", err))
 	}
