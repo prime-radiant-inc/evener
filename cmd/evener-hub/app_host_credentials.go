@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // hubHostCredentialsPusher serves evener/host/pushCredentials (component 07c):
@@ -50,6 +51,12 @@ type hubHostCredentialsPusher struct {
 // matching instance on the host" rather than pushed under a guessed provider.
 // Every entry Names() returned gets exactly one result row, including one whose
 // value was cleared before it could be read (a skip, not a failure).
+//
+// Two entries never reach the wire as a Value, both decided here rather than by
+// the host: one whose value is not an API key at all (the store also holds
+// Google credential JSON, see credentialPushValueIsKey), and one whose host
+// entry cannot consume a key (InstanceEntry.Auth says so, see
+// credentialPushKeyCapableScheme). Both are skips in the report.
 //
 // Per matched entry the status read captures ActiveSource and ConfigRevision,
 // which are echoed into the conditional set's ExpectedSource/ExpectedRevision so
@@ -132,15 +139,39 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 	// provider IDs too (an instance addressing that ID), which the Instances
 	// name match already covers. Implicit is the fallback marker; addressability
 	// is the host's answer to resolve separately.
-	present := make(map[string]bool, len(listing.Instances)+len(listing.AvailableProviders))
+	//
+	// matched carries, per key that has a counterpart on the host, the host's own
+	// entry for it: the name the host spells and the scheme that entry
+	// authenticates with (the listing already says both, InstanceEntry.Auth /
+	// ProviderDescriptor.Auth). A scheme that cannot consume an API key is then a
+	// skip this controller can make before the entry's value crosses the wire at
+	// all.
+	//
+	// The key is case-folded, and only for the lookup: the local store lowercases
+	// the keys it holds (Store.Set/Get), while the host spells its instances as
+	// its own providers.toml authors them, so an exact lookup would call a
+	// mixed-case host instance "no matching instance" without ever asking about
+	// it. The host's own spelling is what travels as the wire Provider - the host
+	// is the side that resolves that value - while the report's row stays the
+	// local store key it accounts for.
+	type hostEntry struct {
+		name string
+		auth string
+	}
+	matched := make(map[string]hostEntry, len(listing.Instances)+len(listing.AvailableProviders))
 	for _, inst := range listing.Instances {
-		present[inst.Name] = true
+		matched[strings.ToLower(inst.Name)] = hostEntry{name: inst.Name, auth: inst.Auth}
 	}
 	for _, provider := range listing.AvailableProviders {
 		if !provider.Implicit {
 			continue
 		}
-		present[provider.ID] = true
+		// An explicit instance row wins over the provider descriptor for the name:
+		// the row is the more specific answer, and its spelling is the one the
+		// host's own listing uses for that instance.
+		if key := strings.ToLower(provider.ID); matched[key].name == "" {
+			matched[key] = hostEntry{name: provider.ID, auth: provider.Auth}
+		}
 	}
 
 	response := appwire.HostPushCredentialsResponse{Host: host, Results: make([]appwire.HostCredentialPushResult, 0, len(names))}
@@ -159,7 +190,8 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 			})
 			continue
 		}
-		if !present[name] {
+		entry, ok := matched[strings.ToLower(name)]
+		if !ok {
 			response.Results = append(response.Results, appwire.HostCredentialPushResult{
 				Instance: name,
 				Action:   appwire.HostCredentialPushSkipped,
@@ -167,21 +199,110 @@ func (p *hubHostCredentialsPusher) Push(ctx context.Context, params appwire.Host
 			})
 			continue
 		}
-		response.Results = append(response.Results, p.pushOne(ctx, remote, name, value))
+		// The value leaves this hub only if it is an API key. The store holds
+		// Google credential JSON under the same instance-name namespace
+		// (evener/auth/credentialJson/set), and nothing but a key may be sent as
+		// a Value: sent as one, a credential JSON would be stored on the host as
+		// an api key its registry never reads, and the bytes would have left this
+		// controller either way.
+		if !credentialPushValueIsKey(value) {
+			response.Results = append(response.Results, appwire.HostCredentialPushResult{
+				Instance: name,
+				Action:   appwire.HostCredentialPushSkipped,
+				Reason:   "the local entry holds a credential JSON document rather than an API key: a credential document is never pushed to another host (a gcp-adc instance signs in with its own credentials)",
+			})
+			continue
+		}
+		// The host's listing already says the host's entry cannot read a key, so
+		// the skip is made here rather than by sending the value and letting the
+		// host refuse it: a gcp-adc or Codex instance would otherwise receive the
+		// secret on the wire before answering "skipped".
+		if credentialPushKeylessScheme(entry.auth) {
+			response.Results = append(response.Results, appwire.HostCredentialPushResult{
+				Instance: name,
+				Action:   appwire.HostCredentialPushSkipped,
+				Reason:   fmt.Sprintf("the host's %s authenticates with %s, which does not read an API key", entry.name, entry.auth),
+			})
+			continue
+		}
+		response.Results = append(response.Results, p.pushOne(ctx, remote, name, entry.name, value))
 	}
 	return response, nil
 }
 
-// pushOne pushes one local entry: it reads the host's status to capture the
-// source/revision to fence on, then calls the host's conditional set. Any
-// failure is one entry's "failed" result; it never aborts the caller's loop.
-func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsource.RemoteHubSource, name, value string) appwire.HostCredentialPushResult {
+// credentialPushActionKnown reports whether action is one of the four the push
+// report's contract names (appwire.HostCredentialPush*): the values the pane
+// renders and the only ones a result row may carry. Compared exactly, because
+// the contract is four exact strings - a padded or otherwise altered action is
+// not one of them, and says so in the failed entry's reason.
+func credentialPushActionKnown(action string) bool {
+	switch action {
+	case appwire.HostCredentialPushAdded, appwire.HostCredentialPushUpdated,
+		appwire.HostCredentialPushSkipped, appwire.HostCredentialPushFailed:
+		return true
+	}
+	return false
+}
+
+// credentialPushKeylessScheme reports whether the host's entry authenticates in
+// a way that reads no API key at all: a Codex OAuth record, Google
+// application-default credentials, or nothing. Those three are exactly the
+// schemes the host's own conditional set skips (its switch, and spec 07's
+// classification table), so the push can make the same skip from the listing and
+// never put the value on the wire: a gcp-adc host would receive the secret
+// before answering "skipped".
+//
+// Every other value - including one this build does not know - is left to the
+// host. The host classifies those by credential source, so skipping one here
+// would refuse a write the host would have made, which is not this controller's
+// decision to make.
+func credentialPushKeylessScheme(auth string) bool {
+	switch auth {
+	case registry.AuthOAuthOpenAICodex, registry.AuthGCPADC, registry.AuthNone:
+		return true
+	}
+	return false
+}
+
+// credentialPushValueIsKey reports whether a credentials-store entry may be sent
+// as a Value. The store holds two kinds of secret under one namespace of
+// instance names: API keys (evener/auth/apiKey/set) and Google credential JSON
+// (evener/auth/credentialJson/set), and only the first is this push's unit.
+//
+// Two rules, both fail-closed (an unproven value is not sent):
+//
+//   - A value the registry's own gate accepts as a Google credential JSON is
+//     not a key. That gate is registry.CheckCredentialJSON, the predicate the
+//     gcp-adc resolution path runs over a store entry, so the two agree on what
+//     a credential document is.
+//   - Any other JSON object or array is not a key either. No api key is a JSON
+//     document - they are opaque tokens - while a document this gate refuses by
+//     name (an external_account file, or a truncated service-account key, both
+//     of which a hand-edited credentials.toml can hold) is still a pasted
+//     credential whose private material must not be copied to another host.
+func credentialPushValueIsKey(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if registry.CheckCredentialJSON([]byte(trimmed)) == nil {
+		return false
+	}
+	if json.Valid([]byte(trimmed)) && (strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) {
+		return false
+	}
+	return true
+}
+
+// pushOne pushes one local entry to the host's entry for it: name is the local
+// store key this result accounts for, and remoteName is the host's own spelling
+// of the instance, which is what travels as the wire Provider (the host resolves
+// that value, so its spelling is the one to send). Any failure is one entry's
+// "failed" result; it never aborts the caller's loop.
+func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsource.RemoteHubSource, name, remoteName, value string) appwire.HostCredentialPushResult {
 	failed := func(reason string) appwire.HostCredentialPushResult {
 		return appwire.HostCredentialPushResult{Instance: name, Action: appwire.HostCredentialPushFailed, Reason: reason}
 	}
 
 	var statusRaw json.RawMessage
-	if err := p.forward(ctx, remote, appwire.MethodEvenerAuthStatus, appwire.AuthStatusParams{Provider: name}, &statusRaw); err != nil {
+	if err := p.forward(ctx, remote, appwire.MethodEvenerAuthStatus, appwire.AuthStatusParams{Provider: remoteName}, &statusRaw); err != nil {
 		return failed(err.Error())
 	}
 	var status appwire.AuthStatusResponse
@@ -193,7 +314,7 @@ func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsourc
 	// revision under its credential write lock and classifies there.
 	var setRaw json.RawMessage
 	if err := p.forward(ctx, remote, appwire.MethodEvenerAuthApiKeyConditionalSet, appwire.ApiKeyConditionalSetParams{
-		Provider:         name,
+		Provider:         remoteName,
 		Value:            value,
 		ExpectedSource:   status.ActiveSource,
 		ExpectedRevision: status.ConfigRevision,
@@ -204,16 +325,20 @@ func (p *hubHostCredentialsPusher) pushOne(ctx context.Context, remote *appsourc
 	if err := json.Unmarshal(setRaw, &set); err != nil {
 		return failed("decode the host's conditional set: " + err.Error())
 	}
-	// The host's action is otherwise reported as it stands, unknown names
-	// included: an action this controller has never heard of is a newer host's
-	// own decision, and folding it into "failed" or relabelling it would hide
-	// what the host actually did. An empty or whitespace-only action is not an
-	// unknown action, though - it is no action at all, and a report row whose
-	// Action is outside the documented added/updated/skipped/failed contract
-	// tells the pane nothing about whether the key landed. That one is a failed
-	// entry naming the malformed answer.
+	// The report's contract is added|updated|skipped|failed, and the pane keys on
+	// those four names: an action outside it - from a newer host, or from one
+	// that is not the hub it claims to be - must not reach the report as a fifth,
+	// so an unrecognized action is a failed entry. The host's own text is carried
+	// in the reason verbatim rather than dropped: the operator still reads what
+	// the host answered, which is what passing it through was protecting.
+	//
+	// An empty or whitespace-only action is the malformed case, which is one
+	// step further: there is no action to quote.
 	if strings.TrimSpace(set.Action) == "" {
 		return failed("the host answered evener/auth/apiKey/conditionalSet without an action, so whether the key landed is unknown")
+	}
+	if !credentialPushActionKnown(set.Action) {
+		return failed(fmt.Sprintf("the host answered evener/auth/apiKey/conditionalSet with an action the report's contract does not define (%q), so whether the key landed is unknown", set.Action))
 	}
 	return appwire.HostCredentialPushResult{Instance: name, Action: set.Action, Reason: set.Reason}
 }
