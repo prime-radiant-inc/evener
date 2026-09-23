@@ -1114,7 +1114,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// (web.go) keeps the handle so main.go can bind hostAttached to the
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
-	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources)
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, cfg.CredsStore)
 	return server, hostAdmin, hostManage
 }
 
@@ -1808,6 +1808,17 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeyClear(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyConditionalSet, func(ctx context.Context, params appwire.ApiKeyConditionalSetParams) (appwire.ApiKeyConditionalSetResponse, error) {
+		resp, err := authController.ApiKeyConditionalSet(params)
+		// A skipped classification wrote nothing, so it owes no broadcast; a
+		// landed write - and a write whose post-write status read failed -
+		// broadcasts like every other credential write (notifyAuthWrite folds
+		// the applied-but-unread case).
+		if err != nil || resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+			notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
+		}
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
 		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.CredentialJsonSet(params) })

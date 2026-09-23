@@ -406,7 +406,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	delete(c.flows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.statusAfterWrite(provider, applied, c.openAIInstanceStatus)
+	status, err := c.statusAfterWrite(provider, applied, c.openAIInstanceStatusByName)
 	return appwire.AuthLoginCompleteResponse{Status: status}, err
 }
 
@@ -473,7 +473,7 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 	}
-	status, err := c.statusAfterWrite(name, applied, c.openAIInstanceStatus)
+	status, err := c.statusAfterWrite(name, applied, c.openAIInstanceStatusByName)
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
 }
 
@@ -500,10 +500,26 @@ var credentialWriteBetween = func() {}
 // which is where the pane reads it (Diagnostics) and where instance writes are
 // refused until the file loads (WritesRefused, spec §10).
 func (c *hubAuthController) credentialWrite(write func() error) (applied bool, err error) {
+	return c.credentialWriteConditional(func() (bool, error) { return true, write() })
+}
+
+// credentialWriteConditional is credentialWrite for a write that may decide not
+// to write after all: its closure reports whether a write landed, and the
+// between-hook and the registry reload run only when one did. A closure that
+// reports false ran its decision under the same exclusive section - that is the
+// point, the classification cannot be split from the write - but changed
+// nothing, so re-deriving the instance set from it would be a reload that
+// describes no change. The lock discipline is credentialWrite's exactly: the
+// decision (and, when it says yes, the write) is one critical section.
+func (c *hubAuthController) credentialWriteConditional(write func() (applied bool, err error)) (applied bool, err error) {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
-	if err := write(); err != nil {
+	applied, err = write()
+	if err != nil {
 		return false, err
+	}
+	if !applied {
+		return false, nil
 	}
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked()
@@ -683,6 +699,96 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		return appwire.AuthStatusResponse{}, err
 	}
 	return c.statusAfterWrite(name, applied, c.statusByProvider)
+}
+
+// skipConditionalSet records a non-writable classification on resp and reports
+// that nothing was written: the one shape every skip branch of the conditional
+// set returns. Each branch still spells its own Reason, because those strings
+// are user-visible; this only collapses the assign-and-return.
+func skipConditionalSet(resp *appwire.ApiKeyConditionalSetResponse, reason string) (bool, error) {
+	resp.Action = appwire.ApiKeyConditionalSetActionSkipped
+	resp.Reason = reason
+	return false, nil
+}
+
+// ApiKeyConditionalSet is the host-side conditional (compare-and-set) credential
+// write the remote credential push calls instead of the read-evenser/auth/status,
+// classify, then evener/auth/apiKey/set pair the design rejects (07 "credential
+// push"). All of the decision and the write happen inside one
+// credentialWriteConditional critical section against the state the host
+// resolves right there, so no concurrent change can slip between the check and
+// the write, and a skip reloads nothing because it wrote nothing:
+//
+//   - The instance is re-resolved under the lock (endpointInstanceFor), so a
+//     rename or removal that landed since the client's read is seen.
+//   - A non-empty ExpectedRevision that no longer equals the instance's
+//     effective-configuration revision, or a non-empty ExpectedSource that no
+//     longer equals its resolved source, is refused with a typed Conflict and
+//     nothing is written. This is the fence: a credential whose configuration
+//     changed underneath the client is never clobbered.
+//   - A scheme whose credential a file-layer key must not shadow — Codex
+//     OAuth, gcp-adc, auth-none — or a credential that now resolves from
+//     providers.toml (api_key/credential_headers) or the environment — comes
+//     back as a successful typed "skipped" with a reason, matching the design's
+//     classification table, so the push report shows a skip, not an error.
+//
+// Only a source of "store" (updated) or "none" on a key-capable scheme (added)
+// reaches c.setCredential; the response's Status is the post-write status read
+// the same way every other credential write reports one.
+func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditionalSetParams) (appwire.ApiKeyConditionalSetResponse, error) {
+	name := normalizeAuthProvider(params.Provider)
+	if strings.TrimSpace(params.Value) == "" {
+		return appwire.ApiKeyConditionalSetResponse{}, appwire.InvalidParams("value is required")
+	}
+	resp := appwire.ApiKeyConditionalSetResponse{}
+	applied, err := c.credentialWriteConditional(func() (bool, error) {
+		_, inst, ok := c.endpointInstanceFor(name)
+		if !ok {
+			return skipConditionalSet(&resp, fmt.Sprintf("%q is not a configured provider or instance on this host", name))
+		}
+		source := inst.CredentialSource
+		// The fences are checked before the classification: a client whose
+		// observed state no longer describes the instance must be told so, not
+		// handed a skip it could mistake for a durable decision.
+		current := hubcore.CredentialConfigRevision(c.registry(), name)
+		if params.ExpectedRevision != "" && params.ExpectedRevision != current {
+			return false, appwire.Conflict(name + " changed on the host after this credential was prepared: its configuration revision no longer matches the one this request observed; re-read the instance and start the push again")
+		}
+		if params.ExpectedSource != "" && params.ExpectedSource != source {
+			return false, appwire.Conflict(fmt.Sprintf("%s no longer resolves its credential from %q (it is now %q): re-read the instance and start the push again", name, params.ExpectedSource, source))
+		}
+		switch {
+		case inst.Auth == registry.AuthOAuthOpenAICodex:
+			return skipConditionalSet(&resp, name+" authenticates with an OAuth record; sign in on the host instead of pushing a key")
+		case inst.Auth == registry.AuthGCPADC:
+			return skipConditionalSet(&resp, name+" authenticates with Google application-default credentials, which do not read an API key")
+		case inst.Auth == registry.AuthNone:
+			return skipConditionalSet(&resp, name+" authenticates without a credential; a stored key would be one nothing sends")
+		case source == "api_key" || source == "credential_headers":
+			return skipConditionalSet(&resp, fmt.Sprintf("%s resolves its credential from providers.toml (%s), which outranks the file layer", name, source))
+		case strings.HasPrefix(source, "env:"):
+			return skipConditionalSet(&resp, fmt.Sprintf("the host's environment supplies %s's credential (%s), which a stored key would silently replace", name, source))
+		case source == "store":
+			resp.Action = appwire.ApiKeyConditionalSetActionUpdated
+		case source == "none":
+			resp.Action = appwire.ApiKeyConditionalSetActionAdded
+		default:
+			return skipConditionalSet(&resp, fmt.Sprintf("%s resolves its credential from %s, which the credential push does not manage", name, source))
+		}
+		if err := c.setCredential(name, params.Value); err != nil {
+			return false, err
+		}
+		return true, nil
+	})
+	if err != nil {
+		return appwire.ApiKeyConditionalSetResponse{}, err
+	}
+	status, err := c.statusAfterWrite(name, applied, c.statusByProvider)
+	if err != nil {
+		return appwire.ApiKeyConditionalSetResponse{}, err
+	}
+	resp.Status = status
+	return resp, nil
 }
 
 // ApiKeyClear removes a stored file-layer key without touching any other
@@ -886,7 +992,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 
 	// Authorized and applied: the record is saved. The state is what the
 	// handler reads to tell this from a pending poll, which writes nothing.
-	status, err := c.statusAfterWrite(provider, applied, c.openAIInstanceStatus)
+	status, err := c.statusAfterWrite(provider, applied, c.openAIInstanceStatusByName)
 	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
 }
 
@@ -1231,10 +1337,13 @@ func (c *hubAuthController) requiresCodex(name string) error {
 
 // instanceStatus is the credential status of one instance or curated
 // implicit provider: the registry's credential source, the store's file
-// layer, and for the Codex transport the OAuth record.
-func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthStatusResponse {
+// layer, and for the Codex transport the OAuth record. A caller that already
+// resolved inst (the instances listing, which resolved it for its endpoint
+// fingerprint) passes that resolution so the revision is not derived from a
+// second ResolveInstance of the same name.
+func (c *hubAuthController) instanceStatus(inst registry.Instance, resolved ...registry.Resolved) appwire.AuthStatusResponse {
 	if inst.Auth == registry.AuthOAuthOpenAICodex {
-		resp, _ := c.openAIInstanceStatus(inst.Name)
+		resp, _ := c.openAIInstanceStatus(inst.Name, resolved...)
 		return resp
 	}
 	_, hasFile := c.creds.Get(inst.Name)
@@ -1256,13 +1365,38 @@ func (c *hubAuthController) instanceStatus(inst registry.Instance) appwire.AuthS
 		HasStoredFile:  hasFile,
 		EnvVar:         envVar,
 		ShadowedEnvVar: inst.ShadowedEnvVar,
+		// The revision the credential push fences its conditional set against,
+		// resolved from the same snapshot instanceStatus answers the source from
+		// (see hubcore.CredentialConfigRevision), or from the caller's own
+		// resolution when it has one.
+		ConfigRevision: c.credentialConfigRevision(inst.Name, resolved...),
 	}
+}
+
+// credentialConfigRevision is the effective credential-configuration revision
+// for name, over a resolution the caller already holds when it has one. With no
+// resolution it resolves the name itself, which is what the single-instance
+// callers (Status, a post-write status read) want.
+func (c *hubAuthController) credentialConfigRevision(name string, resolved ...registry.Resolved) string {
+	if len(resolved) > 0 {
+		return hubcore.CredentialConfigRevisionResolved(resolved[0])
+	}
+	return hubcore.CredentialConfigRevision(c.registry(), name)
+}
+
+// openAIInstanceStatusByName is openAIInstanceStatus in statusAfterWrite's
+// reader shape: a post-write status read has no resolution to reuse, so it
+// resolves the name itself.
+func (c *hubAuthController) openAIInstanceStatusByName(name string) (appwire.AuthStatusResponse, error) {
+	return c.openAIInstanceStatus(name)
 }
 
 // openAIInstanceStatus is the credential status of one instance on the Codex
 // transport, keyed by instance name: it reads auth/<name>.json and
-// credentials[name] (spec §9.5).
-func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatusResponse, error) {
+// credentials[name] (spec §9.5). As on instanceStatus, a caller that already
+// resolved name passes that resolution so the revision is not recomputed from a
+// second resolution.
+func (c *hubAuthController) openAIInstanceStatus(name string, resolved ...registry.Resolved) (appwire.AuthStatusResponse, error) {
 	record, err := c.loadAuth(c.stateDir, name)
 	hasRecord := false
 	switch {
@@ -1307,6 +1441,10 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		NeedsRefresh:  active.NeedsRefresh,
 		NeedsLogin:    active.NeedsLogin,
 		HasStoredFile: hasFile,
+		// An OAuth record is this instance's credential configuration; the
+		// revision is resolved here as it is for every other scheme, reusing a
+		// resolution the caller already made when it has one.
+		ConfigRevision: c.credentialConfigRevision(name, resolved...),
 	}
 	if hasRecord {
 		status.HasStoredOAuth = true

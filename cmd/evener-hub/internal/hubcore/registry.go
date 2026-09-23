@@ -317,6 +317,60 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
+// CredentialConfigRevision returns name's effective credential-configuration
+// revision: a stable, non-reversible digest over the configuration a
+// conditional credential write is fenced against (design §07 "credential
+// push"). It is derived from the same registry snapshot a credential write
+// re-resolves under the credential lock, so a client that captured it from a
+// read-only evener/auth/status or evener/instance/list answer can echo it back
+// as ApiKeyConditionalSetParams.ExpectedRevision and have the host refuse the
+// write when anything it covers has changed since. It covers the instance's
+// structural identity (provider, protocol, surface), the endpoint it routes to
+// (base URL and models endpoint), the credential source that resolves, and the
+// credential-header names in force. It deliberately does NOT hash the secret
+// value: it must not let a reader tell one stored key from another (design's
+// "Honest limitation"), and every source transition it needs to fence — none
+// to store, providers.toml, or the environment — is already a change to the
+// resolved source. Empty for a name the registry cannot resolve: there is
+// nothing to fence, and the empty value is what a client reads as "no revision
+// fence".
+func CredentialConfigRevision(r *registry.Registry, name string) string {
+	if r == nil || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	res, err := r.ResolveInstance(name)
+	if err != nil {
+		return ""
+	}
+	return CredentialConfigRevisionResolved(res)
+}
+
+// CredentialConfigRevisionResolved is CredentialConfigRevision over an instance
+// the caller has already resolved, so a caller that resolved it for another
+// field of the same row - the instances listing's endpoint fingerprint, say -
+// does not resolve the name a second time. It contributes exactly what the
+// resolving form contributes: the same fields, in the same order, with the same
+// separators, so the two agree byte for byte on the same resolution. An
+// unresolved Resolved (no instance name) has no revision, matching the empty
+// string CredentialConfigRevision returns for a name the registry cannot
+// resolve.
+func CredentialConfigRevisionResolved(res registry.Resolved) string {
+	if strings.TrimSpace(res.Instance) == "" {
+		return ""
+	}
+	sum := sha256.New()
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "instance", res.Instance)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "provider", res.ProviderID)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "protocol", res.Protocol)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "surface", res.Surface)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "auth", res.Transport.Auth)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "baseURL", res.Transport.BaseURL)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "modelsEndpoint", res.Transport.ModelsEndpoint)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "source", res.Credential.Source)
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
 // authFingerprint hashes the resolved authentication material
 // non-reversibly (SHA-256 over the actual secret bytes and the stable
 // account-identity fields, never the lengths alone): a same-length key

@@ -12,7 +12,8 @@
         "apiKey"
       ],
       "hasStoredOAuth": false,
-      "envVar": "OPENAI_API_KEY"
+      "envVar": "OPENAI_API_KEY",
+      "configRevision": "b19a5c9c0981010d49ed6ac237522314b714dfc9db2f7fb4e28c72e960466423"
     }
   },
   {
@@ -28,7 +29,8 @@
         "apiKey"
       ],
       "hasStoredOAuth": false,
-      "hasStoredFile": true
+      "hasStoredFile": true,
+      "configRevision": "2951440d5bf064cbc1ee3d2fa9a80178b67ebaa7846995739d92679dbb2cccf5"
     }
   },
   {
@@ -43,7 +45,8 @@
       "authModes": [
         "apiKey"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "450f5fdcd1c4e3730c582977f7f463007b5c8fb1197298578fcbd346034a23cc"
     }
   },
   {
@@ -59,7 +62,8 @@
         "none",
         "apiKey"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "988f70e39f3f9d2ffd310ebd001ff2e03d09c6a958257ff15b6255fa94752084"
     }
   },
   {
@@ -76,7 +80,8 @@
       ],
       "hasStoredOAuth": true,
       "email": "bot@example.com",
-      "storedEmail": "bot@example.com"
+      "storedEmail": "bot@example.com",
+      "configRevision": "e9f45cde6e01d4b8660c1eb402da6bb1c5063749930bd9087fc2eeed48bfd18e"
     }
   },
   {
@@ -94,7 +99,8 @@
       "hasStoredOAuth": true,
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
-      "needsRefresh": true
+      "needsRefresh": true,
+      "configRevision": "e9f45cde6e01d4b8660c1eb402da6bb1c5063749930bd9087fc2eeed48bfd18e"
     }
   },
   {
@@ -112,7 +118,8 @@
       "hasStoredOAuth": true,
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
-      "needsLogin": true
+      "needsLogin": true,
+      "configRevision": "e9f45cde6e01d4b8660c1eb402da6bb1c5063749930bd9087fc2eeed48bfd18e"
     }
   },
   {
@@ -127,7 +134,8 @@
       "authModes": [
         "oauth"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "5b4838a8fd532406e091692e3f6622016c8433b201f8439bd1474e5bda0f311a"
     }
   },
   {
@@ -143,7 +151,8 @@
         "adc",
         "credentialJson"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "e15aecefbd9bb95bfe49db3e362e534aa53fce90c4d051be58d2d662b77ca087"
     }
   },
   {
@@ -160,7 +169,8 @@
         "credentialJson"
       ],
       "hasStoredOAuth": false,
-      "hasStoredFile": true
+      "hasStoredFile": true,
+      "configRevision": "a3e2a374f12c9660f931ad3655e2efe5a1038eb8a0a2ba6a5a4c6483f4e4cdb0"
     }
   },
   {
@@ -175,7 +185,8 @@
       "authModes": [
         "none"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "5715e47bdbee1c7bd7ddfc81c4995ad02361d18ad0d2a1f694ea8e447b71fa71"
     }
   },
   {
@@ -190,7 +201,8 @@
       "authModes": [
         "apiKey"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "20129da4d0f13fb9cce769dd3850156acd6cbbf272287e8721140405a7659626"
     }
   },
   {
@@ -219,7 +231,8 @@
         "authModes": [
           "oauth"
         ],
-        "hasStoredOAuth": false
+        "hasStoredOAuth": false,
+        "configRevision": "5b4838a8fd532406e091692e3f6622016c8433b201f8439bd1474e5bda0f311a"
       }
     }
   },
@@ -237,7 +250,8 @@
         "authModes": [
           "apiKey"
         ],
-        "hasStoredOAuth": false
+        "hasStoredOAuth": false,
+        "configRevision": "20129da4d0f13fb9cce769dd3850156acd6cbbf272287e8721140405a7659626"
       }
     }
   },
@@ -255,7 +269,8 @@
         "authModes": [
           "oauth"
         ],
-        "hasStoredOAuth": false
+        "hasStoredOAuth": false,
+        "configRevision": "5b4838a8fd532406e091692e3f6622016c8433b201f8439bd1474e5bda0f311a"
       }
     }
   },
@@ -281,6 +296,7 @@
         "activeSource": "store",
         "hasStoredFile": true,
         "hasStoredOAuth": false,
+        "configRevision": "2951440d5bf064cbc1ee3d2fa9a80178b67ebaa7846995739d92679dbb2cccf5",
         "credentialRequired": true,
         "models": [
           {
@@ -361,6 +377,7 @@
         "activeSource": "oauth",
         "hasStoredOAuth": true,
         "storedEmail": "bot@example.com",
+        "configRevision": "e9f45cde6e01d4b8660c1eb402da6bb1c5063749930bd9087fc2eeed48bfd18e",
         "credentialRequired": true,
         "models": [
           {
@@ -397,6 +414,7 @@
         "hasStoredOAuth": false,
         "envVar": "OPENAI_API_KEY",
         "renameLeavesRow": true,
+        "configRevision": "b19a5c9c0981010d49ed6ac237522314b714dfc9db2f7fb4e28c72e960466423",
         "credentialRequired": true,
         "models": [
           {
@@ -556,6 +574,7 @@
         "activeSource": "none",
         "hasStoredOAuth": false,
         "renameLeavesRow": true,
+        "configRevision": "4121931e4b4ab1a0f4fec4d80295990c96342e9d4ca3f15b1ea4a2c540521c44",
         "credentialRequired": false
       },
       {
@@ -574,6 +593,7 @@
         ],
         "activeSource": "api_key",
         "hasStoredOAuth": false,
+        "configRevision": "a8848f0eb39d1bf5b23145af235571d246384903026232b1b11aee26249d754a",
         "credentialRequired": true,
         "models": [
           {
@@ -654,6 +674,7 @@
         ],
         "activeSource": "none",
         "hasStoredOAuth": false,
+        "configRevision": "aa32bf90976d43cfd3e0b2fe5b5edc90c9059468b4c2af38136bd788c3a48567",
         "credentialRequired": false
       },
       {
@@ -674,6 +695,7 @@
         ],
         "activeSource": "credential_headers",
         "hasStoredOAuth": false,
+        "configRevision": "09311711986c61166e8acc2fb13bda76e319127ec671ae02de730cdf709c1f55",
         "credentialRequired": false
       },
       {
@@ -693,6 +715,7 @@
         ],
         "activeSource": "none",
         "hasStoredOAuth": false,
+        "configRevision": "f04ad7e1bb94bcb3ba3c6365468645d7e3a40c12275e1b5aa7af10e60ca971be",
         "credentialRequired": true,
         "warnings": [
           "no credential"
@@ -777,6 +800,7 @@
         ],
         "activeSource": "adc",
         "hasStoredOAuth": false,
+        "configRevision": "e15aecefbd9bb95bfe49db3e362e534aa53fce90c4d051be58d2d662b77ca087",
         "credentialRequired": true
       }
     ]
