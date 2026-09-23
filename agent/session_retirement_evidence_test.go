@@ -525,6 +525,10 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the root attention source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -542,7 +546,7 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	})
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	res := <-resultCh
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending attention source escaped preparing: %+v %v", res.state, res.err)
@@ -1003,6 +1007,10 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the retained re-lock source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -1020,7 +1028,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	})
 	select {
 	case r := <-resultCh:
-		root.jobManager.mu.Unlock()
+		unlockJobs()
 		t.Fatalf("real TryClaim completed before the timer fired: %+v", r)
 	default:
 	}
@@ -1028,7 +1036,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	beforeRefused := calls.Load()
 	clk.Advance(laneSweepDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	if got := calls.Load(); got != beforeRefused {
 		t.Fatalf("refused relock retry performed %d Git calls", got-beforeRefused)
 	}
@@ -2359,6 +2367,10 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the live pending source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -2377,7 +2389,7 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	// The armed one-shot fires now and is refused for the whole window.
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	res := <-resultCh
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending source escaped preparing: %+v %v", res.state, res.err)
