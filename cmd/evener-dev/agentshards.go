@@ -87,6 +87,10 @@ type shardsConfig struct {
 	stdout         io.Writer
 	stderr         io.Writer
 	signals        <-chan os.Signal
+	// slotWait, when set, is called each time a shard has to wait for a free
+	// concurrency slot: the observable moment the runner holds a shard back.
+	// A test seam; nil in production.
+	slotWait func()
 }
 
 // runAgentShards and runHubShards are the subcommand entries: environment in,
@@ -492,7 +496,15 @@ func runShards(cfg shardsConfig) int {
 	results := make([]chan shardResult, len(bins))
 	launchFailed := false
 	for i, bin := range bins {
-		slots <- struct{}{}
+		select {
+		case slots <- struct{}{}:
+		default:
+			// Every slot is taken: this shard waits for a running one to exit.
+			if cfg.slotWait != nil {
+				cfg.slotWait()
+			}
+			slots <- struct{}{}
+		}
 		// A signal that arrived while we waited for a slot must not start more
 		// work: the interrupter has already TERMed the live shards, and a shard
 		// started now would outlive the run we are trying to stop.
