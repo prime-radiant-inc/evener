@@ -41,6 +41,9 @@ type Holder struct {
 	startedEnd  *os.File
 	releaseEnd  *os.File
 	releaseOnce sync.Once
+	// startedCh closes once the grandchild has announced itself (or cleanup
+	// closed the started FIFO), so any number of waits can observe it.
+	startedCh chan struct{}
 }
 
 // New creates the FIFOs in a fresh temporary directory. The test holds both
@@ -62,6 +65,12 @@ func New(t testing.TB) *Holder {
 		t.Fatalf("open %s: %v", h.started, err)
 	}
 	t.Cleanup(func() { _ = h.startedEnd.Close() })
+	h.startedCh = make(chan struct{})
+	go func() {
+		defer close(h.startedCh)
+		// Returns on the announcement, or when cleanup closes the FIFO.
+		_, _ = h.startedEnd.Read(make([]byte, 1))
+	}()
 	if h.releaseEnd, err = os.OpenFile(h.release, os.O_RDWR, 0); err != nil {
 		t.Fatalf("open %s: %v", h.release, err)
 	}
@@ -100,7 +109,7 @@ func (h *Holder) WriteScript(t testing.TB, name, body string) string {
 // when cleanup closes the started FIFO, so a goroutine blocked here never
 // outlives its test.
 func (h *Holder) AwaitStarted() {
-	_, _ = h.startedEnd.Read(make([]byte, 1))
+	<-h.startedCh
 }
 
 // Release ends the grandchild. It is safe to call more than once.
@@ -112,10 +121,21 @@ func (h *Holder) Release() {
 // the pipe, then releases the grandchild. A call that waits for the grandchild
 // cannot return on its own; after the tripwire Await releases it so the call
 // can finish, and fails the test.
+//
+// The release waits for the grandchild's announcement first. A child that
+// exits at once can return the call before its backgrounded grandchild has
+// opened the release FIFO, and a release then would leave that open with no
+// writer, blocked for good: a leaked process. The announcement comes after the
+// open, so once it has arrived the release reaches a grandchild holding it.
 func Await[T any](t testing.TB, h *Holder, done <-chan T) T {
 	t.Helper()
 	select {
 	case result := <-done:
+		select {
+		case <-h.startedCh:
+		case <-time.After(awaitTripwire): // TRIPWIRE: the grandchild announces itself as soon as it runs; this only bounds a script that never started it.
+			t.Error("the call returned but its grandchild never started")
+		}
 		h.Release()
 		return result
 	case <-time.After(awaitTripwire):

@@ -25,6 +25,13 @@ import (
 // CombinedOutput, Wait) reported, except that exec.ErrWaitDelay after a
 // successful exit becomes nil: the child answered, and only a descendant it
 // left behind kept the pipe open past cmd.WaitDelay.
+//
+// That holds even when the call's context ended during the wait delay. A
+// context that ends while the child runs makes exec kill it, and a killed
+// child is not a successful exit, so that error survives. A successful exit
+// means the child finished its work on its own, and its output is complete up
+// to that exit; reporting it as cancelled would describe a call that did not
+// happen.
 func ChildErr(cmd *exec.Cmd, err error) error {
 	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		return nil
