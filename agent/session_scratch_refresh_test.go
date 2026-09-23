@@ -582,6 +582,105 @@ func TestRestoreAdoptionReprovisionsWhenTheClaimTurnsContended(t *testing.T) {
 	}
 }
 
+// TestRestoreAdoptionReportsNoTransferWhenOnlyTheUnsandboxedKindTransfers pins
+// round 26's High: adoptRestoredConsumerScratch's replacement branch keyed its
+// success on the adoption's aggregate transfer report, so a claim flip that
+// contended the sandbox slot while the unsandboxed slot still transferred
+// reported the whole adoption as transferred — an immediate successful return
+// with the fresh mint already disposed and the wrapper already rebuilt around
+// the retained directory, leaving the restored session running on a sandbox
+// directory whose lease it does not own. The report must be per-kind: only the
+// kind the replacement disposed for counts as the success, and anything less
+// falls to the reprovision heal.
+func TestRestoreAdoptionReportsNoTransferWhenOnlyTheUnsandboxedKindTransfers(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01CROSSKIND1"
+	const bindingID = "b-cross-kind"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	unsandboxedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() {
+		_ = slots[sandbox.ScratchKindSandbox].Retain()
+		_ = slots[sandbox.ScratchKindUnsandboxed].Retain()
+	})
+	key := canonicalScratchDir(retainedDir)
+	unsandboxedKey := canonicalScratchDir(unsandboxedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindSandbox], unsandboxedKey: slots[sandbox.ScratchKindUnsandboxed]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	// The fold contends only the SANDBOX slot between the guard's read and the
+	// claim's own hold — exactly what an idle-release teardown racing this
+	// restore does — while the unsandboxed slot's claim still transfers.
+	s.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		s.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		pool := s.retainedScratch.Load()
+		pool.mu.Lock()
+		delete(pool.handles, key)
+		pool.contended[key] = struct{}{}
+		pool.mu.Unlock()
+	}
+	adopted, err := s.adoptRestoredConsumerScratch(env, consumerID, true)
+	if err != nil {
+		t.Fatalf("restore adoption across the cross-kind claim flip: %v", err)
+	}
+	if adopted {
+		t.Fatal("an adoption that transferred no sandbox lease reported a transferred allocation")
+	}
+	// The heal re-provisions the sandbox scratch the flip stranded: the
+	// environment must own a sandbox allocation that is not the retained
+	// directory, and the wrapper must follow it rather than the directory
+	// whose lease was lost.
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := ""
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			owned = ref.Dir
+		}
+	}
+	if owned == "" {
+		t.Fatalf("the cross-kind flip left the restored session with no owned sandbox scratch (SessionScratchDir %q)", env.SessionScratchDir())
+	}
+	if filepath.Clean(owned) == filepath.Clean(retainedDir) {
+		t.Fatalf("the restored session runs on the retained %q with no lease", retainedDir)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(owned) {
+		t.Fatalf("the wrapper %q does not name the owned scratch %q", got, owned)
+	}
+	if _, err := os.Stat(owned); err != nil {
+		t.Fatalf("the re-provisioned scratch is not on disk: %v", err)
+	}
+	// The unsandboxed slot's transfer is real and stands: it is the durable
+	// adoption the environment does own.
+	if got := envScratchRefDir(env, sandbox.ScratchKindUnsandboxed); filepath.Clean(got) != filepath.Clean(unsandboxedDir) {
+		t.Fatalf("the unsandboxed transfer did not stand: owned %q, want the retained %q", got, unsandboxedDir)
+	}
+}
+
 // TestScratchRestoreAdoptionReportsNoTransferForABorrow pins the round-22
 // adoption-report lie: a replacement whose claim finds the slot already
 // adopted by a distinct consumer installs a lease-less borrow — no retained

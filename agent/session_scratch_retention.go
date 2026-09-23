@@ -1424,33 +1424,35 @@ func (s *Session) prepareRetainedScratch() error {
 // distinct consumer sharing an allocation another session already adopted —
 // installs without transferring, so no caller can mistake the shared
 // directory for one this session owns (round 22). The same consumer asking
-// twice is refused.
-func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment, bindingID, adopterID string) (bool, bool, error) {
+// twice is refused. transferred reports the transfer PER KIND: a binding's
+// slots are claimed one at a time, and one kind's contended skip must not be
+// masked by another kind's successful transfer (round 26).
+func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment, bindingID, adopterID string) (bool, map[string]bool, error) {
 	if env == nil {
-		return false, false, nil
+		return false, nil, nil
 	}
 	if hook := s.cfg.testOnly.scratchAdoptionBeforeTransfer; hook != nil {
 		hook()
 	}
 	pool := s.retainedScratch.Load()
 	if pool == nil {
-		return false, false, nil
+		return false, nil, nil
 	}
 	pool.mu.Lock()
 	binding, ok := pool.bindings[bindingID]
 	pool.mu.Unlock()
 	if !ok {
-		return false, false, fmt.Errorf("retained scratch: binding %q is not in the manifest", bindingID)
+		return false, nil, fmt.Errorf("retained scratch: binding %q is not in the manifest", bindingID)
 	}
 	if err := env.SetScratchRetentionBinding(pool.owner, binding); err != nil {
-		return false, false, err
+		return false, nil, err
 	}
 	// A kind this environment already provisions (an eagerly provisioned
 	// sandbox scratch) is left exposed; only absent kinds are restored, so a
 	// retained wrapper never replaces a live allocation.
 	existingKinds := map[string]bool{}
 	markedPending := false
-	transferred := false
+	transferred := map[string]bool{}
 	if refs, err := env.ScratchRetentionReferences(); err == nil {
 		for _, ref := range refs {
 			existingKinds[ref.Kind] = true
@@ -1487,10 +1489,10 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// held elsewhere in this process (contended), or its owner binding
 			// has not been adopted yet.
 			if pool.scratchSlotTakenBy(key) == adopterID {
-				return false, false, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+				return false, nil, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 			}
 			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
-				return false, false, err
+				return false, nil, err
 			}
 			continue
 		}
@@ -1517,12 +1519,12 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				markedPending = true
 				continue
 			}
-			return false, false, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
+			return false, nil, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 		case already:
 			// A distinct consumer sharing the allocation borrows the same
 			// directory without doubling the lease its adopter holds.
 			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
-				return false, false, err
+				return false, nil, err
 			}
 		case handle != nil:
 			if hook := s.cfg.testOnly.scratchAdoptionAfterClaim; hook != nil {
@@ -1538,12 +1540,12 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				if !pool.releaseScratchSlotClaim(key, adopterID, handle) {
 					_ = handle.Retain()
 				}
-				return false, false, err
+				return false, nil, err
 			}
 			pool.finishRetainedScratchSlot(key)
-			transferred = true
+			transferred[kind] = true
 		case !contended:
-			return false, false, fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
+			return false, nil, fmt.Errorf("retained scratch: binding %q slot %q has no reacquired handle", bindingID, kind)
 		case contended:
 			// The slot's lease is held elsewhere in this process — typically
 			// the idle-release teardown racing this restore — so adoption
@@ -1564,7 +1566,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 		// the fallback it works in collectible. Pin the owned handles now; the
 		// pending kind pins as a bare protected reference (round 19).
 		if err := env.PinOwnedScratch(); err != nil {
-			return false, false, err
+			return false, nil, err
 		}
 	}
 	return true, transferred, nil
@@ -1674,27 +1676,28 @@ func (p *retainedScratchPool) requeueRetainedScratchSlot(key, adopterID string, 
 
 // adoptConsumerScratch installs the retained owning slot of sessionID's current
 // binding onto env, using the pool prepareRetainedScratch reacquired. It is a
-// no-op when no pool exists or the consumer has no current binding.
-func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, sessionID string) (bool, bool, error) {
+// no-op when no pool exists or the consumer has no current binding. transferred
+// reports the transfer per scratch kind (round 26).
+func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, sessionID string) (bool, map[string]bool, error) {
 	if env == nil {
-		return false, false, nil
+		return false, nil, nil
 	}
 	if hook := s.cfg.testOnly.scratchAdoptionBeforeClaim; hook != nil {
 		hook()
 	}
 	pool := s.retainedScratch.Load()
 	if pool == nil {
-		return false, false, nil
+		return false, nil, nil
 	}
 	pool.mu.Lock()
 	consumer, ok := pool.consumers[sessionID]
 	pool.mu.Unlock()
 	if !ok || consumer.CurrentBindingID == "" {
-		return false, false, nil
+		return false, nil, nil
 	}
 	installed, transferred, err := s.adoptRetainedScratchFor(env, consumer.CurrentBindingID, sessionID)
 	if err != nil {
-		return false, false, err
+		return false, nil, err
 	}
 	return installed, transferred, nil
 }

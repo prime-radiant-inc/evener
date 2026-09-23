@@ -2479,10 +2479,15 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 		if err != nil {
 			return false, reprovisionAfterFailedAdoption(env, err)
 		}
-		if transferred {
-			// A transferred handle is the one durable adoption the failure
-			// path retains: the manifest references the allocation and the
-			// environment owns its lease.
+		if transferred[sandbox.ScratchKindSandbox] {
+			// The SANDBOX kind's own transfer is the one durable adoption the
+			// failure path retains: the manifest references the allocation and
+			// the environment owns its lease. The report is per kind — the
+			// unsandboxed slot's claim can succeed while the sandbox slot's
+			// went contended in the same adoption, and an aggregate would mask
+			// exactly that: a successful return with the mint already disposed
+			// and the wrapper already pointing at a directory this environment
+			// holds no lease on (round 26).
 			return true, nil
 		}
 		// The heal keys on the transfer the environment actually owns, not on
@@ -2509,8 +2514,10 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 	// The shared-environment flavor of the same report: a borrow or a
 	// contended skip installs through the retained directory without
 	// transferring a lease, and only a transfer is the caller's
-	// retain-on-failure signal.
-	return transferred, nil
+	// retain-on-failure signal. The unsandboxed kind's transfer counts here —
+	// no disposal happened on this path, so any kind's real transfer is a
+	// lease the failure path must retain (round 26).
+	return len(transferred) > 0, nil
 }
 
 // sharedRestoreEnvironment resolves the parent environment a shared child
