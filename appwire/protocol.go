@@ -224,7 +224,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerHostStatus, HostStatusParams{}, HostStatusResponse{}, ScopeHub, "Returns one host's list row for a single named host; never dials."},
 	{MethodEvenerHostRemove, HostRemoveParams{}, HostRemoveResponse{}, ScopeHub, "Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here."},
 	{MethodEvenerHostUpdate, HostUpdateParams{}, HostUpdateResponse{}, ScopeHub, "Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused."},
-	{MethodEvenerHostPushCredentials, HostPushCredentialsParams{}, HostPushCredentialsResponse{}, ScopeHub, "Copies the controller's local provider-instance keys to one named remote host (component 07c): the local store's entry keys are sent verbatim as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed."},
+	{MethodEvenerHostPushCredentials, HostPushCredentialsParams{}, HostPushCredentialsResponse{}, ScopeHub, "Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
