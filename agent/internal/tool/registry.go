@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +25,14 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// toolIntentDescription is the shared guidance for the intent parameter the
+// registry appends to every work tool's schema. The enforcement lives in the
+// WIRE schema's required list (WithIntentParameterRequired, applied at the
+// advertise edge), not in this prose and not in the registry's validation
+// schema — models drop an optional-looking rationale exactly where the hub's
+// row grammar wants it most (plain file reads), but a missing rationale must
+// not fail at dispatch, where the retry breaker would park repeated
+// legacy-shaped calls.
 const toolIntentDescription = "What you hope to learn or accomplish from this tool call, using a verb-first gerund. Make your hypothesis and the desired outcome clear; e.g. \"Reading config to identify the active profile, so I can log in.\" or \"Searching handlers for request routing, so I can trace the hang.\""
 
 // MaxToolArgumentBytes caps the size of a tool call's raw argument payload
@@ -90,6 +99,52 @@ func WithIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	}
 	td.Parameters = params
 	return td
+}
+
+// WithIntentParameterRequired advertises a work tool's intent argument as
+// REQUIRED: it composes WithIntentParameter (so the property-injection block
+// lives in exactly one place and the advertised property can never diverge
+// from the one the registry validates against) and then lists intent in the
+// required list of the already-cloned parameters. It is for the advertise
+// edge only (agent's wireToolDef and rebuildToolDefsCache): the registry
+// compiles its dispatch-validation schema from the plain WithIntentParameter
+// form at Register time, where intent stays optional — a model that omits the
+// rationale must not fail at dispatch, or the retry breaker would park its
+// repeated legacy-shaped calls. Element type is preserved ([]string stays
+// []string, []any stays []any); an absent list becomes []string like the
+// builtin builders emit.
+func WithIntentParameterRequired(td llm.ToolDefinition) llm.ToolDefinition {
+	td = WithIntentParameter(td)
+	params := td.Parameters
+	if params["type"] != nil && params["type"] != "object" {
+		return td
+	}
+	switch required := params["required"].(type) {
+	case []string:
+		params["required"] = appendRequiredField(required, "intent")
+	case []any:
+		params["required"] = appendRequiredFieldAny(required, "intent")
+	default:
+		params["required"] = []string{"intent"}
+	}
+	td.Parameters = params
+	return td
+}
+
+func appendRequiredField(values []string, field string) []string {
+	if slices.Contains(values, field) {
+		return values
+	}
+	return append(values, field)
+}
+
+func appendRequiredFieldAny(values []any, field string) []any {
+	for _, value := range values {
+		if s, ok := value.(string); ok && s == field {
+			return values
+		}
+	}
+	return append(values, field)
 }
 
 func WithoutIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
