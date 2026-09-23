@@ -703,7 +703,8 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   real virtualization stack and drives NATIVE scroll events: the
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
-  there.
+  there, including after content grows below the reader and after the
+  scroll port itself shrinks (the pane header growing).
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure

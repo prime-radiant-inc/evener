@@ -3,6 +3,7 @@ import {
   AT_BOTTOM_THRESHOLD_PX,
   contentGrewBelowViewport,
   isAtBottom,
+  isEndBelowFold,
   isNearTop,
   NEAR_TOP_THRESHOLD_PX,
   readScrollMetrics,
@@ -123,4 +124,20 @@ test("readScrollMetrics reads scrollTop/scrollHeight/clientHeight straight off t
   Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
 
   expect(readScrollMetrics(el)).toEqual({ scrollTop: 120, scrollHeight: 2000, clientHeight: 400 });
+});
+
+// isEndBelowFold: the exact true end, with none of isAtBottom's tolerance - a
+// reader following the bottom is re-pinned even for a 4px shortfall.
+test("isEndBelowFold: false at the exact bottom", () => {
+  expect(isEndBelowFold({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 })).toBe(false);
+});
+
+test("isEndBelowFold: true for a shortfall inside isAtBottom's tolerance", () => {
+  const shortByFour: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 46 };
+  expect(isAtBottom(shortByFour)).toBe(true);
+  expect(isEndBelowFold(shortByFour)).toBe(true);
+});
+
+test("isEndBelowFold: false for content that does not scroll at all", () => {
+  expect(isEndBelowFold({ scrollTop: 0, scrollHeight: 100, clientHeight: 200 })).toBe(false);
 });

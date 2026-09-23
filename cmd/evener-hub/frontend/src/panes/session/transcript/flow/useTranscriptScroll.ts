@@ -40,6 +40,7 @@ import { isDormantTranscript } from "../transcriptVisibility";
 import {
   contentGrewBelowViewport,
   isAtBottom,
+  isEndBelowFold,
   isNearTop,
   readScrollMetrics,
   type ScrollMetrics,
@@ -1479,16 +1480,27 @@ export function useTranscriptScroll({
       if (isNearTop(m.scrollTop)) loadOlderRef.current().catch(() => {});
     }
 
-    // A content change that never produces a scroll event: a webfont swaps in
+    // A geometry change that never produces a scroll event: a webfont swaps in
     // after the mount's landing (scrollHeight grows while the offset stays
-    // pinned - measured 11466 -> 11487 at document.fonts.ready), or the
-    // virtualizer adopts newly-measured row heights without moving scrollTop.
-    // The scroll listener's own correction above shares the same geometry
-    // predicate (contentGrewBelowViewport) and the same remedy, but it only
-    // runs on a scroll event - neither of these fires one, so without this the
-    // reader is left a few pixels short of the true bottom with wasAtBottomRef
-    // still true: no pill, nothing to click. Re-pin to the new true bottom
-    // from live geometry, so a prepend or a scroll-away is never yanked.
+    // pinned - measured 11466 -> 11487 at document.fonts.ready), the
+    // virtualizer adopts newly-measured row heights without moving scrollTop,
+    // or the port itself shrinks because something outside the transcript grew
+    // (the pane header's cadence trace appearing - measured clientHeight
+    // 671 -> 667 - or the composer gaining a line). Each leaves the reader
+    // short of the true bottom with wasAtBottomRef still true: no pill, nothing
+    // to click. Re-pin to the true bottom from live geometry.
+    //
+    // No growth-since-baseline test here, unlike the scroll listener's
+    // contentGrewBelowViewport: a scroll event may be the reader's own
+    // movement, so that path has to prove the change was not them, but these
+    // triggers never are (and the gesture veto below covers a reader mid-way
+    // through one). "Was following the bottom, and the true end is out of
+    // view" is the whole condition, which also holds when a scroll event in
+    // the same frame already took the shrunk geometry as its baseline (scroll
+    // events dispatch before ResizeObserver delivery), and for a shortfall
+    // inside isAtBottom's rounding tolerance, which nothing else would ever
+    // correct. A reader scrolled away has wasAtBottomRef false and is never
+    // moved.
     let reanchorRetryFrame: number | null = null;
     // Re-run once the frame boundary clears a pending gesture marker (the same
     // frame markGesture schedules its own clear on). Only armed for a growth
@@ -1499,53 +1511,53 @@ export function useTranscriptScroll({
       if (reanchorRetryFrame !== null) return;
       reanchorRetryFrame = requestAnimationFrame(() => {
         reanchorRetryFrame = null;
-        reanchorIfContentGrew();
+        reanchorIfEndLeftView();
       });
     }
-    function reanchorIfContentGrew() {
+    function reanchorIfEndLeftView() {
       if (!el) return;
-      const previous = lastScrollGeometryRef.current;
       const m = measure(el);
       // The same gesture veto the scroll listener applies, but READ rather than
       // consumed: this is not the event a pending gesture caused (content
       // growth fires none), so the marker must survive for the scroll event
       // that the gesture's own movement still delivers.
       const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
-      const grew = contentGrewBelowViewport(previous, m);
-      // A vetoed correction MUST NOT consume the growth as the new baseline:
-      // the marker can outlive this trigger with no further resize or font
-      // event (a stationary middle-button hold, a selection drag), and a
-      // consumed baseline would leave the reader permanently short of the
-      // bottom with wasAtBottomRef still true and no pill to recover with.
-      // Hold `previous` until the correction actually lands.
-      if (wasAtBottomRef.current && grew && gestured) {
+      const endLeftView = isEndBelowFold(m);
+      // A vetoed correction MUST be retried: the marker can outlive this
+      // trigger with no further resize or font event (a stationary
+      // middle-button hold, a selection drag), and a dropped correction would
+      // leave the reader permanently short of the bottom with wasAtBottomRef
+      // still true and no pill to recover with.
+      if (wasAtBottomRef.current && endLeftView && gestured) {
         scheduleReanchorRetry();
         return;
       }
       lastScrollGeometryRef.current = m;
-      if (wasAtBottomRef.current && grew) {
+      if (wasAtBottomRef.current && endLeftView) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
       }
     }
 
     let disposed = false;
     // The fonts trigger covers the swap landing before the virtualizer has
-    // re-measured the rows; the observer covers the row measurement itself.
+    // re-measured the rows; the observer covers the row measurement itself
+    // (the content) and the port's own resize (the scroll element).
     const fonts = document.fonts;
     if (fonts) {
       void fonts.ready
         .then(() => {
-          if (!disposed) reanchorIfContentGrew();
+          if (!disposed) reanchorIfEndLeftView();
         })
         .catch(() => {});
     }
-    let contentObserver: ResizeObserver | undefined;
+    let geometryObserver: ResizeObserver | undefined;
     const content = el.firstElementChild;
     if (typeof ResizeObserver !== "undefined" && content) {
-      contentObserver = new ResizeObserver(() => {
-        if (!disposed) reanchorIfContentGrew();
+      geometryObserver = new ResizeObserver(() => {
+        if (!disposed) reanchorIfEndLeftView();
       });
-      contentObserver.observe(content);
+      geometryObserver.observe(content);
+      geometryObserver.observe(el);
     }
 
     el.addEventListener("scroll", handleScroll);
@@ -1564,7 +1576,7 @@ export function useTranscriptScroll({
     return () => {
       disposed = true;
       if (reanchorRetryFrame !== null) cancelAnimationFrame(reanchorRetryFrame);
-      contentObserver?.disconnect();
+      geometryObserver?.disconnect();
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markWheel);
       el.removeEventListener("touchstart", startTouch);
