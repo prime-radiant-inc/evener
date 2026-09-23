@@ -177,10 +177,14 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			continue
 		}
 		// Only the actions remoteForwardedThreadCapabilities names may be
-		// advertised: Shutdown is forwarded today, every other staged action is
-		// masked. Stating the expected set here keeps a field from riding along
-		// with a neighbour's enablement.
-		wantAdvertised := tc.field == "Shutdown"
+		// advertised. The expectation is read from that set rather than restated as
+		// a literal here, so enabling another action cannot leave this test agreeing
+		// with a stale copy of it.
+		wantAdvertised, ok := capabilityFieldValue(maskedRemoteThreadCapabilities, tc.field)
+		if !ok {
+			t.Errorf("capability %s is not a field of the shared masked set", tc.field)
+			continue
+		}
 		if advertised != wantAdvertised {
 			t.Errorf("capability %s advertised = %v, want %v", tc.field, advertised, wantAdvertised)
 		}
