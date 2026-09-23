@@ -187,10 +187,10 @@ The handler:
    its provider-instance list — and are already in the exact set through the
    plugin and instance families above; they are named here so component 06's
    discovery set and this allow-list enumerate the same names.) **The whole
-   discovery set is the addition to the shipped 07a allow-list**, which as
-   written covers the five admin families only (the implementation-status note
-   above): `evener/plugin/preview` and `evener/instance/list` are already
-   present through their families, so the genuinely new names are
+   discovery set was the addition to the 07a allow-list** (now landed, per the
+   implementation-status note above): `evener/plugin/preview` and
+   `evener/instance/list` were already present through their families, so the
+   genuinely new names were
    `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`,
    `evener/projects/recent`, `evener/harnesses/list`,
    `evener/spawn/slashCatalog`, `evener/git/head`, and `model/list`. Without
