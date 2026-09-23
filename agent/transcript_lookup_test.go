@@ -800,3 +800,112 @@ func TestFind_LegacyBucketTextFormatShowsBareIDAddressing(t *testing.T) {
 		t.Fatalf("find text format does not mention the bare session ID %q; model cannot address the session:\n%s", legacyID, text)
 	}
 }
+
+// --- roborev fix round 3: RED tests ---
+
+// TestEnumerateBuckets_SkipsSymlinkedBucket asserts that a symlink under
+// evener/projects/ pointing outside the state root is NOT enumerated as a
+// bucket. enumerateBuckets uses os.Stat (follows symlinks), so a symlinked
+// entry is indistinguishable from a real directory and can expose transcripts
+// outside the state root. The sibling-job path (locateLocalJob) already skips
+// symlinks via entry.Type()&os.ModeSymlink; enumerateBuckets must do the same.
+func TestEnumerateBuckets_SkipsSymlinkedBucket(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	normal := newBucketUnder(t, sh)
+	// A directory outside the state root that the symlink will point to.
+	outside := t.TempDir()
+	sessDir := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink under projects/ pointing to the outside dir.
+	linkPath := filepath.Join(sh, "evener", "projects", "symlink-bucket")
+	if err := os.Symlink(outside, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	buckets, err := enumerateBuckets(sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range buckets {
+		if filepath.Base(b) == "symlink-bucket" {
+			t.Fatalf("symlinked bucket was enumerated; symlinks must be skipped to prevent exposure outside the state root")
+		}
+	}
+	// Normal bucket must still be present.
+	found := false
+	for _, b := range buckets {
+		if filepath.Base(b) == filepath.Base(normal) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("normal bucket %q missing from enumeration", filepath.Base(normal))
+	}
+}
+
+// TestReadAPILogSummary_LegacyBucketBareIDOmitsEmptyTranscriptRef asserts that
+// an api_log summary read against a legacy-bucket bare session ID does NOT
+// emit "transcript_ref": "" in the JSON envelope. The field must be absent
+// (omitempty), not present-but-empty — a model reusing an empty
+// transcript_ref would silently read the CURRENT session.
+func TestReadAPILogSummary_LegacyBucketBareIDOmitsEmptyTranscriptRef(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	legacy := filepath.Join(sh, "evener", "projects", "0123456789abcdef")
+	writeTranscript(t, legacy, "02wMz5Txv5aIxgf9yVdd0N")
+	// Create an empty .api.jsonl so the api_log read succeeds with 0 records.
+	apiLogPath := filepath.Join(legacy, "sessions", "02wMz5Txv5aIxgf9yVdd0N"+".api.jsonl")
+	if err := os.WriteFile(apiLogPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := &toolDeps{stateDir: current, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	result, err := execReadSessionTranscript(deps, map[string]any{
+		"transcript_ref": "02wMz5Txv5aIxgf9yVdd0N",
+		"source":         "api_log",
+	})
+	if err != nil {
+		t.Fatalf("read_transcript api_log summary: %v", err)
+	}
+	b, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if ref, ok := env["transcript_ref"]; ok && ref == "" {
+		t.Fatal("apiLogReadEnvelope emitted empty transcript_ref; must be omitted (omitempty) for legacy-bucket bare-ID api_log reads")
+	}
+}
+
+// TestApiLogReadEnvelope_OmitsEmptyTranscriptRef asserts the struct tag
+// directly: apiLogReadEnvelope.TranscriptRef must have ,omitempty.
+func TestApiLogReadEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
+	env := apiLogReadEnvelope{Source: apiLogSource}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "transcript_ref") {
+		t.Fatalf("apiLogReadEnvelope must omit empty transcript_ref (omitempty), got: %s", b)
+	}
+}
+
+// TestApiLogAttemptEnvelope_OmitsEmptyTranscriptRef asserts the struct tag
+// directly: apiLogAttemptEnvelope.TranscriptRef must have ,omitempty.
+func TestApiLogAttemptEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
+	env := apiLogAttemptEnvelope{Source: apiLogSource}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "transcript_ref") {
+		t.Fatalf("apiLogAttemptEnvelope must omit empty transcript_ref (omitempty), got: %s", b)
+	}
+}

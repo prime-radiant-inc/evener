@@ -83,7 +83,7 @@ type apiLogReadMeta struct {
 }
 
 type apiLogReadEnvelope struct {
-	TranscriptRef            string                `json:"transcript_ref"`
+	TranscriptRef            string                `json:"transcript_ref,omitempty"`
 	Source                   string                `json:"source"`
 	CredentialValuesExcluded bool                  `json:"credential_values_excluded"`
 	Records                  []apiLogRecordSummary `json:"records"`
@@ -91,7 +91,7 @@ type apiLogReadEnvelope struct {
 }
 
 type apiLogAttemptEnvelope struct {
-	TranscriptRef            string                  `json:"transcript_ref"`
+	TranscriptRef            string                  `json:"transcript_ref,omitempty"`
 	Source                   string                  `json:"source"`
 	CredentialValuesExcluded bool                    `json:"credential_values_excluded"`
 	Attempt                  apiLogRecordSummary     `json:"attempt"`

@@ -162,11 +162,17 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)
 	}
-	// Filter to directories only.
+	// Filter to directories only. Use Lstat (not Stat) so symlinks are
+	// detected and skipped — a foreign-named symlink under projects/ could
+	// point outside the state root and expose transcripts from elsewhere.
+	// Mirrors locateLocalJob's entry.Type()&os.ModeSymlink guard.
 	dirs := make([]string, 0, len(matches))
 	for _, m := range matches {
-		info, statErr := os.Stat(m)
+		info, statErr := os.Lstat(m)
 		if statErr != nil || !info.IsDir() {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
 		dirs = append(dirs, m)
@@ -243,5 +249,71 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 	if err := identifier.ValidateSessionID(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)
 	}
-	return currentStateDir, selector, scopeCurrentProject, nil
+	// Bare session ID: resolve cross-bucket, mirroring resolveTranscript.
+	// Search the current bucket first (a stat-free check is not possible here
+	// because the parent's transcript may not exist, so we scan for children
+	// in the resolved bucket — the bucket is determined by where the parent
+	// session lives, not by statting the parent transcript). When the
+	// session is not in the current bucket, search sibling buckets. This
+	// mirrors resolveTranscript's bare-ID semantics and prevents
+	// children_of from silently searching the wrong project.
+	sh := stateHomeFor(currentStateDir)
+	if sh == "" {
+		return currentStateDir, selector, scopeCurrentProject, nil
+	}
+	buckets, globErr := enumerateBuckets(sh)
+	if globErr != nil {
+		return "", "", "", fmt.Errorf("enumerating project buckets: %w", globErr)
+	}
+	currentAbs, _ := filepath.Abs(currentStateDir)
+	var otherMatches []string
+	for _, bucket := range buckets {
+		bucketAbs, _ := filepath.Abs(bucket)
+		if bucketAbs == currentAbs {
+			continue
+		}
+		if _, statErr := os.Stat(transcriptPath(bucket, selector)); statErr == nil {
+			otherMatches = append(otherMatches, bucket)
+		}
+	}
+	// Check current bucket too.
+	currentFound := false
+	if _, statErr := os.Stat(transcriptPath(currentStateDir, selector)); statErr == nil {
+		currentFound = true
+	}
+	totalMatches := len(otherMatches)
+	if currentFound {
+		totalMatches++
+	}
+	switch {
+	case totalMatches == 0:
+		// Parent transcript not found in any bucket. The parent may be the
+		// live session (transcript not yet flushed) or a parent whose
+		// transcript was pruned. Fall back to the current bucket so
+		// children_of:"" / children_of:"current" still works, and
+		// children_of:<bare-id> for a never-flushed parent still searches
+		// the current bucket.
+		return currentStateDir, selector, scopeCurrentProject, nil
+	case totalMatches > 1:
+		// Ambiguous: the bare ID exists in multiple buckets. Mirror
+		// resolveTranscript's ambiguity error with bucket names as context.
+		var candidates []string
+		if currentFound {
+			candidates = append(candidates, encodeRef("", selector))
+		}
+		for _, bucket := range otherMatches {
+			if r := refFor(filepath.Base(bucket), selector); r != "" {
+				candidates = append(candidates, r)
+			} else {
+				candidates = append(candidates, filepath.Base(bucket))
+			}
+		}
+		return "", "", "", fmt.Errorf("session %q is ambiguous; found in: %s",
+			selector, strings.Join(candidates, ", "))
+	case currentFound:
+		return currentStateDir, selector, scopeCurrentProject, nil
+	default:
+		// Exactly one match in a sibling bucket.
+		return otherMatches[0], selector, scopeAllProjects, nil
+	}
 }
