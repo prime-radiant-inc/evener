@@ -732,7 +732,10 @@ function HostGlyph(): JSX.Element {
 // leading glyph instead of a signal dot (a host is infrastructure, not
 // triage), label, trailing chevron, attention Badge when a host's sessions
 // need you. Offline follows the session rows' own host-label convention:
-// italic, dimmed, with "(offline)" in the caption ink.
+// italic, dimmed, with "(offline)" in the caption ink. (The Badge is
+// superseded: the shipped host row carries none - the manifest has no
+// per-host attention count - kept here because this page is the frozen
+// review artifact that was approved.)
 function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }): JSX.Element {
   const { host } = node;
   const labelClass = host.online ? rowStyles.label : `${rowStyles.label} ${rowStyles.hostOffline}`;
@@ -770,7 +773,6 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }): JSX
   );
 }
 
-// The organize-by glyph, same grammar: a two-level tree.
 // The organize-by glyph candidates, drawn on the rail's 16x16 icon grid.
 //
 // TuneGlyph is the one in use: three lines with staggered knobs — the

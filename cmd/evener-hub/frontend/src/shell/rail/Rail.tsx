@@ -4,6 +4,7 @@ import type {
   NavigationProjectResource,
   NavigationProjectSummary,
   NavigationSessionSummary,
+  Source,
 } from "@evener/appwire-client";
 import { canReadSharedNotes, errorText } from "@evener/appwire-client";
 import {
@@ -92,19 +93,21 @@ import {
   archivedSessionGroups,
   catalogOverflowNode,
   hostProjectNodes,
+  type IsExpanded,
   liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
   pinSectionDisclosureID,
   pinSectionOverflowNode,
-  projectNodeIdForSessionRef,
   projectNodes,
   projectNodesWithHostBranches,
+  type RailGroupingMode,
   type RailNode,
   type RailPinSection,
   type RailProject,
   type RailSession,
+  revealExpansionIds,
   sectionOverflowNode,
   sessionNodes,
 } from "./railNodes";
@@ -298,6 +301,44 @@ function isPassiveRailNode(node: RailNode): boolean {
     node.kind === "watch" ||
     (node.kind === "overflow" && node.passive === true)
   );
+}
+
+/** The catalogs' "+N more projects" row, appended to whatever the section's
+ * own nodes are - flat project rows today, host groups under the organize-by
+ * setting. */
+function withCatalogOverflow(
+  nodes: RailNode[],
+  overflow?: { remaining: number; offset: number; limit: number },
+  overflowId?: string,
+  overflowCatalog?: "projects" | "archived_projects" | "test_runs",
+): RailNode[] {
+  if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
+    return [
+      ...nodes,
+      ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
+    ];
+  }
+  return nodes;
+}
+
+/** The Projects tier under the organize-by setting: ONE decision pairs the
+ * section's title with its node shape, so they cannot drift apart (the same
+ * one-decision doctrine as projectPlacement below). Test runs stay flat -
+ * that tier is a catalog, not the work surface the setting addresses. */
+function projectsTierFor(
+  mode: RailGroupingMode,
+  projects: readonly RailProject[],
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): { title: string; nodes: RailNode[] } {
+  switch (mode) {
+    case "host-project":
+      return { title: "Hosts", nodes: hostProjectNodes(projects, sources, isExpanded) };
+    case "project-host":
+      return { title: "Projects", nodes: projectNodesWithHostBranches(projects, sources, isExpanded) };
+    default:
+      return { title: "Projects", nodes: projectNodes(projects, isExpanded) };
+  }
 }
 
 // One shared Tree wrapper for the rail's sections: the rail renders on
@@ -942,19 +983,22 @@ function NavigationRail({
   const resourcesState = useNavigationStore((state) => state.resources);
   const expanded = useNavigationStore((state) => state.expanded);
   const attention = useNavigationStore((state) => selectAttentionSummary(state));
-  // The rail's organize-by setting. Host grouping gates on the same evidence
-  // the spawn picker uses: a SETTLED manifest naming at least one non-local
-  // source (selectSources, not the display view, so an in-flight
-  // revalidation cannot blink the layout) - a hub with no configured hosts
-  // keeps today's rail exactly. The builders below read the DISPLAY view
-  // instead: a host group's online flag is a display fact, and a
-  // revalidation must not flip groups offline for the length of the refresh
-  // (the same sticky contract the session rows' host chips read).
+  // The rail's organize-by setting. Host grouping turns on only when the
+  // manifest has named a remote source - decided on the SETTLED list
+  // (selectSources), not the display view, so an in-flight revalidation
+  // cannot blink the whole rail between shapes; the spawn picker reads the
+  // display list for what it SHOWS (its own sticky-display contract) but
+  // never has to make a layout decision from it. A hub with no configured
+  // hosts keeps today's rail exactly. The builders below read the DISPLAY
+  // view instead: a host group's online flag and label are display facts,
+  // and a revalidation must not flip groups offline for the length of the
+  // refresh (the same sticky contract the session rows' host chips read).
   const grouping = usePrefsStore((state) => state.sidebarGrouping);
   const setGrouping = usePrefsStore((state) => state.setSidebarGrouping);
   const groupingSources = useNavigationStore(selectSources);
   const displaySources = useNavigationStore(selectDisplaySources);
   const hostGrouping = groupingSources.some((source) => source.id !== LOCAL_HOST);
+  const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
   const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
@@ -1145,12 +1189,15 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const projectID = projectNodeIdForSessionRef(
+    const chain = revealExpansionIds(
       [...resources.projects, ...resources.testRuns, ...resources.archivedProjects],
+      resources.live,
       revealTarget,
+      groupingMode,
     );
-    if (projectID && expandedOverrides.get(projectID) !== true) {
-      setExpanded(projectID, true);
+    const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
+    if (nextFold) {
+      setExpanded(nextFold, true);
       return;
     }
     const currentState = navigationStore.getState();
@@ -1231,6 +1278,7 @@ function NavigationRail({
     revealTarget,
     resources,
     expandedOverrides,
+    groupingMode,
     consumeReveal,
     setExpanded,
     requestRevealResource,
@@ -1639,49 +1687,18 @@ function NavigationRail({
       ...catalogOverflowNode("catalog:archived_projects", "archived_projects", ov.remaining, ov.offset, ov.limit),
     );
   }
-  // The catalogs' "+N more projects" row, appended to whatever the section's
-  // own nodes are - flat project rows today, host groups under the
-  // organize-by setting.
-  const withCatalogOverflow = (
-    nodes: RailNode[],
-    overflow?: { remaining: number; offset: number; limit: number },
-    overflowId?: string,
-    overflowCatalog?: "projects" | "archived_projects" | "test_runs",
-  ): RailNode[] => {
-    if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
-      return [
-        ...nodes,
-        ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
-      ];
-    }
-    return nodes;
-  };
-  const projectRailNodes = (
-    projects: readonly RailProject[],
-    overflow?: { remaining: number; offset: number; limit: number },
-    overflowId?: string,
-    overflowCatalog?: "projects" | "archived_projects" | "test_runs",
-  ): RailNode[] => withCatalogOverflow(projectNodes(projects, isExpanded), overflow, overflowId, overflowCatalog);
-  // The Projects section's nodes under the organize-by setting: host groups
-  // as the top rows ("Host, then project") or project rows with per-host
-  // branches ("Project, then host"). Test runs keep the flat shape - that
-  // tier is a catalog, not the work surface the setting addresses.
-  const projectsSectionNodes = hostGrouping
-    ? withCatalogOverflow(
-        grouping === "host-project"
-          ? hostProjectNodes(resources.projects, displaySources, isExpanded)
-          : projectNodesWithHostBranches(resources.projects, displaySources, isExpanded),
-        resources.catalogOverflow?.projects,
-        "catalog:projects",
-        "projects",
-      )
-    : projectRailNodes(resources.projects, resources.catalogOverflow?.projects, "catalog:projects", "projects");
-  const projectsSectionTitle = hostGrouping && grouping === "host-project" ? "Hosts" : "Projects";
+  const projectsTier = projectsTierFor(groupingMode, resources.projects, displaySources, isExpanded);
+  const projectsSectionNodes = withCatalogOverflow(
+    projectsTier.nodes,
+    resources.catalogOverflow?.projects,
+    "catalog:projects",
+    "projects",
+  );
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host
     // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
-    ...(hostGrouping
+    ...(groupingMode !== "flat"
       ? liveNodesGroupedByHost(sessionNodes(resources.live, isExpanded), displaySources, isExpanded)
       : sessionNodes(resources.live, isExpanded)),
     ...sectionOverflowNode(
@@ -1806,7 +1823,7 @@ function NavigationRail({
                 </div>
               )}
               <RailSection
-                title={projectsSectionTitle}
+                title={projectsTier.title}
                 nodes={projectsSectionNodes}
                 open={isExpanded(PROJECTS_SECTION_KEY, true)}
                 onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
@@ -1817,8 +1834,8 @@ function NavigationRail({
               />
               <RailSection
                 title="Test runs"
-                nodes={projectRailNodes(
-                  resources.testRuns,
+                nodes={withCatalogOverflow(
+                  projectNodes(resources.testRuns, isExpanded),
                   resources.catalogOverflow?.test_runs,
                   "catalog:test_runs",
                   "test_runs",

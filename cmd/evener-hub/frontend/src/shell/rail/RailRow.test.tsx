@@ -267,7 +267,7 @@ function hostGroupNode(overrides: Partial<HostRailNode> = {}): HostRailNode {
   return {
     id: "host:devbox",
     kind: "host",
-    host: { id: "devbox", online: true },
+    host: { id: "devbox", label: "devbox", online: true },
     expanded: true,
     children: [],
     ...overrides,
@@ -2820,15 +2820,15 @@ describe("host group row", () => {
     expect(screen.getByText("devbox")).toBeTruthy();
   });
 
-  test("names this hub 'This host' rather than its local id", () => {
+  test("names a host by its manifest label rather than its id", () => {
     render(
       <RailRow
-        node={hostGroupNode({ id: "host:local", host: { id: "local", online: true } })}
+        node={hostGroupNode({ id: "host:local", host: { id: "local", label: "this host", online: true } })}
         info={info({ hasChildren: true })}
         actions={actions()}
       />,
     );
-    expect(screen.getByText("This host")).toBeTruthy();
+    expect(screen.getByText("this host")).toBeTruthy();
   });
 
   test("an online host reads plain and its tooltip names just the host", () => {
@@ -2842,7 +2842,7 @@ describe("host group row", () => {
   test("an offline host reads italic-dimmed with an '(offline)' suffix and says so in its tooltip", () => {
     render(
       <RailRow
-        node={hostGroupNode({ id: "host:ci-runner", host: { id: "ci-runner", online: false } })}
+        node={hostGroupNode({ id: "host:ci-runner", host: { id: "ci-runner", label: "ci-runner", online: false } })}
         info={info({ hasChildren: true })}
         actions={actions()}
       />,

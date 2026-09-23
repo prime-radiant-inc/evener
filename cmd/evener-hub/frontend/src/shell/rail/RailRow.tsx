@@ -51,7 +51,6 @@ import {
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { LOCAL_HOST } from "../../stores/hostRouting";
 import { relativeAge, selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
@@ -849,10 +848,6 @@ function ProjectRow({
 // under the group keep their own signals and menus.
 function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
   const { host } = node;
-  // The node carries ids, not display names: this hub's own id reads as
-  // "This host" everywhere else a host is named (the spawn picker's first
-  // entry), so the group row does the same instead of a bare "local".
-  const label = host.id === LOCAL_HOST ? "This host" : host.id;
   return (
     <span
       className={CLASS.railRow}
@@ -865,7 +860,7 @@ function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
           {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
           <span className={host.online ? CLASS.label : `${CLASS.label} ${CLASS.hostOffline}`} onClick={info.activate}>
-            {label}
+            {host.label}
           </span>
           {!host.online && (
             <span data-testid="rail-row-host-group-offline" className={CLASS.host}>

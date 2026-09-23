@@ -2,7 +2,7 @@
 
 import type { NavigationWatchSummary, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { OverflowRailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
+import type { OverflowRailNode, RailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
 import {
   activeWatchCount,
   archivedCount,
@@ -17,6 +17,7 @@ import {
   projectNodeIdForSessionRef,
   projectNodes,
   projectNodesWithHostBranches,
+  revealExpansionIds,
   sessionNodes,
   topLevelAncestorRef,
   watchCountLabel,
@@ -498,6 +499,11 @@ describe("host grouping (organize by)", () => {
       host_id: host,
       ...overrides,
     });
+  // The grouped-row assertions read children ids through kind guards (a
+  // plain "children" in check cannot narrow the base type's optional
+  // property), so the guard itself lives here once.
+  const childIds = (node: RailNode | undefined): string[] =>
+    (node?.kind === "project" || node?.kind === "host" ? node.children : []).map((child) => child.id);
 
   test("hostProjectNodes orders hosts this host first, then online alphabetically, offline last, and hides empty hosts", () => {
     const render = project({ key: "render", sources: ["render-farm"], sessions: [on("render-farm", "r1")] });
@@ -521,16 +527,11 @@ describe("host grouping (organize by)", () => {
     expect(local?.children.map((child) => child.id)).toEqual(["projectnode:evener@local"]);
     const localCopy = local?.children[0];
     expect(localCopy).toMatchObject({ kind: "project", project: { key: "evener" } });
-    expect(localCopy?.kind === "project" ? localCopy.children.map((row) => row.id) : []).toEqual([
-      "navigation:local:l1",
-    ]);
+    expect(childIds(localCopy)).toEqual(["navigation:local:l1"]);
     // The needs-you-first sort survives the per-host filter.
     expect(devbox?.children.map((child) => child.id)).toEqual(["projectnode:evener@devbox"]);
     const devboxCopy = devbox?.children[0];
-    expect(devboxCopy?.kind === "project" ? devboxCopy.children.map((row) => row.id) : []).toEqual([
-      "navigation:devbox:d2",
-      "navigation:devbox:d1",
-    ]);
+    expect(childIds(devboxCopy)).toEqual(["navigation:devbox:d2", "navigation:devbox:d1"]);
   });
 
   test("hostProjectNodes re-ids each copy's overflow so two copies of one project never share a node id", () => {
@@ -587,9 +588,7 @@ describe("host grouping (organize by)", () => {
     ]);
     const localBranch = node?.children[0];
     expect(localBranch).toMatchObject({ kind: "host", host: { id: "local" } });
-    expect(localBranch?.kind === "host" ? localBranch.children.map((row) => row.id) : []).toEqual([
-      "navigation:local:l1",
-    ]);
+    expect(childIds(localBranch)).toEqual(["navigation:local:l1"]);
   });
 
   test("projectNodesWithHostBranches leaves an unloaded project's loading placeholder alone", () => {
@@ -615,9 +614,7 @@ describe("host grouping (organize by)", () => {
     // window) and carries the overflow that can reveal them.
     const hosts = hostProjectNodes([evener], sources, closed);
     const devboxCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
-    expect(devboxCopy?.kind === "project" ? devboxCopy.children.map((row) => row.id) : []).toEqual([
-      "projectnode:evener@devbox:overflow",
-    ]);
+    expect(childIds(devboxCopy)).toEqual(["projectnode:evener@devbox:overflow"]);
   });
 
   test("liveNodesGroupedByHost groups rows under hosts only while more than one host is in play", () => {
@@ -626,7 +623,52 @@ describe("host grouping (organize by)", () => {
     expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
     const local = grouped[0];
     expect(local).toMatchObject({ kind: "host", host: { id: "local", online: true }, expanded: true });
-    expect(local?.kind === "host" ? local.children.map((row) => row.id) : []).toEqual(["navigation:local:l1"]);
+    expect(childIds(local)).toEqual(["navigation:local:l1"]);
+  });
+
+  // A deep-link reveal has to walk the same ids the grouped builders mint,
+  // or the row it targets stays hidden behind a group that never opens.
+  test("revealExpansionIds walks the host-first chain: the host group, then the project's copy", () => {
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("devbox", "d1"), on("local", "l1")],
+    });
+    expect(revealExpansionIds([evener], [], "devbox:d1", "host-project")).toEqual([
+      "host:devbox",
+      "projectnode:evener@devbox",
+    ]);
+    expect(revealExpansionIds([evener], [], "devbox:d1", "flat")).toEqual(["projectnode:evener"]);
+  });
+
+  test("revealExpansionIds walks the project-first chain: the project, then its per-host branch", () => {
+    const evener = project({ key: "evener", sources: ["local", "devbox"], sessions: [on("devbox", "d1")] });
+    expect(revealExpansionIds([evener], [], "devbox:d1", "project-host")).toEqual([
+      "projectnode:evener",
+      "projectnode:evener@host:devbox",
+    ]);
+  });
+
+  test("revealExpansionIds routes a nested row through its top-level carrier's host", () => {
+    const nested = project({
+      key: "evener",
+      sources: ["local"],
+      sessions: [session({ ref: "root", row_id: "root", host_id: "local", children: [on("devbox", "child")] })],
+    });
+    expect(revealExpansionIds([nested], [], "devbox:child", "host-project")).toEqual([
+      "host:local",
+      "projectnode:evener@local",
+    ]);
+  });
+
+  test("revealExpansionIds opens a Live host subheader exactly while live rows span hosts", () => {
+    const twoHosts = [on("local", "l1"), on("devbox", "d1")];
+    expect(revealExpansionIds([], twoHosts, "devbox:d1", "project-host")).toEqual(["livehost:devbox"]);
+    expect(revealExpansionIds([], [on("local", "l1")], "local:l1", "project-host")).toEqual([]);
+  });
+
+  test("revealExpansionIds is empty for a ref nothing loaded holds (the location path owns it)", () => {
+    expect(revealExpansionIds([], [], "missing", "host-project")).toEqual([]);
     // A single host (or none) keeps today's flat list, byte for byte.
     const single = sessionNodes([on("local", "l1"), on("local", "l2")], closed);
     expect(liveNodesGroupedByHost(single, sources, closed)).toBe(single);

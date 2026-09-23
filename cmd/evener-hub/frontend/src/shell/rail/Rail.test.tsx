@@ -2349,7 +2349,7 @@ describe("host grouping (organize by)", () => {
       within(live)
         .getAllByTestId("rail-row-host-group")
         .map((row) => row.textContent),
-    ).toEqual(["This host", "devbox"]);
+    ).toEqual(["this host", "devbox"]);
     expect(within(live).getByText("Devbox live run")).toBeTruthy();
     // The default mode keeps the Projects title and its project rows; inside
     // a project only a host with loaded rows earns a branch, and it starts
@@ -2379,7 +2379,7 @@ describe("host grouping (organize by)", () => {
       within(sectionRoot("Hosts"))
         .getAllByTestId("rail-row-host-group")
         .map((row) => row.textContent),
-    ).toEqual(["This host", "devbox"]);
+    ).toEqual(["this host", "devbox"]);
   });
 
   test("a single-host Live stays flat even in host-first mode", () => {
@@ -2444,6 +2444,27 @@ describe("host grouping (organize by)", () => {
     const archived = sectionRoot(/Archived sessions/);
     expect(within(archived).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
     expect(within(archived).getByText("Old project")).toBeTruthy();
+  });
+
+  test("a reveal walks the host group and project copy its target row hides behind (host-first)", async () => {
+    const restoreScroll = stubScrollIntoView();
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        catalogResource([{ key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"] }]),
+        projectResource("p", [summary({ ref: "devbox:target", title: "Target row", host_id: "devbox" })]),
+      ],
+      remoteManifest(),
+    );
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="devbox:target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(within(sectionRoot("Hosts")).getByText("Target row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
   });
 
   test("the organize row sits hard right, chrome like the headings around it", () => {
