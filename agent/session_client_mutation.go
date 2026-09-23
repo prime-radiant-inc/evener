@@ -428,6 +428,11 @@ func (s *Session) recoveredTurnRunning(snapshot *clientMutationSnapshot) bool {
 // claimClientMutationStart returns the next user turn owned by the durable
 // start lifecycle. In addition to accepted starts, restore may expose a queued
 // turn that crashed after claim under the same stable turn identity.
+//
+// No start is claimed while an interrupt fence exists (see the guard below), and
+// runnableClientMutationStartTurnID reports the same rule: the start path must
+// not arm for, or wake on, a claim this call would refuse. The queue branches
+// are not fenced.
 func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	release, err := s.beginRetirementMutation("input")
 	if err != nil {
@@ -1243,17 +1248,26 @@ func (s *Session) hasRunnableClientMutationStart() bool {
 	return runnable
 }
 
+// runnableClientMutationStartTurnID reports the next turn the start path can run
+// and whether it is runnable right now. Its start branch mirrors
+// claimClientMutationStart's fence guard exactly: NO start is reported runnable
+// while an interrupt fence exists, because none can be claimed then. Reporting
+// one would make ProcessClientMutationStart arm cancellation for a claim that
+// immediately refuses -- a spurious arm/clear on every wake -- and would tell
+// sessionWorkPending, and so WireState, that the session has work to resume
+// while the fence blocks its only pending start. The queue branches are not
+// fenced: they name a turn the fence did not stop. The post-fence wake
+// (wakeRunnableClientMutationStartAfterFence) delivers the held start once the
+// fence clears.
 func (s *Session) runnableClientMutationStartTurnID() (string, bool) {
 	if s == nil || s.clientMutations == nil {
 		return "", false
 	}
 	snapshot := s.clientMutations.snapshot()
 	for _, pending := range snapshot.PendingExecutions {
-		if pending.Method == clientMutationMethodStart &&
+		if snapshot.InterruptFence == nil &&
+			pending.Method == clientMutationMethodStart &&
 			(pending.ExecutionState == "accepted" || pending.ExecutionState == "incorporated") {
-			if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
-				continue
-			}
 			return pending.TurnID, pending.TurnID != ""
 		}
 		if pending.Method == clientMutationMethodQueue &&

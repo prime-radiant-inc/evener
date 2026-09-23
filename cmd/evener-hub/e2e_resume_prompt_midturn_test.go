@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,16 +125,25 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	// that runs them in the other order executes the user's latest words against
 	// the dead turn's state and leaves the stale prompt trailing after them,
 	// which is not what was promised.
+	//
+	// The assertion is on the NEWEST user message of each request, not
+	// Call.Contains. Contains searches the whole conversation, so the dead
+	// prompt replayed from round one satisfies it even when this round ran the
+	// new prompt. The newest user message is the one that names what the round
+	// actually ran, so the recovered prompt must be it and the new prompt, which
+	// has not run yet, must not be.
 	waitCtx, cancelWait := context.WithTimeout(ctx, 60*time.Second)
 	defer cancelWait()
 	recovered, recoveredErr := provider.Next(waitCtx.Done())
 	if recoveredErr != nil {
 		t.Fatalf("the recovered turn never reached the model (turn/start err=%v): %v", startErr, recoveredErr)
 	}
-	t.Logf("model request 1 carries dead=%v new=%v", recovered.Contains(deadPrompt), recovered.Contains(newPrompt))
-	if !recovered.Contains(deadPrompt) {
-		t.Fatalf("the resumed session ran the new prompt BEFORE the recovered one; turn/start err=%v messages:\n%s",
-			startErr, strings.Join(recovered.Texts(), "\n"))
+	recoveredNewestUser := newestUserText(recovered)
+	t.Logf("model request 1 newest user message carries dead=%v new=%v",
+		strings.Contains(recoveredNewestUser, deadPrompt), strings.Contains(recoveredNewestUser, newPrompt))
+	if !strings.Contains(recoveredNewestUser, deadPrompt) || strings.Contains(recoveredNewestUser, newPrompt) {
+		t.Fatalf("the resumed session ran the new prompt BEFORE the recovered one; newest user message=%q turn/start err=%v messages:\n%s",
+			recoveredNewestUser, startErr, strings.Join(recovered.Texts(), "\n"))
 	}
 	recovered.RespondToolCall("communicate", communicateArgs("recovered turn done"))
 
@@ -141,14 +151,32 @@ func TestE2E_SendPromptAfterDaemonDiedMidTurn(t *testing.T) {
 	// for the thread to fall idle here: the follow-up it was admitted behind is
 	// already the next active turn and is sitting at its own model request, so
 	// waiting for an idle thread would wait for a request this test is the one
-	// that must answer.
+	// that must answer. Its newest user message must be the new prompt, with no
+	// dead prompt trailing it.
 	next, nextErr := provider.Next(waitCtx.Done())
 	if nextErr != nil {
 		t.Fatalf("the new prompt never reached the model after the recovered turn (turn/start err=%v): %v", startErr, nextErr)
 	}
-	t.Logf("model request 2 carries dead=%v new=%v", next.Contains(deadPrompt), next.Contains(newPrompt))
-	if !next.Contains(newPrompt) {
-		t.Fatalf("the model request after the recovered turn does not carry the new prompt; turn/start err=%v messages:\n%s",
-			startErr, strings.Join(next.Texts(), "\n"))
+	nextNewestUser := newestUserText(next)
+	t.Logf("model request 2 newest user message carries dead=%v new=%v",
+		strings.Contains(nextNewestUser, deadPrompt), strings.Contains(nextNewestUser, newPrompt))
+	if !strings.Contains(nextNewestUser, newPrompt) || strings.Contains(nextNewestUser, deadPrompt) {
+		t.Fatalf("the model request after the recovered turn is not the new prompt; newest user message=%q turn/start err=%v messages:\n%s",
+			nextNewestUser, startErr, strings.Join(next.Texts(), "\n"))
 	}
+}
+
+// newestUserText returns the text of the last user-role message in a model
+// request -- the prompt the round is answering. Call.Contains searches the whole
+// conversation, so a prompt replayed from an earlier round satisfies it even
+// when the round under test ran a different prompt; the newest user message is
+// the one that names what this round actually ran.
+func newestUserText(call *fakellm.Call) string {
+	lines := call.Texts()
+	for _, line := range slices.Backward(lines) {
+		if text, ok := strings.CutPrefix(line, "user: "); ok {
+			return text
+		}
+	}
+	return ""
 }

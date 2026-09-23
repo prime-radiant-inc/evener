@@ -478,6 +478,62 @@ drain:
 	}
 }
 
+// TestInterruptFenceHoldsTheFollowUpOutOfTheRunnableCheck pins the runnable
+// predicate to the claim guard it feeds. The claim path refuses EVERY start
+// while an interrupt fence exists, so the runnable check must report the same
+// thing. The old check skipped only a pending start whose turn id equalled the
+// fence's ExpectedTurnID -- the fenced turn -- so a follow-up admitted behind
+// the running recovered turn still read as runnable: ProcessClientMutationStart
+// armed cancellation for it, the claim then refused it, and the runner was
+// cleared, a spurious arm/clear on every wake. hasRunnableClientMutationStart
+// also feeds sessionWorkPending and WireState, so the session read as processing
+// while the fence blocked its only pending work.
+//
+// The fence here names the RUNNING inherited turn, which is exactly the case the
+// equality-only check let through: the follow-up's id differs from
+// ExpectedTurnID, so it was reported runnable under the fence.
+func TestInterruptFenceHoldsTheFollowUpOutOfTheRunnableCheck(t *testing.T) {
+	restored, inheritedTurnID, _ := recoveredTurnSession(t)
+
+	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
+		t.Fatalf("claim the inherited turn: ok=%v err=%v", ok, err)
+	}
+	followUpResponse := acceptFollowUp(t, restored, "cm-follow-up", "the follow-up")
+	followUpTurnID := followUpResponse.Turn.ID
+
+	if id, runnable := restored.runnableClientMutationStartTurnID(); !runnable || id != followUpTurnID {
+		t.Fatalf("before the fence: runnable=(%q,%v), want the follow-up %q runnable", id, runnable, followUpTurnID)
+	}
+
+	// A Stop fences the inherited turn, which is still running. The follow-up is
+	// a different turn, so the fence does not name it.
+	if err := restored.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		snapshot.InterruptFence = &clientMutationInterruptFence{
+			ClientMutationID: "cm-stop",
+			ExpectedTurnID:   inheritedTurnID,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("arm interrupt fence: %v", err)
+	}
+
+	if id, runnable := restored.runnableClientMutationStartTurnID(); runnable {
+		t.Fatalf("under the fence: runnable=(%q,%v), want no start runnable while the fence exists", id, runnable)
+	}
+	if restored.hasRunnableClientMutationStart() {
+		t.Fatal("hasRunnableClientMutationStart reported work while the fence blocks the only pending start")
+	}
+
+	disarmTestInterruptFence(t, restored)
+
+	if id, runnable := restored.runnableClientMutationStartTurnID(); !runnable || id != followUpTurnID {
+		t.Fatalf("after the fence cleared: runnable=(%q,%v), want the follow-up %q runnable", id, runnable, followUpTurnID)
+	}
+	if !restored.hasRunnableClientMutationStart() {
+		t.Fatal("hasRunnableClientMutationStart did not report the follow-up runnable after the fence cleared")
+	}
+}
+
 // TestAcceptBehindProcessLocalTurnStillRefused pins the other half of the rule:
 // a turn the session started in THIS process is not inherited work, so a
 // turn/start while it is active keeps today's refusal.
