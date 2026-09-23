@@ -185,7 +185,7 @@ export function ActivitySheet({
           row.delegate.childRef);
     const status =
       row.kind === "job"
-        ? jobStatusDisplay(row.job.status)
+        ? jobStatusDisplay(row.job.status, row.job.reason)
         : (stableDelegateDisplayStatus(row.delegate) ??
           row.delegate.child?.aggregate ??
           "unknown");

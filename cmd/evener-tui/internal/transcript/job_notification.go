@@ -117,7 +117,7 @@ func parseJobNotificationBlock(attrsRaw, body string) JobNotificationTie {
 		headline = communicateHeadline(decodeNotificationEntities(body))
 	}
 	if headline == "" && status != "" {
-		headline = JobStatusDisplay(status)
+		headline = JobStatusDisplay(status, strings.TrimSpace(attrs["reason"]))
 	}
 	return JobNotificationTie{JobID: jobID, Headline: headline, IsError: isError}
 }

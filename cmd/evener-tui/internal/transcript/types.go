@@ -98,19 +98,29 @@ func SubagentDisplayStatus(run SubagentRunInfo) string {
 }
 
 // JobStatusDisplay returns the presentation word for a job status: the two
+// JobStatusDisplay returns the presentation word for a job status: the two
 // command-outcome statuses read "Command failed" / "Command killed" — the
 // words the notification card ruled — while every other status keeps its
-// raw machine value. Presentation paths only; classification stays on the
-// raw status.
-func JobStatusDisplay(status string) string {
+// raw machine value. A legacy pre-split "failed" record joins them when
+// its reason names the command's own outcome, so durable history reads the
+// same as the notification card. Presentation paths only; classification
+// stays on the raw status.
+func JobStatusDisplay(status, reason string) string {
 	switch status {
 	case "command_exited_nonzero":
 		return "Command failed"
 	case "command_killed":
 		return "Command killed"
-	default:
-		return status
+	case "failed":
+		trimmedReason := strings.TrimSpace(reason)
+		if trimmedReason == "exit_nonzero" {
+			return "Command failed"
+		}
+		if strings.HasPrefix(trimmedReason, "killed_by_signal") {
+			return "Command killed"
+		}
 	}
+	return status
 }
 
 type ToolCallInfo struct {

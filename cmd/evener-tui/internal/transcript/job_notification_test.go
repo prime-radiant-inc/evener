@@ -121,6 +121,24 @@ func TestParseJobNotificationCommandOutcome(t *testing.T) {
 	}
 }
 
+func TestParseJobNotificationLegacyFailedReason(t *testing.T) {
+	// A pre-split record carries status="failed" with the command's own
+	// outcome in the reason attr; the headline joins the display words so
+	// durable history reads the same as the notification card.
+	text := `<job-notification job_id="job_L1" job_type="shell" status="failed" reason="exit_nonzero"></job-notification>` +
+		`<job-notification job_id="job_L2" job_type="shell" status="failed" reason="killed_by_signal: SIGTERM"></job-notification>`
+	ties := ParseJobNotificationHeadlines(text)
+	if len(ties) != 2 {
+		t.Fatalf("len(ties) = %d, want 2: %+v", len(ties), ties)
+	}
+	if ties[0].Headline != "Command failed" {
+		t.Fatalf("L1 Headline = %q, want Command failed", ties[0].Headline)
+	}
+	if ties[1].Headline != "Command killed" {
+		t.Fatalf("L2 Headline = %q, want Command killed", ties[1].Headline)
+	}
+}
+
 // TestParseJobNotificationHeadlineDelegatesToPlural pins the single-block
 // entry point (still used directly in a couple of call sites and tests) to
 // the same per-block parsing the multi-block entry point uses, so the two

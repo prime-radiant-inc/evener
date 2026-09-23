@@ -90,7 +90,7 @@ function JobCard({ view, live }: { view: Extract<EntityView, { kind: "job" }>; l
   // The card states the same display word every other surface uses, so a
   // command-outcome run reads "Command failed", never the collapsed or raw
   // machine status.
-  const display = jobStatusDisplay(job.status);
+  const display = jobStatusDisplay(job.status, job.reason);
   const status =
     live || failed || statusKind === "done" || statusKind === "failed" || statusKind === "stopped"
       ? display

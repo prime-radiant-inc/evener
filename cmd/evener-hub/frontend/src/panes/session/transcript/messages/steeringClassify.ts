@@ -15,6 +15,8 @@
 // which stay content-driven because structured markup can't false-positive
 // the way a prose pattern could (see parseSteeringNotifications below).
 
+import { jobStatusDisplay } from "@evener/appwire-client";
+
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
 
 export interface ParsedNotification {
@@ -448,9 +450,10 @@ function terminalJobTitle(status: string, reason: string, exitCode?: number): st
   if (status === "command_exited_nonzero") return "Command failed";
   if (status === "command_killed") return "Command killed";
   if (status === "failed") {
-    const trimmedReason = reason.trim();
-    if (trimmedReason === "exit_nonzero") return "Command failed";
-    if (trimmedReason.startsWith("killed_by_signal")) return "Command killed";
+    // The shared display helper owns the legacy reason literals, so the
+    // parser and every display surface stay one vocabulary.
+    const display = jobStatusDisplay(status, reason);
+    if (display !== status) return display;
   }
   // The glyph that tones this frame error sits in an aria-hidden seat, so
   // the title is the only failure text a screen reader reaches — a real

@@ -367,6 +367,27 @@ test("job card states a signal-killed run as Command killed", () => {
   expect(card.textContent).not.toContain("command_killed");
 });
 
+test("job card joins a legacy failed record to the display word by its reason", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_legacy",
+    "Compile the frontend",
+    {},
+    {
+      status: "failed",
+      outcome: "failure",
+      reason: "exit_nonzero",
+      exitCode: 2,
+    },
+  );
+  render(<EntityRef view={view} id="job_legacy" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  expect(screen.getByRole("tooltip").textContent).toContain("Command failed");
+});
+
 test("falls back to the shared render-context entity map", () => {
   vi.useFakeTimers();
   const view = jobView("job_context", "From context");
