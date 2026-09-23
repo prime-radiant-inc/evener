@@ -2042,18 +2042,74 @@ export function createConversationStore() {
                 freshTextByKey.get(item.transcriptKey ?? item.id) ??
                 freshTextById.get(item.id);
               if (freshText === undefined) return item;
+              // The largest prefix-run the text ends with, not the first:
+              // with chunks [" world", "!"] the text "Hello world!" ends
+              // with the FULL run but not with " world" alone, so a
+              // monotonic walk would settle nothing (RoboRev round 6).
               let settled = 0;
-              while (
-                settled < pending.length &&
-                freshText.endsWith(pendingTextJoined(pending.slice(0, settled + 1)))
-              ) {
-                settled += 1;
+              for (let run = 1; run <= pending.length; run += 1) {
+                if (freshText.endsWith(pendingTextJoined(pending.slice(0, run)))) {
+                  settled = run;
+                }
               }
               if (settled === 0) return item;
               const live = pending.slice(settled);
               return live.length === 0
                 ? { ...item, pendingText: undefined }
                 : { ...item, pendingText: live };
+            };
+            // Rule 4 — the wire's copy of a matched non-page item is
+            // authoritative for the content payloads it carries: the item
+            // merge falls back to the retained value whenever the fresh
+            // side omits one (newer.field ?? older.field), so a payload
+            // the wire WITHDREW — a live input image a snapshot no longer
+            // carries — used to ride the merge back and the next
+            // row-changing frame resurrected it (RoboRev round 6).
+            // Fields a fresh re-issue never carries by construction —
+            // pending chunks, reasoning summaries, observed timings, wire
+            // timestamps a live frame can stamp — keep their fallback:
+            // those are local/live state the snapshot cannot speak for.
+            // Page-owned items keep everything (the round-31 rule: the
+            // page's retained history is not the snapshot's to withdraw).
+            const SNAPSHOT_AUTHORITY_FIELDS = [
+              "images",
+              "outputImages",
+              "output",
+              "error",
+              "raw",
+              "prevalOnly",
+              "exitCode",
+              "argumentsJSON",
+              "description",
+              "toolName",
+              "callId",
+              "eventKind",
+              "steeringKind",
+              "source",
+            ] as const;
+            const freshItemByKey = new Map<string, ItemModel>();
+            const freshItemById = new Map<string, ItemModel>();
+            for (const turn of conversation.turns) {
+              for (const item of turn.items) {
+                freshItemByKey.set(item.transcriptKey ?? item.id, item);
+                freshItemById.set(item.id, item);
+              }
+            }
+            const applySnapshotAuthority = (item: ItemModel): ItemModel => {
+              if (pageOwnedIds.has(item.transcriptKey ?? item.id)) return item;
+              const fresh =
+                freshItemByKey.get(item.transcriptKey ?? item.id) ??
+                freshItemById.get(item.id);
+              if (fresh === undefined) return item;
+              let stripped: ItemModel | undefined;
+              for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
+                const retained = (item as unknown as Record<string, unknown>)[field];
+                const settledOnFresh = (fresh as unknown as Record<string, unknown>)[field];
+                if (retained === undefined || settledOnFresh !== undefined) continue;
+                stripped ??= { ...item };
+                (stripped as unknown as Record<string, unknown>)[field] = undefined;
+              }
+              return stripped ?? item;
             };
             const retainedTurnsForMerge = currentConvForMerge.turns.map(
               (turn) => {
@@ -2070,7 +2126,9 @@ export function createConversationStore() {
                     item.type !== "warning" ||
                     pageOwnedIds.has(item.transcriptKey ?? item.id),
                 );
-                const stripped = kept.map(stripSettledChunks);
+                const stripped = kept
+                  .map(stripSettledChunks)
+                  .map(applySnapshotAuthority);
                 return kept.length === turn.items.length &&
                   stripped.every((item, index) => item === kept[index])
                   ? turn
