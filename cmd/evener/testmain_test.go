@@ -50,9 +50,9 @@ func productEvenerEnvVars() []envvars.Var {
 //
 // Both throwaway roots live inside a private host temp that also collects the
 // session scratch and temp containers the sessions under test retain at close.
-// The self-exec helper children below inherit its TMPDIR, so the roots their own
-// TestMain creates land inside it too: several are killed by a signal or leave
-// through os.Exit on purpose and never reach their own cleanup.
+// The self-exec helper children inherit it (sandboxtest.RootVar), so the roots
+// their own TestMain creates land inside it too: several are killed by a signal
+// or leave through os.Exit on purpose and never reach their own cleanup.
 func TestMain(m *testing.M) {
 	// When evener dev cli-shards launches this binary as a shard, its
 	// -test.run regex arrives through a file (see shardrun). Apply it first:

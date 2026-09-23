@@ -16,6 +16,7 @@ import (
 // bases back.
 func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(RootVar, "")
 	outerTemp := os.TempDir()
 	outerHostTemp := filepath.Join(t.TempDir(), "host-temp")
 	if err := os.Mkdir(outerHostTemp, 0o700); err != nil {
@@ -77,6 +78,52 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 // within reports whether path lies strictly under root. Both are compared in
 // canonical form, because a session temp container reports its canonical path
 // and the temp dir may sit behind a symlink (macOS's /var).
+// TestRedirectHostTempInheritsTheEnclosingRoot covers a self-exec helper child,
+// whose TestMain runs again inside the parent's redirect. A detached process the
+// child starts can outlive it (a daemon whose Hub exits), so the child must use
+// the parent's root and leave its removal to the parent rather than make a
+// nested root and delete it, with that process's temp dir, when it exits.
+func TestRedirectHostTempInheritsTheEnclosingRoot(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(RootVar, "")
+	outer, err := RedirectHostTemp("evener-sandboxtest-outer-")
+	if err != nil {
+		t.Fatalf("RedirectHostTemp (outer): %v", err)
+	}
+	t.Cleanup(func() { _ = outer.Discard() })
+	if got := os.Getenv(RootVar); got != outer.Root() {
+		t.Fatalf("%s = %q, want the outer root %q handed down to children", RootVar, got, outer.Root())
+	}
+	outerTemp := os.TempDir()
+
+	inner, err := RedirectHostTemp("evener-sandboxtest-inner-")
+	if err != nil {
+		t.Fatalf("RedirectHostTemp (inner): %v", err)
+	}
+	if inner.Root() != outer.Root() {
+		t.Fatalf("inner root = %q, want the inherited %q", inner.Root(), outer.Root())
+	}
+	if got := os.TempDir(); got != outerTemp {
+		t.Fatalf("inner TMPDIR = %q, want the inherited %q", got, outerTemp)
+	}
+	survivor := filepath.Join(outerTemp, "detached-daemon-temp")
+	if err := os.Mkdir(survivor, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.Discard(); err != nil {
+		t.Fatalf("Discard (inner): %v", err)
+	}
+	if _, err := os.Stat(survivor); err != nil {
+		t.Fatalf("the inheriting child's Discard removed the enclosing root's contents: %v", err)
+	}
+	if err := outer.Discard(); err != nil {
+		t.Fatalf("Discard (outer): %v", err)
+	}
+	if _, err := os.Stat(outer.Root()); !os.IsNotExist(err) {
+		t.Fatalf("the outer Discard left its root %q: %v", outer.Root(), err)
+	}
+}
+
 func within(root, path string) bool {
 	root, _ = filepath.EvalSymlinks(root)
 	path, _ = filepath.EvalSymlinks(path)

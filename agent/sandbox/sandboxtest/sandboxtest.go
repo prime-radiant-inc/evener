@@ -16,70 +16,119 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
 )
 
+// RootVar hands the root down to self-exec helper children, whose own TestMain
+// runs RedirectHostTemp again. A child inherits the root instead of making one
+// and leaves its removal to the process that made it: a detached process the
+// child starts can outlive the child (a daemon whose Hub exits), and a root of
+// the child's own would be deleted, with that process's temp dir, when the child
+// exits.
+//
+// Like the other EVENER_-prefixed names the test rig owns, it describes the rig
+// rather than the product, so it is absent from envvars.All() and the TestMain
+// scrubs of product variables leave it alone.
+const RootVar = "EVENER_SANDBOXTEST_ROOT"
+
 // HostTemp is a test binary's private temp root. While it is in place, TMPDIR
 // names a directory inside it and so does the world-usable host temp base that
 // session temp containers are minted in.
 type HostTemp struct {
-	root              string
-	restoreHostTemp   func()
-	previousTMPDIR    string
-	hadPreviousTMPDIR bool
+	root            string
+	inherited       bool
+	restoreHostTemp func()
+	restoreEnv      []func() error
 }
 
-// RedirectHostTemp creates a root under the current temp dir, named with
-// prefix, and points TMPDIR and the session temp container bases into it. Child
-// processes inherit the TMPDIR. Call Discard once the tests have run.
+// RedirectHostTemp points TMPDIR and the session temp container bases into a
+// root: the one RootVar names when an enclosing test process made it, or else a
+// new one under the current temp dir, named with prefix. Child processes inherit
+// the TMPDIR and RootVar. Call Discard once the tests have run.
 func RedirectHostTemp(prefix string) (*HostTemp, error) {
+	h := &HostTemp{}
+	if root := os.Getenv(RootVar); root != "" {
+		if info, err := os.Stat(filepath.Join(root, "host-temp")); err == nil && info.IsDir() {
+			h.root, h.inherited = root, true
+		}
+	}
+	if !h.inherited {
+		root, err := newHostTempRoot(prefix)
+		if err != nil {
+			return nil, err
+		}
+		h.root = root
+	}
+	for name, value := range map[string]string{"TMPDIR": filepath.Join(h.root, "tmp"), RootVar: h.root} {
+		if err := h.setenv(name, value); err != nil {
+			return nil, errors.Join(err, h.Discard())
+		}
+	}
+	h.restoreHostTemp = sandbox.SetWorldTempBasesForTesting([]string{filepath.Join(h.root, "host-temp")})
+	return h, nil
+}
+
+// newHostTempRoot creates a root holding the TMPDIR and the host temp base.
+func newHostTempRoot(prefix string) (string, error) {
 	root, err := os.MkdirTemp("", prefix+"*")
 	if err != nil {
-		return nil, fmt.Errorf("sandboxtest: create host temp root: %w", err)
+		return "", fmt.Errorf("sandboxtest: create host temp root: %w", err)
 	}
 	temp := filepath.Join(root, "tmp")
 	hostTemp := filepath.Join(root, "host-temp")
 	for _, dir := range []string{temp, hostTemp} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
-			return nil, errors.Join(fmt.Errorf("sandboxtest: create %s: %w", dir, err), os.RemoveAll(root))
+			return "", errors.Join(fmt.Errorf("sandboxtest: create %s: %w", dir, err), os.RemoveAll(root))
 		}
 	}
 	// A session temp container is only minted in a base with /tmp's own mode:
 	// world-writable, world-traversable and sticky.
 	if err := os.Chmod(hostTemp, 0o777|os.ModeSticky); err != nil {
-		return nil, errors.Join(fmt.Errorf("sandboxtest: open %s: %w", hostTemp, err), os.RemoveAll(root))
+		return "", errors.Join(fmt.Errorf("sandboxtest: open %s: %w", hostTemp, err), os.RemoveAll(root))
 	}
-	previous, had := os.LookupEnv("TMPDIR")
-	if err := os.Setenv("TMPDIR", temp); err != nil {
-		return nil, errors.Join(fmt.Errorf("sandboxtest: set TMPDIR: %w", err), os.RemoveAll(root))
+	return root, nil
+}
+
+// setenv sets name and records how to put back the value it replaced.
+func (h *HostTemp) setenv(name, value string) error {
+	previous, had := os.LookupEnv(name)
+	if err := os.Setenv(name, value); err != nil {
+		return fmt.Errorf("sandboxtest: set %s: %w", name, err)
 	}
-	return &HostTemp{
-		root:              root,
-		restoreHostTemp:   sandbox.SetWorldTempBasesForTesting([]string{hostTemp}),
-		previousTMPDIR:    previous,
-		hadPreviousTMPDIR: had,
-	}, nil
+	h.restoreEnv = append(h.restoreEnv, func() error {
+		if had {
+			return os.Setenv(name, previous)
+		}
+		return os.Unsetenv(name)
+	})
+	return nil
 }
 
 // Root is the directory that holds everything the redirect collects.
 func (h *HostTemp) Root() string { return h.root }
 
-// Discard puts TMPDIR and the session temp container bases back and removes the
-// root with everything the tests left in it.
+// Discard puts TMPDIR, RootVar and the session temp container bases back and,
+// unless the root was inherited, removes it with everything the tests left in
+// it.
 func (h *HostTemp) Discard() error {
-	h.restoreHostTemp()
-	var envErr error
-	if h.hadPreviousTMPDIR {
-		envErr = os.Setenv("TMPDIR", h.previousTMPDIR)
-	} else {
-		envErr = os.Unsetenv("TMPDIR")
+	if h.restoreHostTemp != nil {
+		h.restoreHostTemp()
+		h.restoreHostTemp = nil
 	}
-	if err := os.RemoveAll(h.root); err != nil {
-		return errors.Join(envErr, fmt.Errorf("sandboxtest: remove host temp root %s: %w", h.root, err))
+	var errs []error
+	for _, restore := range slices.Backward(h.restoreEnv) {
+		errs = append(errs, restore())
 	}
-	return envErr
+	h.restoreEnv = nil
+	if !h.inherited && h.root != "" {
+		if err := os.RemoveAll(h.root); err != nil {
+			errs = append(errs, fmt.Errorf("sandboxtest: remove host temp root %s: %w", h.root, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Run is a whole TestMain for a package that needs nothing else: it runs m
