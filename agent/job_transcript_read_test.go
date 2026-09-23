@@ -434,3 +434,46 @@ func TestLocateLocalJob_CorruptSiblingDirDoesNotBreakLookup(t *testing.T) {
 		t.Fatalf("located job in %q, want %q", filepath.Base(loc.StateDir), localJobSiblingProject)
 	}
 }
+
+// --- roborev fix round 3: RED test for finding 2 ---
+
+// TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound asserts
+// that when the target job lives ONLY in a corrupt sibling bucket (and is not
+// found elsewhere), the corruption error propagates instead of being masked
+// as "job not found". The round 2 fix skipped ALL sibling errors, so genuine
+// corruption was swallowed. The fix: retain the first sibling error; if the
+// lookup would finish not-found, return that retained error — this preserves
+// stray-dir tolerance when the target is found elsewhere and surfaces
+// corruption when it is not.
+func TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// The ONLY bucket with the target job is corrupt: its jobs.jsonl exists but
+	// contains invalid JSON. ReadEvents returns an error (not nil,nil) for
+	// corrupt content, so findLocalJobInProject returns an error.
+	corruptDir := localJobProjectBucket(t, stateHome, "corrupt-only-bucket")
+	corruptPath := filepath.Join(jobsDir(corruptDir, owner), "jobs.jsonl")
+	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corruptPath, []byte("NOT VALID JSON\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := locateLocalJob(current, jobID)
+	if err == nil {
+		t.Fatal("expected error for corrupt-only sibling, got nil")
+	}
+	// The error must NOT be "job not found" — it must surface the corruption.
+	if strings.Contains(err.Error(), "not found") {
+		t.Fatalf("corrupt sibling error was masked as not-found: %v", err)
+	}
+	// The error must mention the corruption or the read failure.
+	if !strings.Contains(err.Error(), "corrupt") && !strings.Contains(err.Error(), "read") {
+		t.Fatalf("error does not surface corruption: %v", err)
+	}
+}

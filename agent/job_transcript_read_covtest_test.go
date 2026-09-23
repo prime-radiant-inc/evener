@@ -439,12 +439,12 @@ func TestFinishLocalJobLookup(t *testing.T) {
 	t.Parallel()
 	// Found: returns match.
 	loc := localJobLocation{StateDir: "/some/dir"}
-	got, err := finishLocalJobLookup(loc, true, "job1")
+	got, err := finishLocalJobLookup(loc, true, nil, "job1")
 	if err != nil || got.StateDir != "/some/dir" {
 		t.Fatalf("found: got=%v err=%v", got, err)
 	}
 	// Not found: returns job-not-found error.
-	_, err = finishLocalJobLookup(localJobLocation{}, false, "job1")
+	_, err = finishLocalJobLookup(localJobLocation{}, false, nil, "job1")
 	if err == nil || !isJobNotFoundErr(err) {
 		t.Fatalf("not found: expected job-not-found, got %v", err)
 	}

@@ -195,9 +195,17 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 		return `{"source":"api_log","private_evidence_omitted":true,"re_read":{"tool":"read_session_transcript","source":"api_log"}}`, true
 	}
 
+	// When the result's TranscriptRef is empty (legacy-bucket bare-ID read
+	// where refFor returns ""), fall back to the original call's
+	// transcript_ref so the re_read handle resolves to the same session the
+	// model just read, not the current session.
+	reReadRef := resultIdentity.TranscriptRef
+	if reReadRef == "" {
+		reReadRef = stringArg(args, "transcript_ref")
+	}
 	reRead := apiLogTranscriptReadHandle{
 		Tool:          "read_session_transcript",
-		TranscriptRef: resultIdentity.TranscriptRef,
+		TranscriptRef: reReadRef,
 		Source:        apiLogSource,
 		AttemptID:     resultIdentity.Attempt.AttemptID,
 	}
@@ -213,7 +221,7 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	if resultIsAPILog && resultIdentity.Continuation != nil {
 		continuation := apiLogTranscriptReadHandle{
 			Tool:          "read_session_transcript",
-			TranscriptRef: resultIdentity.TranscriptRef,
+			TranscriptRef: reReadRef,
 			Source:        apiLogSource,
 			AttemptID:     resultIdentity.Continuation.AttemptID,
 			Body:          resultIdentity.Continuation.Body,

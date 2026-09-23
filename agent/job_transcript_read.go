@@ -59,6 +59,7 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 
 	var match localJobLocation
 	haveMatch := false
+	var retainedErr error // first genuine sibling error (corruption/unreadability)
 	entriesRead := 0
 	for entriesRead < localJobProjectLookupLimit {
 		entries, readErr := dir.ReadDir(localJobProjectLookupLimit - entriesRead)
@@ -80,12 +81,15 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 			stateDir := filepath.Join(projectsPath, entry.Name())
 			candidate, found, err := findLocalJobInProject(stateDir, ownerSessionID, jobID)
 			if err != nil {
-				// A sibling bucket whose jobs.jsonl is missing or unreadable
-				// is not the target — skip it. Only a corruption error from
-				// a bucket that actually contains the target job should fail
-				// the lookup; a stray or corrupt non-target sibling must not
-				// abort the search (the removed ValidateProjectID filter was
-				// accidentally protective against this).
+				// jobstore.ReadEvents returns nil for a missing file, so a
+				// non-nil error is genuine corruption or unreadability — not
+				// "not the target". Retain the first such error; if the
+				// lookup would finish not-found, surface it instead of masking
+				// corruption as "job not found". When the target IS found
+				// elsewhere, the error is discarded (stray-dir tolerance).
+				if retainedErr == nil {
+					retainedErr = err
+				}
 				continue
 			}
 			if !found {
@@ -98,7 +102,7 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 			haveMatch = true
 		}
 		if errors.Is(readErr, io.EOF) {
-			return finishLocalJobLookup(match, haveMatch, jobID)
+			return finishLocalJobLookup(match, haveMatch, retainedErr, jobID)
 		}
 		if readErr != nil {
 			return localJobLocation{}, fmt.Errorf("enumerate local projects for job %q: %w", jobID, readErr)
@@ -113,7 +117,7 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 		return localJobLocation{}, fmt.Errorf("lookup_limit_exceeded: job %q exceeded %d local project entries", jobID, localJobProjectLookupLimit)
 	}
 	if errors.Is(readErr, io.EOF) {
-		return finishLocalJobLookup(match, haveMatch, jobID)
+		return finishLocalJobLookup(match, haveMatch, retainedErr, jobID)
 	}
 	if readErr != nil {
 		return localJobLocation{}, fmt.Errorf("enumerate local projects for job %q: %w", jobID, readErr)
@@ -137,9 +141,15 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 	return localJobLocation{StateDir: stateDir, OwnerSessionID: ownerSessionID, Record: record}, true, nil
 }
 
-func finishLocalJobLookup(match localJobLocation, found bool, jobID string) (localJobLocation, error) {
+func finishLocalJobLookup(match localJobLocation, found bool, retainedErr error, jobID string) (localJobLocation, error) {
 	if found {
 		return match, nil
+	}
+	// If a sibling bucket had a genuine corruption/unreadability error and
+	// the target was not found elsewhere, surface that error instead of
+	// masking it as "job not found".
+	if retainedErr != nil {
+		return localJobLocation{}, retainedErr
 	}
 	return localJobLocation{}, errJobNotFound(jobID)
 }
