@@ -16575,6 +16575,187 @@ describe("ConversationStore", () => {
       ).toBe(false);
     });
 
+    it("a reread that rekeys an item does not keep its obsolete keyed twin", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "x",
+                  turnId: "t1",
+                  transcriptKey: "old",
+                  type: "agentMessage",
+                  text: "Hello",
+                  status: "inProgress",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // The reread reissues the content under a NEW transcript key with
+      // the same bare id: the package's identity rule reads the two as
+      // distinct items, so the retained keyed copy is a live twin the
+      // snapshot supersedes — not a match to hide behind (RoboRev round
+      // 17).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "x",
+                  turnId: "t1",
+                  transcriptKey: "new",
+                  type: "agentMessage",
+                  text: "Hello world",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const assistantRows = () =>
+        rows(store).filter((row) => row.kind === "assistant") as Extract<
+          MobileTimelineItem,
+          { kind: "assistant" }
+        >[];
+      expect(assistantRows().map((row) => row.markdown)).toEqual([
+        "Hello world",
+      ]);
+
+      // And no later frame projects the obsolete copy back.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(assistantRows().map((row) => row.markdown)).toEqual([
+        "Hello world",
+      ]);
+      expect(
+        store.getState().conversation?.turns
+          .flatMap((turn) => turn.items)
+          .filter((item) => item.transcriptKey === "old"),
+      ).toHaveLength(0);
+    });
+
+    it("a paged running item settles with the snapshot's completed turn", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "inProgress",
+              items: [],
+            }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      // The older page carries the item's row before the live window
+      // holds it: page ownership registers (RoboRev round 17), and a
+      // live frame then brings the same item into the active turn —
+      // page-owned history AND the running row.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "assistant",
+            id: "item-a",
+            markdown: "Hello",
+            streaming: true,
+          } as unknown as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            id: "item-a",
+            turnId: "t1",
+            type: "agentMessage",
+            text: "Hello",
+            status: "inProgress",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+
+      // The reread's turn completed; its item carries no status of its
+      // own: the snapshot settles it, and the page-owned copy must settle
+      // with it — not project "Writing…" forever after.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                { id: "item-a", turnId: "t1", type: "agentMessage", text: "Hello" } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(
+        (rowById(store, "item-a") as { streaming?: boolean } | undefined)?.streaming,
+      ).toBe(false);
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

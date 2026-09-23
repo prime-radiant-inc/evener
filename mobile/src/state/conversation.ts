@@ -2024,29 +2024,6 @@ export function createConversationStore() {
             // other page row (the round-31 coverage rule reads exactly
             // that), so only the non-page warnings drop.
             const freshTurnIds = new Set(conversation.turns.map((turn) => turn.id));
-            const turnCoveredBySnapshot = (turn: TurnModel): boolean => {
-              return (
-                freshTurnIds.has(turn.id) ||
-                turn.items.some(
-                  (item) =>
-                    freshIdentities.has(item.transcriptKey ?? item.id) ||
-                    freshIdentities.has(item.id),
-                )
-              );
-            };
-            // Rule 3 — a retained item's pending delta chunks are the
-            // response streaming ahead of the transcript: the snapshot's
-            // settled text folds every chunk the wire received before its
-            // cut, so those chunks are stale on the retained side — the
-            // item merge spreads hydrated items over retained ones
-            // ({ ...older, ...newer }) and a hydrated item omits
-            // pendingText entirely, which kept the stale chunks riding
-            // beside the text that already contains them, re-appended by
-            // every later publish (RoboRev round 5). Only the leading run
-            // of chunks the snapshot's text provably ends with strips:
-            // a chunk the text does not end with is still ahead of the
-            // response (the read was cut before the wire folded it), and
-            // stays live for the stream to continue on.
             const freshItemByKey = new Map<string, ItemModel>();
             const freshItemById = new Map<string, ItemModel>();
             // The containing turn's status recorded PER ITEM, not keyed
@@ -2062,13 +2039,57 @@ export function createConversationStore() {
                 freshTurnStatusById.set(item.id, turn.status);
               }
             }
+            // Snapshot matching goes through the package's own identity
+            // rule — itemIdentityMatches — never a bare-id set read: two
+            // items that both carry transcript keys match by key alone,
+            // so a reissued item sharing the bare id under a NEW key is a
+            // distinct item, and a bare-id lookup would wrongly treat the
+            // retained keyed copy as matched — hiding it from the twin
+            // filter and resurrecting the obsolete row beside its
+            // replacement (RoboRev round 17). Coverage, the retained-item
+            // filter, and the reconciliation strips below all read this
+            // one helper.
+            const snapshotMatchFor = (
+              item: ItemModel,
+            ): { fresh: ItemModel; turnStatus: string | undefined } | undefined => {
+              const byKey = freshItemByKey.get(item.transcriptKey ?? item.id);
+              if (byKey !== undefined && itemIdentityMatches(item, byKey)) {
+                return {
+                  fresh: byKey,
+                  turnStatus: freshTurnStatusByKey.get(item.transcriptKey ?? item.id),
+                };
+              }
+              const byId = freshItemById.get(item.id);
+              if (byId !== undefined && itemIdentityMatches(item, byId)) {
+                return { fresh: byId, turnStatus: freshTurnStatusById.get(item.id) };
+              }
+              return undefined;
+            };
+            const turnCoveredBySnapshot = (turn: TurnModel): boolean => {
+              return (
+                freshTurnIds.has(turn.id) ||
+                turn.items.some((item) => snapshotMatchFor(item) !== undefined)
+              );
+            };
+            // Rule 3 — a retained item's pending delta chunks are the
+            // response streaming ahead of the transcript: the snapshot's
+            // settled text folds every chunk the wire received before its
+            // cut, so those chunks are stale on the retained side — the
+            // item merge spreads hydrated items over retained ones
+            // ({ ...older, ...newer }) and a hydrated item omits
+            // pendingText entirely, which kept the stale chunks riding
+            // beside the text that already contains them, re-appended by
+            // every later publish (RoboRev round 5). Only the leading run
+            // of chunks the snapshot's text provably ends with strips:
+            // a chunk the text does not end with is still ahead of the
+            // response (the read was cut before the wire folded it), and
+            // stays live for the stream to continue on.
             const stripSettledChunks = (item: ItemModel): ItemModel => {
               const pending = item.pendingText;
               if (pending === undefined || pending.length === 0) return item;
-              const fresh =
-                freshItemByKey.get(item.transcriptKey ?? item.id) ??
-                freshItemById.get(item.id);
-              if (fresh === undefined) return item;
+              const match = snapshotMatchFor(item);
+              if (match === undefined) return item;
+              const fresh = match.fresh;
               // A fresh item whose text the read omitted says nothing
               // about the stream: the chunks stay live whatever the
               // retained base reads.
@@ -2099,11 +2120,7 @@ export function createConversationStore() {
               // settles too (RoboRev round 14) — with the containing
               // turn recorded per item, so an omitted turnId cannot
               // read as a missing one (round 15).
-              const snapshotSettled = !isActiveItem(
-                fresh,
-                freshTurnStatusByKey.get(item.transcriptKey ?? item.id) ??
-                  freshTurnStatusById.get(item.id),
-              );
+              const snapshotSettled = !isActiveItem(fresh, match.turnStatus);
               if (snapshotSettled) {
                 settled = pending.length;
               } else if (fresh.text.startsWith(item.text)) {
@@ -2175,20 +2192,25 @@ export function createConversationStore() {
               "source",
             ] as const;
             const applySnapshotAuthority = (item: ItemModel): ItemModel => {
-              if (pageOwnedIds.has(item.transcriptKey ?? item.id)) return item;
-              const fresh =
-                freshItemByKey.get(item.transcriptKey ?? item.id) ??
-                freshItemById.get(item.id);
-              if (fresh === undefined) return item;
+              const match = snapshotMatchFor(item);
+              if (match === undefined) return item;
+              const fresh = match.fresh;
               let stripped: ItemModel | undefined;
-              for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
-                const retained = (item as unknown as Record<string, unknown>)[field];
-                const settledOnFresh = (fresh as unknown as Record<string, unknown>)[field];
-                if (retained === undefined || settledOnFresh !== undefined) continue;
-                // Same marker rule as the chunk strip above: the clone
-                // keeps the item's omitted-text presence.
-                stripped ??= copyItemTextPresence(item, { ...item });
-                (stripped as unknown as Record<string, unknown>)[field] = undefined;
+              // Payloads stay the page's to withdraw-or-keep (the
+              // round-31 rule), but the LIFECYCLE below applies to
+              // matched page-owned items too: a paged item running
+              // locally cannot outlive the fresh copy that settled
+              // (RoboRev round 17).
+              if (!pageOwnedIds.has(item.transcriptKey ?? item.id)) {
+                for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
+                  const retained = (item as unknown as Record<string, unknown>)[field];
+                  const settledOnFresh = (fresh as unknown as Record<string, unknown>)[field];
+                  if (retained === undefined || settledOnFresh !== undefined) continue;
+                  // Same marker rule as the chunk strip above: the clone
+                  // keeps the item's omitted-text presence.
+                  stripped ??= copyItemTextPresence(item, { ...item });
+                  (stripped as unknown as Record<string, unknown>)[field] = undefined;
+                }
               }
               // The lifecycle is the snapshot's to settle too: a retained
               // inProgress claim cannot outlive a fresh copy the activity
@@ -2197,11 +2219,7 @@ export function createConversationStore() {
               // "Writing…" on the finished response (RoboRev round 16).
               if (
                 item.status === "inProgress" &&
-                !isActiveItem(
-                  fresh,
-                  freshTurnStatusByKey.get(item.transcriptKey ?? item.id) ??
-                    freshTurnStatusById.get(item.id),
-                )
+                !isActiveItem(fresh, match.turnStatus)
               ) {
                 stripped ??= copyItemTextPresence(item, { ...item });
                 (stripped as unknown as Record<string, unknown>).status = undefined;
@@ -2214,8 +2232,7 @@ export function createConversationStore() {
                   ? turn.items.filter(
                       (item) =>
                         pageOwnedIds.has(item.transcriptKey ?? item.id) ||
-                        freshIdentities.has(item.transcriptKey ?? item.id) ||
-                        freshIdentities.has(item.id),
+                        snapshotMatchFor(item) !== undefined,
                     )
                   : turn.items;
                 const kept = afterTwins.filter(
