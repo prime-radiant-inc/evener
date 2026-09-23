@@ -323,3 +323,46 @@ func TestCheckNoCommandsSeesPartialScan(t *testing.T) {
 		t.Fatalf("checkNoCommands refused a plain reference value: %v", err)
 	}
 }
+
+// A control byte cannot travel in a header value wherever it sits —
+// including behind a $$ escape's separate literal piece, where the
+// piece-walking validator resets its control and glue flags. The refuted
+// review claim was that an earlier piece's violation could be forgotten
+// across that reset; it cannot: the escape's literal piece is itself
+// refused first (one literal word, ahead of the material, is all the
+// boundary allows), so no arrangement below survives validation.
+func TestCheckCredentialHeaderValueNeverPassesControlBytes(t *testing.T) {
+	var controls []byte
+	for i := range 0x20 {
+		if i != '\t' {
+			controls = append(controls, byte(i))
+		}
+	}
+	schemes := []string{"Bearer", "Basic"}
+	escapes := []string{"$$", "$$$", "$$ ", ""}
+	materials := []string{"$A", "$${A}", "${A:-Basic}", "$(cmd)", "$$$(cmd)", "$A$B"}
+	var passed []string
+	for _, c := range controls {
+		for _, s := range schemes {
+			for _, e := range escapes {
+				for _, m := range materials {
+					for _, v := range []string{
+						s + e + string(c) + m,
+						s + string(c) + e + m,
+						s + " " + string(c) + m,
+						s + e + m + string(c),
+						string(c) + s + " " + m,
+						s + " " + m + e + string(c),
+					} {
+						if err := CheckCredentialHeaderValue(v); err == nil {
+							passed = append(passed, v)
+						}
+					}
+				}
+			}
+		}
+	}
+	if len(passed) > 0 {
+		t.Fatalf("control bytes passed credential-header validation: %v", passed)
+	}
+}

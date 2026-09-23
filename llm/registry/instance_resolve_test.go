@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 func cutoverRegistry(t *testing.T, env map[string]string, instances map[string]Provider) *Registry {
@@ -253,5 +255,69 @@ func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(modelOK.Warnings, "\n"), "web_search disabled") {
 		t.Fatalf("resolveOn: an explicit web_search = true must suppress the warning too: %v", modelOK.Warnings)
+	}
+}
+
+// ResolveInstancePresence is the depth the hub's automatic views resolve
+// at (spec §10.1): every field those views read must match a full
+// resolve, with no wire map built and no command executed, so the depth
+// can never silently lose a field.
+func TestResolveInstancePresenceMatchesFullDepth(t *testing.T) {
+	// An explicit instance with an environment credential: presence keeps
+	// the source label the full resolve would report, without the value.
+	const cfgEnv = "[providers.work]\nbase = \"anthropic\"\napi_key_env = [\"WORK_KEY\"]\n"
+	full, err := fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, cfgEnv).ResolveInstance("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	presence, err := fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, cfgEnv).ResolveInstancePresence("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presence.Credential.Source != full.Credential.Source {
+		t.Fatalf("presence source = %q, want the full resolve's %q", presence.Credential.Source, full.Credential.Source)
+	}
+	if presence.Credential.Value != full.Credential.Value {
+		t.Fatalf("presence credential material = %q, want the full resolve's (label parity, same reading as the listing judgment)", full.Credential.Value)
+	}
+	if presence.Protocol != full.Protocol || presence.Surface != full.Surface {
+		t.Fatalf("presence protocol/surface drifted: %q/%q want %q/%q", presence.Protocol, presence.Surface, full.Protocol, full.Surface)
+	}
+	if presence.Transport.Auth != full.Transport.Auth || presence.Transport.BaseURL != full.Transport.BaseURL {
+		t.Fatal("presence transport drifted from the full resolve")
+	}
+	if presence.ShadowedEnvVar != full.ShadowedEnvVar {
+		t.Fatalf("presence shadowed env var = %q, want %q", presence.ShadowedEnvVar, full.ShadowedEnvVar)
+	}
+	if len(presence.CredentialHeaders) != 0 {
+		t.Fatal("presence resolve built a credential-headers wire map; no hub view builds a request")
+	}
+}
+
+// A command-bearing api_key counts as present at presence depth and keeps
+// its field's label, without ever running the command: that judgment is
+// the launch gate's (spec §10.1), and this is the depth the gate's
+// judgment feeds.
+func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const cfgCmd = "[providers.gw]\nbase = \"anthropic\"\napi_key = '''$(gw-mint)'''\n"
+	presence, err := fixtureLoad(t, nil, cfgCmd).ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presence.Credential.Source != "api_key" {
+		t.Fatalf("presence source = %q, want api_key: a command-bearing slot counts as present", presence.Credential.Source)
+	}
+	if presence.Credential.Value != "" {
+		t.Fatal("presence resolve materialized the command's mint")
+	}
+	if runs != 0 {
+		t.Fatalf("presence resolve executed the credential command %d time(s)", runs)
 	}
 }

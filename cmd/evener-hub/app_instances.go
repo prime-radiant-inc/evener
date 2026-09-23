@@ -218,7 +218,7 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 // has to come from the same resolution - otherwise the first key for a
 // credential-requiring provider would be refused as a moved endpoint.
 func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry.Instance, bool) {
-	resolved, err := r.ResolveInstance(id)
+	resolved, err := r.ResolveInstancePresence(id)
 	if err != nil {
 		return registry.Instance{}, false
 	}

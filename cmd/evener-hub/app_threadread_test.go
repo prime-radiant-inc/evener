@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -579,6 +580,42 @@ func pricingRegistry(tb testing.TB) *hubcore.ProviderRegistry {
 		tb.Fatalf("registry: %v", err)
 	}
 	return holder
+}
+
+// The workspace and thread-list cost projections price a past session
+// through the registry row the session recorded — a fact, not a
+// credential: resolving it at full depth would execute a command-bearing
+// credential from a pane the user only opened (spec §10.1). The cost must
+// arrive with zero mints.
+func TestPastEntryCostNeverMintsCommandCredential(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	reg := hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, err := registry.Load(append([]registry.Option{
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{"gw": {Base: "anthropic", APIKey: "$(gw-mint)"}}),
+		}, extra...)...)
+		return r, nil, err
+	})
+	if err := reg.Reload(); err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	cfg := hubcore.WebConfig{Registry: reg}
+	entry := hubcore.PastEntry{Meta: schema.SessionMeta{ProfileID: "gw", Model: "claude-opus-4-5"}}
+	cost := pastEntryCost(cfg, entry)
+	if cost == nil {
+		t.Fatal("the cost projection lost the row's cost along with the credential stage")
+	}
+	if runs != 0 {
+		t.Fatalf("the cost projection executed the credential command %d time(s); pricing a past session is a read, and the hub never runs credential commands (spec §10.1)", runs)
+	}
 }
 
 func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {

@@ -5214,3 +5214,43 @@ func TestInstances_EditCapturesTheListingForARename(t *testing.T) {
 		t.Fatalf("captured row = %+v, want the renamed instance", renamed)
 	}
 }
+
+// The implicit-provider fallback resolves at presence depth. A
+// command-credentialed record always has an instance of its own (the
+// config layer instantiates whatever it keys), so this fallback cannot
+// see command material today; the pin keeps its answer identical to a
+// full resolve's, so the depth swap can never lose a field.
+func TestResolvedInstanceForPresenceShape(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(tomlPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := newTestRegistry(t, t.TempDir(), tomlPath, store, map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "tok"})
+	r := holder.Get()
+	p, ok := r.Provider("amazon-bedrock")
+	if !ok {
+		t.Fatal("the curated implicit provider is missing")
+	}
+	inst, addressable := resolvedInstanceFor(r, "amazon-bedrock", p.Hidden)
+	if !addressable {
+		t.Fatal("the implicit-provider fallback stopped resolving")
+	}
+	full, err := r.ResolveInstance("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.CredentialSource != full.Credential.Source {
+		t.Fatalf("fallback CredentialSource = %q, want the full resolve's %q", inst.CredentialSource, full.Credential.Source)
+	}
+	if inst.Auth != full.Transport.Auth || inst.Protocol != full.Protocol {
+		t.Fatal("the fallback's auth/protocol drifted from a full resolve")
+	}
+	if inst.ShadowedEnvVar != full.ShadowedEnvVar {
+		t.Fatalf("fallback ShadowedEnvVar = %q, want %q", inst.ShadowedEnvVar, full.ShadowedEnvVar)
+	}
+}

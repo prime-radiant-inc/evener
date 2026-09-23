@@ -333,7 +333,7 @@ func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams, key []
 		return c.instanceStatusKeyed(key, inst), nil
 	}
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
-		res, err := r.ResolveInstance(name)
+		res, err := r.ResolveInstancePresence(name)
 		if err != nil {
 			//nolint:nilerr // a provider the registry cannot resolve is reported as unsupported, which is the answer, not an RPC failure
 			return appwire.AuthStatusResponse{Provider: name, Supported: false, ActiveSource: "none"}, nil

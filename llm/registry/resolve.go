@@ -297,8 +297,29 @@ func resetLayerFields(caps *Caps, prov map[string]string) {
 // ResolveInstance resolves an instance without a model: what a model-less
 // call (ListModels, a credential probe) needs — protocol, transport,
 // headers, credential, and the provider-level caps — with no row
-// (spec §8.1: ListModels takes a Resolved). ModelID and WireID stay empty.
+// (spec §8.1: ListModels takes a Resolved). ModelID and WireID stay
+// empty. It materializes the credential: the agent path and the
+// user-initiated probe may (spec §10.1); the hub's automatic views use
+// ResolveInstancePresence instead.
 func (r *Registry) ResolveInstance(name string) (Resolved, error) {
+	return r.resolveInstanceMode(name, false)
+}
+
+// ResolveInstancePresence is ResolveInstance for the hub's automatic
+// views (spec §10.1): the same instance shape — protocol, transport,
+// headers, provider caps, warnings, the credential's source label, the
+// shadowed env var — judged the way the listing judges it: a
+// command-bearing slot counts as present and keeps its field's label,
+// and executing it never happens here, where no session was launched.
+// Environment and stored material may be read for the label the views
+// show — the same reading the listing's judgment does. CredentialHeaders
+// stays empty: those values exist to go on the wire, and a view that
+// never builds a request never needs them.
+func (r *Registry) ResolveInstancePresence(name string) (Resolved, error) {
+	return r.resolveInstanceMode(name, true)
+}
+
+func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, error) {
 	rec, ok := r.recordFor(name)
 	if !ok {
 		return Resolved{}, r.unknownInstance(name)
@@ -322,7 +343,14 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
-	cred, credHeaders, cw := r.resolveCredentials(rec, transport)
+	var cred Credential
+	var credHeaders map[string]string
+	var cw []string
+	if presence {
+		cred, cw = r.credential(rec, transport)
+	} else {
+		cred, credHeaders, cw = r.resolveCredentials(rec, transport)
+	}
 	warnings = append(warnings, cw...)
 	if rec.head.Hidden {
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")

@@ -613,3 +613,29 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 		}
 	})
 }
+
+// The status fallback for an implicit provider (env unset, so no
+// credential and no instance of its own) resolves at presence depth and
+// still answers with the full resolve's shape.
+func TestAuthStatusImplicitProviderResolvesPresence(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := writeProvidersToml(t, dir, "")
+	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
+	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Provider != "amazon-bedrock" || !resp.Supported {
+		t.Fatalf("implicit-provider status = %+v; want a supported answer", resp)
+	}
+	full, err := ctrl.registry().ResolveInstance("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ActiveSource != full.Credential.Source {
+		t.Fatalf("status ActiveSource = %q, want the full resolve's %q", resp.ActiveSource, full.Credential.Source)
+	}
+	if resp.SignedIn != (full.Credential.Source != "none") {
+		t.Fatal("SignedIn drifted from the resolved credential source")
+	}
+}
