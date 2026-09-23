@@ -213,19 +213,20 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   if (isTerminalCatchup(raw)) {
     const source = strField(raw, "source") ?? "";
     const status = strField(raw, "status");
+    const reason = strField(raw, "reason");
     // The terminal outcome is the whole reason the condition can never
     // match, so the one-liner names it ("Watch on job_a1b2 ended — job
     // completed before it could fire"). A catch-up that FIRED matched on
     // the terminal scan instead — same shape, opposite outcome.
     if (boolField(raw, "fired")) {
       return status
-        ? `Watch on ${source} fired on terminal scan — ${jobStatusDisplay(status)}`
+        ? `Watch on ${source} fired on terminal scan — ${jobStatusDisplay(status, reason)}`
         : `Watch on ${source} fired`;
     }
     if (status) {
       // Machine statuses keep the "job <status>" subject ("job completed");
       // the command-outcome display words already name the subject.
-      const display = jobStatusDisplay(status);
+      const display = jobStatusDisplay(status, reason);
       const subject = display === status ? `job ${status}` : display;
       return `Watch on ${source} ended — ${subject} before it could fire`;
     }

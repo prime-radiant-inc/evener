@@ -409,7 +409,10 @@ type watchResult struct {
 	// unmatched one. Status carries the target's terminal status.
 	TerminalCatchup bool
 	// Status carries the watched job's terminal status for a terminal catch-up
-	// (spec §7.1). Empty for live installs.
+	// (spec §7.1). Empty for live installs. Reason carries the producer's
+	// terminal reason beside it, so display surfaces can join the card's
+	// command-outcome words for legacy pre-split records.
+	Reason string
 	Status string
 }
 
@@ -759,7 +762,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		// be a no-op success rather than target_terminal. A genuinely-missing
 		// target still returns its original target_not_found.
 		if a.Clear {
-			if _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
+			if _, _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
 				return jm.clearWatch(key)
 			}
 			return watchResult{}, err
@@ -770,7 +773,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		// keep their original error. terminalWatchTargetStatus resolves the terminal
 		// status directly rather than parsing the error string.
 		if watchArgsIsOutputMatchOnly(a) {
-			status, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
+			status, reason, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
 			if statusErr != nil {
 				return watchResult{}, statusErr
 			}
@@ -780,7 +783,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 						return watchResult{}, sendErr
 					}
 				}
-				return jm.runTerminalCatchup(a, key, status)
+				return jm.runTerminalCatchup(a, key, status, reason)
 			}
 		}
 		return watchResult{}, err
@@ -1155,41 +1158,41 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 // before ownership, so a terminal nested-owned job surfaces as target_terminal
 // here. Mirroring that ownership rejection keeps catch-up from scanning or firing
 // on a job the caller is forbidden to watch.
-func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.Status, terminal bool, err error) {
+func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.Status, reason string, terminal bool, err error) {
 	if isWatchSessionTarget(target) {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	jm.mu.Lock()
 	run := jm.running[target]
 	if run != nil && run.terminal != nil {
 		s := run.terminal.status
 		jm.mu.Unlock()
-		return s, true, nil
+		return s, run.terminal.reason, true, nil
 	}
 	if run != nil {
 		// Running or finalizing: not catch-up-eligible (see doc comment).
 		jm.mu.Unlock()
-		return "", false, nil
+		return "", "", false, nil
 	}
 	jm.mu.Unlock()
 
 	recs, err := jm.store.Load()
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	rec := recs[target]
 	if rec == nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
 		// Owned by a nested session: not watchable from here, so not catch-up-
 		// eligible. Fall through to the original validateWatchTarget error.
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if rec.Status.IsTerminal() {
-		return rec.Status, true, nil
+		return rec.Status, rec.Reason, true, nil
 	}
-	return "", false, nil
+	return "", "", false, nil
 }
 
 func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
@@ -3687,7 +3690,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 // terminalFlush via rememberDetachedPendingLocked — exactly how
 // expireJobWatchesLocked parks a terminal output_match send — so drains, restore,
 // and pendingWatchSendDeliveries can see and settle it.
-func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status) (watchResult, error) {
+func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status, reason string) (watchResult, error) {
 	// Build the one-shot detached config up front: it validates and compiles
 	// output_match into its matcher (wrapping a bad pattern as
 	// "invalid_request: output_match:"), and the send branch reuses it to carry
@@ -3698,7 +3701,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return watchResult{}, err
 	}
 
-	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
+	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: reason}
 
 	// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
 	data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
@@ -3710,10 +3713,10 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return result, nil
 	}
 	result.Fired = true
-	reason := "output_match: " + last
+	matchReason := "output_match: " + last
 
 	if a.Send == nil {
-		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, reason, jobProvenanceForWatch(jm, key.Target))})
+		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, matchReason, jobProvenanceForWatch(jm, key.Target))})
 		return result, nil
 	}
 	result = watchResultFromConfig(cfg, false)

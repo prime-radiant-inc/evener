@@ -115,7 +115,7 @@ func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
 
 	// The ownership rejection must hold even though the record is terminal: a
 	// nested-owned target is not catch-up-eligible.
-	if _, terminal, err := jm.terminalWatchTargetStatus("job_nested"); err != nil || terminal {
+	if _, _, terminal, err := jm.terminalWatchTargetStatus("job_nested"); err != nil || terminal {
 		t.Fatalf("terminalWatchTargetStatus(nested-owned terminal) = terminal:%v err:%v, want terminal:false", terminal, err)
 	}
 

@@ -1668,6 +1668,7 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type jobWatchToolEventFilter struct {
@@ -1841,6 +1842,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+		Reason:             res.Reason,
 	}
 	if res.OneShot {
 		out.AfterSeconds = res.TimerSeconds

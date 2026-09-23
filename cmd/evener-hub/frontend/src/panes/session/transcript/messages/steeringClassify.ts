@@ -447,14 +447,11 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
 // escapes, so the raw attribute value compares directly — no entity a
 // producer could emit decodes into a literal.
 function terminalJobTitle(status: string, reason: string, exitCode?: number): string {
-  if (status === "command_exited_nonzero") return "Command failed";
-  if (status === "command_killed") return "Command killed";
-  if (status === "failed") {
-    // The shared display helper owns the legacy reason literals, so the
-    // parser and every display surface stay one vocabulary.
-    const display = jobStatusDisplay(status, reason);
-    if (display !== status) return display;
-  }
+  // The shared display helper owns every command-outcome word — the modern
+  // statuses and the legacy reason shapes — so the parser and every display
+  // surface stay one vocabulary.
+  const display = jobStatusDisplay(status, reason);
+  if (display !== status) return display;
   // The glyph that tones this frame error sits in an aria-hidden seat, so
   // the title is the only failure text a screen reader reaches — a real
   // nonzero exit must still name the command's failure when the status
