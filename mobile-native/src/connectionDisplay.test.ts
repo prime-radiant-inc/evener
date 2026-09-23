@@ -191,6 +191,59 @@ it("useLiveReadiness refuses a stale callback inside the commit-to-effect window
 	expect(current()).toBe(true);
 });
 
+it("useLiveReadiness refuses a ready-captured callback while the connection state drops", () => {
+	const first = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	// Sentinel defaults keep the closure-assigned callbacks callable for the
+	// type checker; the first render overwrites both before any assertion.
+	let current: LiveReadiness = () => false;
+	let stale: LiveReadiness = () => false;
+	let staleCaptured = false;
+	let windowVerdict: boolean | null = null;
+	// The same child-layout-effect probe as the identity-move window test:
+	// it observes the commit-to-effect window of every committed render.
+	function Probe() {
+		useLayoutEffect(() => {
+			windowVerdict = stale();
+		});
+		return null;
+	}
+	function Owner() {
+		current = useLiveReadiness(hubId, client, state);
+		if (!staleCaptured) {
+			stale = current;
+			staleCaptured = true;
+		}
+		return createElement(Probe);
+	}
+	const tree = render(createElement(Owner));
+	// hub-1's connection is genuinely ready: the captured callback authorizes.
+	expect(windowVerdict).toBe(true);
+
+	// The connection drops: only `state` moves — the hub and client pairing
+	// is unchanged. A callback captured while ready must refuse the moment
+	// the dropped render commits, not one effect-settle later: the settled
+	// snapshot still reports "ready" through the window.
+	state = "reconnecting";
+	act(() => {
+		tree.update(createElement(Owner));
+	});
+	expect(windowVerdict).toBe(false);
+	// After the settle the snapshot reports the truth: the fresh callback
+	// stays refused while the connection is down.
+	expect(current()).toBe(false);
+
+	// Recovery: a transition back into ready authorizes again once settled —
+	// the refusal is a window guard, not a permanent poisoning.
+	state = "ready";
+	act(() => {
+		tree.update(createElement(Owner));
+	});
+	expect(current()).toBe(true);
+});
+
 it("useLiveReadiness recovers when React abandons an identity-changing render", async () => {
 	const first = {} as AppwireClient;
 	const second = {} as AppwireClient;

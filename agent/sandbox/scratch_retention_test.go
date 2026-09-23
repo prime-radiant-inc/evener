@@ -418,7 +418,7 @@ func TestScratchRetentionRollbackKeepsAPublishedPin(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(dir, scratchPinName)); statErr != nil {
 		t.Fatalf("rollback removed a pin the manifest still references: %v", statErr)
 	}
-	retained, retainErr := scratchDirectoryRetained(dir)
+	retained, retainErr := ScratchDirectoryRetained(dir)
 	if retainErr != nil || !retained {
 		t.Fatalf("published directory = retained %v err %v, want retained with no diagnostic", retained, retainErr)
 	}
@@ -831,7 +831,7 @@ func TestResetReleasedReconcilesLeftoverPins(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); !os.IsNotExist(err) {
 		t.Fatalf("the reset left a collectible directory's pin in place: %v", err)
 	}
-	retained, err := scratchDirectoryRetained(scratch.Dir)
+	retained, err := ScratchDirectoryRetained(scratch.Dir)
 	if err != nil || retained {
 		t.Fatalf("the settled dir must read as ordinary collectible after the reset: retained=%v err=%v", retained, err)
 	}
@@ -870,7 +870,7 @@ func TestResetReleasedReconcilesLeftoverPins(t *testing.T) {
 	if !carried {
 		t.Fatalf("the reset dropped the reference for the still-held pin %q; the collector would retain it forever", held.Dir)
 	}
-	retained, err = scratchDirectoryRetained(held.Dir)
+	retained, err = ScratchDirectoryRetained(held.Dir)
 	if err != nil {
 		t.Fatalf("the still-held dir's pin/reference pair reads as incoherent: %v", err)
 	}
@@ -1661,7 +1661,7 @@ func TestResetReleasedLeavesTheContendedDyingPinInPlace(t *testing.T) {
 	// The left pin is protection, not an orphan the collector may take: the
 	// holder still uses the directory, so the sweep conservatively retains it
 	// with its diagnostic.
-	retained, retErr := scratchDirectoryRetained(scratch.Dir)
+	retained, retErr := ScratchDirectoryRetained(scratch.Dir)
 	if !retained || retErr == nil {
 		t.Fatalf("the stripped-pin directory read collectible: retained=%v err=%v", retained, retErr)
 	}
@@ -1676,7 +1676,7 @@ func TestResetReleasedLeavesTheContendedDyingPinInPlace(t *testing.T) {
 	if err := ReleaseScratchRetention(owner); err != nil {
 		t.Fatalf("next terminal release: %v", err)
 	}
-	if retained, retErr := scratchDirectoryRetained(scratch.Dir); retained || retErr != nil {
+	if retained, retErr := ScratchDirectoryRetained(scratch.Dir); retained || retErr != nil {
 		t.Fatalf("the freed-pin directory still reads retained after the terminal release: retained=%v err=%v", retained, retErr)
 	}
 }

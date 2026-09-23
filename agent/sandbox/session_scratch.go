@@ -308,7 +308,7 @@ func sweepCrashedSessionScratch(base string) error {
 			_ = lease.Release()
 			continue
 		}
-		retain, retentionErr := scratchDirectoryRetained(dir)
+		retain, retentionErr := ScratchDirectoryRetained(dir)
 		if retentionErr != nil {
 			failures = append(failures, retentionErr)
 			_ = lease.Release()

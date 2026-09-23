@@ -261,7 +261,7 @@ func (s *Session) releaseRetirementScratch() {
 	// between the detach and its seed CAS would publish a pool nothing can
 	// ever release, holding every retained directory's lease for the daemon's
 	// life (round 28).
-	s.retainedScratchSealed.Store(true)
+	s.sealRetainedScratch()
 	s.mu.Lock()
 	current := s.env
 	parentShared := s.parentSharedEnv
@@ -318,7 +318,7 @@ func (s *Session) releaseTerminalScratchRetention() {
 	// wins the seed CAS after the detach undoes its own publish and hands the
 	// leases back; a pass that published before the seal is swept by the
 	// detach itself.
-	s.retainedScratchSealed.Store(true)
+	s.sealRetainedScratch()
 	s.detachRetainedScratch()
 	if hook := s.cfg.testOnly.scratchTerminalReleaseAfterDetach; hook != nil {
 		hook()

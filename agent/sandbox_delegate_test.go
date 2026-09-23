@@ -557,6 +557,122 @@ func TestRestoreIdleFailureSettlesTheReprovisionedFreshScratch(t *testing.T) {
 	}
 }
 
+// A created environment whose restore genuinely transferred a retained
+// allocation must still settle a failure by the manifest, not retain every
+// scratch the environment carries: a later construction step can leave
+// further scratch on that environment — here, an unrelated directory the
+// manifest does not reference — and a blanket retain hands it a durable
+// lease-less leak instead of the settlement's classification. The manifest
+// names the adopted allocation, so the settlement keeps exactly that one and
+// disposes the unreferenced newcomer (round 30).
+func TestRestoreIdleFailureSettlesUnrelatedScratchBesideAnAdoptedTransfer(t *testing.T) {
+	// Isolate the scratch base: every directory this restore mints or the
+	// test installs lands under it, so the settlement's keep-vs-dispose is
+	// observable directly.
+	isolated := t.TempDir()
+	t.Setenv(envvars.TmpDir.Name, isolated)
+	// A workspace of the child's own keeps the restore off the root's shared
+	// environment (a fresh plain environment this restore created), and a
+	// write-capable ceiling keeps the restore off the read-only floor so the
+	// environment mints its scratch lazily — nothing exists for the adoption
+	// to skip, so the retained unsandboxed slot genuinely transfers.
+	childWorkspace := t.TempDir()
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.WorkingDir = childWorkspace
+		descriptor.ToolNameCeiling = []string{"communicate", "write_file"}
+	})
+	sbxGit(t, fixture.workspace, "init", "-q")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root session has no scratch retention owner")
+	}
+	const bindingID = "b-adopted-settle"
+	slots, bindingRow := mintRefreshScratchBinding(t, root, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, root, fixture.childID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+	key := canonicalScratchDir(retainedDir)
+	root.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: slots[sandbox.ScratchKindUnsandboxed]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{fixture.childID: {SessionID: fixture.childID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+
+	// The later construction step: an unrelated scratch directory the
+	// manifest does not name, installed on the environment after the
+	// adoption — the exact newcomer the settlement must classify away.
+	extraDir := t.TempDir()
+	if !strings.HasPrefix(filepath.Clean(extraDir), filepath.Clean(isolated)+string(os.PathSeparator)) {
+		// t.TempDir roots elsewhere; keep the assertion set honest by placing
+		// the newcomer inside the isolated base the settlement reads.
+		extraDir = filepath.Join(isolated, "evener-sandbox-unrelated")
+		if err := os.MkdirAll(extraDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root.cfg.testOnly.scratchRestoreAfterAdoption = func(env *execenv.LocalExecutionEnvironment) {
+		borrowed, err := sandbox.BorrowRetainedSessionScratch(extraDir)
+		if err != nil {
+			t.Fatalf("borrow the unrelated scratch: %v", err)
+		}
+		if err := env.RestoreSessionScratch(bindingID, sandbox.ScratchReference{Dir: extraDir, Kind: sandbox.ScratchKindSandbox}, borrowed); err != nil {
+			t.Fatalf("install the unrelated scratch: %v", err)
+		}
+	}
+	boom := errors.New("restored delegate construction failed")
+	root.cfg.testOnly.sessionInitFault = func(point string) error {
+		if point == "builtin_agents" {
+			return boom
+		}
+		return nil
+	}
+
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	if _, _, err := (delegateRuntime{owner: root}).restoreIdle(started); !errors.Is(err, boom) {
+		t.Fatalf("restoreIdle error = %v, want %v", err, boom)
+	}
+	_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(context.Canceled, "test_cleanup"))
+
+	// The unrelated, unreferenced scratch is this restore's to dispose: the
+	// settlement must not have retained it beside the adopted allocation.
+	if _, err := os.Stat(extraDir); !os.IsNotExist(err) {
+		t.Fatalf("the unrelated scratch %q survived the failed restore's settlement beside an adopted transfer: %v", extraDir, err)
+	}
+	// The adopted allocation is manifest-referenced durable state: it
+	// survives, handed back to the pool — the settle releases the
+	// environment's hold by requeueing the transferred handle, so the next
+	// in-process restore of this child re-claims it without flock churn.
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the adopted retained scratch %q did not survive the failed restore: %v", retainedDir, err)
+	}
+	pool := root.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the root pool is gone after the failed restore")
+	}
+	pool.mu.Lock()
+	requeued := pool.handles[key]
+	pool.mu.Unlock()
+	if requeued == nil {
+		t.Fatalf("the adopted retained scratch %q was not requeued into the pool for the next restore", retainedDir)
+	}
+}
+
 // saveColdRestorableChild writes a committed child's session meta and an
 // empty transcript — the durable state a real committed spawn leaves — so a
 // cold restore can reconstruct the child from disk.

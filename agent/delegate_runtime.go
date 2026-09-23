@@ -2260,11 +2260,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// proves the environment held no scratch this restore could have mistaken
 	// for its own mint.
 	mintedScratch := ownsFresh
-	// adoptedScratch records that adoption below transferred a durable retained
-	// allocation onto an environment this restore created. ownsFresh says only
-	// that the environment is this restore's; after adoption it exposes a
-	// retained handle the manifest still references, never a mint to dispose.
-	adoptedScratch := false
 	defer func() {
 		// The construction below runs the child's git snapshot, which is what
 		// mints an unsandboxed environment's scratch, so a failure after that
@@ -2272,21 +2267,16 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		if !discardEnv {
 			return
 		}
-		switch {
-		case adoptedScratch:
-			// Release the lease the adoption took but keep the directory and its
-			// manifest reference, the handoff a retirement makes: the retained
-			// allocation is durable state a later restore reacquires.
-			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.RetainSessionScratch()
-			}
-		case mintedScratch:
-			// Adoption can transfer one slot of the child's binding and then
-			// fail on another, and its recovery can pin a fresh mint; either
-			// way a blanket dispose would remove a directory the manifest still
-			// references. Settle it by what the manifest names; createdEnv
-			// (ownsFresh) tells the settle whether the environment is this
-			// restore's own or the live parent's shared object.
+		if mintedScratch {
+			// Settle by what the manifest names, whether adoption transferred
+			// a durable allocation or not: the settlement retains every
+			// referenced directory with its lease released — the handoff a
+			// retirement makes — and disposes only unreferenced fresh state,
+			// including scratch a later construction step left on the
+			// environment beside a transferred allocation (round 30). A
+			// blanket retain here would leak exactly that newcomer.
+			// createdEnv (ownsFresh) tells the settle whether the environment
+			// is this restore's own or the live parent's shared object.
 			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID, ownsFresh)
 		}
 	}()
@@ -2298,13 +2288,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// Binding the exact consumer here is what restores the child's allocation at
 	// its original absolute path instead of minting a replacement.
 	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-		// Adoption reports whether a retained allocation actually transferred,
-		// which is what the failure path keys its retain-vs-dispose decision on.
-		// Re-deriving that from SessionScratchDir() before/after is wrong for a
-		// sandboxed env, whose accessor reflects only the wrapper tmp and so
-		// hides a transferred unsandboxed slot.
-		adopted, err := s.adoptRestoredConsumerScratch(local, descriptor.ChildSessionID, ownsFresh)
-		if err != nil {
+		// Adoption reports whether a retained allocation actually transferred;
+		// the failure settlement no longer keys on that report — it classifies
+		// by the manifest, which names every durable allocation adoption moved
+		// (round 30). The error alone decides here.
+		if _, err := s.adoptRestoredConsumerScratch(local, descriptor.ChildSessionID, ownsFresh); err != nil {
 			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
 		}
 		// Ownership and failure-path disposal are separate concerns. A shared
@@ -2319,11 +2307,8 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		if !ownsFresh && local.SessionScratchDir() == "" {
 			mintedScratch = true
 		}
-		// Adoption filled an environment this restore created with a durable
-		// retained handle. That allocation is durable state, so the failure path
-		// must retain it, not dispose it.
-		if ownsFresh && adopted {
-			adoptedScratch = true
+		if hook := s.cfg.testOnly.scratchRestoreAfterAdoption; hook != nil {
+			hook(local)
 		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)

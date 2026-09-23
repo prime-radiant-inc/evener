@@ -24,8 +24,10 @@ export type LiveReadiness = () => boolean;
  * effect, so between a moved render's commit and that effect a callback from
  * the previous render still validated against the previous settle — the exact
  * window where a deferred request could fire on a hub the render has already
- * left. A generation counter closed it: the render that observes the identity
- * (scope or client) move bumps the counter synchronously, so every callback a
+ * left. A generation counter closed it: the render that observes the pairing
+ * move — the scope or client identity, or a connection-state drop that leaves
+ * the settled snapshot reporting "ready" through the window — bumps the
+ * counter synchronously, so every callback a
  * previous render captured refuses from that instant — the effect's settle
  * then makes the NEW callback usable, and the window never authorizes the old
  * one. The bump is the one render-phase write this hook allows, and it is
@@ -57,16 +59,24 @@ export function useLiveReadiness(
 	// render React abandons midway must not leave ref writes behind.
 	const current = useRef({ scope, client, state });
 	const bornScope = useRef({ client, scope });
-	const lastIdentity = useRef({ scope, client });
+	const lastObserved = useRef({ scope, client, state });
 	const generation = useRef(0);
-	// Synchronous on the identity move, before any effect runs: this is what
-	// closes the commit-to-effect window.
-	if (lastIdentity.current.scope !== scope || lastIdentity.current.client !== client) {
+	// Synchronous on the observed pairing move, before any effect runs: this
+	// is what closes the commit-to-effect window. The state is part of the
+	// observed pairing for the same reason: a connection drop must refuse a
+	// ready-captured callback the moment the dropped render commits, and the
+	// settled snapshot keeps reporting the previous state through the window
+	// (round 30).
+	if (
+		lastObserved.current.scope !== scope ||
+		lastObserved.current.client !== client ||
+		lastObserved.current.state !== state
+	) {
 		generation.current += 1;
 	}
 	const myGeneration = generation.current;
 	useEffect(() => {
-		lastIdentity.current = { scope, client };
+		lastObserved.current = { scope, client, state };
 		if (client !== null && bornScope.current.client !== client) {
 			bornScope.current = { client, scope };
 		}
@@ -75,12 +85,17 @@ export function useLiveReadiness(
 	return useCallback(
 		() =>
 			generation.current === myGeneration &&
+			// The render that built this callback must itself have observed a
+			// ready connection: the settled snapshot lags one effect, so a
+			// callback born in a dropped render would otherwise authorize
+			// against the not-yet-settled "ready" through the window.
+			state === "ready" &&
 			bornScope.current.client === client &&
 			bornScope.current.scope === scope &&
 			current.current.scope === scope &&
 			current.current.client === client &&
 			current.current.state === "ready",
-		[scope, client, myGeneration],
+		[scope, client, state, myGeneration],
 	);
 }
 

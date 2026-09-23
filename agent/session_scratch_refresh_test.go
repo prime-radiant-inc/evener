@@ -739,6 +739,74 @@ func TestScratchRestoreAdoptionReportsNoTransferForABorrow(t *testing.T) {
 	}
 }
 
+// TestScratchBorrowDeclinesATerminallyReleasedDirectory pins round 30's
+// wrapper-borrow window: adoptRetainedScratchFor snapshots the binding under
+// the pool lock and borrows outside it, and this session's own terminal
+// release can seal, detach, and tombstone the allocation in between. The bare
+// borrow checks nothing but the directory's existence, so pre-fix it
+// installed a Released, pin-less, lease-less directory the collector is free
+// to remove from under the restored environment.
+func TestScratchBorrowDeclinesATerminallyReleasedDirectory(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01BORROWRELSED1"
+	const bindingID = "b-borrow-released"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	// A wrapper-only slot: the binding borrows a directory whose lease another
+	// binding owns, so the adoption runs the borrow branch rather than a
+	// claim.
+	wrapperRow := bindingRow
+	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The terminal release lands inside the snapshot-to-borrow window: by the
+	// time the borrow runs, the manifest is tombstoned and the pin is gone.
+	s.cfg.testOnly.scratchAdoptionBeforeBorrow = func() {
+		s.releaseTerminalScratchRetention()
+		manifest, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Fatalf("load the released manifest: %v", err)
+		}
+		if !manifest.Released {
+			t.Fatal("the fixture's terminal release did not tombstone the manifest inside the borrow window")
+		}
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the wrapper binding over a terminal release: %v", err)
+	}
+	if !installed {
+		t.Fatal("the adoption did not run")
+	}
+	// The directory itself still exists — the release retains pooled handles
+	// rather than deleting — so a bare existence check would pass; the
+	// borrow must not have installed it.
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the fixture retained directory %q vanished: %v", retainedDir, err)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) == filepath.Clean(retainedDir) {
+		t.Fatalf("the adoption borrowed the terminal-released %q: the environment would run on a collectible, lease-less directory", retainedDir)
+	}
+}
+
 // TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows pins round 24's
 // first Medium: the refresh declined on a released manifest without clearing
 // the pool, so the adoption seam reading the pool right below it served the

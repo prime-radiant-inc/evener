@@ -646,6 +646,21 @@ type testConfig struct {
 	// snapshot and a second lookup. Nil in production.
 	scratchClaimResolved func()
 
+	// scratchRestoreAfterAdoption runs in the committed-delegate restore right
+	// after the retained-scratch adoption installs (or declines) on the
+	// child's environment and before the construction continues — the window
+	// where a later construction step can leave further scratch on that
+	// environment ahead of a failure. It receives the environment so a test
+	// can provision exactly that. Nil in production.
+	scratchRestoreAfterAdoption func(env *execenv.LocalExecutionEnvironment)
+
+	// scratchAdoptionBeforeBorrow runs in adoptRetainedScratchFor's
+	// wrapper-only branch after the binding snapshot and before the borrow's
+	// revalidation — the window where this session's own terminal release
+	// can seal, detach, and tombstone the allocation the snapshot approved.
+	// Nil in production.
+	scratchAdoptionBeforeBorrow func()
+
 	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
 	// before each UpdateScratchBindings attempt, so a test can make the first
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.

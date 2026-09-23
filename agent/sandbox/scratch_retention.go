@@ -1400,12 +1400,14 @@ func BorrowRetainedSessionScratch(dir string) (*SessionScratch, error) {
 	return &SessionScratch{Dir: canonical, base: filepath.Dir(canonical)}, nil
 }
 
-// scratchDirectoryRetained decides whether the collector must skip dir. A
-// missing pin means "not retained by this subsystem". A malformed pin, a
+// ScratchDirectoryRetained decides whether the collector must skip dir —
+// and whether a wrapper borrow may still install it: a directory the
+// collector may take is not one a restored environment may use (round 30).
+// A missing pin means "not retained by this subsystem". A malformed pin, a
 // missing/incomplete manifest, or a pin whose reference is absent is
 // conservatively retained with a diagnostic, never treated as collectible. A
 // Released tombstone authorizes ordinary collection.
-func scratchDirectoryRetained(dir string) (bool, error) {
+func ScratchDirectoryRetained(dir string) (bool, error) {
 	pin, err := readScratchDirectoryPin(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

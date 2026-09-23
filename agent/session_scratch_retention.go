@@ -1495,11 +1495,20 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			// another binding owns. It never takes a second lease, so the borrow
 			// must happen whether the owning handle was reacquired (present), is
 			// held elsewhere in this process (contended), or its owner binding
-			// has not been adopted yet.
-			if pool.scratchSlotTakenBy(key) == adopterID {
+			// has not been adopted yet. But the binding was snapshotted above
+			// and this session's own terminal release can seal, detach, and
+			// tombstone the allocation in between — the guarded borrow
+			// revalidates and serializes against exactly that (round 30).
+			if hook := s.cfg.testOnly.scratchAdoptionBeforeBorrow; hook != nil {
+				hook()
+			}
+			pool.mu.Lock()
+			takenBy := pool.adopted[key]
+			pool.mu.Unlock()
+			if takenBy == adopterID {
 				return false, nil, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 			}
-			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
+			if _, err := s.borrowRetainedScratchIfLive(pool, env, bindingID, kind, slot); err != nil {
 				return false, nil, err
 			}
 			continue
@@ -1530,8 +1539,11 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 			return false, nil, fmt.Errorf("retained scratch: binding %q slot %q was already transferred", bindingID, kind)
 		case already:
 			// A distinct consumer sharing the allocation borrows the same
-			// directory without doubling the lease its adopter holds.
-			if err := borrowRetainedScratch(env, bindingID, kind, slot); err != nil {
+			// directory without doubling the lease its adopter holds — but
+			// only while the allocation is still live: the claim's snapshot
+			// is one pool-lock hold earlier, and the terminal release can
+			// seal, detach, and tombstone in between (round 30).
+			if _, err := s.borrowRetainedScratchIfLive(pool, env, bindingID, kind, slot); err != nil {
 				return false, nil, err
 			}
 		case handle != nil:
@@ -1581,8 +1593,8 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 }
 
 // borrowRetainedScratch installs a lease-less borrow of one retained directory
-// on env without taking a second lease. It holds no pool lock across the borrow
-// or the restore.
+// on env without taking a second lease. The guarded caller holds the pool lock
+// across it; the helper itself takes none.
 func borrowRetainedScratch(env *execenv.LocalExecutionEnvironment, bindingID, kind string, slot sandbox.ScratchSlot) error {
 	borrow, err := sandbox.BorrowRetainedSessionScratch(slot.Dir)
 	if err != nil {
@@ -1592,12 +1604,37 @@ func borrowRetainedScratch(env *execenv.LocalExecutionEnvironment, bindingID, ki
 	return env.RestoreSessionScratch(bindingID, ref, borrow)
 }
 
-// scratchSlotTakenBy reports the consumer that has claimed or already taken one
-// pooled allocation, or "" when no adopter holds it.
-func (p *retainedScratchPool) scratchSlotTakenBy(key string) string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.adopted[key]
+// borrowRetainedScratchIfLive installs a lease-less borrow of one retained
+// directory, declining unless the allocation is still live. The binding was
+// snapshotted under the pool lock earlier in the adoption, and this session's
+// own terminal release can seal, detach, and tombstone it in between — while
+// the bare borrow checks nothing but the directory's existence. The disk
+// revalidation asks what the collector would see: a Released tombstone or a
+// removed pin leaves the directory collectible, and a collectible directory
+// is not one a restored environment may run on. The install runs under the
+// pool lock, and the terminal release stores its seal under the same lock,
+// so the release either sealed first (declined) or starts after this install
+// completes (round 30).
+func (s *Session) borrowRetainedScratchIfLive(pool *retainedScratchPool, env *execenv.LocalExecutionEnvironment, bindingID, kind string, slot sandbox.ScratchSlot) (bool, error) {
+	retained, retainedErr := sandbox.ScratchDirectoryRetained(slot.Dir)
+	if retainedErr != nil {
+		// Unreadable retention state is the r23 abort class, not a decline:
+		// fail the adoption loudly and retryably rather than silently
+		// skipping an allocation that may still be live.
+		return false, retainedErr
+	}
+	if !retained {
+		return false, nil
+	}
+	pool.mu.Lock()
+	sealed := s.retainedScratchSealed.Load()
+	live := s.retainedScratch.Load() == pool
+	var borrowErr error
+	if !sealed && live {
+		borrowErr = borrowRetainedScratch(env, bindingID, kind, slot)
+	}
+	pool.mu.Unlock()
+	return true, borrowErr
 }
 
 // scratchSlotContended reports whether slot key's lease was held elsewhere in
@@ -2083,6 +2120,23 @@ func releaseRetainedScratchPool(pool *retainedScratchPool) {
 // pool's published lifetime or declines and retries against the current
 // pointer. Handles are still released outside the mutex so a concurrent
 // adoption never observes a half-cleared map.
+// sealRetainedScratch marks this session's retained-scratch pool sealed,
+// storing the seal under the live pool's own lock: a wrapper borrow that
+// holds the lock across its install either completes before the seal or
+// declines inside its critical section, so a terminal release can no longer
+// start mid-borrow and leave a restored environment on a directory the
+// release is about to make collectible (round 30).
+func (s *Session) sealRetainedScratch() {
+	pool := s.retainedScratch.Load()
+	if pool == nil {
+		s.retainedScratchSealed.Store(true)
+		return
+	}
+	pool.mu.Lock()
+	s.retainedScratchSealed.Store(true)
+	pool.mu.Unlock()
+}
+
 func (s *Session) detachRetainedScratch() {
 	pool := s.retainedScratch.Load()
 	if pool == nil {

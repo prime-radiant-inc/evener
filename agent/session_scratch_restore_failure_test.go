@@ -175,14 +175,19 @@ func TestDelegateRestoreFailurePreservesAdoptedRetainedScratch(t *testing.T) {
 	if !referenced {
 		t.Fatalf("retained reference for %s was erased: %+v", scratch.Dir, after.References)
 	}
-	// Its lease is released rather than leaked, so a later restore can
-	// reacquire it.
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
-	if err != nil {
-		t.Fatalf("adopted retained scratch lease was not released: %v", err)
+	// Its lease is handed back to the pool rather than leaked: the failed
+	// restore settles by the manifest (round 30), and the settle's handoff
+	// for a transferred handle is the requeue — the next in-process restore
+	// of this child re-claims it without flock churn.
+	pool := root2.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the restored root has no retained-scratch pool after the failed delegate restore")
 	}
-	if err := handle.Retain(); err != nil {
-		t.Fatal(err)
+	pool.mu.Lock()
+	requeued := pool.handles[canonicalScratchDir(scratch.Dir)]
+	pool.mu.Unlock()
+	if requeued == nil {
+		t.Fatalf("adopted retained scratch %q was not requeued into the pool for the next restore", scratch.Dir)
 	}
 }
 
@@ -471,13 +476,19 @@ func TestDelegateSandboxedRestoreFailurePreservesAdoptedUnsandboxedScratch(t *te
 	if got, err := os.ReadFile(artifact); err != nil || string(got) != "durable" {
 		t.Fatalf("adopted retained artifact lost: bytes=%q err=%v", got, err)
 	}
-	owner := sandbox.ScratchOwner{StateDir: fixture.root.stateDir, RootSessionID: fixture.root.id}
-	handle, err := sandbox.OpenRetainedSessionScratch(owner, fixture.ref)
-	if err != nil {
-		t.Fatalf("adopted retained scratch lease was not released: %v", err)
+	// Its lease is handed back to the pool rather than leaked: the failed
+	// restore settles by the manifest (round 30), and the settle's handoff
+	// for a transferred handle is the requeue — the next in-process restore
+	// of this child re-claims it without flock churn.
+	pool := fixture.root.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("the restored root has no retained-scratch pool after the failed sandboxed restore")
 	}
-	if err := handle.Retain(); err != nil {
-		t.Fatal(err)
+	pool.mu.Lock()
+	requeued := pool.handles[canonicalScratchDir(fixture.ref.Dir)]
+	pool.mu.Unlock()
+	if requeued == nil {
+		t.Fatalf("adopted retained scratch %q was not requeued into the pool for the next restore", fixture.ref.Dir)
 	}
 }
 
