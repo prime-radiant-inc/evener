@@ -103,15 +103,14 @@ func assertCapabilityParity(t *testing.T, projection string, daemon, got appwire
 func TestCapabilityProjectionsMatchTheDaemonOracle(t *testing.T) {
 	daemon := daemonCapabilitiesAtState(t, appwire.ThreadStatusIdle)
 
-	// The cold set a session with no daemon reads through: send resumes it,
-	// and the hub's mutation gates re-verify every action against the daemon
-	// a resume spawns. The turn actions are withheld because the hub cannot
-	// carry them out with nothing there to take them; fork stays advertised
-	// because it is the hub's own operation.
+	// The cold set a session with no daemon reads through: send and queue resume
+	// it, and the hub's mutation gates re-verify every action against the daemon
+	// a resume spawns. Steer and Interrupt are withheld because they need a turn
+	// already running and a cold session has none; fork stays advertised because
+	// it is the hub's own operation.
 	pastDiffer := map[string]string{
 		"Steer":        "no daemon is running to carry out a steer",
 		"Interrupt":    "no daemon is running to interrupt",
-		"Queue":        "no daemon is running to queue behind",
 		"ForkFromTurn": "the hub's own operation; applyHubForkCapability owns the bit on every path that serves it",
 	}
 	assertCapabilityParity(t, "pastThreadCapabilities", daemon, pastThreadCapabilities(), pastDiffer, nil)
