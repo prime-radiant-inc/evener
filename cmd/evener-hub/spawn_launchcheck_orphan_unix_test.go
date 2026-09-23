@@ -135,8 +135,19 @@ func TestEvenerLaunchCheckSuccessSurvivesAnOrphanedPipeHolder(t *testing.T) {
 				t.Fatalf("open %s: %v", release, err)
 			}
 			t.Cleanup(func() { _ = releaseEnd.Close() })
-			if err := call(evenerBinary); err != nil {
-				t.Fatalf("a check that answered and exited 0 was reported as: %v", err)
+			done := make(chan error, 1)
+			go func() { done <- call(evenerBinary) }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("a check that answered and exited 0 was reported as: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				// TRIPWIRE: a call that waits on the orphan's pipe never returns
+				// on its own; end the orphan so the call can, then fail.
+				_ = releaseEnd.Close()
+				<-done
+				t.Fatal("launch-check that answered did not return while an orphan held its output pipe")
 			}
 		})
 	}
