@@ -446,14 +446,6 @@ class Driver {
     );
   }
 
-  // regionText returns the innerText of the region with this accessible name.
-  regionText(ariaLabel) {
-    return evaluate(
-      this.send,
-      `(() => { const el = document.querySelector("[aria-label=" + JSON.stringify(${JSON.stringify(ariaLabel)}) + "]"); return el === null ? null : el.innerText; })()`,
-    );
-  }
-
   settingsURL(section, { cwd = null } = {}) {
     const params = new URLSearchParams();
     params.set("host", this.host);
@@ -522,7 +514,19 @@ async function runPane(driver, section) {
         `(() => document.querySelector("[aria-label=" + JSON.stringify(${JSON.stringify(regionLabel)}) + "]") !== null ? true : null)()`,
         { label: `remote credentials region "${regionLabel}"` },
       );
-      const text = await driver.regionText(regionLabel);
+      // The region appears with the pane, but its ROWS come from the selected
+      // host over evener/host/request, so the listing arrives after the region
+      // does. Read the region only once the host's own instance is in it: every
+      // other pane's assertion already waits this way, and reading the instant
+      // the region exists asserts against an empty listing.
+      const text = await driver.waitPage(
+        `(() => {
+          const el = document.querySelector("[aria-label=" + JSON.stringify(${JSON.stringify(regionLabel)}) + "]");
+          if (el === null) return null;
+          return el.innerText.includes(${JSON.stringify(expect.credentials.hostText)}) ? el.innerText : null;
+        })()`,
+        { label: `the remote pane to list the host's own instance ${JSON.stringify(expect.credentials.hostText)}` },
+      );
       requireHostValue(text, expect.credentials.hostText, expect.credentials.controllerText, "credentials");
       record.probe = `Host picker (accessible name "Host") -> option value "${driver.host}"; remote section [aria-label="${regionLabel}"]`;
       record.evidence = { regionText: text };
