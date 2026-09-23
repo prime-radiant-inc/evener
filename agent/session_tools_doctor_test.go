@@ -481,6 +481,47 @@ func TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct(t *testing.T) {
 	}
 }
 
+// TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct widens the
+// error-result contract from locate to every selector-taking command: a miss
+// must surface the doctor's explicit not-found text, never the command
+// function's zero struct — the tool layer renders a non-nil erroring value
+// as the result content, so a zero struct would print an all-empty JSON
+// object and hide where the sweep looked.
+func TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	writeDoctorFixtureSession(t, bucket)
+	missing := doctorTestSID(t)
+
+	rt := doctorToolForTest(t, stateHome)
+	cases := []map[string]any{
+		{"command": "locate", "selector": missing},
+		{"command": "transcript", "selector": missing},
+		{"command": "transcript", "selector": missing, "count": "read_file"},
+		{"command": "transcript", "selector": missing, "health": true},
+		{"command": "apilog", "selector": missing},
+		{"command": "apilog", "selector": missing, "validate": true},
+		{"command": "apilog", "selector": missing, "health": true},
+		{"command": "jobs", "selector": missing},
+		{"command": "mutations", "selector": missing},
+		{"command": "watches", "selector": missing},
+		{"command": "tree", "selector": missing},
+	}
+	for _, args := range cases {
+		out, err := rt.Exec(context.Background(), nil, args)
+		if err == nil {
+			t.Errorf("%v: want not-found error, got nil (out=%v)", args, out)
+			continue
+		}
+		if out != nil {
+			t.Errorf("%v: miss returned %T (%v), want nil so the error text is the result content", args, out, out)
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("%v: err = %v, want the explicit not-found text", args, err)
+		}
+	}
+}
+
 // TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets proves the
 // daemon's own invocation shape (the session's state dir is its project
 // bucket directory — see userdirs.StateHomeForBucketDir): a bare-id locate
