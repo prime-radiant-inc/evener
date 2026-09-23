@@ -23,3 +23,13 @@ GATE_FUZZ_TEST_SKIP='(SeqFuzz|SchemaFuzz|Structured.*Reach|LifecycleAdapter|Tool
 # which is make fuzz's job, not the default gate's.
 GATE_TEST_RUN='^(Test|Example)'
 
+# gate_shard_skip GATE USER — the -skip regex a shard runner gets: the gate's
+# own skip, plus a caller's *_SHARD_SKIP as an alternative when one is set, so
+# a test the caller asked to skip stays skipped under the gate too.
+gate_shard_skip() {
+	if [ -n "$2" ]; then
+		printf '%s|(%s)' "$1" "$2"
+	else
+		printf '%s' "$1"
+	fi
+}

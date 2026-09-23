@@ -122,8 +122,11 @@ printf 'root=%s\nagent=%s\nother=%s\nshards=%s %s\n' \
 	"$(gate_module_flags .)" \
 	"$(gate_module_flags agent)" \
 	"$(gate_module_flags llm)" \
-	"$AGENT_SHARD_PARALLEL" "$AGENT_SHARD_SURVEY_PARALLEL"`)
-			want := "root=" + tc.wantRoot + "\nagent=" + tc.wantAgent + "\nother=\nshards=" + tc.wantShards
+	"$AGENT_SHARD_PARALLEL" "$AGENT_SHARD_SURVEY_PARALLEL"
+printf 'hub=%s %s\n' "$HUB_SHARD_PARALLEL" "$HUB_SHARD_SURVEY_PARALLEL"`)
+			// The hub's shards take the same per-shard and survey widths as the
+			// agent's, so both shrink together on a loaded host.
+			want := "root=" + tc.wantRoot + "\nagent=" + tc.wantAgent + "\nother=\nshards=" + tc.wantShards + "\nhub=" + tc.wantShards
 			if got != want {
 				t.Errorf("effective gate flags =\n%s\nwant\n%s", got, want)
 			}

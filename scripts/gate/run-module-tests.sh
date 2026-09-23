@@ -390,7 +390,7 @@ run_module() {
 		# Test/Example surface, which the runner applies itself.
 		local hub_pid="" hub_status=0 root_status=0
 		if [ "$HUB_SHARDS" -ne 0 ]; then
-			HUB_SHARD_SKIP="$root_skip" go run ./cmd/evener-dev/bin dev hub-shards ${test_flags[@]+"${test_flags[@]}"} &
+			HUB_SHARD_SKIP="$(gate_shard_skip "$root_skip" "${HUB_SHARD_SKIP:-}")" go run ./cmd/evener-dev/bin dev hub-shards ${test_flags[@]+"${test_flags[@]}"} &
 			hub_pid=$!
 		fi
 		# ROOT_FULL removes short mode through module_test_flags_array while
@@ -421,7 +421,7 @@ run_module() {
 		# zero-vs-nonzero is read below, so nothing here depends on them.
 		# The shards get the gate's fuzz-owned skip like every other module;
 		# coverage-floor.sh already measures agent without those tests.
-		(cd .. && AGENT_SHARD_SKIP="$fuzz_test_skip" go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
