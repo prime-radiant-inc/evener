@@ -493,7 +493,11 @@ The frontend unit gate sizes Vitest from the machine's spare capacity through
 actually use (affinity- and cgroup-quota-aware, not the host's advertised
 count) minus the 1-minute load average rounded up, clamped to at least one and
 at most four. A checkout where the helper cannot be read falls back to a flat
-four, which is what the gate used before the helper existed.
+four, which is what the gate used before the helper existed. On top of that,
+`vitest_run_args` (scripts/lib/gate-budgets.sh) and vite.config.ts's default
+never hand Vitest fewer than two workers. That floor is a correctness bound,
+not a tuning one, and it lives there rather than in the shared helper: see the
+vmThreads note below.
 The four is a ceiling, not a fixed pool. Vitest's own default pool is
 `os.availableParallelism()`, which oversubscribed a 10-core host under the
 combined load of `make test`'s sibling Go streams and starved otherwise causal
@@ -506,6 +510,28 @@ widens a timeout or replaces an awaitable completion with polling.
 Vitest file isolation prevents worker-count or file assignment from sharing
 module stores, panes, or mocks; per-file teardown is still required for timers,
 clients, and listeners.
+
+The suite runs on Vitest's `vmThreads` pool (vite.config.ts): each file gets
+its own VM context, module registry and jsdom window, but workers are reused,
+so jsdom (~450ms to load) loads once per worker rather than once per file.
+That took the suite from 164s to 75s at four workers. Three consequences for
+test authors, because the global object is now the jsdom window itself:
+
+- `localStorage` is a getter-only window property, so install a storage stub
+  with `installLocalStorage` (src/storageTestUtils.ts) rather than assigning
+  `globalThis.localStorage`.
+- `window.location` is non-configurable and cannot be stubbed; UI code reloads
+  through `reloadPage()` (src/shell/pageReload.ts), which a test spies on.
+- `instanceof` fails for objects built in the runner's realm, such as
+  `vi.mock`'s wrapper errors; check the brand
+  (`Object.prototype.toString.call(e) === "[object Error]"`) instead.
+
+With a single worker, Vitest batches every file of a VM pool into one shared
+context and isolation is gone, so the gate never sizes Vitest below two
+workers, and src/testSetup.ts fails the second file that lands in a used
+context. Running one file with `--maxWorkers=1` is fine.
+Workers are recycled at `vmMemoryLimit` (512MB); VM contexts otherwise grow a
+worker's memory file after file, and the unbounded suite peaked at 8.3GB.
 
 ### Whole-system residue audit
 

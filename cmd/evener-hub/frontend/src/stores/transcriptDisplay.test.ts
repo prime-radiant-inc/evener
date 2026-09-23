@@ -16,6 +16,7 @@ import {
   registerTranscriptView,
   resetTranscriptViewRegistryForTests,
 } from "../panes/session/transcript/flow/transcriptViewRegistry";
+import { installLocalStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import {
   initTranscriptDisplay,
@@ -101,7 +102,7 @@ function viewSnapshot(id: string): CapturedTranscriptView {
 beforeEach(() => {
   storage.clear();
   // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
-  globalThis.localStorage = storage;
+  installLocalStorage(storage);
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetTranscriptDisplayStoreForTests();
   resetTranscriptViewRegistryForTests();

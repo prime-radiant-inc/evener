@@ -26,6 +26,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { navigate } from "../../shell/routing";
+import { installLocalStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
@@ -1314,7 +1315,7 @@ test("restoring a project's effort never clamps it against the previous project'
 });
 
 beforeAll(() => {
-  globalThis.localStorage = new MemoryStorage() as unknown as Storage;
+  installLocalStorage(new MemoryStorage() as unknown as Storage);
 });
 
 beforeEach(() => {

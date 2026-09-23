@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
+import { installLocalStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
@@ -114,7 +115,7 @@ class CommitObservedStorage extends MutationOutboxIndexedDB {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {

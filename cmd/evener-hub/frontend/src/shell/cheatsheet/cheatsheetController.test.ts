@@ -3,6 +3,7 @@ import { ACTIONS, CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } fr
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
+import { installLocalStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
@@ -31,7 +32,7 @@ class MemoryStorage {
 
 beforeAll(() => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function resetRegistryToDefaults(): void {
