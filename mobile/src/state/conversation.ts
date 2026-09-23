@@ -2097,6 +2097,13 @@ export function createConversationStore() {
                   offset += chunk.length;
                   settled += 1;
                 }
+                if (settled === 0 && advance !== "") {
+                  // The wire's continuation diverges from the chunk
+                  // stream — a restart the client missed, still
+                  // streaming: the chunks belong to the dead generation
+                  // (RoboRev round 12).
+                  settled = pending.length;
+                }
               } else {
                 // The snapshot's provided text does not advance the
                 // retained base: an authoritative replacement (or an
