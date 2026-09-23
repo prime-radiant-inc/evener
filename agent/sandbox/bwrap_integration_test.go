@@ -200,7 +200,7 @@ func TestBwrapConfinesAndMasks(t *testing.T) {
 	facts := requireRealBwrap(t)
 
 	// A fake home with a credential file that MUST be invisible inside the sandbox.
-	home := secretHomeDir(t)
+	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -262,5 +262,29 @@ func TestBwrapDeniesGitConfigWrite(t *testing.T) {
 	// The real hook file must not exist on the host afterward.
 	if _, err := os.Stat(filepath.Join(cwd, ".git", "hooks", "post-commit")); err == nil {
 		t.Errorf("a git hook was persisted to the host despite the sandbox")
+	}
+}
+
+// A read-only sandbox whose workspace lives under /dev/shm must see the real
+// workspace and refuse writes to it, as it does anywhere else. Without the
+// re-bind, bwrap's fresh --dev tmpfs hid the workspace: the host file was
+// missing and a write "succeeded" into a private directory that vanished.
+func TestBwrapReadOnlyDevShmWorkspaceIsRealAndReadOnly(t *testing.T) {
+	facts := requireRealBwrap(t)
+	facts.Home = t.TempDir()
+	cwd := devShmMainCheckout(t)
+	if err := os.WriteFile(filepath.Join(cwd, "host-marker"), []byte("HOST-MARKER"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runWrapped(t, facts, ModeReadOnly, true, cwd, t.TempDir(),
+		`cat host-marker; echo; if echo x > sandbox-write 2>/dev/null; then echo WRITE-ALLOWED; else echo WRITE-DENIED; fi`)
+	if err != nil {
+		t.Fatalf("read-only /dev/shm sandbox failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "HOST-MARKER") {
+		t.Errorf("the sandbox did not see the host workspace under /dev/shm:\n%s", out)
+	}
+	if !strings.Contains(out, "WRITE-DENIED") {
+		t.Errorf("a read-only sandbox accepted a write to its /dev/shm workspace:\n%s", out)
 	}
 }

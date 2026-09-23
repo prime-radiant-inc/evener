@@ -82,9 +82,14 @@ func buildBwrapArgv(rp ResolvedPolicy, sessionTmp, cwd string) []string {
 	// writable below and win (later mounts win), so a root that is both read- and
 	// write-granted ends up writable. The session tmp (already bound writable) and
 	// the /tmp tmpfs root itself are left untouched.
+	//
+	// The fresh --dev shadows /dev/shm the same way: a workspace kept there would
+	// otherwise be an empty private directory in which "writes" succeed and
+	// vanish. Only /dev/shm is re-bound — a tmpfs of ordinary files — never any
+	// other /dev path, whose device nodes the minimal --dev hides on purpose.
 	reboundRO := make(map[string]bool)
 	for _, r := range append([]string{cwd}, sp.ReadRoots...) {
-		if r == "" || r == "/tmp" || !pathUnder(r, "/tmp") {
+		if r == "" || r == "/tmp" || r == "/dev/shm" || (!pathUnder(r, "/tmp") && !pathUnder(r, "/dev/shm")) {
 			continue
 		}
 		if r == sessionTmp || (sessionTmp != "" && pathUnder(r, sessionTmp)) {
@@ -289,8 +294,13 @@ func isUnderAnyRoot(path string, roots []string) bool {
 // namespace mount rather than an explicit mask: /proc (the fresh pid-ns --proc)
 // and everything under /dev (the minimal --dev, which omits /dev/mem and makes
 // /dev/fd a safe self-referential symlink). Masking these again would clobber the
-// namespace mount, so the caller skips them.
+// namespace mount, so the caller skips them. /dev/shm is the exception: a read
+// root under it is re-bound after --dev, so a secret there is visible again and
+// needs its explicit mask.
 func maskHandledByNamespace(path string) bool {
+	if path == "/dev/shm" || pathUnder(path, "/dev/shm") {
+		return false
+	}
 	return path == "/proc" || path == "/dev" || strings.HasPrefix(path, "/dev/")
 }
 

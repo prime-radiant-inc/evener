@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -47,25 +46,19 @@ func bwrapFacts(home string) HostFacts {
 	return HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: false}
 }
 
-// secretHomeDir is a fake home whose secrets the bwrap argv must mask. It is
-// t.TempDir() unless that lands under /dev, as it does when the gate puts
-// TMPDIR on /dev/shm: bwrap's minimal --dev already hides everything under
-// /dev, so buildBwrapArgv rightly emits no mask there and a /dev home would
-// leave the masking under test unexercised. /var/tmp is the real-filesystem
-// scratch the sandbox fixtures already use for paths that must not live
-// under /tmp, so the home moves there instead.
-func secretHomeDir(t *testing.T) string {
+// devShmMainCheckout is a main-checkout workspace under /dev/shm, the tmpfs a
+// gate or a user may keep a workspace on. Hosts without a writable /dev/shm
+// skip.
+func devShmMainCheckout(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	if home != "/dev" && !strings.HasPrefix(home, "/dev/") {
-		return home
-	}
-	home, err := os.MkdirTemp("/var/tmp", "sbx-secret-home-")
+	root, err := os.MkdirTemp("/dev/shm", "sbx-devshm-cwd-")
 	if err != nil {
-		t.Fatalf("mkdir fake home outside /dev: %v", err)
+		t.Skipf("this host offers no writable /dev/shm: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	return resolveCleanPath(home)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	root = resolveCleanPath(root)
+	contractGitRunnerFor(t)(t, root, "init", "-q")
+	return root
 }
 
 // tmpMainCheckout is a main-checkout workspace under /tmp itself, whatever
@@ -95,7 +88,7 @@ func tmpMainCheckout(t *testing.T) string {
 // and resolves the requested mode against a bwrap host.
 func resolveFixture(t *testing.T, mode Mode, netOn bool) (ResolvedPolicy, string, string) {
 	t.Helper()
-	home := secretHomeDir(t)
+	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
 		t.Fatalf("mkdir .ssh: %v", err)
 	}

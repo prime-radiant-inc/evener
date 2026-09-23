@@ -195,7 +195,7 @@ func TestBuildBwrapArgvMasksDaemonSockets(t *testing.T) {
 func TestBuildBwrapArgvMasksSymlinkedSecret(t *testing.T) {
 	// Verifier finding F3: a symlinked credential dir must be masked at its real
 	// target (as a directory), not misclassified and aborted.
-	home := secretHomeDir(t)
+	home := t.TempDir()
 	realSSH := filepath.Join(home, "real-ssh")
 	if err := os.MkdirAll(realSSH, 0o700); err != nil {
 		t.Fatal(err)
@@ -317,5 +317,24 @@ func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	}
 	if seqIndex(args, "--bind", infra, infra) >= 0 {
 		t.Errorf("hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", infra, args)
+	}
+}
+
+// A read-only cwd under /dev/shm sits beneath the fresh --dev tmpfs, which
+// would otherwise replace it with an empty private directory: writes "succeed"
+// and vanish, and the real workspace is unreadable. It must be re-bound
+// read-only after --dev, exactly as a /tmp cwd is after the /tmp tmpfs.
+func TestBuildBwrapArgvReadOnlyRebindsDevShmCwd(t *testing.T) {
+	cwd := devShmMainCheckout(t)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(t.TempDir()), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "/tmp/evener-session", cwd)
+	devIdx := seqIndex(args, "--dev", "/dev")
+	rebindIdx := seqIndex(args, "--ro-bind", cwd, cwd)
+	if rebindIdx < 0 || devIdx < 0 || rebindIdx < devIdx {
+		t.Fatalf("read-only cwd under /dev/shm must be re-bound read-only after --dev (dev idx %d, rebind idx %d): %v", devIdx, rebindIdx, args)
 	}
 }

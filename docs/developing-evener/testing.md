@@ -444,10 +444,12 @@ SQLite fixture and atomic write pays real fsync latency; measured on a busy
 host, tmpfs took the gate from 558s to 221s and evener-doctor alone from 52s to
 0.5s. macOS has no `/dev/shm` and stays on disk. Two consequences for test
 authors: a failed run's retained logs occupy RAM until you delete them or
-reboot, and a test must not assume `TMPDIR` is outside `/dev`: the agent
-sandbox's minimal `--dev` hides everything under `/dev`, so a fixture that
-needs a host path the sandbox masks has to put it elsewhere (see
-`secretHomeDir` in agent/sandbox). `XDG_RUNTIME_DIR` is not a usable
+reboot, and a test must not assume `TMPDIR` is under `/tmp`: a fixture that
+needs a `/tmp` path creates one explicitly (`tmpMainCheckout` in
+agent/sandbox). The agent sandbox's minimal `--dev` replaces `/dev`, so it
+re-binds read roots under `/dev/shm` afterwards and masks secrets there, the
+same way it treats `/tmp`; sandbox tests therefore behave the same with
+`TMPDIR` on disk or on `/dev/shm`. `XDG_RUNTIME_DIR` is not a usable
 alternative: the sandbox masks `/run/user`, and roughly twenty agent tests lose
 their workspace under it.
 
