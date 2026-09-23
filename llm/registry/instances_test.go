@@ -1280,6 +1280,35 @@ func TestListingJudgesTheGlobResolvedDefaultModel(t *testing.T) {
 	t.Fatal("the gw instance is missing from the listing")
 }
 
+// The listing describes one launch — the bare-name one — so the endpoint
+// it prints is the one that launch contacts: a default row overriding
+// base_url moves the listing's URL with it, the same way the row's auth
+// scheme already moves the listing's Auth. Mixing the provider-level URL
+// with the row's scheme describes a launch nothing makes.
+func TestListingBaseURLFollowsTheRowOverride(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-K\"\n" +
+		"credential_headers = { \"X-K\" = \"$K\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"base_url = \"https://row.internal.example/v1\"\n"
+	r := fixtureLoad(t, map[string]string{"K": "k-1"}, config)
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.BaseURL != "https://row.internal.example/v1" {
+			t.Fatalf("listing base URL = %q; want the default row's override, the endpoint the bare-name launch contacts", inst.BaseURL)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
 // The model-less resolve reports the shadowed variable against the same
 // transport it resolved the credential with — the provider-level one — not
 // the default row's merged shape, which may name a different header.

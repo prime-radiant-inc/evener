@@ -490,9 +490,49 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 	// one, so the oauth and adc terminals and the header's own name agree.
 	t := r.listingTransport(rec)
 	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || h.APIKey != "" {
-		return r.credentialWithAuth(rec, authExpansion{}, t, false)
+		return r.credentialWithAuth(rec, authExpansion{}, t, false, false)
 	}
-	return r.credentialWithAuth(rec, r.authorization(rec, t), t, false)
+	return r.credentialWithAuth(rec, r.authorization(rec, t), t, false, false)
+}
+
+// credentialPresence is the gate's judgment of credential: the same
+// precedence under the same transport, with command expressions counted as
+// present and never executed.
+func (r *Registry) credentialPresence(rec *record, t Transport) (Credential, []string) {
+	h := rec.head
+	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC || h.APIKey != "" {
+		return r.credentialWithAuth(rec, authExpansion{}, t, false, true)
+	}
+	return r.credentialWithAuth(rec, r.authorizationMode(rec, t, true), t, false, true)
+}
+
+// ResolveGateCredential is the spawn gate's judgment of one launch: the
+// transport the launch resolves — the named model's, the default model's
+// for a bare instance name — with a structural credential presence under
+// it. Command expressions are presence, never execution: the hub's
+// preflight must not mint a token the child alone uses (the evaluation
+// contract: commands expand at resolve time, per request, on the agent
+// path), so a command-bearing credential slot counts as present and its
+// outcome belongs to the child's first request. A provider-qualified model
+// is accepted and stripped of this instance's own prefix. The credential
+// value is never materialized.
+func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, error) {
+	name := strings.ToLower(strings.TrimSpace(instance))
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, fmt.Errorf("unknown instance %q", name)
+	}
+	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	t := r.listingTransport(rec)
+	if model != "" {
+		if res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, true); err == nil {
+			t = res.Transport
+		}
+	}
+	cred, warnings := r.credentialPresence(rec, t)
+	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
 }
 
 // authHeaderName is the header the auth scheme of the transport a launch
@@ -561,6 +601,9 @@ type authExpansion struct {
 	present    bool
 	unresolved []valueexpr.Unresolved
 	noMaterial bool
+	// commandBorne marks a presence judgment on command material: the raw
+	// value carries a command expression and was never expanded.
+	commandBorne bool
 }
 
 // authorization expands the record's auth credential header once,
@@ -570,13 +613,40 @@ type authExpansion struct {
 // The transport a launch resolves names the header: the resolve paths pass
 // their row-merged transport, the listing the default row's.
 func (r *Registry) authorization(rec *record, t Transport) authExpansion {
+	return r.authorizationMode(rec, t, false)
+}
+
+// authorizationMode is authorization with the spawn gate's switch:
+// presence counts a command-bearing credential header as present without
+// expanding it — the hub's preflight executes no command expression, so
+// the value and its failures belong to the launch the child makes.
+func (r *Registry) authorizationMode(rec *record, t Transport, presence bool) authExpansion {
 	key := authHeaderKey(rec.head.CredentialHeaders, authHeaderName(t))
 	if key == "" {
 		return authExpansion{}
 	}
 	raw := rec.head.CredentialHeaders[key]
+	if presence && hasCommandMaterial(raw) {
+		return authExpansion{key: key, present: true, commandBorne: true}
+	}
 	expanded, unresolved := expandEnv(raw, r.env)
 	return authExpansion{key: key, expanded: expanded, present: true, unresolved: unresolved, noMaterial: r.schemeWordDefault(raw)}
+}
+
+// hasCommandMaterial reports whether raw's expression pieces include a
+// command — presence without execution. A scan error is not command
+// material: the expansion paths own malformed values and their warnings.
+func hasCommandMaterial(raw string) bool {
+	pieces, err := valueexpr.Pieces(raw)
+	if err != nil {
+		return false
+	}
+	for _, p := range pieces {
+		if p.Kind == valueexpr.PieceCommand {
+			return true
+		}
+	}
+	return false
 }
 
 // schemeWordDefault reports whether a raw credential field's — the
@@ -633,7 +703,7 @@ func (r *Registry) schemeWordDefault(raw string) bool {
 // header loop reports the same failure naming the header — one condition,
 // one warning — while the listing path builds no header map and passes
 // false to keep the reason.
-func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transport, suppressAuthReason bool) (Credential, []string) {
+func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transport, suppressAuthReason bool, presence bool) (Credential, []string) {
 	h := rec.head
 	optional := t.Auth == AuthNone || t.Auth == AuthOptionalBearer
 	none := func(reason string) (Credential, []string) {
@@ -674,6 +744,12 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		return cred, append(warn, reasons...)
 	}
 	if h.APIKey != "" {
+		if presence && hasCommandMaterial(h.APIKey) {
+			// The gate's judgment: a well-formed command is credential
+			// material. Whether it succeeds is the child's first request
+			// to answer, not the preflight's.
+			return Credential{Source: "api_key"}, nil
+		}
 		v, missing := expandEnv(h.APIKey, r.env)
 		if len(missing) > 0 {
 			// The authored layer is present and terminal, and its variable is
@@ -700,6 +776,9 @@ func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transpo
 		return Credential{Value: v, Source: "api_key"}, nil
 	}
 	if auth.present {
+		if auth.commandBorne {
+			return Credential{Source: "credential_headers"}, nil
+		}
 		noneAuth := none
 		if suppressAuthReason {
 			noneAuth = func(string) (Credential, []string) { return Credential{Source: "none"}, nil }
@@ -865,7 +944,7 @@ func (r *Registry) Instances() []Instance {
 		}
 		baseURL := ""
 		if !h.Hidden {
-			baseURL, _, _ = r.resolveBaseURL(inst.rec, h.Transport)
+			baseURL, _, _ = r.resolveBaseURL(inst.rec, t)
 		}
 		out = append(out, Instance{
 			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: h.Protocol, Surface: h.Surface,
@@ -886,6 +965,16 @@ func (r *Registry) Instance(name string) (Instance, bool) {
 		}
 	}
 	return Instance{}, false
+}
+
+// HasInstance reports whether the listing would carry the named instance,
+// without computing one: the spawn gate needs the set alone, and Instance
+// resolves every instance's credential on the way — work the gate must not
+// trigger, since the listing's judgment may expand command expressions the
+// gate counts as presence.
+func (r *Registry) HasInstance(name string) bool {
+	_, ok := r.instances[strings.ToLower(strings.TrimSpace(name))]
+	return ok
 }
 
 // StateRoot is the state root the registry was loaded with: OAuth records

@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -312,4 +313,64 @@ func TestCredentialAgreement_GateJudgesTheLaunchedModel(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The spawn gate counts command expressions as credential material and
+// never executes them. The child process alone runs the command — the
+// spec's evaluation contract is resolve time, per request, on the agent
+// path — so a preflight execution would mint a second token for every
+// stateful or one-time command, double-hit rate limits, and a transient
+// failure would block a launch the child's own retry would survive.
+func TestCredentialAgreement_GateNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(cmd string) (string, error) {
+		runs++
+		return "token-for-" + cmd, nil
+	}
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	store, err := credentials.LoadStore(dir + "/credentials.toml")
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	reg := newProbeRegistry(t, stateDir, store, nil,
+		map[string]registry.Provider{
+			"gw": {
+				Base:     "openai-compatible",
+				Protocol: registry.ProtocolOpenAIChat,
+				Transport: registry.Transport{
+					BaseURL: "https://gw.internal.example/v1",
+					Auth:    registry.AuthBearer,
+				},
+				CredentialHeaders: map[string]string{"Authorization": `$(mint-token)`},
+				DefaultModel:      "house-model",
+				Models: map[string]registry.Model{
+					"house-model": {},
+				},
+			},
+		})
+	// The hub's registry load fingerprints instance identities through the
+	// listing — the pane's pinned surface, which reads the credential it
+	// displays, and its mint now sits in the evaluator's cache. Clear both,
+	// so the preflight is judged on its own against an empty cache: a gate
+	// that expanded command material would have to run it, not borrow it.
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs = 0
+	valueexpr.RunCommand = func(cmd string) (string, error) {
+		runs++
+		return "token-for-" + cmd, nil
+	}
+	if err := validateProviderCredentials("gw", "gw/house-model", reg); err != nil {
+		t.Fatalf("the gate refused a model launch whose credential header carries a command: %v", err)
+	}
+	if err := validateProviderCredentials("gw", "", reg); err != nil {
+		t.Fatalf("the gate refused the bare-name view of a command-backed credential: %v", err)
+	}
+	if runs != 0 {
+		t.Fatalf("the gate ran the credential command %d time(s); the preflight must count command material without executing it", runs)
+	}
 }

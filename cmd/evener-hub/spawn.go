@@ -847,16 +847,19 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 // credential the child could resolve, so the failure is a launch error the
 // user can read rather than a 401 mid-session. A launch names a model, and
 // the child resolves instance/model through that model's own row-merged
-// transport — a row may override the auth scheme or header — so when the
-// model is known the gate resolves instance/model and judges that, not the
-// per-instance listing (which describes the bare-name launch alone). With
-// no model — a resume, whose persisted metadata owns model selection — the
-// gate falls back to the listing view. The registry answers every part of
-// it (spec §11.3): auth = none and optional-bearer need nothing,
-// oauth-openai-codex is satisfied by the instance's OAuth record, gcp-adc by
-// the ADC variable or file, and everything else by a resolved key or
-// credential header — with the endpoint stop of §10 already applied, so a
-// gateway that inherits no vendor key is refused here.
+// transport — a row may override the auth scheme or header — so the gate
+// judges that transport, not the per-instance listing (which describes the
+// bare-name launch alone); with no model it judges the listing view. The
+// judgment is structural for command expressions: the gate counts a
+// command-bearing credential slot as present and never executes it — the
+// child alone runs credential commands (the evaluation contract), so the
+// preflight neither mints a second token nor blocks a launch on a
+// transient command failure the child's retry would survive. The registry
+// answers every part of it (spec §11.3): auth = none and optional-bearer
+// need nothing, oauth-openai-codex is satisfied by the instance's OAuth
+// record, gcp-adc by the ADC variable or file, and everything else by a
+// resolved key or credential header — with the endpoint stop of §10
+// already applied, so a gateway that inherits no vendor key is refused here.
 //
 // A nil registry or an empty provider name means there is nothing to check.
 func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRegistry) error {
@@ -865,21 +868,19 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		return nil
 	}
 	r := reg.Get()
-	if model != "" {
-		// The launch's model arrives as launchconfig materialized it:
-		// provider-qualified (cmdutil.ModelRef.Qualified()). The gate
-		// judges instance/model, so this instance's own prefix comes off
-		// before the ref is built — a qualified name twice would resolve
-		// to a synthesized row judged at the provider level, silently
-		// skipping the row-aware judgment entirely.
-		if ref := registry.ParseRef(model); strings.EqualFold(ref.Instance, name) {
-			model = ref.Model
-		}
-		// The launch the child actually makes. A ref that does not resolve
-		// is not the credential gate's refusal to give — the launch contract
-		// below and the child's own resolution name it — so the gate keeps
-		// the instance view rather than guessing at the model's credentials.
-		if res, err := r.Resolve(name + "/" + model); err == nil {
+	// The launch's model arrives as launchconfig materialized it:
+	// provider-qualified (cmdutil.ModelRef.Qualified()). Strip this
+	// instance's own prefix once, for the refusal message and the judgment
+	// alike — ResolveGateCredential strips again, harmlessly.
+	if ref := registry.ParseRef(model); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	if r.HasInstance(name) {
+		// The listing says the instance exists; the judgment is the gate's
+		// own view of the launch — ResolveGateCredential handles the
+		// provider-qualified model form, judges the model's transport, and
+		// executes no command expression.
+		if res, err := r.ResolveGateCredential(name, model); err == nil {
 			switch res.Transport.Auth {
 			case registry.AuthNone, registry.AuthOptionalBearer:
 				return nil
@@ -887,18 +888,13 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 			if res.Credential.Source != "none" {
 				return nil
 			}
-			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s/%s: %s", name, model, strings.Join(res.Warnings, "; ")))
+			target := name
+			if model != "" {
+				target = name + "/" + model
+			}
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", target, strings.Join(res.Warnings, "; ")))
 		}
-	}
-	if inst, ok := r.Instance(name); ok {
-		switch inst.Auth {
-		case registry.AuthNone, registry.AuthOptionalBearer:
-			return nil
-		}
-		if inst.CredentialSource != "none" {
-			return nil
-		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", name, strings.Join(inst.Warnings, "; ")))
+		return nil
 	}
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.

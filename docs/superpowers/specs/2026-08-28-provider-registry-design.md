@@ -1882,6 +1882,11 @@ a closed stdin (a prompting command reads EOF instead of hanging), and a
 per command text — instances sharing a command share one mint — until a
 JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a
 five-minute TTL; concurrent callers single-flight onto one run.
+The hub's launch preflight counts a command-bearing credential as present
+and never executes it — the child alone runs credential commands, so a
+preflight execution would mint a second token for stateful or one-time
+commands and a transient failure there would block a launch the child's
+own retry would survive.
 
 Failure. A failed command behaves like an unset variable: the value
 resolves to nothing and the warning carries the command's exit status and
