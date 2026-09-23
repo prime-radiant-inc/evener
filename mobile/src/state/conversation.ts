@@ -2233,14 +2233,17 @@ export function createConversationStore() {
                 // compact memory the remembered-alias folds read
                 // (pageOwnedCompactTurnIds/compactedTurnItems — the
                 // #1919 restoration world), or the live working set of
-                // the ACTIVE turn. Any other uncovered turn gets the
+                // the turn the SNAPSHOT names active — never the
+                // retained model's own flag, which a missed completion
+                // leaves stale (RoboRev round 22). Any other uncovered
+                // turn gets the
                 // same item-level retention as a covered one — its
                 // page-owned rows stay, its discarded live items do not
                 // ride the model back onto the screen beside them
                 // (RoboRev round 21).
                 const keepWholesale =
                   !turnCoveredBySnapshot(turn) &&
-                  (turn.id === currentConvForMerge.activeTurnId ||
+                  (turn.id === conversation.activeTurnId ||
                     compactedTurnItems.has(turn.id) ||
                     pageOwnedCompactTurnIds.has(turn.id));
                 const afterTwins = !keepWholesale
