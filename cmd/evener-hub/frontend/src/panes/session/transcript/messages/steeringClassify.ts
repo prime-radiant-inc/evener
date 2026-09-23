@@ -457,10 +457,22 @@ function terminalJobTitle(status: string, reason: string, exitCode?: number): st
   }
   // The glyph that tones this frame error sits in an aria-hidden seat, so
   // the title is the only failure text a screen reader reaches — a real
-  // nonzero exit must still name the command's failure, whatever the
-  // status word. -1 is the signalled-not-exited sentinel (not a shell
-  // code), so stopped/cancelled frames keep their status titles.
-  if (exitCode !== undefined && exitCode !== 0 && exitCode !== -1) return "Command failed";
+  // nonzero exit must still name the command's failure when the status
+  // word has no vocabulary of its own ("completed", or an unrecognized
+  // status). -1 is the signalled-not-exited sentinel, and failed/stopped/
+  // cancelled/exhausted are the job system's own words — a wait failure
+  // carries the underlying 127 — so those keep their status titles.
+  if (exitCode !== undefined && exitCode !== 0 && exitCode !== -1) {
+    switch (status) {
+      case "failed":
+      case "stopped":
+      case "cancelled":
+      case "exhausted":
+        break;
+      default:
+        return "Command failed";
+    }
+  }
   return `Job ${status}`;
 }
 

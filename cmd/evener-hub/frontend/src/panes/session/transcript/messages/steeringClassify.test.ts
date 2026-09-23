@@ -337,6 +337,26 @@ Job job_stopped stopped.
   });
 });
 
+test("a wait_failed supervision failure keeps its Job failed title even with a real exit code", () => {
+  const block = `<job-notification job_id="job_wait" job_type="shell" status="failed" reason="wait_failed" exit_code="127">
+Job job_wait failed.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job failed",
+    tone: "error",
+  });
+});
+
+test("a stopped run that exited nonzero before the stop signal keeps its Job stopped title", () => {
+  const block = `<job-notification job_id="job_late_stop" job_type="shell" status="stopped" reason="stopped_by_parent" exit_code="5">
+Job job_late_stop stopped.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job stopped",
+    tone: "warning",
+  });
+});
+
 test("explicit failure keeps a neutral secondary without compacting malformed exit text", () => {
   const block = `<job-notification job_id="job_bad_exit" job_type="shell" status="failed" reason="wait_failed" exit_code="7x">
 Job job_bad_exit failed.
