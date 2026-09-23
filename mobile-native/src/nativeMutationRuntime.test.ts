@@ -2,14 +2,18 @@ import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import {
+	MutationOutbox,
 	createMutationProjectionFence,
 	type MutationAttachmentRef,
+	type MutationLifecycleTarget,
+	type MutationOutboxChannel,
 	type MutationPersistencePort,
 	type MutationPersistenceSnapshot,
 } from "@evener/appwire-client/state/mutation";
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
+import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import {
 	getNativeMutationRuntime,
 	nativeMutationTargetKey,
@@ -87,6 +91,26 @@ function readResponse(
 function registerAndStart(runtime: NativeMutationRuntime, client: FakeClient, hubId = "hub-1", targetRef = "ref-1") {
 	runtime.registerTarget(hubId, targetRef, client);
 	return runtime.start();
+}
+
+// The startup/retry regressions share a real NativeMutationRuntime with an
+// injected timer port that records the armed callbacks and cleared ids and can
+// throw on chosen setup attempts; no real timer is ever created.
+function timerRecordingRuntime(failSetups?: (attempt: number) => boolean) {
+	const intervals: Array<() => void> = [];
+	const cleared: number[] = [];
+	let attempts = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		setInterval: (callback) => {
+			attempts += 1;
+			if (failSetups?.(attempts)) throw new Error("timer setup unavailable");
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: (intervalId) => cleared.push(intervalId),
+	});
+	return { runtime, intervals, cleared, attempts: () => attempts };
 }
 
 test("a target stays gated until a matching authoritative read opens it", async () => {
@@ -1286,4 +1310,183 @@ test("the process getter reuses one runtime and database handle across provider 
 	await first.stop();
 	await first.start();
 	await first.stop();
+});
+
+test("a timer setup failure rejects the first start and the retry re-arms exactly one timer", async () => {
+	const { runtime, intervals, cleared, attempts } = timerRecordingRuntime((attempt) => attempt === 1);
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	// A "connecting" client gates every scan but startup, so the only
+	// discovery that runs is the outbox's startup scan. It reads the target
+	// refs before onDiscover, so counting that read counts startup scans.
+	let targetRefReads = 0;
+	const originalListTargetRefs = runtime.storage.listTargetRefs.bind(runtime.storage);
+	runtime.storage.listTargetRefs = async () => {
+		targetRefReads += 1;
+		return originalListTargetRefs();
+	};
+
+	await expect(runtime.start()).rejects.toThrow("timer setup unavailable");
+	// The retry runs with no intervening stop: the failed start must not have
+	// latched, or this second start would return early and never re-arm.
+	await runtime.start();
+	await vi.waitFor(() => expect(targetRefReads).toBe(1));
+
+	expect(attempts()).toBe(2);
+	expect(intervals).toHaveLength(1);
+	expect(cleared).toEqual([]);
+	// Exactly one startup scan: the failed setup scheduled none and the retry
+	// scheduled one. Settle the queue before pinning the count.
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(targetRefReads).toBe(1);
+
+	await runtime.stop();
+	// stop stays safe and idempotent after the retry.
+	await runtime.stop();
+	expect(cleared).toEqual([1]);
+});
+
+test("stop during an in-flight start still cancels the acquired timer", async () => {
+	const { runtime, intervals, cleared } = timerRecordingRuntime();
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+
+	// The outbox acquires the timer synchronously and the start only settles a
+	// microtask later. A stop that lands before that settle must still release
+	// the acquired timer, and the settled start must not re-mark the runtime
+	// started after shutdown finished.
+	const pending = runtime.start();
+	await runtime.stop();
+	await pending;
+
+	expect(intervals).toHaveLength(1);
+	expect(cleared).toEqual([1]);
+	// The runtime really is stopped: a later start re-arms exactly one timer.
+	await runtime.start();
+	expect(intervals).toHaveLength(2);
+	await runtime.stop();
+	expect(cleared).toEqual([1, 2]);
+});
+
+test("a stale failed start cannot clear a newer successful start", async () => {
+	const { runtime, intervals, cleared, attempts } = timerRecordingRuntime((attempt) => attempt === 1);
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+
+	// The first start rejects in a microtask. Before that settles, a stop and a
+	// successful restart run and acquire the timer. The stale rejection's
+	// rollback must not clear the newer start's started state.
+	const failing = runtime.start();
+	const stopping = runtime.stop();
+	const restarting = runtime.start();
+	await failing.catch(() => undefined);
+	await stopping;
+	await restarting;
+
+	expect(attempts()).toBe(2);
+	expect(intervals).toHaveLength(1);
+	// The runtime is still started, so this stop releases the acquired timer.
+	await runtime.stop();
+	expect(cleared).toEqual([1]);
+});
+
+test("a concurrent start shares a failing attempt's rejection", async () => {
+	const { runtime, intervals, cleared } = timerRecordingRuntime((attempt) => attempt === 1);
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+
+	// Both calls run before the first attempt settles. They must share the one
+	// attempt: the failure rejects both callers rather than telling one the
+	// runtime started while the rollback leaves it stopped.
+	const first = runtime.start();
+	const second = runtime.start();
+	await expect(first).rejects.toThrow("timer setup unavailable");
+	await expect(second).rejects.toThrow("timer setup unavailable");
+
+	// The runtime stays retryable: a fresh start re-arms exactly one timer.
+	await runtime.start();
+	expect(intervals).toHaveLength(1);
+	await runtime.stop();
+	expect(cleared).toEqual([1]);
+});
+
+test("a failed outbox setup unwinds its listeners and channel, and the retry re-arms once", async () => {
+	const storage = new MutationOutboxSQLite(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		now: () => 1,
+	});
+	let channelAdds = 0;
+	let channelRemoves = 0;
+	let channelCloses = 0;
+	const channel: MutationOutboxChannel = {
+		postMessage: () => undefined,
+		close: () => {
+			channelCloses += 1;
+		},
+		addEventListener: (_type: string, _listener: (event: unknown) => void) => {
+			channelAdds += 1;
+		},
+		removeEventListener: (_type: string, _listener: (event: unknown) => void) => {
+			channelRemoves += 1;
+		},
+	};
+	let lifecycleAdds = 0;
+	let lifecycleRemoves = 0;
+	const lifecycle: MutationLifecycleTarget = {
+		addEventListener: (_type: string, _listener: () => void) => {
+			lifecycleAdds += 1;
+		},
+		removeEventListener: (_type: string, _listener: () => void) => {
+			lifecycleRemoves += 1;
+		},
+	};
+	const intervals: Array<() => void> = [];
+	const cleared: number[] = [];
+	let setupAttempts = 0;
+	const discoveries: string[] = [];
+	const outbox = new MutationOutbox(storage, {
+		getClient: () => undefined,
+		onDiscover: (_targetRefs, reason) => {
+			discoveries.push(reason);
+		},
+		createBroadcastChannel: () => channel,
+		lifecycleWindow: lifecycle,
+		setInterval: (callback) => {
+			setupAttempts += 1;
+			if (setupAttempts === 1) throw new Error("timer setup unavailable");
+			intervals.push(callback);
+			return intervals.length;
+		},
+		clearInterval: (intervalId) => cleared.push(intervalId),
+	});
+
+	await expect(outbox.start()).rejects.toThrow("timer setup unavailable");
+	// The rejected setup unwound the channel and both lifecycle listeners it
+	// had already added, so nothing is left live behind it.
+	expect(channelAdds).toBe(1);
+	expect(channelRemoves).toBe(1);
+	expect(channelCloses).toBe(1);
+	expect(lifecycleAdds).toBe(2);
+	expect(lifecycleRemoves).toBe(2);
+
+	await outbox.start();
+	await vi.waitFor(() => expect(discoveries).toEqual(["startup"]));
+	expect(setupAttempts).toBe(2);
+	expect(intervals).toHaveLength(1);
+	expect(channelAdds).toBe(2);
+	expect(channelRemoves).toBe(1);
+	expect(channelCloses).toBe(1);
+	expect(lifecycleAdds).toBe(4);
+	expect(lifecycleRemoves).toBe(2);
+	// Net live listeners are exactly the successful setup's - no duplicates.
+	expect(channelAdds - channelRemoves).toBe(1);
+	expect(lifecycleAdds - lifecycleRemoves).toBe(2);
+
+	await outbox.stop();
+	// stop stays safe and idempotent after the retry.
+	await outbox.stop();
+	expect(channelRemoves).toBe(2);
+	expect(channelCloses).toBe(2);
+	expect(lifecycleRemoves).toBe(4);
+	expect(cleared).toEqual([1]);
 });

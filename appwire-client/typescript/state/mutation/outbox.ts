@@ -238,15 +238,26 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#clearInterval = cancellableTimer ? options.clearInterval : undefined;
   }
 
+  // Startup is transactional. Every listener, channel and timer is acquired
+  // first, the started state published only after all of them succeed, and a
+  // setup step that throws - an injected timer port's first call, say - unwinds
+  // whatever it acquired. Nothing stays live and nothing stays latched, so the
+  // next start runs the whole setup again instead of returning early on a
+  // half-initialized outbox.
   async start(): Promise<void> {
     if (this.#started) return;
+    try {
+      this.#channel = this.#createChannel?.(CHANNEL_NAME);
+      this.#channel?.addEventListener("message", this.#handleBroadcast);
+      this.#lifecycleTarget?.addEventListener("online", this.#handleOnline);
+      this.#lifecycleTarget?.addEventListener("focus", this.#handleFocus);
+      this.#visibilityTarget?.addEventListener("visibilitychange", this.#handleVisibility);
+      this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), SCAN_INTERVAL_MS);
+    } catch (error) {
+      this.#releaseAcquired();
+      throw error;
+    }
     this.#started = true;
-    this.#channel = this.#createChannel?.(CHANNEL_NAME);
-    this.#channel?.addEventListener("message", this.#handleBroadcast);
-    this.#lifecycleTarget?.addEventListener("online", this.#handleOnline);
-    this.#lifecycleTarget?.addEventListener("focus", this.#handleFocus);
-    this.#visibilityTarget?.addEventListener("visibilitychange", this.#handleVisibility);
-    this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), SCAN_INTERVAL_MS);
     // Submissions need the runtime's listeners, not a scan of earlier work.
     // Queue startup discovery so a stalled read cannot delay their own commit.
     this.#schedule(() => this.#discoverAll("startup"));
@@ -255,6 +266,13 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   async stop(): Promise<void> {
     if (!this.#started) return this.#pendingDiscovery;
     this.#started = false;
+    this.#releaseAcquired();
+    await this.#pendingDiscovery;
+  }
+
+  // Releases every resource start() acquires, shared by stop() and start()'s
+  // failure path so a newly acquired resource is torn down by both.
+  #releaseAcquired(): void {
     this.#channel?.removeEventListener("message", this.#handleBroadcast);
     this.#channel?.close();
     this.#channel = undefined;
@@ -263,7 +281,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#visibilityTarget?.removeEventListener("visibilitychange", this.#handleVisibility);
     if (this.#intervalId !== undefined) this.#clearInterval?.(this.#intervalId);
     this.#intervalId = undefined;
-    await this.#pendingDiscovery;
   }
 
   async enqueueIntent(
