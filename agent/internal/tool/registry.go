@@ -102,36 +102,22 @@ func WithIntentParameter(td llm.ToolDefinition) llm.ToolDefinition {
 }
 
 // WithIntentParameterRequired advertises a work tool's intent argument as
-// REQUIRED: it adds the shared intent property (the same one
-// WithIntentParameter injects) when absent and lists intent in the required
-// list, so callers may apply it to a bare definition. It is for the
-// advertise edge only (agent's wireToolDef and rebuildToolDefsCache): the
-// registry compiles its dispatch-validation schema from the plain
-// WithIntentParameter form at Register time, where intent stays optional —
-// a model that omits the rationale must not fail at dispatch, or the retry
-// breaker would park its repeated legacy-shaped calls. Element type is
-// preserved ([]string stays []string, []any stays []any); an absent list
-// becomes []string like the builtin builders emit.
+// REQUIRED: it composes WithIntentParameter (so the property-injection block
+// lives in exactly one place and the advertised property can never diverge
+// from the one the registry validates against) and then lists intent in the
+// required list of the already-cloned parameters. It is for the advertise
+// edge only (agent's wireToolDef and rebuildToolDefsCache): the registry
+// compiles its dispatch-validation schema from the plain WithIntentParameter
+// form at Register time, where intent stays optional — a model that omits the
+// rationale must not fail at dispatch, or the retry breaker would park its
+// repeated legacy-shaped calls. Element type is preserved ([]string stays
+// []string, []any stays []any); an absent list becomes []string like the
+// builtin builders emit.
 func WithIntentParameterRequired(td llm.ToolDefinition) llm.ToolDefinition {
-	params := CloneSchemaMap(td.Parameters)
-	if params == nil {
-		params = map[string]any{"type": "object"}
-	}
+	td = WithIntentParameter(td)
+	params := td.Parameters
 	if params["type"] != nil && params["type"] != "object" {
-		td.Parameters = params
 		return td
-	}
-	params["type"] = "object"
-	props, _ := params["properties"].(map[string]any)
-	if props == nil {
-		props = map[string]any{}
-		params["properties"] = props
-	}
-	if _, exists := props["intent"]; !exists {
-		props["intent"] = map[string]any{
-			"type":        "string",
-			"description": toolIntentDescription,
-		}
 	}
 	switch required := params["required"].(type) {
 	case []string:
