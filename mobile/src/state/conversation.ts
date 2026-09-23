@@ -3186,15 +3186,19 @@ export function createConversationStore() {
           const stamp = params.turn;
           if (
             stamp?.itemsView === "full" &&
-            Array.isArray(stamp.items) &&
             stamp.id !== undefined &&
             state.conversation.activeTurnId === stamp.id
           ) {
             const oldTurn = state.conversation.turns.find(
               (turn) => turn.id === stamp.id,
             );
+            // The stamp's item list can be OMITTED, not empty-bracketed —
+            // Go's omitempty drops an empty list, and the reducer reads
+            // that exactly as one: every item is withdrawn (RoboRev
+            // round 19).
+            const kept = stamp.items ?? [];
             for (const old of oldTurn?.items ?? []) {
-              if (stamp.items.some((item) => itemIdentityMatches(old, item))) {
+              if (kept.some((item) => itemIdentityMatches(old, item))) {
                 continue;
               }
               pageOwnedIds.delete(old.transcriptKey ?? old.id);
