@@ -152,6 +152,39 @@ models_endpoint = "/v1/models"
 count_tokens_endpoint = "/v1/count-tokens"
 `
 
+// authoredGapInstanceToml is one instance whose credential is authored in
+// providers.toml but resolves to nothing: api_key names a variable that is not
+// set. The authored layer is terminal - registry.credential returns "none" at
+// it without consulting the file store or the environment - so a key stored
+// under this name is one nothing reads.
+const authoredGapInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+api_key = "$AUTHORED_GAP_KEY"
+`
+
+// authoredHeaderGapInstanceToml is the same shape through the other terminal
+// authored layer: an Authorization credential_headers entry whose variable is
+// unset.
+const authoredHeaderGapInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+
+[providers.authored-gap.credential_headers]
+Authorization = "Bearer $AUTHORED_GAP_HDR"
+`
+
+// authoredGapCredentiallessInstanceToml is the same instance with no authored
+// credential at all: the shape the revision has to distinguish from the two
+// above, since all three resolve source "none".
+const authoredGapCredentiallessInstanceToml = `[providers.authored-gap]
+base = "openai-compatible"
+base_url = "http://127.0.0.1:9/v1"
+auth = "bearer"
+`
+
 // TestAuth_StatusExposesConfigRevision proves AuthStatusResponse carries a
 // non-empty ConfigRevision, that it is stable while the instance's credential
 // configuration is unchanged, and that it moves when the effective source
@@ -280,6 +313,104 @@ func TestAuth_ConfigRevisionCoversTheCredentialDestination(t *testing.T) {
 			}
 			if changed.ConfigRevision == base.ConfigRevision {
 				t.Fatalf("the revision did not move when %s changed (%q): a push prepared before the change would pass the fence and send the key to a destination the client never reviewed", tc.field, changed.ConfigRevision)
+			}
+		})
+	}
+}
+
+// TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing
+// pins the other direction of the same class the authored-header skip closes:
+// an authored credential whose variables are unset is terminal, so the instance
+// resolves "none" (registry.credential returns there without consulting the file
+// store or the environment) while a stored key is never read. Reported as
+// "added" it is a live credential that is dead.
+func TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing(t *testing.T) {
+	cases := []struct {
+		name     string
+		toml     string
+		instance string
+		layer    string
+	}{
+		{name: "api-key-var-unset", toml: authoredGapInstanceToml, instance: "authored-gap", layer: "api_key"},
+		{name: "credential-headers-var-unset", toml: authoredHeaderGapInstanceToml, instance: "authored-gap", layer: "credential_headers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			stateDir := t.TempDir()
+			ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, tc.toml))
+			before, err := ctrl.Status(appwire.AuthStatusParams{Provider: tc.instance})
+			if err != nil {
+				t.Fatalf("Status(%s): %v", tc.instance, err)
+			}
+			// The premise, from the client's own read: nothing resolves here, so
+			// "none" is what the push echoes back as ExpectedSource.
+			if before.ActiveSource != "none" {
+				t.Fatalf("ActiveSource = %q, want none", before.ActiveSource)
+			}
+			resp, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{
+				Provider:       tc.instance,
+				Value:          "sk-pushed",
+				ExpectedSource: before.ActiveSource,
+			})
+			if err != nil {
+				t.Fatalf("ApiKeyConditionalSet(%s): %v", tc.instance, err)
+			}
+			if resp.Action != appwire.ApiKeyConditionalSetActionSkipped {
+				t.Fatalf("Action = %q, want skipped: providers.toml authors this instance's %s and outranks the store", resp.Action, tc.layer)
+			}
+			if !strings.Contains(resp.Reason, tc.layer) {
+				t.Fatalf("Reason = %q, want it to name the authored %s layer", resp.Reason, tc.layer)
+			}
+			if _, has := loadStoredKey(t, dir, tc.instance); has {
+				t.Fatal("a key was stored for an instance whose authored credential outranks the store")
+			}
+		})
+	}
+}
+
+// TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer pins the marker in the
+// revision: an instance that authors a credential whose variables are unset
+// resolves "none", exactly like one that authors nothing, so without the marker
+// a push prepared against the credentialless instance and applied after the
+// authored layer appeared would pass both fences - and the key it stores is one
+// nothing reads.
+func TestAuth_ConfigRevisionCoversTheAuthoredUnresolvedLayer(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	writeProvidersToml(t, dir, authoredGapCredentiallessInstanceToml)
+	ctrl := newTestAuthController(t, dir, stateDir, filepath.Join(dir, "providers.toml"))
+	credentialless, err := ctrl.Status(appwire.AuthStatusParams{Provider: "authored-gap"})
+	if err != nil {
+		t.Fatalf("Status(authored-gap): %v", err)
+	}
+	if credentialless.ActiveSource != "none" {
+		t.Fatalf("ActiveSource = %q, want none", credentialless.ActiveSource)
+	}
+
+	for _, tc := range []struct {
+		name string
+		toml string
+	}{
+		{name: "api-key-var-unset", toml: authoredGapInstanceToml},
+		{name: "credential-headers-var-unset", toml: authoredHeaderGapInstanceToml},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeProvidersToml(t, dir, tc.toml)
+			if err := ctrl.reg.Reload(); err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			authored, err := ctrl.Status(appwire.AuthStatusParams{Provider: "authored-gap"})
+			if err != nil {
+				t.Fatalf("Status(authored-gap): %v", err)
+			}
+			// The source is the same "none" both sides of the change, so the
+			// revision is the only thing that can carry the difference.
+			if authored.ActiveSource != "none" {
+				t.Fatalf("ActiveSource = %q, want none", authored.ActiveSource)
+			}
+			if authored.ConfigRevision == credentialless.ConfigRevision {
+				t.Fatalf("the revision did not move when providers.toml gained an authored credential whose variables are unset (%q)", authored.ConfigRevision)
 			}
 		})
 	}

@@ -402,6 +402,13 @@ func CredentialConfigRevisionResolved(res registry.Resolved) string {
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "authHeader", res.Transport.AuthHeader)
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "destination", DestinationIdentity(res))
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "source", res.Credential.Source)
+	// The authored layer that resolved to nothing is part of the configuration
+	// even though it moves the source to "none": an instance that authors a
+	// credential whose variables are unset is not the same instance as one that
+	// authors nothing, and it is the difference between "a stored key would be
+	// sent" and "a stored key is dead". The value is the layer's name, never its
+	// variable or a secret.
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "authoredLayer", res.Credential.AuthoredLayer)
 	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
 	return hex.EncodeToString(sum.Sum(nil))
 }

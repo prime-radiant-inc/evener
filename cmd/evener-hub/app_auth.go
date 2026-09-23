@@ -845,6 +845,15 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 		// nothing ever sends: ask the predicate itself, not the source string.
 		case resolvedOK && llm.CredentialHeaderShadowsKey(resolved):
 			return skipConditionalSet(&resp, name+"'s own auth header is supplied by its authored credential_headers in providers.toml, which win over any key a push could store")
+		// An authored credential whose variables are unset is terminal: the
+		// registry returns "none" at its layer without consulting the file store
+		// or the environment (registry.credential), which is why the source
+		// string alone cannot carry this - "none" is also what a writable
+		// instance with no credential reports. A stored key here is one
+		// nothing reads until the variables are set, so the write is refused
+		// rather than reported as a live credential that is dead.
+		case resolvedOK && resolved.Credential.AuthoredLayer != "":
+			return skipConditionalSet(&resp, fmt.Sprintf("%s authors its %s in providers.toml and it resolves to nothing (its variables are unset), which outranks any stored key: a key pushed here would be one nothing sends", name, resolved.Credential.AuthoredLayer))
 		case source == "store":
 			resp.Action = appwire.ApiKeyConditionalSetActionUpdated
 		case source == "none":

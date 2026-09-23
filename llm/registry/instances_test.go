@@ -163,6 +163,10 @@ api_key = "$MY_KEY"
 base = "openai"
 base_url = "https://gw/v1"
 credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
+[providers.hdrgap]
+base = "openai"
+base_url = "https://gw/v1"
+credential_headers = { "Authorization" = "Bearer $PORTKEY_MISSING" }
 [providers.stored]
 base = "openai"
 base_url = "https://gw/v1"
@@ -194,9 +198,14 @@ base_url = "https://proxy/v1"
 	env := map[string]string{"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk", "GW_KEY": "gw", "GW_API_KEY": "gw2", "ANTHROPIC_API_KEY": "sk-ant", "AWS_BEARER_TOKEN_BEDROCK": "bt", "OPENAI_BASE_URL": "https://proxy/v1"}
 	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
 	want := map[string]Credential{
-		"lit":       {Value: "literal-key", Source: "api_key"},
-		"envref":    {Value: "", Source: "none"},
+		"lit": {Value: "literal-key", Source: "api_key"},
+		// An authored layer whose variables are unset is terminal, and it says
+		// so: "none" alone would be indistinguishable from an instance that
+		// authors no credential at all, and the difference decides whether a key
+		// a writer stores under the name is ever sent (AuthoredLayer).
+		"envref":    {Value: "", Source: "none", AuthoredLayer: "api_key"},
 		"hdr":       {Value: "Bearer pk", Source: "credential_headers"},
+		"hdrgap":    {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
 		"stored":    {Value: "from-store", Source: "store"},
 		"work":      {Value: "", Source: "none"},
 		"work2":     {Value: "gw", Source: "env:GW_KEY"},
