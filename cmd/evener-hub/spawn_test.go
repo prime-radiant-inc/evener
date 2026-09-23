@@ -1212,7 +1212,7 @@ func TestValidateProviderCredentials_CodexInstanceOAuth(t *testing.T) {
 			reg := newSpawnGateRegistry(t, stateRoot, nil, map[string]registry.Provider{
 				"work": {Base: "openai-codex"},
 			})
-			err := validateProviderCredentials("work", reg)
+			err := validateProviderCredentials("work", "", reg)
 			if tt.hasRecord {
 				if err != nil {
 					t.Fatalf("validateProviderCredentials(work) with auth/work.json: %v", err)
@@ -1239,7 +1239,7 @@ func TestValidateProviderCredentials_AuthSchemesNeedingNothing(t *testing.T) {
 					Transport: registry.Transport{BaseURL: "http://127.0.0.1:11434/v1", Auth: auth},
 				},
 			})
-			if err := validateProviderCredentials("local", reg); err != nil {
+			if err := validateProviderCredentials("local", "", reg); err != nil {
 				t.Fatalf("validateProviderCredentials(local) with auth = %q: %v", auth, err)
 			}
 		})
@@ -1309,7 +1309,7 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reg := newSpawnGateRegistry(t, t.TempDir(), tt.env, map[string]registry.Provider{"work": tt.provider})
-			err := validateProviderCredentials("work", reg)
+			err := validateProviderCredentials("work", "", reg)
 			if tt.wantErr {
 				assertHubLaunchError(t, err)
 				if !strings.Contains(err.Error(), "work") {
@@ -1332,7 +1332,7 @@ func TestValidateProviderCredentials_EndpointStop(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), env, map[string]registry.Provider{
 		"gateway": {Base: "anthropic", Transport: registry.Transport{BaseURL: "https://gw.example.test/v1"}},
 	})
-	err := validateProviderCredentials("gateway", reg)
+	err := validateProviderCredentials("gateway", "", reg)
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "gateway") {
 		t.Fatalf("the refusal names the gateway instance: %v", err)
@@ -1356,7 +1356,7 @@ func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing
 	} {
 		t.Run(tt.provider, func(t *testing.T) {
 			reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-			err := validateProviderCredentials(tt.provider, reg)
+			err := validateProviderCredentials(tt.provider, "", reg)
 			assertHubLaunchError(t, err)
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("the refusal names the way in (%q): %v", tt.want, err)
@@ -1372,7 +1372,7 @@ func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing
 // has never heard of: the refusal says how to declare it.
 func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-	err := validateProviderCredentials("nowhere", reg)
+	err := validateProviderCredentials("nowhere", "", reg)
 	assertHubLaunchError(t, err)
 	if !strings.Contains(err.Error(), "[providers.nowhere]") {
 		t.Fatalf("the refusal says how to declare the instance: %v", err)
@@ -1384,13 +1384,13 @@ func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 // registry never loaded.
 func TestValidateProviderCredentials_NoRegistryOrProviderSkips(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
-	if err := validateProviderCredentials("", reg); err != nil {
+	if err := validateProviderCredentials("", "", reg); err != nil {
 		t.Fatalf("no provider, no gate: %v", err)
 	}
-	if err := validateProviderCredentials("anything", nil); err != nil {
+	if err := validateProviderCredentials("anything", "", nil); err != nil {
 		t.Fatalf("no registry, no gate: %v", err)
 	}
-	if err := validateProviderCredentials("anything", hubcore.NewProviderRegistry(nil)); err != nil {
+	if err := validateProviderCredentials("anything", "", hubcore.NewProviderRegistry(nil)); err != nil {
 		t.Fatalf("a registry that never loaded, no gate: %v", err)
 	}
 }

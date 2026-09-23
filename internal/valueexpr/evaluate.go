@@ -293,7 +293,10 @@ func realRunCommand(command string) (string, error) {
 	if stdout.overflowed() {
 		return "", &CommandError{Detail: "command output exceeds 1 MiB"}
 	}
-	if stdout.String() == "" && stderr.String() != "" {
+	// Whitespace-only stdout is no output — the value contract trims it to
+	// nothing — so a command that only emitted blanks still hands its stderr
+	// complaint to the diagnosis instead of the generic no-output error.
+	if strings.TrimSpace(stdout.String()) == "" && stderr.String() != "" {
 		return "", &CommandError{Detail: firstLine(stderr.String())}
 	}
 	return stdout.String(), nil

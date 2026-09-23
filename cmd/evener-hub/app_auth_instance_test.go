@@ -531,7 +531,7 @@ func TestAuth_NonCodexLogout_ClearsTheStoredKeyAndReloads(t *testing.T) {
 			case !tt.staysAnInstance && stillAnInstance:
 				t.Fatalf("%s is still an instance after its only credential was cleared — the registry was not reloaded", tt.instance)
 			}
-			if err := validateProviderCredentials(tt.instance, ctrl.reg); err == nil {
+			if err := validateProviderCredentials(tt.instance, "", ctrl.reg); err == nil {
 				t.Error("the spawn gate still accepts an instance whose key was just cleared")
 			}
 		})
@@ -556,7 +556,7 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 	t.Run("unset variables", func(t *testing.T) {
 		// No ADC (an empty HOME) and none of the base-URL variables set.
 		ctrl := newController(t, map[string]string{"HOME": t.TempDir()})
-		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		err := validateProviderCredentials("google-vertex", "", ctrl.reg)
 		if err == nil {
 			t.Fatal("the spawn gate accepted an unconfigured google-vertex provider")
 		}
@@ -574,7 +574,7 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 
 	t.Run("no credential", func(t *testing.T) {
 		ctrl := newController(t, map[string]string{"HOME": t.TempDir(), "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "global"})
-		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		err := validateProviderCredentials("google-vertex", "", ctrl.reg)
 		if err == nil {
 			t.Fatal("the spawn gate accepted a google-vertex provider with no credential")
 		}
@@ -600,7 +600,7 @@ func TestAuth_ImplicitGCPADCProviderNamesItsOwnRemedies(t *testing.T) {
 		// The location is set, so telling the user to set it is no help:
 		// say what is wrong with the value instead (round 8, F2).
 		ctrl := newController(t, map[string]string{"HOME": t.TempDir(), "GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "bad.host"})
-		err := validateProviderCredentials("google-vertex", ctrl.reg)
+		err := validateProviderCredentials("google-vertex", "", ctrl.reg)
 		if err == nil {
 			t.Fatal("the spawn gate accepted a google-vertex provider with an invalid location")
 		}

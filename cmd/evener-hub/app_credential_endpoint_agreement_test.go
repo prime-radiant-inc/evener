@@ -136,7 +136,7 @@ func TestCredentialAgreement_HubAgreesWithTheKeyTheChildSends(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Status(%q): %v", tt.instance, err)
 			}
-			preflight := validateProviderCredentials(tt.instance, reg)
+			preflight := validateProviderCredentials(tt.instance, "", reg)
 
 			if tt.wantInjected {
 				if preflight != nil {
@@ -232,7 +232,77 @@ func TestCredentialAgreement_RowAuthOverrideNeedsNoCredential(t *testing.T) {
 				},
 			},
 		})
-	if err := validateProviderCredentials("gw", reg); err != nil {
+	if err := validateProviderCredentials("gw", "", reg); err != nil {
 		t.Fatalf("the spawn gate refused a launch whose default row overrides auth to none: %v", err)
 	}
+}
+
+// The spawn gate judges the launch being made, and a launch names a model:
+// the child resolves instance/model through that model's own row-merged
+// transport, so the gate must too. Judged from the per-instance listing the
+// gate both refuses launches that would authenticate (a row override carries
+// the credential the listing cannot see) and passes launches that 401
+// mid-session (the default row is credentialed, the launched model's row is
+// not) — the exact failure the gate exists to prevent.
+func TestCredentialAgreement_GateJudgesTheLaunchedModel(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	clearProviderKeysFromEnvironment(t)
+
+	// Provider-level auth_header names a header nothing carries; the
+	// Authorization credential header carries the real key. A row that
+	// overrides auth_header to Authorization is the row that can
+	// authenticate — the provider-level shape never can.
+	gw := registry.Provider{
+		Base:     "openai-compatible",
+		Protocol: registry.ProtocolOpenAIChat,
+		Transport: registry.Transport{
+			BaseURL:    "https://gw.internal.example/v1",
+			Auth:       registry.AuthHeader,
+			AuthHeader: "X-Provider-Key",
+		},
+		CredentialHeaders: map[string]string{"Authorization": "$K"},
+		Models: map[string]registry.Model{
+			"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+		},
+	}
+	// The same provider with a credentialed default row and a bare second
+	// row: the listing (the bare-name launch) is credentialed, a launch of
+	// the bare row is not.
+	credentialedDefault := gw
+	credentialedDefault.DefaultModel = "house-model"
+	credentialedDefault.Models = map[string]registry.Model{
+		"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+		"bare-model":  {},
+	}
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	store, err := credentials.LoadStore(dir + "/credentials.toml")
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	env := map[string]string{"K": "k-1"}
+	gwReg := newProbeRegistry(t, stateDir, store, env, map[string]registry.Provider{"gw": gw})
+	defReg := newProbeRegistry(t, t.TempDir(), store, env, map[string]registry.Provider{"gw": credentialedDefault})
+
+	t.Run("a row override carries the credential the listing cannot see", func(t *testing.T) {
+		if err := validateProviderCredentials("gw", "house-model", gwReg); err != nil {
+			t.Fatalf("the gate refused a launch whose row override carries the credential: %v", err)
+		}
+	})
+	t.Run("the instance view keeps the bare-name approximation", func(t *testing.T) {
+		if err := validateProviderCredentials("gw", "", gwReg); err == nil {
+			t.Fatal("with no default row the instance view stays provider-level, and the gate must keep refusing it")
+		}
+	})
+	t.Run("a bare row is judged, not the default row's credential", func(t *testing.T) {
+		if err := validateProviderCredentials("gw", "bare-model", defReg); err == nil {
+			t.Fatal("the gate passed a launch whose own row resolves no credential — the mid-session 401 it exists to prevent")
+		}
+	})
+	t.Run("the default model still passes", func(t *testing.T) {
+		if err := validateProviderCredentials("gw", "house-model", defReg); err != nil {
+			t.Fatalf("the gate refused the default model's own launch: %v", err)
+		}
+	})
 }

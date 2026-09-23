@@ -203,7 +203,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
 		CredentialsPath:     h.CredentialsPath,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
@@ -259,7 +259,10 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+		// The resumed session's persisted metadata, not ambient launch
+		// config, selects the model, so the gate judges the instance
+		// view here — the same contract the comment below pins.
+		if err := validateProviderCredentials(req.Provider, "", h.Registry); err != nil {
 			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
@@ -836,22 +839,44 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 	return project, stateDir, nil
 }
 
-// validateProviderCredentials refuses a launch whose instance has no
+// validateProviderCredentials refuses a launch whose target has no
 // credential the child could resolve, so the failure is a launch error the
-// user can read rather than a 401 mid-session. The registry answers every
-// part of it (spec §11.3): auth = none and optional-bearer need nothing,
+// user can read rather than a 401 mid-session. A launch names a model, and
+// the child resolves instance/model through that model's own row-merged
+// transport — a row may override the auth scheme or header — so when the
+// model is known the gate resolves instance/model and judges that, not the
+// per-instance listing (which describes the bare-name launch alone). With
+// no model — a resume, whose persisted metadata owns model selection — the
+// gate falls back to the listing view. The registry answers every part of
+// it (spec §11.3): auth = none and optional-bearer need nothing,
 // oauth-openai-codex is satisfied by the instance's OAuth record, gcp-adc by
 // the ADC variable or file, and everything else by a resolved key or
 // credential header — with the endpoint stop of §10 already applied, so a
 // gateway that inherits no vendor key is refused here.
 //
 // A nil registry or an empty provider name means there is nothing to check.
-func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry) error {
+func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRegistry) error {
 	name := strings.ToLower(strings.TrimSpace(provider))
 	if name == "" || reg == nil || reg.Get() == nil {
 		return nil
 	}
 	r := reg.Get()
+	if model != "" {
+		// The launch the child actually makes. A ref that does not resolve
+		// is not the credential gate's refusal to give — the launch contract
+		// below and the child's own resolution name it — so the gate keeps
+		// the instance view rather than guessing at the model's credentials.
+		if res, err := r.Resolve(name + "/" + model); err == nil {
+			switch res.Transport.Auth {
+			case registry.AuthNone, registry.AuthOptionalBearer:
+				return nil
+			}
+			if res.Credential.Source != "none" {
+				return nil
+			}
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s/%s: %s", name, model, strings.Join(res.Warnings, "; ")))
+		}
+	}
 	if inst, ok := r.Instance(name); ok {
 		switch inst.Auth {
 		case registry.AuthNone, registry.AuthOptionalBearer:
