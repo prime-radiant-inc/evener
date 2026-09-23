@@ -4049,17 +4049,63 @@ describe("ConversationStore", () => {
       expect(warningIdsAfter).toEqual(warningIdsBefore);
     });
 
-    // Decision 2: a warning with no turn to land in has nowhere wire-true to
-    // go — warnings are not transcript-persisted, so no later snapshot would
-    // carry it either. It is dropped rather than shown against no turn.
-    it("drops a warning that arrives with no active turn", async () => {
+    // RoboRev round 34: a warning that arrives with no active turn is a
+    // real server diagnostic (the projector emits EventWarning
+    // unconditionally; a prompt-render failure on a model change lands
+    // exactly here, while idle). The wire drops it and never persists it,
+    // so no read can recover it either — the store displays it itself, as
+    // the attention row the canonical projection builds for a model
+    // warning item (project.ts's warningItem), held in transient display
+    // state that every timeline rebuild re-appends and every conversation
+    // transition clears, the lifetime main's live-owned rows gave it.
+    it("shows a warning that arrives with no active turn, and keeps it through rebuilds and transitions", async () => {
       const store = await openProjectedThread(makeThread());
       store.getState().applyNotification({
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", title: "Provider", message: "careful" },
       } as AnyNotification);
+      // Displayed at once: title as its own field, the message as detail.
+      expect(rows(store)).toEqual([
+        expect.objectContaining({
+          kind: "failure",
+          title: "Provider",
+          detail: "careful",
+        }),
+      ]);
+      // A later row-changing frame rebuilds the timeline from the
+      // projection — the notice is not a model row, yet survives.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
       expect(
-        rows(store).filter((row) => row.kind === "notice" && row.tone === "warning"),
+        rows(store).some((row) => row.kind === "failure" && row.title === "Provider"),
+      ).toBe(true);
+      // A resync reread publishes a snapshot that does not carry the
+      // warning (warnings are never persisted) — the notice survives that
+      // rebuild too, from the transient surface, not the transcript.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(
+        rows(store).some((row) => row.kind === "failure" && row.title === "Provider"),
+      ).toBe(true);
+      // The conversation transition clears it: reopened, the conversation
+      // does not resurrect a notice from before it.
+      store.getState().reset();
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(
+        rows(store).filter((row) => row.kind === "failure"),
       ).toEqual([]);
     });
 

@@ -23,12 +23,14 @@ import { create } from "zustand";
 import {
   applyNotification,
   copyItemTextPresence,
+  foldWarningParams,
   isStaleCursorError,
   isActiveItem,
   isToolCallItemId,
   isToolResultItemId,
   itemTextPresence,
   itemIdentityMatches,
+  joinWarningParts,
   markItemIdentityOnly,
   markItemTextOmitted,
   mergeOlderItemPageWithFolds,
@@ -46,6 +48,7 @@ import type {
   ThreadItem,
   TurnModel,
   ThreadModel,
+  WarningParams,
 } from "@evener/appwire-client";
 import type {
   BoundText,
@@ -662,6 +665,35 @@ export function createConversationStore() {
     );
   }
 
+  // RoboRev round 34: turn-independent warnings — a warning that arrives
+  // with no active turn — are real server diagnostics the wire drops: the
+  // reducer has nowhere transcript-true to fold one (its "warning" case
+  // returns only the liveness restamp when no turn is active), and the
+  // transcript never persists warnings, so no read can recover what the
+  // frame carried either. Main's row applier displayed them as live-owned
+  // rows; this store's rows are a projection of the model, so a row the
+  // model cannot hold lives here, as transient display state outside it.
+  // Every timeline rebuild passes through capAndTruncate, the display
+  // boundary, which re-appends them at the tail (they are the newest
+  // evidence), and the conversation transitions that clear the page
+  // history clear these with it, so a notice never crosses threads.
+  const transientWarningRows: MobileTimelineItem[] = [];
+  let liveNoticeSerial = 0;
+  // The row an idle warning displays as: the same attention row the
+  // canonical projection builds for a model warning item (project.ts's
+  // warningItem — kind "failure", title its own field, message and hint
+  // joined as detail), under the live serial identity main's applier
+  // used, since there is no model item to share an identity with.
+  function idleWarningRow(params: WarningParams): MobileTimelineItem {
+    const folded = foldWarningParams(params);
+    return {
+      kind: "failure",
+      id: `warning:${(liveNoticeSerial += 1)}`,
+      title: folded.title ?? "Warning",
+      detail: joinWarningParts([folded.text, folded.hint]),
+    };
+  }
+
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
     const previous = boundedText;
     const next = new Map<string, string>();
@@ -677,7 +709,26 @@ export function createConversationStore() {
       if (bounded !== text) next.set(bounded, bounded);
       return bounded;
     };
-    const items = capItems(conversation.items).map((item) => truncateItem(item, bound));
+    // The transient notices rejoin the timeline here: appended at the tail
+    // once (a rebuild whose input rows already carry one — loadOlder merges
+    // the current items — must not duplicate it), inside the cap so the
+    // window that evicts them is the one that evicts every row, and pruned
+    // back to what the cap kept so an evicted notice stays evicted.
+    const carriedIdentities = new Set(conversation.items.map(timelineIdentity));
+    const items = capItems([
+      ...conversation.items,
+      ...transientWarningRows.filter(
+        (row) => !carriedIdentities.has(timelineIdentity(row)),
+      ),
+    ]).map((item) => truncateItem(item, bound));
+    const retainedIdentities = new Set(items.map(timelineIdentity));
+    for (let index = transientWarningRows.length - 1; index >= 0; index -= 1) {
+      if (
+        !retainedIdentities.has(timelineIdentity(transientWarningRows[index]))
+      ) {
+        transientWarningRows.splice(index, 1);
+      }
+    }
     boundedText = next;
     return { ...conversation, items };
   }
@@ -1638,6 +1689,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
+        transientWarningRows.length = 0;
         releaseBoundedTextCache();
         set({
           status: "opening",
@@ -1698,6 +1750,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
+        transientWarningRows.length = 0;
         releaseBoundedTextCache();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
@@ -2692,6 +2745,7 @@ export function createConversationStore() {
             pageOwnedTurnIds.clear();
             pageOwnedCompactTurnIds.clear();
             compactedTurnItems.clear();
+            transientWarningRows.length = 0;
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are its
@@ -3531,6 +3585,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
+        transientWarningRows.length = 0;
         releaseBoundedTextCache();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
@@ -3632,8 +3687,28 @@ export function createConversationStore() {
             }
           }
         }
+        // RoboRev round 34: a warning with no active turn is the one frame
+        // the wire drops entirely (and never persists, so no read can carry
+        // it back), yet it is a real diagnostic — the projector emits
+        // EventWarning unconditionally, and a prompt-render failure on a
+        // model change lands exactly here, while idle. The store keeps it
+        // itself: the notice goes to the transient surface capAndTruncate
+        // re-appends to every rebuild, and this frame takes the full
+        // publish path below so the row reaches the screen at once. A
+        // warning WITH an active turn needs none of this — the reducer
+        // folds it into the turn's items and the projection renders it.
+        const idleWarningNotice =
+          n.method === "warning" && !applied.activeTurnId
+            ? idleWarningRow(n.params)
+            : null;
+        if (idleWarningNotice !== null) {
+          transientWarningRows.push(idleWarningNotice);
+        }
         if (applied !== state.conversation) {
-          if (changesRows(state.conversation, applied)) {
+          if (
+            changesRows(state.conversation, applied) ||
+            idleWarningNotice !== null
+          ) {
             const projected = withPageHistory(
               state.conversation,
               projectConversation(applied),
@@ -3687,7 +3762,9 @@ export function createConversationStore() {
         // reducer because warnings are never transcript-persisted (its
         // "warning" case cites internal/apptranscript having no warning-item
         // conversion), so the canonical read cannot carry that warning either.
-        // Nothing is missing from the transcript and there is nothing to fetch.
+        // Nothing is missing from the transcript and there is nothing to
+        // fetch — the store displays the dropped warning from its own
+        // transient surface instead (transientWarningRows, above).
         const droppedByTheWiresOwnRule =
           n.method === "warning" && !state.conversation.activeTurnId;
         if (
@@ -3736,6 +3813,7 @@ export function createConversationStore() {
         pageOwnedTurnIds.clear();
         pageOwnedCompactTurnIds.clear();
         compactedTurnItems.clear();
+        transientWarningRows.length = 0;
         releaseBoundedTextCache();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
