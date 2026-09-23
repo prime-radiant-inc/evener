@@ -82,7 +82,8 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 	return h, nil
 }
 
-// newHostTempRoot creates a root holding the TMPDIR and the host temp base.
+// newHostTempRoot creates a root holding the TMPDIR, the Windows user cache
+// dir and the host temp base.
 func newHostTempRoot(prefix string) (string, error) {
 	root, err := os.MkdirTemp("", prefix+"*")
 	if err != nil {
@@ -98,7 +99,8 @@ func newHostTempRoot(prefix string) (string, error) {
 	}
 	temp := filepath.Join(root, "tmp")
 	hostTemp := filepath.Join(root, "host-temp")
-	for _, dir := range []string{temp, hostTemp} {
+	// cache inside tmp is the Windows user cache dir RedirectHostTemp names.
+	for _, dir := range []string{temp, filepath.Join(temp, "cache"), hostTemp} {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			return "", errors.Join(fmt.Errorf("sandboxtest: create %s: %w", dir, err), os.RemoveAll(root))
 		}

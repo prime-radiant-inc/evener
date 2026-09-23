@@ -34,7 +34,16 @@ func TestRedirectHostTempContainsEverySessionTempAndIsRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RedirectHostTemp: %v", err)
 	}
+	t.Cleanup(func() { _ = redirect.Discard() })
 	root := redirect.Root()
+	// The user cache dir Windows resolves (os.UserCacheDir reads LocalAppData
+	// there) must be a real directory: the bundled-skills cache refuses a base
+	// it cannot resolve.
+	if cache := os.Getenv("LocalAppData"); !within(root, cache) {
+		t.Fatalf("LocalAppData = %q, want it under the redirect root %q", cache, root)
+	} else if info, err := os.Stat(cache); err != nil || !info.IsDir() {
+		t.Fatalf("redirected user cache dir %q is not a directory: %v", cache, err)
+	}
 	// Traversable but not listable, so a command running as another user can
 	// reach the world-usable host temp inside it, as it can reach /tmp.
 	info, err := os.Stat(root)
@@ -145,5 +154,5 @@ func within(root, path string) bool {
 		path = resolved
 	}
 	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != "." && !strings.HasPrefix(rel, "..")
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
