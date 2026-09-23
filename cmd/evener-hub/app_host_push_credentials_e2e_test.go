@@ -25,9 +25,16 @@ package hub
 //   - a per-run, test-owned directory on the host holds a private providers.toml,
 //     a private credentials.toml, and a private hub.toml (addr +
 //     hub_state_root);
-//   - the test launches the host's OWN evener hub itself, over ssh, with
-//     XDG_CONFIG_HOME pointed into that directory, so the hub resolves
-//     <dir>/evener/providers.toml and <dir>/evener/credentials.toml;
+//   - the test cross-compiles this checkout's own evener for the host's target
+//     (unstamped, so its version matches the controller's test build), stages it
+//     INTO that directory, and launches that hub over ssh with XDG_CONFIG_HOME
+//     pointed into the directory, so the hub resolves
+//     <dir>/evener/providers.toml and <dir>/evener/credentials.toml. The host's
+//     own install is used only as a fallback identity check — it is never
+//     executed and never written. The staged build is required rather than the
+//     host's install because the push's host half (evener/auth/apiKey/
+//     conditionalSet) is new: a host hub built from an older main answers the
+//     push's conditional set with "method not found";
 //   - the controller then adds and attaches to that host. Because a hub is
 //     already running and healthy at the configured address, sshconn's Ensure
 //     attaches through the bridge form (channelArgv: `hub attach --stdio
@@ -48,15 +55,18 @@ package hub
 // gate is separate, like the deploy check's EVENER_SSH_E2E_DEPLOY, because this
 // check WRITES to the host: it creates its own directory and starts a hub from
 // it. The write is confined to that directory, removed on the way out. The
-// host must already carry a matching evener build at EVENER_SSH_E2E_EVENER_PATH
-// (default ~/.local/bin/evener): a test hub has no BuildSource, so a version
-// mismatch would be refused rather than deployed, and this check must not deploy
-// a binary over the host's real install.
+// controller and host hubs both run unstamped builds of this checkout, so the
+// version ladder matches ("dev") and the attach bridges; the check stages the
+// host build itself rather than deploying over the host's real install, which is
+// hashed before and after and must be unchanged.
 import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,11 +100,6 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
 	e2ecap.RequireProcessInspect(t)
 
-	evenerPath := os.Getenv("EVENER_SSH_E2E_EVENER_PATH")
-	if evenerPath == "" {
-		evenerPath = "~/.local/bin/evener"
-	}
-
 	host := newHostSSH(t, dest, os.Getenv("EVENER_SSH_E2E_USER"))
 	home := host.output(`printf '%s' "$HOME"`)
 	if !strings.HasPrefix(home, "/") {
@@ -102,9 +107,7 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	}
 	// The host target is probed so a host this check cannot run against (no
 	// shipped build) is announced as a skip, mirroring the deploy sibling.
-	hostTarget(t, host)
-
-	evenerAbs := expandTilde(evenerPath, home)
+	goos, goarch := hostTarget(t, host)
 
 	provider, err := fakellm.New()
 	if err != nil {
@@ -146,13 +149,28 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	if _, err := host.run("test -e " + shellquote.RemoteWord(hostDir)); err == nil {
 		t.Fatalf("host %s already has %s; this check creates and removes that directory itself, so it must not adopt an existing one", host.target, hostDir)
 	}
-	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/state") + " " + shellquote.RemoteWord(cfgRoot))
+	hostBin := hostDir + "/bin/evener"
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(hostDir+"/state") + " " + shellquote.RemoteWord(hostDir+"/bin") + " " + shellquote.RemoteWord(cfgRoot))
+
+	// The disposable host hub must run a build that carries evener/host's 07c
+	// host half (evener/auth/apiKey/conditionalSet). The host's own install here
+	// predates the feature — a live run against it answers "method not found" —
+	// so this check stages a build of THIS checkout for the host's target into
+	// the test-owned directory and runs the host hub from it. The host's real
+	// install at ~/.local/bin/evener is never touched (hashed before/after below).
+	host.writeFile(hostBin, hostPushStagedBinary(t, goos, goarch))
+	host.mustRun("chmod 700 " + shellquote.RemoteWord(hostBin))
 
 	// The disposable host config root: the provider instance the push joins
 	// against, the credentials file the test controls (a sentinel entry the
 	// push's merge must preserve), and the private hub.toml.
 	host.writeFile(cfgRoot+"/providers.toml", []byte(hostPushProvidersTOML))
 	host.writeFile(credsPath, []byte(hostPushSeededCredentialsTOML))
+	// The credentials store refuses any credentials.toml whose group/world bits
+	// are set (internal/credentials/store.go), and `cat >` over ssh lands the file
+	// at the remote umask (0644). Tighten it, or the disposable hub refuses to
+	// start — which the readiness wait reports with the hub's own log line.
+	host.mustRun("chmod 600 " + shellquote.RemoteWord(credsPath))
 	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostPushAddr, hostDir+"/state")))
 
 	// The two files this check must leave untouched: the host's REAL credential
@@ -168,6 +186,11 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 	// than logged away.
 	t.Cleanup(func() {
 		stopHostListener(t, host, hostPushAddr, configPath)
+		// Read the guarded files BEFORE removing the directory: with the
+		// falsification hook the guarded path can live inside hostDir, and hashing
+		// after the removal would fire on "absent" rather than on "changed".
+		realCredsAfter := host.sha256IfFile(realCredsPath)
+		installAfter := host.sha256IfFile(installPath)
 		if err := host.tryRun("rm -rf " + shellquote.RemoteWord(hostDir)); err != nil {
 			t.Errorf("remove the test-owned directory %s on host %s: %v", hostDir, host.target, err)
 		}
@@ -176,26 +199,26 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 			// Skipping would let the push create one and still pass — exactly the
 			// violation the assertion exists to catch — so assert it is still
 			// absent.
-			if got := host.sha256IfFile(realCredsPath); got != "" {
-				t.Errorf("the push created the host's real credential store %s on host %s (sha256 %s); it must write only the test-owned %s", realCredsPath, host.target, got, credsPath)
+			if realCredsAfter != "" {
+				t.Errorf("the push created the host's real credential store %s on host %s (sha256 %s); it must write only the test-owned %s", realCredsPath, host.target, realCredsAfter, credsPath)
 			}
-		} else if got := host.sha256IfFile(realCredsPath); got != realCredsBefore {
-			t.Errorf("the host's REAL credential store %s on %s changed during the push (sha256 %s -> %s); the push must write only the test-owned %s", realCredsPath, host.target, realCredsBefore, got, credsPath)
+		} else if realCredsAfter != realCredsBefore {
+			t.Errorf("the host's REAL credential store %s on %s changed during the push (sha256 %s -> %s); the push must write only the test-owned %s", realCredsPath, host.target, realCredsBefore, realCredsAfter, credsPath)
 		}
 		if installBefore == "" {
-			if got := host.sha256IfFile(installPath); got != "" {
-				t.Errorf("this check created %s on host %s (sha256 %s); it must install nothing, only run the host's own binary", installPath, host.target, got)
+			if installAfter != "" {
+				t.Errorf("this check created %s on host %s (sha256 %s); it must install nothing, only run the host's own binary", installPath, host.target, installAfter)
 			}
 			return
 		}
-		if got := host.sha256IfFile(installPath); got != installBefore {
-			t.Errorf("the host's own install %s changed during the check (sha256 %s -> %s); the check must not deploy over it", installPath, installBefore, got)
+		if installAfter != installBefore {
+			t.Errorf("the host's own install %s changed during the check (sha256 %s -> %s); the check must not deploy over it", installPath, installBefore, installAfter)
 		}
 	})
 
 	// Start the disposable host hub itself, so the attach below bridges to it
 	// instead of bootstrapping a hub with the host's real environment.
-	host.mustRun(hostPushLaunchScript(evenerAbs, hostDir, hostPushAddr))
+	host.mustRun(hostPushLaunchScript(hostBin, hostDir, hostPushAddr))
 	hostPushAwaitHub(t, host, hostPushAddr, hostDir+"/hub.log")
 
 	row, err := clientRequest[appwire.HostRow](ctx, client, appwire.MethodEvenerHostAdd, appwire.HostAddParams{
@@ -203,7 +226,7 @@ func TestHostPushCredentialsDisposableHostE2E(t *testing.T) {
 			Name:       hostPushName,
 			Address:    dest,
 			User:       os.Getenv("EVENER_SSH_E2E_USER"),
-			EvenerPath: evenerAbs,
+			EvenerPath: hostBin,
 			ConfigPath: configPath,
 			Addr:       hostPushAddr,
 		},
@@ -403,17 +426,57 @@ func hostPushResultFor(resp appwire.HostPushCredentialsResponse, instance string
 	return appwire.HostCredentialPushResult{}, false
 }
 
-// expandTilde resolves a leading ~/ in path against home. The host binary must
-// be addressed absolutely: the non-interactive ssh PATH does not carry
-// ~/.local/bin.
-func expandTilde(p, home string) string {
-	if p == "~" {
-		return home
+// hostPushStagedBinary cross-compiles this checkout's ./cmd/evener, unstamped,
+// for the host's target and returns the local path. It is deliberately unstamped
+// so its reported version matches the controller's own unstamped test build
+// ("dev"): the version ladder compares the strings, so a stamped artifact would
+// be refused rather than bridged to. The build is cached once per target per test
+// binary, like the sibling helpers' builds.
+func hostPushStagedBinary(t *testing.T, goos, goarch string) []byte {
+	t.Helper()
+	key := goos + "-" + goarch
+	hostPushBuild.mu.Lock()
+	defer hostPushBuild.mu.Unlock()
+	if hostPushBuild.err != nil {
+		t.Fatalf("stage the credential-push check's host binary: %v", hostPushBuild.err)
 	}
-	if rest, ok := strings.CutPrefix(p, "~/"); ok {
-		return home + "/" + rest
+	if hostPushBuild.bins == nil {
+		hostPushBuild.bins = map[string][]byte{}
 	}
-	return p
+	if path, ok := hostPushBuild.bins[key]; ok {
+		return path
+	}
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("abs repo root: %v", err)
+	}
+	dir := filepath.Join(testEnv.Root, "push-e2e-bin", key)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create %s: %v", dir, err)
+	}
+	out := filepath.Join(dir, "evener")
+	build := exec.Command("go", "build", "-o", out, "./cmd/evener/")
+	build.Dir = repoRoot
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	if combined, err := build.CombinedOutput(); err != nil {
+		hostPushBuild.err = fmt.Errorf("build ./cmd/evener/ for %s: %w\n%s", key, err, combined)
+		t.Fatalf("stage the credential-push check's host binary: %v", hostPushBuild.err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read staged binary %s: %v", out, err)
+	}
+	if len(data) == 0 {
+		t.Fatalf("staged binary %s is empty", out)
+	}
+	hostPushBuild.bins[key] = data
+	return data
+}
+
+var hostPushBuild struct {
+	mu   sync.Mutex
+	bins map[string][]byte
+	err  error
 }
 
 // TestHostPushGuardedCredentialsDefaultTargetsRealStore pins the guard's target
