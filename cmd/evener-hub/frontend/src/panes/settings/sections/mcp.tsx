@@ -16,7 +16,7 @@ import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-cl
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
-import { LOCAL_HOST } from "../../../stores/hostRouting";
+import { isLocalHost, LOCAL_HOST } from "../../../stores/hostRouting";
 import {
   Button,
   Chip,
@@ -101,14 +101,17 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   const [removeServerBusy, setRemoveServerBusy] = useState(false);
   const serverCommandId = useId();
 
-  // Runs once on mount - the injected hook's own fetch reference is expected
-  // to be a stable store action (mirrors every useXStore() in this app:
-  // threads.ts/tree.ts/extensions.ts all define their actions once in the
-  // store creator), so this never needs to re-fire.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once fetch against an injected store hook - see comment above.
+  // evener/settings/overview is this hub's own read (stores/settingsOverview.ts
+  // is built on the controller's client) and is NOT on the proxy allow-list, so
+  // there is nothing honest to fetch or show for a remote host: the discovered
+  // block below renders only for the local hub, and so does this fetch. The
+  // injected hook's own fetch is a stable store action (every useXStore() here
+  // defines its actions once in the store creator), so it fires on mount and
+  // re-fires only when the selected host changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: host-keyed fetch against an injected store hook - see comment above.
   useEffect(() => {
-    void overview.fetch();
-  }, []);
+    if (isLocalHost(host)) void overview.fetch();
+  }, [host]);
 
   // useConnectedEffect, not a bare mount-once effect: a direct deep link to
   // /settings/mcp can mount this section before AppShell's connect() handshake
@@ -195,33 +198,39 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
       <h2 className={CLASS.title}>MCP servers</h2>
       <p className={CLASS.help}>MCP servers evener spawns alongside each session. Stored in the global launch layer.</p>
 
-      <section className={CLASS.section}>
-        <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
-        <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
-        {discovered?.error !== undefined ? (
-          <EmptyState title="Failed to load" hint={discovered.error} />
-        ) : overview.loading && overview.data === null ? (
-          <Skeleton />
-        ) : (
-          <ul aria-label="Discovered MCP servers" className={CLASS.list}>
-            {(discovered?.servers ?? []).length === 0 ? (
-              <li className={CLASS.empty}>No MCP servers configured.</li>
-            ) : (
-              (discovered?.servers ?? []).map((s) => (
-                <li key={s.name} className={CLASS.row}>
-                  <div>
-                    <div className={CLASS.rowText}>
-                      {s.name} — {s.transport}{" "}
-                      <Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>
+      {/* Reachability probed from THIS hub: settings/overview is not on the
+          proxy allow-list, so it can only ever describe the controller, never a
+          remote host. Under a remote selection the block is omitted rather than
+          presenting this hub's probe as the selected host's own. */}
+      {isLocalHost(host) && (
+        <section className={CLASS.section}>
+          <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
+          <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
+          {discovered?.error !== undefined ? (
+            <EmptyState title="Failed to load" hint={discovered.error} />
+          ) : overview.loading && overview.data === null ? (
+            <Skeleton />
+          ) : (
+            <ul aria-label="Discovered MCP servers" className={CLASS.list}>
+              {(discovered?.servers ?? []).length === 0 ? (
+                <li className={CLASS.empty}>No MCP servers configured.</li>
+              ) : (
+                (discovered?.servers ?? []).map((s) => (
+                  <li key={s.name} className={CLASS.row}>
+                    <div>
+                      <div className={CLASS.rowText}>
+                        {s.name} — {s.transport}{" "}
+                        <Chip tone={s.status === "available" ? "alive" : "danger"}>{s.status}</Chip>
+                      </div>
+                      {s.error !== undefined && <div className={CLASS.rowMeta}>{s.error}</div>}
                     </div>
-                    {s.error !== undefined && <div className={CLASS.rowMeta}>{s.error}</div>}
-                  </div>
-                </li>
-              ))
-            )}
-          </ul>
-        )}
-      </section>
+                  </li>
+                ))
+              )}
+            </ul>
+          )}
+        </section>
+      )}
 
       {launchLayerError !== null ? (
         <EmptyState title="Failed to load" hint={launchLayerError} />

@@ -173,6 +173,9 @@ export interface ScalarFieldProps {
   /** The path picker's helpers for the host whose layer is being edited
    * (component 07b). Omitted = controllerLaunchFormPaths (today's behavior). */
   paths?: LaunchFormPaths;
+  /** The host whose own model catalog the modelPicker offers (component 07b).
+   * Omitted = the local hub, so a direct render is today's local picker. */
+  host?: string;
 }
 
 /** Renders one non-collection LaunchOption per its `kind`. */
@@ -185,6 +188,7 @@ export function ScalarField({
   error,
   resolvedDefaults,
   paths,
+  host,
 }: ScalarFieldProps) {
   const fieldId = `launch-field-${option.field}`;
   const formPaths = paths ?? controllerLaunchFormPaths;
@@ -238,12 +242,14 @@ export function ScalarField({
     // A composite widget, not a single labelable control, so the field label
     // is a plain span (mirroring the spawn form's own Model field) rather than
     // a FormRow's <label htmlFor> - the ModelCatalog's inner combobox carries
-    // its own accessible name. loadCatalog is the unscoped model/list call
-    // (launch defaults aren't harness/cwd-scoped the way a live spawn is).
+    // its own accessible name. loadCatalog is the host-scoped model/list call:
+    // the local hub's plain call (launch defaults aren't harness/cwd-scoped
+    // the way a live spawn is), or the selected remote host's through
+    // evener/host/request.
     return (
       <div className={CLASS.modelBlock}>
         <span className={CLASS.modelLabel}>{option.label}</span>
-        <SettingsModelCatalog value={value} onChange={onChange} emptyLabel={resolvedLabel} />
+        <SettingsModelCatalog host={host} value={value} onChange={onChange} emptyLabel={resolvedLabel} />
         {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
         <DefaultHint text={globalDefaultHint} />
       </div>

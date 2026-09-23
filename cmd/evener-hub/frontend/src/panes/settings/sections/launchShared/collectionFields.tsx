@@ -251,6 +251,9 @@ export interface ModelListFieldProps {
   explicitEmpty: boolean;
   onExplicitEmptyChange: (checked: boolean) => void;
   inheritedItems?: readonly string[];
+  /** The host whose own model catalog the picker offers (component 07b).
+   * Omitted = the local hub, so a direct render is today's local picker. */
+  host?: string;
 }
 
 /**
@@ -269,6 +272,7 @@ export function ModelListField({
   explicitEmpty,
   onExplicitEmptyChange,
   inheritedItems,
+  host,
 }: ModelListFieldProps) {
   return (
     <StringListField
@@ -285,7 +289,7 @@ export function ModelListField({
       inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
         <div className={CLASS.modelAddRow}>
-          <ModelAddField value={value} onChange={setDraft} disabled={disabled} />
+          <ModelAddField host={host} value={value} onChange={setDraft} disabled={disabled} />
         </div>
       )}
     />
@@ -294,19 +298,22 @@ export function ModelListField({
 
 /**
  * The modelList add row: the shared model picker plus CollectionEditor's own
- * submit button. The picker is unscoped (model/list with no harness/cwd) -
- * a launch-config fallback list isn't scoped to one live spawn - matching the
- * scalar modelPicker field in this section's sibling fields.tsx.
+ * submit button. The picker is host-scoped (component 07b): the local hub's
+ * plain model/list with no harness/cwd - a launch-config fallback list isn't
+ * scoped to one live spawn - or the selected remote host's through the proxy,
+ * matching the scalar modelPicker field in this section's sibling fields.tsx.
  *
  * The picked id lands in CollectionEditor's `draft`; the Add button submits it
  * (the picker's own panel is portaled outside this <form>, so Enter inside the
  * picker picks a model rather than submitting the row).
  */
 function ModelAddField({
+  host,
   value,
   onChange,
   disabled,
 }: {
+  host?: string;
   value: string;
   onChange: (value: string) => void;
   disabled: boolean;
@@ -314,7 +321,7 @@ function ModelAddField({
   return (
     <>
       <span className={CLASS.modelAddField}>
-        <SettingsModelCatalog value={value} onChange={onChange} />
+        <SettingsModelCatalog host={host} value={value} onChange={onChange} />
       </span>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add

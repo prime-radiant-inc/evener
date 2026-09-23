@@ -73,6 +73,9 @@ export interface LaunchConfigFormProps {
    * edited (component 07b). A host-scoped pane passes the store bound to its
    * selected host; omitted = the controller's own helpers (today's behavior). */
   paths?: LaunchFormPaths;
+  /** The host whose own model catalog the modelPicker/modelList fields offer
+   * (component 07b). Omitted = the local hub, so a direct render is today's. */
+  host?: string;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   onSaved?: (resolved: LaunchConfigResolved) => void;
 }
@@ -97,6 +100,7 @@ export function LaunchConfigForm({
   successToast,
   validatePath,
   paths,
+  host,
   onSave,
   onSaved,
 }: LaunchConfigFormProps) {
@@ -222,6 +226,7 @@ export function LaunchConfigForm({
           return (
             <ModelListField
               option={opt}
+              host={host}
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
@@ -264,6 +269,7 @@ export function LaunchConfigForm({
         error={fieldErrors[opt.wireField]}
         resolvedDefaults={resolvedDefaults}
         paths={paths}
+        host={host}
       />
     );
   }

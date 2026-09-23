@@ -142,6 +142,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
             successToast="Launch defaults saved"
             validatePath={(path, kind) => store.getState().validatePath(path, kind)}
             paths={paths}
+            host={host}
             onSave={(config) => store.getState().setLayer("/", "global", config)}
             onSaved={(resolved) => {
               setDiagnostics(resolved.diagnostics ?? []);
