@@ -418,6 +418,86 @@ func TestRestoreKeepsFreshScratchWhenRetainedSlotContended(t *testing.T) {
 	}
 }
 
+// TestRestoreAdoptionSurvivesPoolDetachAfterDisposal pins the round-17 detach
+// race: the pool can be swept after retainedConsumerScratchSlot approved the
+// replacement but before the disposal branch's adoption claimed the handle.
+// The disposal had already discarded the fresh mint, so the adoption's silent
+// no-op left the restored delegate with a wrapper pointing at a retained
+// directory it owns no lease on. The restore must re-provision the
+// environment's own scratch instead, and report no transfer so the failure
+// path still treats that scratch as a plain mint.
+func TestRestoreAdoptionSurvivesPoolDetachAfterDisposal(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01RESTOREDETACH1"
+	const bindingID = "b-restore-detach"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindSandbox].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{canonicalScratchDir(retainedDir): slots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	// The detach lands inside the claim window — after the slot read approved
+	// the replacement and the disposal discarded the mint.
+	s.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		s.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		s.retainedScratchSealed.Store(true)
+		s.detachRetainedScratch()
+	}
+	adopted, err := s.adoptRestoredConsumerScratch(env, consumerID, true)
+	if err != nil {
+		t.Fatalf("restore adoption across the detach: %v", err)
+	}
+	if adopted {
+		t.Fatal("a detached-pool fallback reported a transferred allocation")
+	}
+	// The restored session must own the scratch it runs in: the disposed
+	// mint's replacement, not the retained directory beside its live holder.
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := ""
+	for _, ref := range refs {
+		if ref.Kind == sandbox.ScratchKindSandbox {
+			owned = ref.Dir
+		}
+	}
+	if owned == "" {
+		t.Fatalf("the detach left the restored session with no owned sandbox scratch (SessionScratchDir %q)", env.SessionScratchDir())
+	}
+	if filepath.Clean(owned) == filepath.Clean(retainedDir) {
+		t.Fatalf("the restored session runs on the retained %q with no lease", retainedDir)
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(owned) {
+		t.Fatalf("the wrapper %q does not name the owned scratch %q", got, owned)
+	}
+	if _, err := os.Stat(owned); err != nil {
+		t.Fatalf("the re-provisioned scratch is not on disk: %v", err)
+	}
+}
+
 // TestRestoreAdoptsPoolOwnedHandleDespiteStaleContentionMark pins the round-5
 // healing at the replacement guard: a pool left holding both a reacquired
 // handle and a contention record for the same directory — the wedged state

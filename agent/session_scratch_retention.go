@@ -1543,6 +1543,9 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 	if env == nil {
 		return false, nil
 	}
+	if hook := s.cfg.testOnly.scratchAdoptionBeforeClaim; hook != nil {
+		hook()
+	}
 	pool := s.retainedScratch.Load()
 	if pool == nil {
 		return false, nil
@@ -1572,8 +1575,10 @@ func (s *Session) adoptConsumerScratch(env *execenv.LocalExecutionEnvironment, s
 // Disposal is inherent to that order — RestoreSessionScratch refuses to replace
 // an exposed scratch — so the replacement wrapper is built FIRST: a host that
 // cannot wrap the retained directory refuses the restore while the minted
-// scratch is still intact. A failure after the disposal re-provisions the
-// environment's own scratch rather than leaving it with none.
+// scratch is still intact. A failure after the disposal — or an adoption that
+// claims nothing because the pool detached between the slot read and the
+// claim — re-provisions the environment's own scratch rather than leaving the
+// resumed root running on a directory it owns no lease on.
 //
 // The unsandboxed kind gets the same replacement treatment. The launcher
 // environment handed to a restore may already own an unsandboxed scratch its own
@@ -1595,8 +1600,18 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 			return err
 		}
 		env.DisposeSandboxScratch()
-		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
-			return reprovisionDiscardedSandboxScratch(env, err)
+		gained, err := s.adoptConsumerScratch(env, sessionID)
+		if err != nil {
+			return reprovisionAfterFailedAdoption(env, err)
+		}
+		if !gained {
+			// The pool detached — or the consumer row died — between the slot
+			// read and the claim, and the adoption installed nothing: the
+			// fresh mint is already disposed and the rebuilt wrapper names a
+			// directory this session owns no lease on. The resume PROCEEDS
+			// with this environment, so it must own the scratch its wrapper
+			// names (round 17).
+			return reprovisionUnclaimedSandboxScratch(env)
 		}
 	}
 	unsandboxed, ok, unsandboxedContended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindUnsandboxed)
@@ -1627,15 +1642,14 @@ func envScratchRefDir(env *execenv.LocalExecutionEnvironment, kind string) strin
 	return ""
 }
 
-// reprovisionDiscardedSandboxScratch leaves env with a usable sandbox scratch
-// after a failed retained-scratch adoption discarded the freshly minted one.
-// Adoption has to dispose that mint first (RestoreSessionScratch refuses to
-// replace an exposed scratch), so the failure path re-provisions the
-// environment's own policy instead of returning one whose only scratch is gone.
-// It is a no-op when env already reports a scratch: either the wrapper was
-// repointed at the retained directory before the disposal or a partial adoption
-// installed it, and both leave a live directory in place.
-func reprovisionDiscardedSandboxScratch(env *execenv.LocalExecutionEnvironment, cause error) error {
+// reprovisionAfterFailedAdoption is the error exit of a dispose-then-adopt
+// replacement. A failed adoption refuses the restore, and the failure path
+// settles the environment by what the durable manifest names — a mid-failure
+// mint would pin fresh durable state the next attempt's refusal semantics do
+// not expect — so the environment keeps whatever it reports, and only one
+// with nothing to report (no kernel wrapper was rebuilt: a host that cannot
+// wrap never reached the disposal) gets a usable scratch re-provisioned.
+func reprovisionAfterFailedAdoption(env *execenv.LocalExecutionEnvironment, cause error) error {
 	if env == nil || env.SessionScratchDir() != "" || env.Sandbox == nil {
 		return cause
 	}
@@ -1643,6 +1657,36 @@ func reprovisionDiscardedSandboxScratch(env *execenv.LocalExecutionEnvironment, 
 		return errors.Join(cause, fmt.Errorf("re-provision sandbox scratch after a failed retained-scratch adoption: %w", err))
 	}
 	return cause
+}
+
+// reprovisionUnclaimedSandboxScratch heals the silent no-op adoption after a
+// disposal: with no error, the restore PROCEEDS with this environment, so it
+// must own the scratch its wrapper names. The stale wrapper built around the
+// retained directory is dropped first — it is not ownership, and the
+// ownership check below would otherwise see nothing to fix — then the
+// environment's own policy scratch is minted, wrapper and all, unless it
+// already owns a sandbox scratch a partial adoption installed.
+func reprovisionUnclaimedSandboxScratch(env *execenv.LocalExecutionEnvironment) error {
+	if env == nil || env.Sandbox == nil {
+		return nil
+	}
+	env.Wrapper = nil
+	// A wrapper naming the retained directory is not ownership: when the
+	// adoption installed nothing — the pool detached between the slot read
+	// and the claim — that wrapper points at a directory this session holds
+	// no lease on, and running there would straddle the live in-process
+	// holder (round 17).
+	if refs, refsErr := env.ScratchRetentionReferences(); refsErr == nil {
+		for _, ref := range refs {
+			if ref.Kind == sandbox.ScratchKindSandbox {
+				return nil
+			}
+		}
+	}
+	if err := env.EnableSandbox(env.Sandbox); err != nil {
+		return fmt.Errorf("re-provision sandbox scratch after an unclaimed retained-scratch adoption: %w", err)
+	}
+	return nil
 }
 
 // retainedConsumerScratchSlot snapshots sessionID's lease-owning slot

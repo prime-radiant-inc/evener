@@ -2431,7 +2431,9 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 // consumer's binding owns a sandbox allocation at a different directory, rebuild
 // env's kernel wrapper around it BEFORE disposing the mint (so a host that
 // cannot wrap refuses while the mint is intact), dispose the mint, then adopt;
-// a failure after the disposal re-provisions the environment's own scratch. A
+// a failure after the disposal — or an adoption that claims nothing because
+// the pool detached between the slot read and the claim — re-provisions the
+// environment's own scratch. A
 // shared environment (ownsFresh false) belongs to the live parent, so its
 // already-owned kinds are left alone and its scratch is never disposed here.
 // A contended sandbox slot — its lease held in this process by the racing
@@ -2459,8 +2461,19 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 			return false, err
 		}
 		env.DisposeSandboxScratch()
-		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
-			return false, reprovisionDiscardedSandboxScratch(env, err)
+		gained, err := s.adoptConsumerScratch(env, sessionID)
+		if err != nil {
+			return false, reprovisionAfterFailedAdoption(env, err)
+		}
+		if !gained {
+			// The pool detached — or the consumer row died — between the slot
+			// read and the claim, and the adoption installed nothing: the
+			// fresh mint is already disposed and the rebuilt wrapper names a
+			// directory this session owns no lease on. The restore PROCEEDS
+			// with this environment, so it must own the scratch its wrapper
+			// names — and no transfer is reported, so the failure path still
+			// treats a later scratch as a plain mint (round 17).
+			return false, reprovisionUnclaimedSandboxScratch(env)
 		}
 	} else if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
 		return false, err

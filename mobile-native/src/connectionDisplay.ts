@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
@@ -56,9 +56,10 @@ export function connectionDisplay(
 
 /** Tracks `everReady` across a screen's own connection transitions and
  * derives its display from the current state. `everReady` is a ref, not
- * state: it mutates during render (the ForkScreen.tsx `owner.current`
- * pattern), never causes its own re-render, and only ever needs to be read
- * alongside the state that already re-renders the screen when it changes.
+ * state: it never causes its own re-render, is updated in an effect rather
+ * than during render (a render React abandons midway must not leave ref
+ * writes behind), and only ever needs to be read alongside the state that
+ * already re-renders the screen when it changes.
  *
  * `hubId` is the hub whose connection `state` reports - the ACTIVE
  * profile's hub, not the one the route names. The two disagree in the
@@ -66,9 +67,10 @@ export function connectionDisplay(
  * another hub while the connection still reports the previous one (the
  * screen's own `activeProfile?.id !== route.params.hubId` early return is
  * what hides that window's data), and retention recorded for the previous
- * hub says nothing about the next one: both refs are reset the moment
- * `hubId` moves, so a hub the profile is still moving toward inherits
- * neither the banner history nor the fatal wall of the one before it. */
+ * hub says nothing about the next one: both refs are reset as soon as
+ * `hubId` moves, and the new hub's first render already reads them as void,
+ * so a hub the profile is still moving toward inherits neither the banner
+ * history nor the fatal wall of the one before it. */
 export function useConnectionDisplay(
 	hubId: string | undefined,
 	state: ConnectionState,
@@ -77,24 +79,30 @@ export function useConnectionDisplay(
 	const everReady = useRef(false);
 	const fatalRecovery = useRef(false);
 	const scope = useRef<string | undefined>(hubId);
-	if (scope.current !== hubId) {
-		scope.current = hubId;
-		everReady.current = false;
-		fatalRecovery.current = false;
-	}
-	if (state === "ready") {
-		everReady.current = true;
-		fatalRecovery.current = false;
-	} else if (fatal) {
-		// A fatal close unmounts ready-only children. Keep that wall in place
-		// until the replacement is ready; clearing the fatal flag while it is
-		// still dialing must not remount a child against the closed client.
-		fatalRecovery.current = true;
-	}
+	// The hub the refs still record retention for. The reset itself runs in
+	// the effect below, so this render computes with voided values instead of
+	// mutating the refs mid-render.
+	const scopeMoved = scope.current !== hubId;
+	useEffect(() => {
+		if (scope.current !== hubId) {
+			scope.current = hubId;
+			everReady.current = false;
+			fatalRecovery.current = false;
+		}
+		if (state === "ready") {
+			everReady.current = true;
+			fatalRecovery.current = false;
+		} else if (fatal) {
+			// A fatal close unmounts ready-only children. Keep that wall in place
+			// until the replacement is ready; clearing the fatal flag while it is
+			// still dialing must not remount a child against the closed client.
+			fatalRecovery.current = true;
+		}
+	}, [state, fatal, hubId]);
 	return connectionDisplay(
 		state,
-		everReady.current,
-		fatal || fatalRecovery.current,
+		scopeMoved ? false : everReady.current,
+		fatal || (scopeMoved ? false : fatalRecovery.current),
 	);
 }
 
@@ -140,11 +148,17 @@ export function useRenderClient(
 ): AppwireClient | null {
 	const lastClient = useRef<AppwireClient | null>(null);
 	const scope = useRef<string | undefined>(hubId);
-	if (scope.current !== hubId) {
-		scope.current = hubId;
-		lastClient.current = null;
-	}
-	if (state === "ready") lastClient.current = client;
-	return state === "ready" ? client : lastClient.current;
+	// The same read-side void as useConnectionDisplay: the reset runs in the
+	// effect, so the new hub's first render must not fall back to the
+	// previous hub's client while the refs still hold it.
+	const scopeMoved = scope.current !== hubId;
+	useEffect(() => {
+		if (scope.current !== hubId) {
+			scope.current = hubId;
+			lastClient.current = null;
+		}
+		if (state === "ready") lastClient.current = client;
+	}, [state, hubId, client]);
+	return state === "ready" ? client : scopeMoved ? null : lastClient.current;
 }
 

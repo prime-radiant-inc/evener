@@ -1214,3 +1214,170 @@ func TestResetReleasedDropsContendedReferenceWithoutPin(t *testing.T) {
 		}
 	}
 }
+
+// TestResetReleasedCarriesMultiRoleConsumerGraph pins the round-17 consumer
+// overwrite: a consumer routinely names several bindings, and narrowing it once
+// per carried reference let the second carry overwrite the first's roles.
+// The surviving carried binding was then named by no consumer — the exact
+// graph the restore reader fails closed on, with Released false again and no
+// later reset to repair it.
+func TestResetReleasedCarriesMultiRoleConsumerGraph(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratchA, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratchA.Cleanup() })
+	scratchB, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratchB.Cleanup() })
+	bindingE0 := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratchA.Dir, OwnsLease: true}})
+	bindingE1 := retentionBinding("E1", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratchB.Dir, OwnsLease: true}})
+	if err := PinScratchBinding(owner, bindingE0, map[string]*SessionScratch{ScratchKindSandbox: scratchA}, nil); err != nil {
+		t.Fatalf("pin the E0 binding: %v", err)
+	}
+	if err := PinScratchBinding(owner, bindingE1, map[string]*SessionScratch{ScratchKindSandbox: scratchB}, nil); err != nil {
+		t.Fatalf("pin the E1 binding: %v", err)
+	}
+	consumer := ScratchConsumerBinding{
+		SessionID:             "consumer-multi",
+		CurrentBindingID:      bindingE0.BindingID,
+		ParentSharedBindingID: bindingE1.BindingID,
+	}
+	if err := UpsertScratchBinding(owner, bindingE0, consumer); err != nil {
+		t.Fatalf("publish the multi-role consumer: %v", err)
+	}
+	// Both leases stay held, so the terminal release leaves both pins behind
+	// and the reset must carry both references with their rows.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	fresh, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over two held pins: %v", err)
+	}
+	if len(fresh.References) != 2 {
+		t.Fatalf("fixture expected both held references to carry: %+v", fresh.References)
+	}
+	carried, found := ScratchConsumerBinding{}, false
+	for _, row := range fresh.Consumers {
+		if row.SessionID == consumer.SessionID {
+			carried, found = row, true
+		}
+	}
+	if !found {
+		t.Fatalf("the multi-role consumer is absent from the reset manifest: %+v", fresh.Consumers)
+	}
+	if carried.CurrentBindingID != bindingE0.BindingID || carried.ParentSharedBindingID != bindingE1.BindingID {
+		t.Fatalf("the carried consumer lost a role across two carried bindings: %+v", carried)
+	}
+	for _, binding := range fresh.Bindings {
+		if len(consumersNamingScratchBinding(fresh.Consumers, binding.BindingID)) == 0 {
+			t.Fatalf("carried binding %q is named by no consumer in the reset manifest %+v", binding.BindingID, fresh.Consumers)
+		}
+	}
+}
+
+// TestResetReleasedDropsContendedReferenceWithForeignPin pins the round-17
+// identity gap on the contended carry: the reset validated only the pin's
+// existence, so a readable pin belonging to another owner was carried into
+// the fresh manifest — wedging every later restore at its pin verification,
+// with Released false again and no later reset to repair it.
+func TestResetReleasedDropsContendedReferenceWithForeignPin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	foreign := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-foreign", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); err != nil {
+		t.Fatalf("publish the pre-release consumer: %v", err)
+	}
+	// The lease stays held, so the terminal release leaves the pin — and the
+	// fixture replaces it with a foreign owner's pin for the same directory.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	if err := os.Remove(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeScratchDirectoryPin(scratch.Dir, foreign, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox}); err != nil {
+		t.Fatalf("write the foreign pin: %v", err)
+	}
+	fresh, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over a foreign held pin: %v", err)
+	}
+	for _, ref := range fresh.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			t.Fatalf("the reset carried a reference whose pin belongs to another owner: %+v", fresh.References)
+		}
+	}
+	// A foreign pin is not this reset's to remove: the file stays for its own
+	// manifest.
+	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatalf("the reset removed a foreign pin it does not own: %v", err)
+	}
+}
+
+// TestResetReleasedDropsFreeLeaseReferenceWithMismatchedPin covers the
+// free-lease branch of the same round-17 identity gap: a readable pin with
+// our own owner but a kind this reference cannot verify fell into the old
+// carry-everything default, wedging later restores the same way.
+func TestResetReleasedDropsFreeLeaseReferenceWithMismatchedPin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	binding := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	consumer := ScratchConsumerBinding{SessionID: "consumer-mismatch", CurrentBindingID: binding.BindingID}
+	if err := PinScratchBinding(owner, binding, map[string]*SessionScratch{ScratchKindSandbox: scratch}, nil); err != nil {
+		t.Fatalf("pin the pre-release binding: %v", err)
+	}
+	if err := UpsertScratchBinding(owner, binding, consumer); err != nil {
+		t.Fatalf("publish the pre-release consumer: %v", err)
+	}
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("terminal release: %v", err)
+	}
+	// Free the lease so the reset's free-lease branch takes this reference,
+	// then replace the pin with our own pin naming the WRONG kind.
+	_ = scratch.Retain()
+	if err := os.Remove(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeScratchDirectoryPin(scratch.Dir, owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindUnsandboxed}); err != nil {
+		t.Fatalf("write the kind-mismatched pin: %v", err)
+	}
+	fresh, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over a mismatched free-lease pin: %v", err)
+	}
+	for _, ref := range fresh.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			t.Fatalf("the reset carried a reference whose pin fails identity verification: %+v", fresh.References)
+		}
+	}
+	// The mismatched pin file is left in place: nothing references it, so it
+	// is inert until the directory's own sweep collects it.
+	if _, err := os.Stat(filepath.Join(scratch.Dir, scratchPinName)); err != nil {
+		t.Fatalf("the reset removed a pin it merely failed to verify: %v", err)
+	}
+}

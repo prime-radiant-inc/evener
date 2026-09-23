@@ -615,6 +615,13 @@ type testConfig struct {
 	// concurrent writer's commit must be observable. Nil in production.
 	scratchUpsertAfterLoad func()
 
+	// scratchAdoptionBeforeClaim runs at the top of adoptConsumerScratch,
+	// before the pool load — the window where a terminal detach can sweep the
+	// pool after a dispose-then-adopt replacement's slot read approved the
+	// swap and its disposal already discarded the fresh mint. Nil in
+	// production.
+	scratchAdoptionBeforeClaim func()
+
 	// scratchAdoptionAfterClaim runs immediately after adoptRetainedScratchFor
 	// claims a pooled handle and before the environment restore installs it —
 	// the window where a terminal detach must not release the claimed lease.
