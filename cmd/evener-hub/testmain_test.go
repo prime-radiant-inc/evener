@@ -290,3 +290,9 @@ func chdirTemp(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 }
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// hub-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
+}
