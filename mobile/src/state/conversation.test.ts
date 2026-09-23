@@ -18038,6 +18038,118 @@ describe("ConversationStore", () => {
       expect(failureRows()[0]?.id).toBe("failure:t9");
     });
 
+    // RoboRev round 31, fold-rename collision: the survivor of a fold can
+    // carry its OWN error — the snapshot then projects failure:<survivor>
+    // while the page-owned failure:<older> row renames onto the SAME
+    // identity, leaving two display rows with one list key. The snapshot's
+    // row is the survivor's authoritative failure; the renamed history row
+    // must reconcile away instead of duplicating.
+    it("keeps one failure row when the fold survivor carries its own error", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
+          {
+            kind: "failure",
+            id: "failure:t0",
+            title: "page boom",
+            detail: "page boom",
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t0",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      expect(failureRows()).toHaveLength(1);
+
+      // The reread reissues the page turn's content under a new turn id
+      // whose turn carries its OWN error: the fold renames the page-owned
+      // failure row onto the survivor's identity — the very identity the
+      // snapshot already projects. One failure, one row.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "failed",
+              error: { message: "fresh boom" },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t9",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t9");
+      // The snapshot's failure is the survivor's authoritative error —
+      // the retained page row must not override it.
+      expect(failureRows()[0]?.title).toBe("fresh boom");
+
+      // A live row-changing frame renders the survivor's failure once,
+      // still from the model.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t9");
+      expect(failureRows()[0]?.title).toBe("fresh boom");
+    });
+
     it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(

@@ -2683,14 +2683,47 @@ export function createConversationStore() {
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are its
           // own, plus the page history prepended above.
-          const mergedItems =
-            foldedFailureRows !== null && foldedFailureRows.size > 0
-              ? merged.items.map((row) => {
-                  if (row.kind !== "failure") return row;
-                  const renamed = foldedFailureRows?.get(row.id);
-                  return renamed === undefined ? row : { ...row, id: renamed };
-                })
-              : merged.items;
+          const mergedItems = (() => {
+            if (
+              foldedFailureRows === null ||
+              foldedFailureRows.size === 0
+            ) {
+              return merged.items;
+            }
+            const renames = foldedFailureRows;
+            // RoboRev round 31: the rename can land a retained history
+            // failure row on an identity the snapshot already owns — the
+            // fold's survivor carries its OWN error while the folded
+            // older turn's page-owned row renames onto the same id (or
+            // two folded turns rename onto one survivor) — leaving two
+            // display rows with one list key. One row per identity: the
+            // snapshot's unrenamed row is the survivor's authoritative
+            // failure and wins; renamed rows keep first-come order.
+            const nativeFailureIds = new Set<string>();
+            for (const row of merged.items) {
+              if (row.kind === "failure" && !renames.has(row.id)) {
+                nativeFailureIds.add(row.id);
+              }
+            }
+            const rewritten: Array<(typeof merged.items)[number]> = [];
+            const seenRenamedIds = new Set<string>();
+            for (const row of merged.items) {
+              if (row.kind !== "failure") {
+                rewritten.push(row);
+                continue;
+              }
+              const renamedId = renames.get(row.id);
+              if (renamedId === undefined) {
+                rewritten.push(row);
+                continue;
+              }
+              if (nativeFailureIds.has(renamedId)) continue;
+              if (seenRenamedIds.has(renamedId)) continue;
+              seenRenamedIds.add(renamedId);
+              rewritten.push({ ...row, id: renamedId });
+            }
+            return rewritten;
+          })();
           const committedConversation = capAndTruncate({
             ...merged,
             turns: mergedTurns,
