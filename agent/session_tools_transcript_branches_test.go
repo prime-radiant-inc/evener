@@ -3351,3 +3351,30 @@ func TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef(
 		t.Fatalf("re_read handle lost the transcript_ref for legacy-bucket api_log read; placeholder does not carry the bare session ID, so it resolves to the CURRENT session:\n%s", placeholder)
 	}
 }
+
+// TestApiLogResultTranscriptPlaceholder_SizeOverflowPreservesFallbackRef
+// asserts that when the placeholder exceeds 1 KiB, the response still
+// carries the fallback transcript_ref so the re_read handle resolves to the
+// same session, not the current session. Today the size-overflow branch
+// returns a generic re_read handle with no transcript_ref.
+func TestApiLogResultTranscriptPlaceholder_SizeOverflowPreservesFallbackRef(t *testing.T) {
+	sid := "02wMz5Txv5aIxgf9yVdd0N"
+	call := llm.ToolCallData{
+		Name:      "read_session_transcript",
+		Arguments: json.RawMessage(`{"transcript_ref":"` + sid + `","source":"api_log"}`),
+	}
+	// Result with a large body that exceeds 1 KiB when encoded.
+	largeBody := strings.Repeat("x", 1200)
+	resultJSON := `{"source":"api_log","transcript_ref":"","attempt":{"attempt_id":"att_1"},"body":{"body":"` + largeBody + `","offset_bytes":0}}`
+	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
+
+	placeholder, ok := apiLogResultTranscriptPlaceholder(call, result)
+	if !ok {
+		t.Fatal("expected ok=true for api_log result")
+	}
+	// The placeholder must still carry the transcript_ref so the re_read
+	// handle resolves to the same session, not the current session.
+	if !strings.Contains(placeholder, sid) {
+		t.Fatalf("size-overflow placeholder lost the transcript_ref; re_read targets current session:\n%s", placeholder)
+	}
+}

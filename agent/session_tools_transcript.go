@@ -231,7 +231,30 @@ func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecRe
 	}
 	encoded, err := json.Marshal(placeholder)
 	if err != nil || len(encoded) > apiLogTranscriptPlaceholderMaxBytes {
-		return `{"source":"api_log","private_evidence_omitted":true,"re_read":{"tool":"read_session_transcript","source":"api_log"}}`, true
+		// The placeholder exceeds 1 KiB (likely a large body or continuation).
+		// Trim optional body/continuation fields and re-encode with a minimal
+		// re_read handle that preserves the transcript_ref so the handle
+		// resolves to the same session, not the current session. The
+		// transcript_ref is essential; body/continuation are optional replay
+		// hints that the model can re-derive by re-reading.
+		minimal := apiLogTranscriptPlaceholder{
+			Source:                 apiLogSource,
+			PrivateEvidenceOmitted: true,
+			ReRead: apiLogTranscriptReadHandle{
+				Tool:          "read_session_transcript",
+				TranscriptRef: reReadRef,
+				Source:        apiLogSource,
+				AttemptID:     resultIdentity.Attempt.AttemptID,
+			},
+		}
+		encoded, err = json.Marshal(minimal)
+		if err != nil || len(encoded) > apiLogTranscriptPlaceholderMaxBytes {
+			// Still too large (attempt_id alone exceeds 1 KiB — pathological).
+			// Drop the attempt_id but keep the transcript_ref.
+			minimal.ReRead.AttemptID = ""
+			encoded, _ = json.Marshal(minimal)
+		}
+		return string(encoded), true
 	}
 	return string(encoded), true
 }
