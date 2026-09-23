@@ -909,3 +909,44 @@ func TestApiLogAttemptEnvelope_OmitsEmptyTranscriptRef(t *testing.T) {
 		t.Fatalf("apiLogAttemptEnvelope must omit empty transcript_ref (omitempty), got: %s", b)
 	}
 }
+
+// --- roborev fix round 4: RED tests ---
+
+// TestResolveTranscript_ExplicitProjRefRejectsSymlinkedBucket asserts that an
+// explicit proj:<bucket>:<sid> ref pointing at a symlinked bucket is REJECTED.
+// Round 3 made enumerateBuckets skip symlinks (os.Lstat), but the explicit
+// proj: branch resolves the bucket by filepath.Join(stateHome, "evener",
+// "projects", projectID) followed by os.Stat — which FOLLOWS symlinks. A
+// symlink with a grammar-valid name (e.g. link-0123456789, which passes
+// ValidateProjectID) bypasses the enumeration protection and exposes
+// transcripts outside the state root. The explicit-ref branch must Lstat the
+// joined bucket path and reject symlinks before any content access, and the
+// read path must reject symlinked transcript files too.
+func TestResolveTranscript_ExplicitProjRefRejectsSymlinkedBucket(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	current := newBucketUnder(t, sh)
+	// A directory outside the state root that the symlink will point to.
+	outside := t.TempDir()
+	outsideSess := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(outsideSess, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sid = "02wMz5Txv9yYdSRJat13MZ"
+	writeTranscript(t, outside, sid)
+	// Symlink under projects/ with a grammar-valid name pointing outside.
+	const linkName = "link-0123456789" // passes ValidateProjectID
+	linkPath := filepath.Join(sh, "evener", "projects", linkName)
+	if err := os.Symlink(outside, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	// Explicit proj: ref currently reads THROUGH the symlink — must be rejected.
+	ref := "proj:" + linkName + ":" + sid
+	_, _, err := resolveTranscript(ref, current, "02wMz5TxvEMoJEDTDGOTil")
+	if err == nil {
+		t.Fatalf("explicit proj: ref to symlinked bucket resolved through the symlink; symlinks must be rejected to prevent exposure outside the state root")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink for symlinked bucket ref, got: %v", err)
+	}
+}

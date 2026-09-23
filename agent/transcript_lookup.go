@@ -53,14 +53,26 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 			// local: — use current bucket
 			bucketDir = currentStateDir
 		} else {
-			// proj: — resolve sibling bucket
+			// proj: — resolve sibling bucket. Lstat the joined path and reject
+			// symlinks before any Stat/content access: a symlink with a
+			// grammar-valid name bypasses enumerateBuckets' symlink skip
+			// (enumerateBuckets is not consulted here) and could point outside
+			// the state root.
 			sh := stateHomeFor(currentStateDir)
 			if sh == "" {
 				return "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 			}
 			bucketDir = filepath.Join(sh, "evener", "projects", projectID)
+			if err := symlinkError(bucketDir); err != nil {
+				return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+			}
 		}
 		p := transcriptPath(bucketDir, sessionID)
+		// Reject symlinked transcript files on the read path — a symlinked
+		// transcript could point outside the state root.
+		if err := symlinkError(p); err != nil {
+			return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+		}
 		if _, statErr := os.Stat(p); statErr != nil {
 			return "", "", fmt.Errorf("transcript ref %q: transcript not found: %w", selector, statErr)
 		}
@@ -77,32 +89,11 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		return "", "", fmt.Errorf("invalid session selector: %w", err)
 	}
 
-	// Search current bucket first.
-	currentPath := transcriptPath(currentStateDir, selector)
-	currentFound := false
-	if _, statErr := os.Stat(currentPath); statErr == nil {
-		currentFound = true
-	}
-
-	// Search sibling buckets when a stateHome is available.
+	// Search current bucket and sibling buckets via the shared helper.
 	sh := stateHomeFor(currentStateDir)
-	var otherMatches []string // bucket dirs (not current) where the session exists
-	if sh != "" {
-		buckets, globErr := enumerateBuckets(sh)
-		if globErr != nil {
-			return "", "", fmt.Errorf("enumerating project buckets: %w", globErr)
-		}
-		currentAbs, _ := filepath.Abs(currentStateDir)
-		for _, bucket := range buckets {
-			bucketAbs, _ := filepath.Abs(bucket)
-			if bucketAbs == currentAbs {
-				continue // already checked above
-			}
-			p := transcriptPath(bucket, selector)
-			if _, statErr := os.Stat(p); statErr == nil {
-				otherMatches = append(otherMatches, bucket)
-			}
-		}
+	currentFound, otherMatches, err := findBareIDBuckets(selector, currentStateDir, sh)
+	if err != nil {
+		return "", "", err
 	}
 
 	totalMatches := len(otherMatches)
@@ -123,28 +114,47 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		// usable selector. The bare id alone is ambiguous across these
 		// buckets and cannot be resolved to one without changing which
 		// bucket is current.
-		var candidates []string
-		if currentFound {
-			candidates = append(candidates, encodeRef("", selector))
-		}
-		for _, bucket := range otherMatches {
-			if r := refFor(filepath.Base(bucket), selector); r != "" {
-				candidates = append(candidates, r)
-			} else {
-				candidates = append(candidates, filepath.Base(bucket))
-			}
-		}
+		candidates := ambiguityCandidates(selector, currentFound, otherMatches)
 		return "", "", fmt.Errorf("session %q is ambiguous; found in: %s",
 			selector, strings.Join(candidates, ", "))
 	case currentFound:
+		currentPath := transcriptPath(currentStateDir, selector)
+		if err := symlinkError(currentPath); err != nil {
+			return "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		return currentPath, encodeRef("", selector), nil
 	default:
 		// Exactly one match in a sibling bucket.
 		bucket := otherMatches[0]
 		projectID := filepath.Base(bucket)
 		p := transcriptPath(bucket, selector)
+		if err := symlinkError(p); err != nil {
+			return "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		return p, refFor(projectID, selector), nil
 	}
+}
+
+// symlinkError returns an error if path is a symlink, nil otherwise. A
+// non-existent path returns nil — the caller's own existence check (os.Stat)
+// handles missing files. Symlinked buckets and transcript files are rejected
+// on the agent-side read paths: a symlink can point outside the state root and
+// expose transcripts from elsewhere. enumerateBuckets already skips symlinked
+// bucket dirs; this guards the explicit proj: branch (which resolves the
+// bucket dir directly, bypassing enumeration) and the transcript files
+// themselves.
+func symlinkError(path string) error {
+	// A missing path returns nil — the caller's own existence check
+	// (os.Stat) handles "not found". We only reject symlinks; using the
+	// blank identifier for the error avoids the nilerr lint pattern.
+	info, _ := os.Lstat(path)
+	if info == nil {
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("path %q is a symlink (symlinks are not allowed on the transcript read path)", path)
+	}
+	return nil
 }
 
 // enumerateBuckets returns the state-root dirs under <stateHome>/evener/projects/*.
@@ -153,31 +163,98 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 // Every directory under projects/ is a bucket: bucket identity is the actual
 // directory name, and filtering on identifier.ValidateProjectID would hide a
 // legacy- or foreign-named bucket that holds real sessions — the agent-side
-// read paths must see what is on disk, mirroring the doctor's globBuckets
+// read paths must see what is on disk, like the doctor's globBuckets
 // (PR #2163). Refs for grammar-incompatible bucket names are suppressed at
 // emission time by refFor, not here.
+//
+// Symlink policy: enumerateBuckets skips symlinked bucket dirs, a deliberate
+// agent-side divergence from the doctor's globBuckets, which follows symlinks
+// (its isDir helper uses os.Stat). The doctor is an operator forensic tool
+// that must see everything on disk; the agent's model-facing read paths hold
+// the higher bar — a symlink under projects/ could point outside the state
+// root and expose transcripts from elsewhere, so the agent never follows
+// them. The doctor's symlink policy is a separate concern.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	pattern := filepath.Join(stateHome, "evener", "projects", "*")
 	matches, err := transcriptBucketGlob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)
 	}
-	// Filter to directories only. Use Lstat (not Stat) so symlinks are
-	// detected and skipped — a foreign-named symlink under projects/ could
-	// point outside the state root and expose transcripts from elsewhere.
-	// Mirrors locateLocalJob's entry.Type()&os.ModeSymlink guard.
+	// Filter to directories only. The symlink check MUST come first and
+	// MUST use Lstat (not Stat): Stat follows the symlink, clears
+	// ModeSymlink, and would let the symlink through. With Lstat, a symlink
+	// reports ModeSymlink and is skipped here; a regular file reports neither
+	// ModeSymlink nor IsDir and is skipped by the IsDir check. Mirrors
+	// locateLocalJob's entry.Type()&os.ModeSymlink guard.
 	dirs := make([]string, 0, len(matches))
 	for _, m := range matches {
 		info, statErr := os.Lstat(m)
-		if statErr != nil || !info.IsDir() {
+		if statErr != nil {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
+		if !info.IsDir() {
+			continue
+		}
 		dirs = append(dirs, m)
 	}
 	return dirs, nil
+}
+
+// findBareIDBuckets stats the current bucket and all sibling buckets (via
+// enumerateBuckets) for a bare session ID, returning which buckets contain the
+// transcript. The current bucket is checked via os.Stat; sibling buckets are
+// enumerated and stat-filtered, excluding the current bucket from
+// otherMatches. When stateHome is empty (flat layout), no sibling search is
+// performed and otherMatches is nil. Callers apply their own policy for the
+// zero-match case (resolveTranscript returns "unknown session";
+// parentBucketAndID falls back to the current bucket).
+func findBareIDBuckets(selector, currentStateDir, stateHome string) (currentFound bool, otherMatches []string, err error) {
+	if _, statErr := os.Stat(transcriptPath(currentStateDir, selector)); statErr == nil {
+		currentFound = true
+	}
+	if stateHome == "" {
+		return currentFound, nil, nil
+	}
+	buckets, globErr := enumerateBuckets(stateHome)
+	if globErr != nil {
+		return false, nil, fmt.Errorf("enumerating project buckets: %w", globErr)
+	}
+	currentAbs, _ := filepath.Abs(currentStateDir)
+	for _, bucket := range buckets {
+		bucketAbs, _ := filepath.Abs(bucket)
+		if bucketAbs == currentAbs {
+			continue // already checked above
+		}
+		if _, statErr := os.Stat(transcriptPath(bucket, selector)); statErr == nil {
+			otherMatches = append(otherMatches, bucket)
+		}
+	}
+	return currentFound, otherMatches, nil
+}
+
+// ambiguityCandidates builds the context list for a bare-ID ambiguity error.
+// When refFor returns a usable ref (valid bucket name), include it — the
+// model can pass it back. When refFor returns "" (grammar-incompatible bucket
+// name), include the bucket directory name as context only — a proj: ref for
+// such a name is rejected by the explicit-ref branch, so it is not a usable
+// selector. Shared by resolveTranscript and parentBucketAndID so the two
+// cannot drift apart.
+func ambiguityCandidates(selector string, currentFound bool, otherMatches []string) []string {
+	var candidates []string
+	if currentFound {
+		candidates = append(candidates, encodeRef("", selector))
+	}
+	for _, bucket := range otherMatches {
+		if r := refFor(filepath.Base(bucket), selector); r != "" {
+			candidates = append(candidates, r)
+		} else {
+			candidates = append(candidates, filepath.Base(bucket))
+		}
+	}
+	return candidates
 }
 
 // refFor builds a transcript ref only when the bucket name is consumable by
@@ -213,10 +290,10 @@ func transcriptPath(bucketDir, sessionID string) string {
 // session ID of the parent session, without requiring the parent's transcript
 // to exist. This is used by execFindChildren: the parent's bucket and ID are
 // resolved from the ref when a proj: ref is given, or by statting candidate
-// buckets for a bare ID (mirroring resolveTranscript's read path). When the
-// parent transcript is not found in any bucket (never-flushed live session),
-// parentBucketAndID falls back to the current bucket so children can still be
-// found.
+// buckets for a bare ID (via the shared findBareIDBuckets helper, the same
+// search resolveTranscript uses). When the parent transcript is not found in
+// any bucket (never-flushed live session), parentBucketAndID falls back to
+// the current bucket so children can still be found.
 //
 // Returns the resolved bucket dir, the parent session ID, the scope that
 // applies (current_project or all_projects), and any parse error.
@@ -247,39 +324,31 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		if sh == "" {
 			return "", "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
 		}
-		return filepath.Join(sh, "evener", "projects", projectID), id, scopeAllProjects, nil
+		bucket := filepath.Join(sh, "evener", "projects", projectID)
+		// Reject symlinked buckets on the explicit proj: path, matching
+		// resolveTranscript's guard. parentBucketAndID does not stat the
+		// transcript, but the bucket dir it returns is used to search for
+		// children — a symlinked bucket would expose children outside the
+		// state root.
+		if err := symlinkError(bucket); err != nil {
+			return "", "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+		}
+		return bucket, id, scopeAllProjects, nil
 	}
 	if err := identifier.ValidateSessionID(selector); err != nil {
 		return "", "", "", fmt.Errorf("invalid session selector: %w", err)
 	}
-	// Bare session ID: resolve cross-bucket by statting candidate buckets,
-	// mirroring resolveTranscript's read path. The current bucket is checked
-	// first, then sibling buckets. When the parent transcript is not found in
-	// any bucket (never-flushed live session), fall back to the current
+	// Bare session ID: resolve cross-bucket via the shared helper, mirroring
+	// resolveTranscript's read path. When the parent transcript is not found
+	// in any bucket (never-flushed live session), fall back to the current
 	// bucket so children_of:"<bare-id>" still works.
 	sh := stateHomeFor(currentStateDir)
 	if sh == "" {
 		return currentStateDir, selector, scopeCurrentProject, nil
 	}
-	buckets, globErr := enumerateBuckets(sh)
-	if globErr != nil {
-		return "", "", "", fmt.Errorf("enumerating project buckets: %w", globErr)
-	}
-	currentAbs, _ := filepath.Abs(currentStateDir)
-	var otherMatches []string
-	for _, bucket := range buckets {
-		bucketAbs, _ := filepath.Abs(bucket)
-		if bucketAbs == currentAbs {
-			continue
-		}
-		if _, statErr := os.Stat(transcriptPath(bucket, selector)); statErr == nil {
-			otherMatches = append(otherMatches, bucket)
-		}
-	}
-	// Check current bucket too.
-	currentFound := false
-	if _, statErr := os.Stat(transcriptPath(currentStateDir, selector)); statErr == nil {
-		currentFound = true
+	currentFound, otherMatches, err := findBareIDBuckets(selector, currentStateDir, sh)
+	if err != nil {
+		return "", "", "", err
 	}
 	totalMatches := len(otherMatches)
 	if currentFound {
@@ -297,17 +366,7 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 	case totalMatches > 1:
 		// Ambiguous: the bare ID exists in multiple buckets. Mirror
 		// resolveTranscript's ambiguity error with bucket names as context.
-		var candidates []string
-		if currentFound {
-			candidates = append(candidates, encodeRef("", selector))
-		}
-		for _, bucket := range otherMatches {
-			if r := refFor(filepath.Base(bucket), selector); r != "" {
-				candidates = append(candidates, r)
-			} else {
-				candidates = append(candidates, filepath.Base(bucket))
-			}
-		}
+		candidates := ambiguityCandidates(selector, currentFound, otherMatches)
 		return "", "", "", fmt.Errorf("session %q is ambiguous; found in: %s",
 			selector, strings.Join(candidates, ", "))
 	case currentFound:
