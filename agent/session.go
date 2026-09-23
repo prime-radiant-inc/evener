@@ -520,6 +520,25 @@ type Session struct {
 	// captured before ResumeHistory compacts model context.
 	restoredClientMutationTurns map[string]string
 	restoredClientMutationItems map[string]clientMutationTranscriptItems
+	// recoveredTurnID is the ActiveTurnID the durable client-mutation snapshot
+	// named when this process restored the session, and only when the pending
+	// execution that owns it is a client turn/start. That start is the user
+	// turn a dead process left mid-flight, which restore reclaims and re-runs;
+	// a follow-up turn/start behind it is the user speaking again, so
+	// AcceptClientMutationStart admits it once the inherited turn is actually
+	// running (see recoveredTurnRunning).
+	//
+	// A queue-origin turn (a queued message that was mid-run at the crash)
+	// deliberately leaves this empty even though it also leaves ActiveTurnID
+	// set: no follow-up is admitted behind it. The claim path prefers starts,
+	// so a follow-up start admitted behind an inherited queue turn would wait
+	// for a claim that can never come. It stays refused, which is the pre-fix
+	// behaviour.
+	//
+	// It is a per-process fact and is deliberately never persisted. A turn id
+	// is never reused, so the field needs no clearing: once the inherited turn
+	// ends, no later active turn can equal it again.
+	recoveredTurnID string
 	// clientMutationAppendedTurn flags that a restore-time client-mutation
 	// recovery appended turns to the transcript file. Restore consults it
 	// after the recovery pass to decide whether the retained transcript
