@@ -2782,9 +2782,6 @@ export function createConversationStore() {
             for (const olderIdentity of failureRenames.keys()) {
               pageOwnedIds.delete(olderIdentity);
             }
-            for (const survivorIdentity of new Set(failureRenames.values())) {
-              pageOwnedIds.add(survivorIdentity);
-            }
             if (failureRenames.size > 0) foldedFailureRows = failureRenames;
             // #1919 follow-up: bound the merged result AFTER the merge, so
             // turns inside the keep-window keep everything the older
@@ -2846,6 +2843,20 @@ export function createConversationStore() {
               if (seenRenamedIds.has(renamedId)) continue;
               seenRenamedIds.add(renamedId);
               rewritten.push({ ...row, id: renamedId });
+            }
+            // RoboRev round 38 (panel Medium 2): the rewrite above drops a
+            // renamed row when the snapshot carries its own failure:<survivor>
+            // row (nativeFailureIds wins) or an earlier renamed row already
+            // took the identity. The survivor's row that remains is then the
+            // snapshot's own, not the page's — marking it page-owned would
+            // defeat the snapshot-authority guard and keep a resolved or
+            // retried failure on screen indefinitely. Add the survivor only
+            // when the page's renamed row actually survived, mirroring the
+            // loadOlder path's seenRenamedIds guard.
+            for (const survivorIdentity of new Set(renames.values())) {
+              if (seenRenamedIds.has(survivorIdentity)) {
+                pageOwnedIds.add(survivorIdentity);
+              }
             }
             return rewritten;
           })();

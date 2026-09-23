@@ -18607,6 +18607,162 @@ describe("ConversationStore", () => {
       expect(failureRows()[0]?.title).toBe("fresh boom");
     });
 
+    // RoboRev round 38 (panel Medium 2): the rehydrate failure-fold marked
+    // every fold survivor page-owned unconditionally, but the row rewrite
+    // below drops the renamed row whenever the snapshot carries its own
+    // failure:<survivor> row (nativeFailureIds wins). The survivor was
+    // marked page-owned even though the page's content did not survive,
+    // so the next snapshot to resolve or retry the failure read the
+    // snapshot's own row as retained history and kept the resolved failure
+    // on screen indefinitely. The loadOlder path adds the survivor only
+    // when the renamed row actually survived (seenRenamedIds); the
+    // rehydrate fold must mirror that guard.
+    it("does not keep a resolved failure on screen when the snapshot's own row won the fold rename", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "assistant", id: "k1", markdown: "page text", streaming: false } as MobileTimelineItem,
+          {
+            kind: "failure",
+            id: "failure:t0",
+            title: "page boom",
+            detail: "page boom",
+          } as MobileTimelineItem,
+        ],
+        turnsPage: turnsPage(
+          [
+            {
+              id: "t0",
+              itemsView: "fragment",
+              status: "failed",
+              error: { message: "page boom" },
+              usage: { inputTokens: 500, outputTokens: 20 },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t0",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            },
+          ],
+          "c9",
+        ),
+        nextCursor: "c9",
+      };
+      await store.getState().loadOlder(service);
+      const failureRows = () =>
+        rows(store).filter((row) => row.kind === "failure");
+      expect(failureRows()).toHaveLength(1);
+
+      // The reread reissues the page turn's content under a new turn id
+      // whose turn carries its OWN error: the fold renames the page-owned
+      // failure row onto the survivor's identity — the very identity the
+      // snapshot already projects — so the snapshot's row wins and the
+      // renamed page row is dropped (round 31). The page's content did
+      // NOT survive: the survivor must not become page-owned.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "failed",
+              error: { message: "fresh boom" },
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t9",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // The coalesced rereads drain through microtasks; the second drain's
+      // chain is one hop longer than the first's, so wait on the read the
+      // reread issues rather than a fixed tick count.
+      const awaitRehydrateRead = async (count: number): Promise<void> => {
+        for (let i = 0; i < 40 && service.readProjectionCalls.length < count; i++) {
+          await Promise.resolve();
+        }
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      };
+      await awaitRehydrateRead(2);
+      expect(failureRows()).toHaveLength(1);
+      expect(failureRows()[0]?.id).toBe("failure:t9");
+      expect(failureRows()[0]?.title).toBe("fresh boom");
+
+      // The failure is resolved/retried: the next snapshot carries t9
+      // WITHOUT the error. The snapshot is authoritative and its own row
+      // was never page history, so the failure must leave the screen
+      // instead of sticking until cap eviction or a thread transition.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t9",
+              status: "completed",
+              items: [
+                {
+                  id: "k1",
+                  transcriptKey: "k1",
+                  turnId: "t9",
+                  type: "agentMessage",
+                  text: "page text",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+            makeTurn({ id: "t1", status: "inProgress", items: [] }),
+          ],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await awaitRehydrateRead(3);
+      expect(failureRows()).toHaveLength(0);
+
+      // A live row-changing frame reprojects from the model: the resolved
+      // failure stays gone.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      expect(failureRows()).toHaveLength(0);
+    });
+
     // RoboRev round 32, pagination-side fold: loadOlder's merge folds a
     // failed page turn into a retained turn that shares its item — the
     // merged model carries the error under the RETAINED turn, but the
