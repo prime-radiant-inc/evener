@@ -546,6 +546,20 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 // pure over the args map (no session state), so the decode — including the
 // tri-state sandbox_net (nil = inherit, never a silent false) — is unit-testable
 // without minting a delegate.
+// validateDelegateLabel validates a delegate name with the same alphabet
+// manage_worktree names use (worktree.ValidateName), wrapped in the
+// invalid_request convention both the create path and describe share.
+// A blank name is valid (absent label).
+func validateDelegateLabel(name string) error {
+	if name == "" {
+		return nil
+	}
+	if verr := worktree.ValidateName(name); verr != nil {
+		return fmt.Errorf("invalid_request: name: %w", verr)
+	}
+	return nil
+}
+
 func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	if strings.TrimSpace(stringArg(args, "prompt")) == "" {
 		return delegateArgs{}, errors.New("invalid_request: prompt is required")
@@ -607,8 +621,8 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 	// capacity is reserved; the worktree create core re-checks with git's own
 	// ref rules and refuses a branch that already exists.
 	if name := stringArg(args, "name"); name != "" {
-		if verr := worktree.ValidateName(name); verr != nil {
-			return delegateArgs{}, fmt.Errorf("invalid_request: name: %w", verr)
+		if err := validateDelegateLabel(name); err != nil {
+			return delegateArgs{}, err
 		}
 		a.Name = name
 	}

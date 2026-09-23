@@ -167,6 +167,25 @@ func TestDelegateName_DeliveryPlanAndNotificationFrameCarryLabel(t *testing.T) {
 // packet (delegateTerminalMetadataFromRun → stableDelegateFinishFromRun) into
 // the send result (populateStableDelegateSendResult → marshalDelegateSendResult).
 
+// marshalDelegateSendResultWire marshals a send result and returns its wire
+// JSON, following the file's existing helper convention.
+func marshalDelegateSendResultWire(t *testing.T, result sendMessageResult) string {
+	t.Helper()
+	value, err := marshalDelegateSendResult(result, 0)
+	if err != nil {
+		t.Fatalf("marshalDelegateSendResult: %v", err)
+	}
+	sr, ok := value.(toolpkg.StateResult)
+	if !ok {
+		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
+	}
+	wire, err := json.Marshal(sr.State)
+	if err != nil {
+		t.Fatalf("marshal send result state: %v", err)
+	}
+	return string(wire)
+}
+
 func TestDelegateName_TerminalMetadataCarriesLabel(t *testing.T) {
 	t.Parallel()
 	// A named delegate's terminal metadata includes the label from the descriptor.
@@ -236,45 +255,23 @@ func TestDelegateName_PopulateSendResultOmitsAbsentLabel(t *testing.T) {
 
 func TestDelegateName_MarshalSendResultCarriesLabel(t *testing.T) {
 	t.Parallel()
-	value, err := marshalDelegateSendResult(sendMessageResult{
+	wire := marshalDelegateSendResultWire(t, sendMessageResult{
 		DelegateID: "dlg_named",
 		Name:       "marshal-label",
 		Action:     "completed",
-	}, 0)
-	if err != nil {
-		t.Fatalf("marshalDelegateSendResult: %v", err)
-	}
-	sr, ok := value.(toolpkg.StateResult)
-	if !ok {
-		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
-	}
-	wire, err := json.Marshal(sr.State)
-	if err != nil {
-		t.Fatalf("marshal send result state: %v", err)
-	}
-	if !strings.Contains(string(wire), `"name":"marshal-label"`) {
+	})
+	if !strings.Contains(wire, `"name":"marshal-label"`) {
 		t.Fatalf("send result JSON omits the label:\n%s", wire)
 	}
 }
 
 func TestDelegateName_MarshalSendResultOmitsAbsentLabel(t *testing.T) {
 	t.Parallel()
-	value, err := marshalDelegateSendResult(sendMessageResult{
+	wire := marshalDelegateSendResultWire(t, sendMessageResult{
 		DelegateID: "dlg_unnamed",
 		Action:     "completed",
-	}, 0)
-	if err != nil {
-		t.Fatalf("marshalDelegateSendResult: %v", err)
-	}
-	sr, ok := value.(toolpkg.StateResult)
-	if !ok {
-		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
-	}
-	wire, err := json.Marshal(sr.State)
-	if err != nil {
-		t.Fatalf("marshal send result state: %v", err)
-	}
-	if strings.Contains(string(wire), `"name"`) {
+	})
+	if strings.Contains(wire, `"name"`) {
 		t.Fatalf("unnamed send result JSON carries a name field:\n%s", wire)
 	}
 }
@@ -292,22 +289,8 @@ func TestDelegateName_FullChainSendReplyCarriesLabel(t *testing.T) {
 	})
 	var result sendMessageResult
 	populateStableDelegateSendResult(&result, *finish.packet)
-	if result.Name != "chain-label" {
-		t.Fatalf("full-chain send result name = %q, want chain-label", result.Name)
-	}
-	value, err := marshalDelegateSendResult(result, 0)
-	if err != nil {
-		t.Fatalf("marshalDelegateSendResult: %v", err)
-	}
-	sr, ok := value.(toolpkg.StateResult)
-	if !ok {
-		t.Fatalf("marshalDelegateSendResult returned %T, want StateResult", value)
-	}
-	wire, err := json.Marshal(sr.State)
-	if err != nil {
-		t.Fatalf("marshal send result state: %v", err)
-	}
-	if !strings.Contains(string(wire), `"name":"chain-label"`) {
+	wire := marshalDelegateSendResultWire(t, result)
+	if !strings.Contains(wire, `"name":"chain-label"`) {
 		t.Fatalf("full-chain send result JSON omits the label:\n%s", wire)
 	}
 }

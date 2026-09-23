@@ -20,7 +20,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
-	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
@@ -1842,16 +1841,8 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if agentType == "" {
 		agentType = "default"
 	}
-	// Validate the label with the same alphabet the create path uses
-	// (worktree.ValidateName), before the descriptor is built and stored. The
-	// create path (decodeDelegateArgs) already validates, but describe is a
-	// separate entry point — an invalid label here must not flow unescaped
-	// into storage or renders. Matches the create path's invalid_request
-	// convention.
-	if args.Name != "" {
-		if verr := worktree.ValidateName(args.Name); verr != nil {
-			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("invalid_request: name: %w", verr)
-		}
+	if err := validateDelegateLabel(args.Name); err != nil {
+		return delegatestore.Descriptor{}, identifier.Project{}, err
 	}
 	agentName, rolePrompt := stableDelegateRole(selection, args.grantsDelegation(), s)
 	reasoningEffort := llm.NormalizeReasoningEffort(args.ReasoningEffort)
