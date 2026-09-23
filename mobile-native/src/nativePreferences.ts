@@ -127,6 +127,15 @@ function keybindingsDomain(
 // has no field for it), and a hub-sourced failure is fixed copy. An
 // unconfirmed write is `writeUncertain`; its message is that fact, so the
 // screen's error slot and its write-uncertain notice never disagree.
+function transcriptErrorMessage(
+	state: TranscriptDisplayStoreState,
+): string | null {
+	if (state.draftError !== null) return state.draftError;
+	return state.hubError !== null || state.writeUncertain
+		? HUB_UNCONFIRMED_MESSAGE
+		: null;
+}
+
 function transcriptDomain(
 	state: TranscriptDisplayStoreState,
 ): TranscriptMobilePreferenceState {
@@ -139,11 +148,7 @@ function transcriptDomain(
 			state.draft === null || state.draft.layout !== "mobile"
 				? null
 				: { revision: state.draft.revision, config: state.draft.config },
-		error:
-			state.draftError ??
-			(state.hubError !== null || state.writeUncertain
-				? HUB_UNCONFIRMED_MESSAGE
-				: null),
+		error: transcriptErrorMessage(state),
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,

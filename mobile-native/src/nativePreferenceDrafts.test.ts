@@ -280,9 +280,10 @@ describe("nativeTranscriptDrafts", () => {
 		raw.set("evener.native.transcript-draft.hub", "null");
 		const storage = nativeTranscriptDrafts("hub", b);
 
-		expect(storage.load()).not.toBeNull();
-		expect(isStoredNullRecord(storage.load())).toBe(true);
-		expect(storage.removeIf(storage.load() as never)).toBe(true);
+		const loaded = storage.load();
+		expect(loaded).not.toBeNull();
+		expect(isStoredNullRecord(loaded)).toBe(true);
+		expect(storage.removeIf(loaded as never)).toBe(true);
 		expect(storage.load()).toBeNull();
 	});
 

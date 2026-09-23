@@ -8,6 +8,7 @@ import {
 	presetContent,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
+import { unreadableDraftDiscardDisabled } from "./keybindingOfflineRecovery";
 import type { NativePreferencesSnapshot } from "./nativePreferences";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -134,17 +135,20 @@ export function TranscriptPreferencesEditor({
 					<Copy muted>Loading display settings…</Copy>
 				) : null}
 				<ErrorMessage message={state.error} />
-					{state.draftUnreadable ? (
-						<View style={{ gap: 8 }}>
-							<Copy>
-								A saved transcript draft on this hub could not be read. Discard
-								it to edit these settings again.
-							</Copy>
-							<Action disabled={!connected || state.saving} onPress={discard}>
-								Discard unreadable draft
-							</Action>
-						</View>
-					) : null}
+			{state.draftUnreadable ? (
+				<View style={{ gap: 8 }}>
+					<Copy>
+						A saved transcript draft on this hub could not be read. Discard it
+						to edit these settings again.
+					</Copy>
+					<Action
+						disabled={unreadableDraftDiscardDisabled(connected, state)}
+						onPress={discard}
+					>
+						Discard unreadable draft
+					</Action>
+				</View>
+			) : null}
 				{state.writeUncertain ? (
 					<View style={{ gap: 8 }}>
 						<Copy>The last save could not be confirmed.</Copy>
