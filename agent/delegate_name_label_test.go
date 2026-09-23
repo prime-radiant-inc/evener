@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/llm"
 )
 
 // Non-worktree delegate names are display-only labels: the create result, the
@@ -292,5 +293,60 @@ func TestDelegateName_FullChainSendReplyCarriesLabel(t *testing.T) {
 	wire := marshalDelegateSendResultWire(t, result)
 	if !strings.Contains(wire, `"name":"chain-label"`) {
 		t.Fatalf("full-chain send result JSON omits the label:\n%s", wire)
+	}
+}
+
+// TestDelegateName_SteeredReplyCarriesLabel verifies that a delegate_send to an
+// already-running named delegate (the steered path, maxWaitMS == 0) includes the
+// name in the reply. The steered return at the send path built a sendMessageResult
+// without Name, so a delegate_send to a running named delegate omitted the label.
+func TestDelegateName_SteeredReplyCarriesLabel(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(d *delegatestore.Descriptor) {
+		d.Name = "steer-label"
+	})
+	fixture.adapter.steps = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(entered)
+			<-release
+			return finalResponse("first result")
+		},
+		func(llm.Request) llm.Response { return finalResponse("continued") },
+	}
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	steered := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "new steering", 0)
+	if steered.result.Err != nil || steered.result.Action != "steered" {
+		t.Fatalf("steer = %#v", steered.result)
+	}
+	if steered.result.Name != "steer-label" {
+		t.Fatalf("steered reply name = %q, want steer-label", steered.result.Name)
+	}
+}
+
+// TestDelegateName_PopulateSendResultPreservesDescriptorNameOnNamelessMetadata
+// verifies that terminal metadata without a name field does not overwrite the
+// descriptor-derived name already on the result. Packets written by older
+// versions carry no name in metadata; the descriptor-derived value must survive.
+func TestDelegateName_PopulateSendResultPreservesDescriptorNameOnNamelessMetadata(t *testing.T) {
+	t.Parallel()
+	metadata, _ := json.Marshal(delegateTerminalPacketMetadata{
+		Task: "task",
+	})
+	packet := delegatestore.TerminalPacket{
+		Kind:     delegatestore.PacketReported,
+		Metadata: metadata,
+	}
+	var result sendMessageResult
+	result.Name = "descriptor-label"
+	populateStableDelegateSendResult(&result, packet)
+	if result.Name != "descriptor-label" {
+		t.Fatalf("name overwritten to %q, want descriptor-label", result.Name)
 	}
 }

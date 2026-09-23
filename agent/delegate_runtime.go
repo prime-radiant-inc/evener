@@ -1186,11 +1186,24 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if maxWaitMS == 0 {
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
+			name := ""
+			for _, update := range plans.updates {
+				for _, row := range update.rows {
+					if row.id == delegateID {
+						name = row.descriptor.Name
+						break
+					}
+				}
+				if name != "" {
+					break
+				}
+			}
 			return stableDelegateSendOutcome{result: sendMessageResult{
 				Target:              delegateID,
 				DelegateID:          delegateID,
 				Type:                delegateResourceType,
 				Status:              jobstore.StatusRunning,
+				Name:                name,
 				RunningInBackground: true,
 				Action:              "steered",
 			}}
@@ -1476,7 +1489,9 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 	result.Warnings = append([]string(nil), packet.Warnings...)
 	var metadata delegateTerminalPacketMetadata
 	if err := json.Unmarshal(packet.Metadata, &metadata); err == nil {
-		result.Name = metadata.Name
+		if metadata.Name != "" {
+			result.Name = metadata.Name
+		}
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
