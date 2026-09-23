@@ -86,6 +86,23 @@ const HOST_SELECT_EXPR = `(() => {
   }) ?? null;
 })()`;
 
+// labeledInputExpr locates a text input by the FormRow label that names it, the
+// same way HOST_SELECT_EXPR locates the Host picker: the launch form's text
+// fields take their accessible name from a <label htmlFor>, and widgets/input
+// emits no aria-label of its own, so an [aria-label] probe would find nothing.
+// Probing by label association is what the product actually renders; if this
+// ever stops finding a field, that is a finding about the delivered UI, not a
+// reason to add a testid here.
+function labeledInputExpr(label) {
+  return `(() => {
+    const inputs = [...document.querySelectorAll("input")];
+    return inputs.find((i) => {
+      const labels = [...(i.labels ?? [])].map((l) => (l.textContent ?? "").trim());
+      return labels.includes(${JSON.stringify(label)});
+    }) ?? null;
+  })()`;
+}
+
 function usage() {
   return [
     "Usage: node scripts/settingshostguard/run.mjs --url URL --artifact-dir DIR --host NAME --expect FILE",
@@ -279,6 +296,23 @@ class Driver {
     return evaluate(this.send, SETTINGS_TEXT_EXPR);
   }
 
+  // settingsTextWithValues is settingsText plus the current value of every form
+  // control inside the region. innerText does not include an input's or a
+  // textarea's value, so a negative assertion made on innerText alone cannot
+  // see a controller value that a pane rendered inside a field - which is
+  // exactly the mistake those assertions exist to catch.
+  settingsTextWithValues() {
+    return evaluate(
+      this.send,
+      `(() => {
+        const el = document.querySelector("[data-testid='settings-content']");
+        if (el === null) return document.body.innerText;
+        const values = [...el.querySelectorAll("input, textarea, select")].map((c) => c.value ?? "");
+        return [el.innerText, ...values].join("\n");
+      })()`,
+    );
+  }
+
   // hostSelectState reads the "Host" picker's presence and current value. The
   // value names the host the route selected, so it is the per-pane proof that
   // the route carried the selection into this pane.
@@ -289,10 +323,18 @@ class Driver {
     );
   }
 
-  // selectHost drives the picker the way a user does: set the native select's
-  // value and dispatch the change event React's onChange listens to. The app
-  // then rewrites the route (selectHost -> navigate), so the URL carries it.
+  // selectHost drives the picker the way a user does: it first waits for the
+  // option to exist (the picker fetches the host registry asynchronously on
+  // mount, so a remote option appears only once that resolves - setting the
+  // value before then would silently leave the select on its previous option),
+  // then sets the native select's value and dispatches the change event React's
+  // onChange listens to. The app then rewrites the route (selectHost ->
+  // navigate), so the URL carries it.
   async selectHost(value) {
+    await this.waitPage(
+      `(() => { const s = ${HOST_SELECT_EXPR}; return s !== null && [...s.options].some((o) => o.value === ${JSON.stringify(value)}) ? true : null; })()`,
+      { label: `Host picker offers an option for ${JSON.stringify(value)}` },
+    );
     const ok = await evaluate(
       this.send,
       `(() => {
@@ -491,7 +533,7 @@ async function runPane(driver, section) {
         `(() => { const el = document.querySelector("textarea[aria-label='AGENTS.md contents']"); return el === null ? null : (el.value.includes(${JSON.stringify(c.hostContent)}) ? el.value : null); })()`,
         { label: "host AGENTS.md content loaded" },
       );
-      const text = await driver.settingsText();
+      const text = await driver.settingsTextWithValues();
       check(
         !text.includes(c.controllerContent),
         `agents-md: the controller's AGENTS.md content ${JSON.stringify(c.controllerContent)} appeared while a remote host was selected`,
@@ -521,15 +563,15 @@ async function runPane(driver, section) {
       const c = expect.launchAgent;
       await driver.openPane(section);
       const value = await driver.waitPage(
-        `(() => { const el = document.querySelector("input[aria-label='Agent']"); return el === null ? null : (el.value.includes(${JSON.stringify(c.host)}) ? el.value : null); })()`,
+        `(() => { const el = ${labeledInputExpr("Agent")}; return el === null ? null : (el.value.includes(${JSON.stringify(c.host)}) ? el.value : null); })()`,
         { label: "host launch Agent value" },
       );
-      const text = await driver.settingsText();
+      const text = await driver.settingsTextWithValues();
       check(
         !text.includes(c.controller),
         `launch-evener: the controller's launch Agent ${JSON.stringify(c.controller)} appeared while a remote host was selected`,
       );
-      record.probe = `input [aria-label="Agent"] (global launch layer)`;
+      record.probe = `input labeled "Agent" (global launch layer)`;
       record.evidence = { agent: value };
       record.ok = true;
       return record;
