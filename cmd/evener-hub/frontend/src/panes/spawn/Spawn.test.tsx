@@ -354,6 +354,9 @@ async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: str
 // 250ms. Fake timers own that clock, and the stubbed `jest` global lets Testing
 // Library's findBy/waitFor polls advance it, so each debounce costs a poll
 // rather than a quarter second of real time.
+// vi.dynamicImportSettled() is unaffected: Vitest waits on its own saved real
+// timers (getSafeTimers), not the faked globals, so the lazy chunk loads these
+// tests await still settle.
 function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
