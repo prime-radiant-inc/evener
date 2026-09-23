@@ -583,7 +583,8 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	if rc := runShards(cfg); rc != 2 {
 		t.Fatalf("missing agent dir rc = %d, want 2", rc)
 	}
-	if !strings.Contains(stderr.String(), "agent-shards: no agent dir") {
+	// The refusal names the directory it looked for, not the runner's label.
+	if !strings.Contains(stderr.String(), "agent-shards: no "+cfg.pkgDir+" dir") {
 		t.Fatalf("missing agent dir not explained:\n%s", stderr)
 	}
 }
@@ -715,6 +716,15 @@ func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
 		if !strings.Contains(out, "hub-shards: ") || !strings.Contains(out, tc.name) {
 			t.Fatalf("%s=%s not refused by hub-shards by name:\n%s", tc.name, tc.value, out)
 		}
+	}
+
+	// Run outside a checkout, the refusal names the package directory it
+	// looked for.
+	missing := exec.Command(bin, "dev", "hub-shards")
+	missing.Dir = t.TempDir()
+	missing.Env = append(os.Environ(), hubFixtureToolchainEnv(t)...)
+	if out, err := missing.CombinedOutput(); err == nil || !strings.Contains(string(out), "hub-shards: no "+filepath.Join("cmd", "evener-hub")+" dir") {
+		t.Fatalf("hub-shards outside a checkout = %v, want a refusal naming cmd/evener-hub:\n%s", err, out)
 	}
 
 	// A refused flag points at the hub's own variable, never the agent's.

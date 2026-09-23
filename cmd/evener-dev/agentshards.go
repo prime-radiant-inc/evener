@@ -292,7 +292,7 @@ var signalNames = map[syscall.Signal]string{
 // runShards runs the module's tests as cost-balanced shards.
 func runShards(cfg shardsConfig) int {
 	if info, err := os.Stat(cfg.pkgDir); err != nil || !info.IsDir() {
-		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: no %s dir\n", cfg.label, cfg.label)
+		_, _ = fmt.Fprintf(cfg.stderr, "%s-shards: no %s dir\n", cfg.label, cfg.pkgDir)
 		return 2
 	}
 
