@@ -59,6 +59,13 @@ func TestRemoteOriginatedDispatchIsRefusedAtTheClientSeam(t *testing.T) {
 	err = source.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: "alpha:t1", Name: "renamed"})
 	assertDispatchRefusal(t, "SetThreadName", err)
 
+	// Shutdown is the one lifecycle verb the controller forwards today, so the
+	// newly reachable action must be refused for a remote origin like every other
+	// dispatch: a peer hub could otherwise ride an attached client to stop a
+	// session on a second host.
+	err = source.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: "alpha:t1"})
+	assertDispatchRefusal(t, "ShutdownThread", err)
+
 	_, err = source.HostCapabilities(ctx)
 	assertDispatchRefusal(t, "HostCapabilities", err)
 
