@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1989,7 +1990,7 @@ func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) 
 	}
 	// The omission count must be exactly 2 (202 - 200).
 	wantOmitted := totalSessions - evidenceSessionRefCap
-	if !strings.Contains(desc, fmt.Sprintf("%d", wantOmitted)) {
+	if !strings.Contains(desc, strconv.Itoa(wantOmitted)) {
 		t.Errorf("Description %q must disclose the correct command-side omission count %d (round 11 finding 3)", desc, wantOmitted)
 	}
 	// The command itself must carry at most 200 selectors.
