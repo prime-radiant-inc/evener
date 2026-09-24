@@ -527,13 +527,6 @@ type ToolItemMergeContext = {
   // (the strip's real-source test, duplicate-reconciliation freshness)
   // treat a surviving candidate as a source the call never merged from.
   toolResultFolds: WeakMap<ItemModel, readonly ItemModel[]>;
-  // The absorbed results that supplied tool fields the rewritten call
-  // carries — the fold's own supersession test, recorded where the
-  // absorption happened because the candidates it reads are fold-time
-  // state. A result whose every foldable field a fresh candidate also
-  // supplies left nothing behind and is not a contributor. Retention
-  // consumers read this instead of re-deriving field presence.
-  toolResultContributors: WeakMap<ItemModel, ReadonlySet<ItemModel>>;
 };
 type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
 
@@ -541,7 +534,6 @@ function createToolItemMergeContext(fresh: readonly TurnModel[], older: readonly
   const context: ToolItemMergeContext = {
     provenance: new WeakMap(),
     toolResultFolds: new WeakMap(),
-    toolResultContributors: new WeakMap(),
   };
   const add = (source: ToolItemSource, turns: readonly TurnModel[]): void => {
     for (const turn of turns) {
@@ -734,16 +726,6 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
             recordToolFoldRewrite(context, rewritten, item);
             const absorbed = [...fresh.results, ...older.results];
             if (absorbed.length > 0) context.toolResultFolds.set(rewritten, absorbed);
-            // The merge's own supersession test names the absorbed results
-            // that supplied tool fields the rewrite carries; a result whose
-            // every foldable field a fresh candidate also supplies left
-            // nothing behind and contributes nothing.
-            const surviving = absorbed.filter(
-              (result) => !fullySupersededToolResult(result, fold),
-            );
-            if (surviving.length > 0) {
-              context.toolResultContributors.set(rewritten, new Set(surviving));
-            }
           }
           items.push(rewritten);
           continue;
@@ -1930,33 +1912,80 @@ function foldItemSpine(leaves: readonly ItemModel[]): ItemModel {
 }
 
 // The fold's answer to whether the inputs `side` names contributed content
-// the merged item carries: replay the spine without them and the merge's
+// the merged item carries: replay the merge without them and the merge's
 // own selection rules decide what was lost. Every field rule counts —
 // rank-merged status, the ??-fallback fields (startedAt and completedAt
-// included), text presence, and every spread-merged field — because the
-// comparison IS the merge's own output.
+// included), text presence, every spread-merged field, and, for a call the
+// tool fold rewrote, the rewrite's own field selection — because the
+// comparison IS the merge's final output, not the spine it then overrode.
 function itemSideContributesOf(
   context?: ToolItemMergeContext,
 ): (item: ItemModel, side: (input: ItemModel) => boolean) => boolean {
   const sourcesOf = itemFoldSourcesOf(context);
   return (item, side) => {
-    // Absorbed tool results answer through the fold's own recorded
-    // supersession: a surviving contributor on the asked side means the
-    // rewrite carries tool fields that side supplied.
-    for (const result of context?.toolResultContributors.get(item) ?? []) {
-      if (side(result)) return true;
+    const calls = sourcesOf(item);
+    const results = context?.toolResultFolds.get(item) ?? [];
+    const keptCalls = calls.filter((call) => !side(call));
+    const keptResults = results.filter((result) => !side(result));
+    if (
+      keptCalls.length === calls.length &&
+      keptResults.length === results.length
+    ) {
+      return false;
     }
-    const leaves = sourcesOf(item);
-    const kept = leaves.filter((leaf) => !side(leaf));
-    if (kept.length === leaves.length) return false;
-    if (kept.length === 0) return true;
-    const full = foldItemSpine(leaves);
-    const without = foldItemSpine(kept);
+    // The item itself came from the named side when every identity leaf
+    // did: the merge would not hold it at all without them.
+    if (keptCalls.length === 0) return true;
+    // A rewritten call replays through the tool fold's own field
+    // selection on both sides; with no results left the fold would not
+    // rewrite at all, so the spine stands as the merge's answer.
+    const finish = (
+      spine: ItemModel,
+      groupCalls: readonly ItemModel[],
+      groupResults: readonly ItemModel[],
+    ): ItemModel =>
+      groupResults.length > 0
+        ? toolRewriteOf(spine, groupCalls, groupResults, side)
+        : spine;
+    const full = finish(foldItemSpine(calls), calls, results);
+    const without = finish(foldItemSpine(keptCalls), keptCalls, keptResults);
     return (
       !sameModelFields(full, without) ||
       itemTextPresence(full) !== itemTextPresence(without)
     );
   };
+}
+
+// The tool fold's own field selection replayed for one candidate set: the
+// not-side (fresh) results then calls, then the side's, each scanned
+// last-first the way preferredToolField scans the fold view's groups,
+// with the replayed spine's own value last — the same preference the fold
+// applied when it rewrote the call. The identity leaves stand in for the
+// view's call candidates (the common case is one call per side), and a
+// same-side candidate list replays in fold order.
+function toolRewriteOf(
+  base: ItemModel,
+  calls: readonly ItemModel[],
+  results: readonly ItemModel[],
+  side: (input: ItemModel) => boolean,
+): ItemModel {
+  const freshResults = results.filter((result) => !side(result)).reverse();
+  const freshCalls = calls.filter((call) => !side(call)).reverse();
+  const sideResults = results.filter(side).reverse();
+  const sideCalls = calls.filter(side).reverse();
+  const field = <K extends ToolResultField>(name: K) =>
+    preferredToolField(base, name, freshResults, freshCalls, sideResults, sideCalls);
+  return copyItemTextPresence(base, {
+    ...base,
+    output: field("output"),
+    error: field("error"),
+    prevalOnly: field("prevalOnly"),
+    exitCode: field("exitCode"),
+    completedAt: field("completedAt"),
+    status: field("status"),
+    outputImages: field("outputImages"),
+    raw: field("raw"),
+  });
 }
 
 // The older-page merge plus its own fragment membership, for callers that
