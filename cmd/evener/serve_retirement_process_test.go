@@ -300,6 +300,53 @@ func TestDaemonRetirementProcessClockArmsFromTheEvaluatedInstant(t *testing.T) {
 	}
 }
 
+// TestDaemonRetirementProcessClockAcknowledgesAdvanceBeforeFiring pins that an
+// advance is acknowledged before it delivers the timer. The daemon retires on
+// that delivery, and a retirement that won the race closed the event pipe
+// before the acknowledgement was written, so the fixture's advance saw "event
+// stream closed" (#2253).
+func TestDaemonRetirementProcessClockAcknowledgesAdvanceBeforeFiring(t *testing.T) {
+	h := newDaemonRetirementProcessHelper(nil, nil)
+	w := &advanceAckOrderWriter{}
+	h.enc = json.NewEncoder(w)
+	clk := h.clock
+	w.timer = clk.NewTimer(time.Hour)
+
+	clk.advance(time.Hour, 1)
+
+	if !w.acked {
+		t.Fatal("advance wrote no acknowledgement")
+	}
+	if w.firedBeforeAck {
+		t.Fatal("the timer fired before the advance was acknowledged")
+	}
+	select {
+	case <-w.timer.C():
+	default:
+		t.Fatal("an advance to the deadline did not fire the timer")
+	}
+}
+
+// advanceAckOrderWriter records whether the timer had already fired when the
+// advance acknowledgement was written.
+type advanceAckOrderWriter struct {
+	timer          agent.RetirementTimer
+	acked          bool
+	firedBeforeAck bool
+}
+
+func (w *advanceAckOrderWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte(`"kind":"advanced"`)) {
+		w.acked = true
+		select {
+		case <-w.timer.C():
+			w.firedBeforeAck = true
+		default:
+		}
+	}
+	return len(p), nil
+}
+
 // daemonRetirementProcessClock is the helper-side retirement clock. Every
 // assertion the fixture makes about evaluation, arming and resetting is an
 // event this clock emits; every advance is a command it acknowledges. It never
@@ -394,33 +441,36 @@ func (c *daemonRetirementProcessClock) stop(t *daemonRetirementProcessTimer) {
 // advance moves virtual time and delivers the armed timer if its deadline has
 // passed. It acknowledges with the post-command armed state, so the fixture's
 // wait is a pipe acknowledgement rather than a quiet window.
+//
+// The acknowledgement is written before the timer is delivered: the daemon
+// retires on that delivery and closes the event pipe, so an acknowledgement
+// written after it can be lost. The lock is held across both so no arm or stop
+// lands between the state the acknowledgement reports and the delivery.
 func (c *daemonRetirementProcessClock) advance(d time.Duration, seq int) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
 	t := c.timer
-	fired := false
-	if t != nil && !c.now.Before(t.deadline) {
-		fired = true
+	fired := t != nil && !c.now.Before(t.deadline)
+	armed := t != nil
+	var remaining int64
+	if armed {
+		remaining = max(int64(t.deadline.Sub(c.now)), 0)
+	}
+	c.h.emit(daemonRetirementProcessEvent{
+		Kind:      "advanced",
+		Seq:       seq,
+		Now:       c.now.UTC().Format(time.RFC3339Nano),
+		Armed:     &armed,
+		Remaining: remaining,
+		Fired:     &fired,
+	})
+	if fired {
 		select {
 		case t.ch <- c.now:
 		default:
 		}
 	}
-	now := c.now
-	armed := c.timer != nil
-	var remaining int64
-	if armed {
-		remaining = max(int64(c.timer.deadline.Sub(c.now)), 0)
-	}
-	c.mu.Unlock()
-	c.h.emit(daemonRetirementProcessEvent{
-		Kind:      "advanced",
-		Seq:       seq,
-		Now:       now.UTC().Format(time.RFC3339Nano),
-		Armed:     &armed,
-		Remaining: remaining,
-		Fired:     &fired,
-	})
 }
 
 type daemonRetirementProcessTimer struct {
