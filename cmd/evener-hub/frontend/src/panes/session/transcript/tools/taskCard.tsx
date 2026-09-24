@@ -41,7 +41,7 @@ import { requestPaneFocus, workspaceStore } from "../../../../shell/workspace";
 import { Meter, OpenButton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
-import { registerToolRenderer } from "../toolRenderers";
+import { registerToolRenderer, toolCallFailed } from "../toolRenderers";
 import { STATUS_TOUCH, TaskCheck, type TaskTouch, TOUCH_WORD } from "./taskCheck";
 import styles from "./taskcard.module.css";
 import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
@@ -454,9 +454,10 @@ function TaskFallbackRow({ row }: { row: TouchedRow }) {
 
 function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
   // A failed mutation renders no card - ToolCallItem's generic failed-row
-  // treatment already shows the error text (mirrors the legacy card being
-  // appended only on success).
-  if (item.error) return null;
+  // treatment already owns the failure (mirrors the legacy card being
+  // appended only on success). The shared predicate, not error text alone:
+  // a status-only or exit-code failure must suppress the card too.
+  if (toolCallFailed(item)) return null;
   const touched = mutationRows(item) ?? [];
   const progress = parseProgress(item.output);
   // The parsed footer keeps the backend's own outcome shape (done/cancelled/
@@ -559,7 +560,8 @@ registerToolRenderer({
   // explicit store entry beats any fallback).
   foldByDefault: true,
   // A read (view), a malformed non-mutation, or a status-unchanged update
-  // renders nothing; a failed call is never suppressed so its error still
-  // surfaces (ToolCallItem generic path).
-  suppress: (item) => !item.error && !isTaskMutation(item),
+  // renders nothing; a failed call is never suppressed so its failure still
+  // surfaces (ToolCallItem generic path) - for every failure shape the
+  // shared predicate recognizes, not just error text.
+  suppress: (item) => !toolCallFailed(item) && !isTaskMutation(item),
 });

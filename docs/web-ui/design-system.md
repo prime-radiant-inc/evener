@@ -415,8 +415,9 @@ Added, Dropped, sentence case) and the body shows at most three slots joined by 
 spine: most-recently-settled (done or cancelled; timestamps order it, list position breaks
 ties), in-progress, next. A note renders only when THIS call added it, set in the prose face —
 the note is the agent's own sentence. The footer keeps the aggregate sentence + meter and
-carries the whole-list affordance: an "Open task list" control that runs the same workspace
-toggle the `/tasks` palette command does, hidden where no session owns the card. An update
+carries the whole-list affordance: an "Open task list" control that opens (and focuses) the
+session's Tasks pane and never closes it — an open operation, not the `/tasks` palette
+command's toggle — hidden where no session owns the card. An update
 that changes no task status renders nothing at all. The tasks pane keeps its grouped
 full-list structure — settled/in-progress/open groups, timestamps, meta, prompt disclosure,
 the full notes timeline — but renders its rows on the same TaskCheck family, its live row's

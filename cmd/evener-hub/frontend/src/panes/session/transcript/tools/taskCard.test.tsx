@@ -95,6 +95,19 @@ test("a failed task_list mutation renders NO card (its error is surfaced by the 
   expect(screen.getByText("task 9 not found")).toBeTruthy();
 });
 
+test("a status-only failed task_list call renders NO card either (the shared failure predicate, not just error text)", () => {
+  // item.error is absent; the call failed by its honest status alone. The
+  // shared predicate recognizes that shape, so the generic failed-row
+  // treatment owns the row and the card must not render its task content
+  // for it - suppressing on error text alone would let a status-only
+  // failure render a normal task card.
+  renderItem(taskItem({ action: "update", updates: [{ id: 9, status: "done" }] }, "", { status: "failed" }));
+  const row = screen.getByTestId("tool-call-item");
+  expect(row).toBeTruthy();
+  expect(row.getAttribute("data-failed")).toBe("true");
+  expect(screen.queryByTestId("task-card")).toBe(null);
+});
+
 test("a malformed / non-mutation task_list with no error renders nothing", () => {
   renderItem(taskItem({ action: "append" }, "")); // append with no tasks array = invalid
   expect(screen.queryByTestId("tool-call-item")).toBe(null);
