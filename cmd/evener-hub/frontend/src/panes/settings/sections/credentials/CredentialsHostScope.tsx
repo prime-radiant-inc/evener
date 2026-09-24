@@ -15,7 +15,7 @@
 // selecting it renders that host's own refusal/state, never a fallback to the
 // controller's listing.
 import type { HostPushCredentialsResponse } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { errorText, RequestTimeoutError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import {
   connectionGeneration,
@@ -74,7 +74,19 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
       </p>
     );
   } else {
-    body = <RemoteHostInstances host={host} registryFailed={load.phase === "error"} />;
+    body = (
+      <RemoteHostInstances
+        host={host}
+        registryFailed={load.phase === "error"}
+        // Whether the registry's CURRENT answer names the host - the same
+        // predicate the branch above decides the body with, so the two can never
+        // disagree about what "the registry names this host" means. The body
+        // renders without it (a listing already read under this revision is the
+        // registry's own answer and stays on screen), but the WRITE below does
+        // not run without it: see RemoteHostInstances.
+        registryNamesHost={load.phase === "ready" && isConfiguredHost(load, host)}
+      />
+    );
   }
 
   return (
@@ -91,7 +103,19 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
  * that hook), so nothing here knows about registry revisions. Nothing in the
  * listing writes: the shared listing renders its read-only rows, and the push
  * action below it is the one write the surface offers. */
-function RemoteHostInstances({ host, registryFailed }: { host: string; registryFailed: boolean }) {
+function RemoteHostInstances({
+  host,
+  registryFailed,
+  registryNamesHost,
+}: {
+  host: string;
+  registryFailed: boolean;
+  /** Whether the registry's current, READY snapshot lists this host. The
+   * registry has to have ANSWERED: an unanswered one says nothing about the
+   * name, which is why absence from it is not read as much here as a refusal
+   * (CredentialsHostScope's own branch decides that case). */
+  registryNamesHost: boolean;
+}) {
   const state = useHostInstances(host);
   const title = `Providers on ${host}`;
   // Rows are shown only once a read for the current registry snapshot has
@@ -158,28 +182,55 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
           stores and the shared frame key on). The unverifiable case is the guard
           the listing above takes: this action sends this hub's keys, so offering
           it for a name the registry cannot confirm is exactly what it prevents.
+          The OTHER half of that guard is `registryNamesHost`, held INSIDE the
+          action rather than here: a registry that has not answered (a deep link,
+          or the Retry that leaves it reading) names nothing yet, so the action
+          stays mounted - it must not lose a report or an in-flight attempt's
+          outcome to a remount over a registry re-read - and its button is held
+          until the registry's own listing says this host is still a host.
           The host registration is one of the action's two ties; the CONNECTION
           its request goes out on is the other, and it is held inside the action
           rather than in this key - see PushCredentials, which must not lose an
           in-flight mutation's outcome to a remount. */}
-      {!unverifiable && <PushCredentials key={`host:${hostInstanceIdentity(host)}`} host={host} />}
+      {!unverifiable && (
+        <PushCredentials key={`host:${hostInstanceIdentity(host)}`} host={host} registryNamesHost={registryNamesHost} />
+      )}
     </>
   );
 }
 
+// PushOutcome is what one completed attempt settled on. The RESPONSE's own
+// report is held as it arrived and never assembled from anything captured before
+// the write. Every outcome carries the CONNECTION GENERATION it settled on
+// (stores/credentials.ts's connectionGeneration): a push is a mutation, so its
+// outcome is one connection's, and it is readable only while that connection
+// still is the page's - see PushCredentials.
+type PushOutcome =
+  | { phase: "report"; generation: number; response: HostPushCredentialsResponse }
+  | { phase: "failed"; generation: number; message: string }
+  // The client's own deadline expired with the request on the wire. The host may
+  // have applied the keys and may not have: an unknown outcome, which is neither
+  // the host's refusal nor a report, and has no text of its own to show - the
+  // client's "timed out after Nms" names a class and a method, not what the host
+  // did.
+  | { phase: "unknown"; generation: number };
+
 // PushState is the action's one lifetime: idle until fired, pending while the
-// controller's call is out, then either the RESPONSE's own report or the
-// failure's text. The report is held from the response and never assembled from
-// anything captured before the write. The pending attempt carries the
-// CONNECTION GENERATION it was issued under (stores/credentials.ts's
-// connectionGeneration): a push is a mutation, so it is one connection's and
-// its settlement is only readable while that connection still is the page's -
-// see PushCredentials.
-type PushState =
-  | { phase: "idle" }
-  | { phase: "pending"; generation: number }
-  | { phase: "report"; response: HostPushCredentialsResponse }
-  | { phase: "failed"; message: string };
+// controller's call is out, then the outcome above.
+type PushState = { phase: "idle" } | { phase: "pending"; generation: number } | PushOutcome;
+
+/** pushOutcome narrows a push state to the settled outcome it holds, or null
+ * while it holds none (idle, or still in flight). */
+function pushOutcome(state: PushState): PushOutcome | null {
+  switch (state.phase) {
+    case "report":
+    case "failed":
+    case "unknown":
+      return state;
+    default:
+      return null;
+  }
+}
 
 /** PushCredentials is the credential-push action on the remote-credentials
  * surface (component 07c): it copies THIS hub's local provider-instance keys to
@@ -193,10 +244,20 @@ type PushState =
  * CONNECTION its request goes out on: a push is a mutation, so the answer that
  * arrives after that connection was replaced describes a hub this page is no
  * longer wired to. That settlement is dropped rather than rendered as the
- * replacement connection's outcome, and the attempt reads as an outcome this
- * connection never saw - never as a silent retry, and never as a report the
- * user cannot tell the provenance of. */
-function PushCredentials({ host }: { host: string }) {
+ * replacement connection's outcome, and so is one that had already been
+ * RENDERED when the replacement happened: every outcome carries its generation,
+ * and an outcome whose connection is gone is withheld (never silently reset,
+ * and never left standing over a listing that now describes another connection)
+ * with the reason said out loud. An attempt reads as an outcome this connection
+ * never saw - never as a silent retry, and never as a report the user cannot
+ * tell the provenance of.
+ *
+ * The button is gated on `registryNamesHost` as well: this sends this hub's
+ * keys, so it runs only for a host the registry's own current listing names. The
+ * state is deliberately NOT keyed on that - see the call site - so a registry
+ * re-read cannot remount the action out from under a pending attempt or a report
+ * the user is reading. */
+function PushCredentials({ host, registryNamesHost }: { host: string; registryNamesHost: boolean }) {
   const [push, setPush] = useState<PushState>({ phase: "idle" });
   // The connection this action is on, subscribed rather than read once: a
   // replacement is what makes an in-flight attempt's outcome unknowable, and
@@ -209,6 +270,15 @@ function PushCredentials({ host }: { host: string }) {
   // decision - never a silent retry of a mutation.
   const pending = push.phase === "pending" && push.generation === generation;
   const orphaned = push.phase === "pending" && push.generation !== generation;
+  // A settled outcome is READABLE only on the connection that produced it. The
+  // listing this action sits under is re-read for the connection in use now
+  // (useHostInstances keys on the generation), so an outcome from a connection
+  // that is gone would pair a fresh listing with a report of what a different
+  // hub did. It is withheld - held, not deleted - so the render after a
+  // replacement says why the thing the user was reading is no longer there.
+  const outcome = pushOutcome(push);
+  const shown = outcome !== null && outcome.generation === generation ? outcome : null;
+  const staleOutcome = outcome !== null && outcome.generation !== generation;
 
   async function handlePush(): Promise<void> {
     // Read from the store at call time, in the same turn the call resolves its
@@ -226,31 +296,66 @@ function PushCredentials({ host }: { host: string }) {
       // hub this page is no longer wired to, so it is dropped rather than shown
       // as the outcome of the connection that replaced it.
       if (connectionGeneration() !== attempt) return;
-      setPush({ phase: "report", response });
+      setPush({ phase: "report", generation: attempt, response });
     } catch (err) {
-      // An unattached or unknown host, and a refused call, are real failures:
-      // they surface here rather than as an empty report that would read like a
-      // successful push of nothing. One from a replaced connection is not this
-      // connection's failure either - it is dropped with the report above. The
-      // sharpest case is a socket drop: the transport FAILS the in-flight call
-      // (AppwireClient's handleSocketLoss), and whether the host applied the
-      // push before that is exactly what nobody here can know.
+      // A rejection from a replaced connection is not this connection's failure
+      // either - it is dropped with the report above, and the render that follows
+      // says what the attempt is. That covers a socket drop: the transport FAILS
+      // the in-flight call (AppwireClient's handleSocketLoss), and the connection
+      // transition that loss causes has already moved the generation by the time
+      // this runs (and where it has not, the failure is withheld on the render
+      // that follows it, for the same reason).
       if (connectionGeneration() !== attempt) return;
-      setPush({ phase: "failed", message: errorText(err) });
+      // What is left is the client's own deadline expiring with the request on
+      // the wire (RequestTimeoutError). A push is many sequential remote writes
+      // over the host link (see pushHostCredentials), so the client giving up is
+      // not the host refusing: whether the host applied the keys - all of them, some
+      // of them, none - is exactly what nobody here can know. It reads as an
+      // unknown outcome, and the way to send the keys again is a separate,
+      // deliberate control below rather than the same button over a mutation
+      // that may already have landed.
+      if (err instanceof RequestTimeoutError) {
+        setPush({ phase: "unknown", generation: attempt });
+        return;
+      }
+      // Every other rejection names what happened: an unattached or unknown
+      // host, and a refused call, are the host's own answer, and a client that
+      // never sent the call is the client's. They surface as failures rather than
+      // as an empty report that would read like a successful push of nothing.
+      setPush({ phase: "failed", generation: attempt, message: errorText(err) });
     }
   }
 
   return (
     <div className={CLASS.push}>
-      <Button size="sm" variant="secondary" disabled={pending} onClick={() => void handlePush()}>
-        Push credentials to {host}
+      <Button size="sm" variant="secondary" disabled={pending || !registryNamesHost} onClick={() => void handlePush()}>
+        {/* An unknown outcome is not re-offered as the action that produced it:
+            the same click over a mutation that may already have landed is the
+            blind retry this state exists to stop, and the warning beside it is
+            what makes a second send a decision. */}
+        {shown?.phase === "unknown" ? `Push credentials to ${host} again` : `Push credentials to ${host}`}
       </Button>
       <p className={CLASS.note}>
         Copies this hub's own provider-instance keys to {host}. A key {host} cannot take is reported, not forced.
       </p>
-      {push.phase === "failed" && (
+      {/* The registry has no answer naming this host, so what this button sends
+          has no confirmed target: held until its listing says otherwise. */}
+      {!registryNamesHost && (
+        <p className={CLASS.note}>
+          The hosts list has no answer for {host} yet, and this sends this hub's keys: the push is offered only while
+          that listing names {host}.
+        </p>
+      )}
+      {shown?.phase === "failed" && (
         <p className={CLASS.error} role="alert">
-          Couldn't push credentials to {host}: {push.message}
+          Couldn't push credentials to {host}: {shown.message}
+        </p>
+      )}
+      {shown?.phase === "unknown" && (
+        <p className={CLASS.error} role="alert">
+          The push to {host} didn't answer before this page's deadline, so its outcome is not known here: {host} may
+          have applied the keys already. Check what {host} now holds, and send them again only if you mean to - a second
+          push can apply them twice or overwrite what {host} has taken since.
         </p>
       )}
       {orphaned && (
@@ -259,7 +364,17 @@ function PushCredentials({ host }: { host: string }) {
           connection never saw the result. Push again only if you mean to send the keys again.
         </p>
       )}
-      {push.phase === "report" && <PushReport response={push.response} />}
+      {/* The other half of the same rule: an outcome that HAD rendered is not the
+          new connection's either. Withheld (the state is kept, so nothing is
+          silently forgotten) and named, rather than left standing over a listing
+          that has already been re-read for the connection in use now. */}
+      {staleOutcome && (
+        <p className={CLASS.error} role="alert">
+          The hub connection was replaced after the push to {host} settled, so the connection in use now never saw its
+          outcome: it is not shown here. Push again only if you mean to send the keys again.
+        </p>
+      )}
+      {shown?.phase === "report" && <PushReport response={shown.response} />}
     </div>
   );
 }
