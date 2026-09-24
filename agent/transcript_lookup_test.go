@@ -2006,3 +2006,111 @@ func TestFindBucketsWithEnumerate_FlatAllProjectsSymlinkedStateDirRefused(t *tes
 		t.Fatalf("expected error mentioning symlink, got: %v", err)
 	}
 }
+
+// --- FU3 round 13: RED tests for L4 (parentBucketAndID symlinked layout) ---
+
+// TestParentBucketAndID_CurrentSymlinkedLayoutRefused (FU3 round 13, L4)
+// asserts parentBucketAndID refuses a symlinked layout prefix for the
+// ""/"current" selector. Pre-fix, parentBucketAndID returned currentStateDir
+// unvalidated; collectCandidates' currentPrefixOK guard then silently dropped
+// the bucket, so children_of:"current" on a symlinked layout reported "No
+// matching sessions" instead of surfacing the refusal. Post-fix,
+// validateLayoutPrefix is called before the return, matching resolveTranscript.
+func TestParentBucketAndID_CurrentSymlinkedLayoutRefused(t *testing.T) {
+	t.Parallel()
+	// Real state home with a bucket and sessions dir.
+	realHome := t.TempDir()
+	realBucket := filepath.Join(realHome, "evener", "projects", "test-0123456789")
+	if err := os.MkdirAll(filepath.Join(realBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink evener/ in a separate home.
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	linkedCurrent := filepath.Join(linkHome, "evener", "projects", "test-0123456789")
+
+	_, _, _, err := parentBucketAndID("", linkedCurrent, "02wMz5TxvEMoJEDTDGOTil")
+	if err == nil {
+		t.Fatal("parentBucketAndID returned no error for \"\" selector with a " +
+			"symlinked evener/ prefix; the security refusal must be surfaced")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+
+	// Same for "current" selector.
+	_, _, _, err = parentBucketAndID("current", linkedCurrent, "02wMz5TxvEMoJEDTDGOTil")
+	if err == nil {
+		t.Fatal("parentBucketAndID returned no error for \"current\" selector with " +
+			"a symlinked evener/ prefix; the security refusal must be surfaced")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}
+
+// TestParentBucketAndID_LocalRefSymlinkedLayoutRefused (FU3 round 13, L4)
+// asserts parentBucketAndID refuses a symlinked layout prefix for the
+// "local:<id>" selector. Pre-fix, the local: path returned currentStateDir
+// unvalidated; collectCandidates silently dropped the bucket, so
+// children_of:"local:<id>" on a symlinked layout reported "No matching sessions".
+func TestParentBucketAndID_LocalRefSymlinkedLayoutRefused(t *testing.T) {
+	t.Parallel()
+	// Real state home with a bucket and sessions dir.
+	realHome := t.TempDir()
+	realBucket := filepath.Join(realHome, "evener", "projects", "test-0123456789")
+	if err := os.MkdirAll(filepath.Join(realBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink evener/ in a separate home.
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	linkedCurrent := filepath.Join(linkHome, "evener", "projects", "test-0123456789")
+
+	_, _, _, err := parentBucketAndID("local:02wMz5TxvEMoJEDTDGOTil", linkedCurrent, "02wMz5Txv2enqVTitaig6F")
+	if err == nil {
+		t.Fatal("parentBucketAndID returned no error for local: selector with a " +
+			"symlinked evener/ prefix; the security refusal must be surfaced")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}
+
+// TestParentBucketAndID_FlatBareIDSymlinkedStateDirRefused (FU3 round 13, L4)
+// asserts parentBucketAndID refuses a symlinked flat state dir for a bare-ID
+// selector that falls through to the current bucket. Pre-fix, the flat-layout
+// and zero-match paths returned currentStateDir unvalidated; collectCandidates
+// silently dropped the bucket, so children_of:"<bare-id>" on a symlinked flat
+// layout reported "No matching sessions".
+func TestParentBucketAndID_FlatBareIDSymlinkedStateDirRefused(t *testing.T) {
+	t.Parallel()
+	// Create a real flat state dir with a sessions subdir.
+	realDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(realDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink to the real dir — the state dir itself is a symlink.
+	linkDir := filepath.Join(t.TempDir(), "linked-state-dir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare ID not found in any bucket (flat layout, no siblings): zero-match
+	// fallback returns currentStateDir, which must be validated.
+	_, _, _, err := parentBucketAndID("02wMz5Txv5aIxgf9yVdd0N", linkDir, "02wMz5Txv2enqVTitaig6F")
+	if err == nil {
+		t.Fatal("parentBucketAndID returned no error for bare-ID selector with a " +
+			"symlinked flat state dir; the security refusal must be surfaced")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}

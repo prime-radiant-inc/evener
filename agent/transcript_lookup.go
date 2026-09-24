@@ -462,6 +462,14 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		if err := identifier.ValidateSessionID(currentSessionID); err != nil {
 			return "", "", "", fmt.Errorf("invalid current session ID: %w", err)
 		}
+		// Validate the layout prefix for the current bucket, consistent
+		// with resolveTranscript's current-session path. Without this,
+		// collectCandidates' currentPrefixOK guard silently drops the
+		// bucket, so children_of:"current" on a symlinked layout reports
+		// "No matching sessions" instead of surfacing the refusal.
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return "", "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		return currentStateDir, currentSessionID, scopeCurrentProject, nil
 	}
 	if strings.HasPrefix(selector, "local:") || strings.HasPrefix(selector, "proj:") {
@@ -478,6 +486,14 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 			}
 		}
 		if projectID == "" {
+			// Validate the layout prefix for the current bucket, matching
+			// resolveTranscript's local: path. Without this,
+			// collectCandidates silently drops the bucket, so
+			// children_of:"local:<id>" on a symlinked layout reports
+			// "No matching sessions".
+			if err := validateLayoutPrefix(currentStateDir); err != nil {
+				return "", "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+			}
 			return currentStateDir, id, scopeCurrentProject, nil
 		}
 		sh := stateHomeFor(currentStateDir)
@@ -504,6 +520,13 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 	// bucket so children_of:"<bare-id>" still works.
 	sh := stateHomeFor(currentStateDir)
 	if sh == "" {
+		// Validate the layout prefix for the flat layout: the bucket dir
+		// itself may be a symlink. Without this, collectCandidates silently
+		// drops the bucket, so children_of:"<bare-id>" on a symlinked flat
+		// layout reports "No matching sessions".
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return "", "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		return currentStateDir, selector, scopeCurrentProject, nil
 	}
 	currentFound, otherMatches, err := findBareIDBuckets(selector, currentStateDir, sh)
@@ -521,7 +544,12 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		// transcript was pruned. Fall back to the current bucket so
 		// children_of:"" / children_of:"current" still works, and
 		// children_of:<bare-id> for a never-flushed parent still searches
-		// the current bucket.
+		// the current bucket. Validate the layout prefix so a symlinked
+		// current bucket is refused, not silently dropped by
+		// collectCandidates' currentPrefixOK guard.
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return "", "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		return currentStateDir, selector, scopeCurrentProject, nil
 	case totalMatches > 1:
 		// Ambiguous: the bare ID exists in multiple buckets. Mirror
@@ -530,6 +558,11 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		return "", "", "", fmt.Errorf("session %q is ambiguous; found in: %s",
 			selector, strings.Join(candidates, ", "))
 	case currentFound:
+		// Validate the layout prefix, matching resolveTranscript's
+		// bare-ID currentFound path.
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return "", "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		return currentStateDir, selector, scopeCurrentProject, nil
 	default:
 		// Exactly one match in a sibling bucket.
