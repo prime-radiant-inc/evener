@@ -2815,6 +2815,53 @@ test("a remote host waits for a registry read that is in flight", async () => {
   hostsStore.getState().resetForTests();
 });
 
+// A reconnect on the SAME client is not a client replacement, so the registry
+// revision does not move - but the connection did, and the host's listing may
+// have changed with it. The partition is tied to the connection generation it
+// was read under, so a reconnect converges.
+test("a same-client reconnect re-reads a remote host", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.setState({ load: { phase: "ready", hosts: [registryRow({ name: "buildbox" })] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  expect(remoteReads(fake)).toBe(1);
+
+  // The SAME client's transport flaps and recovers: no replacement, no registry
+  // change.
+  await act(async () => {
+    connectionStore.setState({ state: "reconnecting" });
+    connectionStore.setState({ state: "ready" });
+    // Let the reconnect's own read land inside this act.
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(remoteReads(fake)).toBe(2));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  hostsStore.getState().resetForTests();
+});
+
+// The registry's FIRST answer is an answer even when it names no host: a read
+// taken while the registry was unread must not survive it (an empty first
+// snapshot used to be indistinguishable from "never published").
+test("a read taken while the registry was unread does not survive its first empty answer", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.getState().resetForTests();
+
+  await fetchHost("buildbox");
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).toBe(0);
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  expect(hostsStore.getState().revision).toBe(1);
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").registryRevision).not.toBe(
+    hostsStore.getState().revision,
+  );
+  hostsStore.getState().resetForTests();
+});
+
 // An answer that lands after the registry moved on was issued under the old
 // snapshot: it is committed to the partition but never shown, and the read for
 // the current snapshot is what a consumer sees.

@@ -98,12 +98,12 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
       {!unverifiable && verified && <Diagnostics diagnostics={state.diagnostics} />}
       {/* An error is an answer: the skeleton is for "nothing, and no failure,
           yet" - beside a refusal it would read as "still working". */}
-      {state.error !== null && (
+      {state.error !== null && !unverifiable && (
         <p className={CLASS.error}>
           Couldn't read providers from {host}: {state.error}
         </p>
       )}
-      {state.error === null && unverifiable && (
+      {unverifiable && (
         <EmptyState
           title={`Couldn't check ${host}'s registration`}
           hint="The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the name it was selected by. Retry to read the hosts list again."

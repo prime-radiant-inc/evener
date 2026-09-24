@@ -1,4 +1,10 @@
-import type { HostForwardedResult, HostRow, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import {
+  type HostForwardedResult,
+  type HostRow,
+  type InstanceEntry,
+  type InstanceListResponse,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -175,6 +181,37 @@ test("a controller-scoped refetch does not replace a remote host's provider list
 function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
 }
+
+// M1: the registry's own failure must be REACHABLE here. A remote target whose
+// registry read failed used to sit on a pending state forever - status
+// "loading", no verdict, and Start proceeding without the provider gate.
+test("a failed registry surfaces on a remote target, and its retry recovers", async () => {
+  const client = new FakeClient("ready");
+  let registryDown = true;
+  client.on("evener/host/list", () => {
+    if (registryDown) throw new WireError("registry unavailable", -32000);
+    return { hosts: [registryRow({ name: "buildbox" })] };
+  });
+  client.on(
+    "evener/host/request",
+    () =>
+      ({
+        instances: [{ ...provider, activeSource: "store" }],
+        availableProviders: [],
+      }) as unknown as HostForwardedResult,
+  );
+  connectionStore.getState().connect(client);
+  hostsStore.getState().resetForTests();
+  await hostsStore.getState().fetch(); // the registry read fails
+
+  const { result } = renderHook(() => useProviderSetup("buildbox"));
+  await waitFor(() => expect(result.current.status).toBe("error"));
+
+  // Its retry re-reads the registry, and the listing follows.
+  registryDown = false;
+  await act(async () => result.current.retry());
+  await waitFor(() => expect(result.current.status).toBe("ready"));
+});
 
 test("a registry-driven re-registration re-reads the host's listing without a remount", async () => {
   const client = new FakeClient("ready");

@@ -497,28 +497,10 @@ test("a registry read that fails shows the honest unverifiable state", async () 
   render(<CredentialsHostScope sectionId="credentials" />);
 
   expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
-  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
-});
-
-// The fallback's SUCCESS path must be honest too: with a failed registry no
-// identity ever arrives, so a read that answers can never be `verified`. It used
-// to sit on a permanent skeleton, which reads to a user as "still working" - the
-// same lie as showing the wrong host's data, only quieter.
-test("a failed registry never leaves a successful read on a permanent skeleton", async () => {
-  const fake = connectFakeClient();
-  fake.on("evener/instance/list", () => CONTROLLER_LIST);
-  fake.on("evener/host/list", () => {
-    throw new WireError("registry unavailable", -32000);
-  });
-  fake.on("evener/host/request", () => HOST_LIST);
-
-  settingsHostStore.setState({ host: "beta" });
-  render(<CredentialsHostScope sectionId="credentials" />);
-
-  // The read reached the host and answered, but ownership cannot be checked:
-  // the pane says so instead of spinning on a skeleton.
-  expect(await screen.findByText(/hosts list/i)).toBeTruthy();
+  // A failed registry is never a permanent skeleton - that reads as "still
+  // working" - and no remote read is issued under it.
   expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
 });
 
 // The unverifiable state is not a dead end: the registry's own read (Retry)

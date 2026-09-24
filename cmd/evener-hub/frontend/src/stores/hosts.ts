@@ -28,12 +28,15 @@ interface HostsStoreState {
    */
   revision: number;
   /**
-   * True while a registry list request is in flight. A read issued against the
-   * registry's CURRENT answer is what a partition records, so a remote listing
-   * waits for one that is already on its way rather than reading under an answer
-   * that is about to be replaced (see stores/credentials.ts's useHostInstances).
+   * How many registry list requests are in flight right now. A read issued
+   * against the registry's CURRENT answer is what a partition records, so a
+   * remote listing waits for one that is already on its way rather than reading
+   * under an answer that is about to be replaced (see stores/credentials.ts's
+   * useHostInstances). A COUNT, not a flag: a foreground fetch and the poll can
+   * overlap, and one of them settling must not say "not reading" while the other
+   * request is still out.
    */
-  reading: boolean;
+  reading: number;
   fetch: () => Promise<void>;
   /**
    * Quiet re-read for the section's background poll. Unlike fetch it never
@@ -64,6 +67,16 @@ const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
 // At most one background refresh runs at a time; concurrent callers join the
 // same promise (mirrors stores/daemonResidents.ts).
 let refreshInflight: Promise<void> | null = null;
+
+// The two ends of one registry list request, so `reading` counts every request
+// whichever path issued it. Hoisted function declarations: they are called from
+// quietReRead and fetch, which are defined above the store they update.
+function beginListRequest(): void {
+  hostsStore.setState((previous) => ({ reading: previous.reading + 1 }));
+}
+function endListRequest(): void {
+  hostsStore.setState((previous) => ({ reading: Math.max(0, previous.reading - 1) }));
+}
 
 // The client the last revision was derived from. A REPLACEMENT (both sides
 // non-null and different) is a different hub, so every snapshot read from the
@@ -197,7 +210,7 @@ export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
 // were rendering; the rows stay, and the next poll or fetch converges them.
 async function quietReRead(): Promise<void> {
   const generation = ++latestGeneration;
-  hostsStore.setState({ reading: true });
+  beginListRequest();
   try {
     const read = await listHosts();
     publishReady(generation, read.client, read.hosts);
@@ -206,7 +219,7 @@ async function quietReRead(): Promise<void> {
     // issued it still stands, the rows stay rendered, and the next tick
     // retries anyway.
   } finally {
-    hostsStore.setState({ reading: false });
+    endListRequest();
   }
 }
 
@@ -239,14 +252,15 @@ async function reReadAfterMutation(): Promise<void> {
 export const hostsStore = create<HostsStoreState>((set) => ({
   load: { phase: "loading" },
   revision: 0,
-  reading: false,
+  reading: 0,
 
   fetch: async () => {
     const generation = ++latestGeneration;
     // The client this read is issued on, so the failure path can tell whether it
     // still describes the connection that asked.
     const client = connectionStore.getState().client;
-    set({ load: { phase: "loading" }, reading: true });
+    set({ load: { phase: "loading" } });
+    beginListRequest();
     try {
       const read = await listHosts();
       publishReady(generation, read.client, read.hosts);
@@ -261,7 +275,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
         set({ load: { phase: "error", message: errorText(err) } });
       }
     } finally {
-      set({ reading: false });
+      endListRequest();
     }
   },
 
@@ -328,8 +342,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     latestGeneration = 0;
     latestPublishedGeneration = 0;
     lastClient = connectionStore.getState().client;
-    lastPublished = [];
-    set({ load: { phase: "loading" }, revision: 0, reading: false });
+    lastPublished = null;
+    set({ load: { phase: "loading" }, revision: 0, reading: 0 });
   },
 }));
 
@@ -338,14 +352,19 @@ export const hostsStore = create<HostsStoreState>((set) => ({
 // registry's answer could have changed, so every partition cached against it is
 // stale. An unchanged snapshot advances nothing, which is what keeps the 2s poll
 // from re-reading anything.
-let lastPublished: HostRow[] = [];
+//
+// null means NOTHING has been published yet, which is not the same as having
+// published an empty list: the registry's FIRST answer is an answer, so it
+// advances the revision even when it names no host, and a read taken while the
+// registry was unread cannot survive it.
+let lastPublished: HostRow[] | null = null;
 function sameSnapshot(a: readonly HostRow[], b: readonly HostRow[]): boolean {
   return a.length === b.length && a.every((row, i) => hostRowEqual(row, b[i]));
 }
 hostsStore.subscribe((state) => {
   if (state.load.phase !== "ready") return;
   const hosts = state.load.hosts;
-  if (sameSnapshot(lastPublished, hosts)) return;
+  if (lastPublished !== null && sameSnapshot(lastPublished, hosts)) return;
   lastPublished = hosts;
   hostsStore.setState((previous) => ({ revision: previous.revision + 1 }));
 });

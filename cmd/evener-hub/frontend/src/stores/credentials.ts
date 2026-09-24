@@ -90,6 +90,11 @@ export interface HostInstanceState {
    * what makes an unanswered (or transition-orphaned) read unable to pass for an
    * empty listing. */
   read: boolean;
+  /** hostInstancesStore's connection generation when this read was issued. A
+   * reconnect on the SAME client does not move the registry revision, but it is
+   * still a different connection and the host's listing may have changed with
+   * it, so a partition is current only under the generation it was read in. */
+  readGeneration: number;
 }
 
 /** The empty partition, a module constant rather than a fresh literal: a host
@@ -104,6 +109,7 @@ export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
   error: null,
   registryRevision: null,
   read: false,
+  readGeneration: 0,
 });
 
 /** PENDING_HOST_INSTANCE_STATE is what a consumer sees while there is no
@@ -175,11 +181,15 @@ export function hostPartition(state: HostInstancesState, host: string): HostInst
  * which partitions were dropped. */
 export function useHostInstances(host: string): HostInstanceState {
   const partition = useStore(hostInstancesStore, (state) => hostPartition(state, host));
+  const generation = useStore(hostInstancesStore, (state) => state.generation);
   const revision = useHostsStore((state) => state.revision);
   const load = useHostsStore((state) => state.load);
   const reading = useHostsStore((state) => state.reading);
   const { client, state: connection } = useConnectionStore();
-  const current = partition.registryRevision !== null && partition.registryRevision === revision;
+  const current =
+    partition.registryRevision !== null &&
+    partition.registryRevision === revision &&
+    partition.readGeneration === generation;
   // Two states hold the read back, and they are the only two:
   //  - the registry has FAILED (see CredentialsHostScope's unverifiable state) -
   //    its failure is what the pane shows, so a read taken then is not fetched,
@@ -201,10 +211,34 @@ export function useHostInstances(host: string): HostInstanceState {
     // own mount effect can have started a registry read in this same commit, and
     // this read has to wait for that one.
     const live = hostsStore.getState();
-    if (live.reading || live.load.phase === "error") return;
+    if (live.reading > 0 || live.load.phase === "error") return;
     void fetchHost(host);
-  }, [shouldRead, host, revision, reading]);
-  return current ? partition : PENDING_HOST_INSTANCE_STATE;
+  }, [shouldRead, host, revision, reading, generation]);
+  if (current) return partition;
+  // M1: the registry has FAILED and this host has no listing for the current
+  // revision. The read is held (see shouldRead), so a consumer that knows
+  // nothing about the registry - the spawn form's provider setup - would
+  // otherwise sit on the pending state forever: no verdict, no retry. Hand it the
+  // registry's own failure instead, in the state shape every consumer already
+  // reads (`error`), so the failure is NAMEABLE and retryable from anywhere.
+  // `instances` is EMPTY's shared array, so a consumer's dependency on it is
+  // stable.
+  if (load.phase === "error") return { ...EMPTY_HOST_INSTANCE_STATE, error: load.message };
+  return PENDING_HOST_INSTANCE_STATE;
+}
+
+/** retryHostRead is a consumer's retry for a remote host's listing. The read is
+ * held while the registry's own read has FAILED (see useHostInstances), so the
+ * retry re-reads the registry first when that is what failed - the listing then
+ * follows on its own; otherwise it re-reads the host. Consumers that know nothing
+ * about the registry (the spawn form) get a retry that works anyway. */
+export function retryHostRead(host: string): void {
+  if (isLocalHost(host)) return;
+  if (hostsStore.getState().load.phase === "error") {
+    void hostsStore.getState().fetch();
+    return;
+  }
+  void fetchHost(host);
 }
 
 /** hostRequestVersions is one monotonic sequence per host, the same ordering
@@ -237,7 +271,7 @@ export async function fetchHost(host: string): Promise<void> {
   hostRequestVersions.set(host, version);
   const generation = hostInstancesStore.getState().generation;
   const registryRevision = hostsStore.getState().revision;
-  setHostPartition(host, (previous) => startHostRead(previous, registryRevision));
+  setHostPartition(host, (previous) => startHostRead(previous, registryRevision, generation));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
@@ -250,6 +284,7 @@ export async function fetchHost(host: string): Promise<void> {
       error: null,
       registryRevision,
       read: true,
+      readGeneration: generation,
     }));
   } catch (err) {
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
@@ -264,11 +299,11 @@ export async function fetchHost(host: string): Promise<void> {
 // nothing read under a snapshot the registry has moved past is ever shown.
 // `read` is left as it was in the kept case, and false in the cleared one, so an
 // unanswered read can never pass for an empty listing.
-function startHostRead(previous: HostInstanceState, registryRevision: number): HostInstanceState {
+function startHostRead(previous: HostInstanceState, registryRevision: number, generation: number): HostInstanceState {
   if (previous.registryRevision === registryRevision) {
-    return { ...previous, loading: true, error: null };
+    return { ...previous, loading: true, error: null, readGeneration: generation };
   }
-  return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision };
+  return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision, readGeneration: generation };
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in
