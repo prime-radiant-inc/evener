@@ -643,8 +643,36 @@ func TestRetirementReasoningPersistenceError(t *testing.T) {
 // restarted the interval at whenever the probe happened to run, which under
 // load was after virtual time had already moved on.
 func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
+	root, c, settled := newSettledRetirementRoot(t)
+	if _, processed, err := root.ProcessClientMutationStart(context.Background(), nil); err != nil || processed {
+		t.Fatalf("idle probe = processed %v, err %v; want nothing to run", processed, err)
+	}
+	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+		t.Fatalf("idle probe moved the settled instant from %v to %v; it is not admitted work", settled, got)
+	}
+}
+
+// A queued-input wake that finds no queued message and no user steering is the
+// same kind of no-op as an idle start probe: it must not restart the idle
+// interval either. Wakes are unconditional and coalesce, so one can arrive
+// after the work it was sent for has already run.
+func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
+	root, c, settled := newSettledRetirementRoot(t)
+	if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
+		t.Fatalf("idle wake = processed %v, err %v; want nothing to run", processed, err)
+	}
+	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+		t.Fatalf("idle wake moved the settled instant from %v to %v; it is not admitted work", settled, got)
+	}
+}
+
+// newSettledRetirementRoot returns an idle root with its client mutation store
+// open, attached to a controller whose settled instant is already recorded, so
+// the call under test is the only thing that can move it.
+func newSettledRetirementRoot(t *testing.T) (*Session, *RetirementController, time.Time) {
+	t.Helper()
 	root := newQueuePersistTestSession(t, t.TempDir())
-	defer root.Close()
+	t.Cleanup(root.Close)
 	if err := root.ensureClientMutationStore(); err != nil {
 		t.Fatal(err)
 	}
@@ -656,17 +684,10 @@ func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
 	if err := c.AttachRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	// Run's evaluate records the settled instant; set it directly so the probe
-	// is the only thing that can move it.
+	// Run's evaluate records the settled instant; set it directly.
 	settled := clk.Now()
 	c.mu.Lock()
 	c.eligibleSince = settled
 	c.mu.Unlock()
-
-	if _, processed, err := root.ProcessClientMutationStart(context.Background(), nil); err != nil || processed {
-		t.Fatalf("idle probe = processed %v, err %v; want nothing to run", processed, err)
-	}
-	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
-		t.Fatalf("idle probe moved the settled instant from %v to %v; it is not admitted work", settled, got)
-	}
+	return root, c, settled
 }

@@ -183,6 +183,24 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 	return response, nil
 }
 
+// hasPendingUserInputToRun reports whether ProcessPendingUserInput could find
+// anything to run, without claiming it or taking a retirement lease. It may
+// over-report (the claim under the lease re-decides) but never under-reports: a
+// store not yet opened may hold a durable queue, so it counts as work.
+func (s *Session) hasPendingUserInputToRun() bool {
+	if s.hasPendingUserSteering() {
+		return true
+	}
+	s.clientMutationsInitMu.Lock()
+	store := s.clientMutations
+	s.clientMutationsInitMu.Unlock()
+	if store == nil {
+		return true
+	}
+	snapshot := store.snapshot()
+	return queueHeadClaimable(&snapshot)
+}
+
 // ProcessPendingUserInput runs input the user has already given but the session
 // has not delivered -- a queued message, or steering with no turn to land in --
 // and reports whether it ran a turn.
@@ -211,6 +229,18 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 // the pending steer's own reserved id, not a freshly minted one, so the id the
 // client was told in its Applied receipt is the id that actually runs.
 func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+	// Wakes are unconditional and coalesce, so one can arrive after the work
+	// it was sent for has already run. A wake that finds nothing is not
+	// admitted work and must not take a retirement lease: beginning one
+	// restarts the idle interval, which would move the deadline from the
+	// settlement to whenever the wake happened to run. Returning without a
+	// lease is safe because input queued after this check sends its own wake,
+	// and until it is claimed queued input and pending steering are
+	// themselves retirement evidence (retirementInputBlockers). Input that is
+	// present here is claimed under the lease below, which re-decides it.
+	if !s.hasPendingUserInputToRun() {
+		return "", false, nil
+	}
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
 		return "", false, admissionErr
