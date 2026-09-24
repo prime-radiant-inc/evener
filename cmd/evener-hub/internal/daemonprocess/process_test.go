@@ -272,3 +272,61 @@ func TestIdentifyAnswersNotOwnerOnlyOnPositiveEvidence(t *testing.T) {
 		})
 	}
 }
+
+// A committed-retiring daemon releases its session API log before it exits,
+// so for a Retiring target log ownership is not evidence either way: Open binds
+// the process by its other facts, and the handle confirms exit but never
+// signals.
+func TestRetiringTargetConfirmsExitWithoutLogOwnership(t *testing.T) {
+	target := validTarget()
+	target.Retiring = true
+	k := &kernelProcess{facts: validIdentity()}
+	k.facts.ownsLog = false
+	p, err := testController(k).Open(target)
+	if err != nil {
+		t.Fatalf("Open refused a retiring daemon that released its API log: %v", err)
+	}
+	defer p.Close()
+	if err := p.Kill(); err == nil {
+		t.Fatal("a retiring target's handle accepted a kill")
+	}
+	if k.signals != 0 {
+		t.Fatal("a retiring target was signaled")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Wait(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("live retiring daemon declared exited: %v", err)
+	}
+	k.gone = true
+	if err := p.Wait(context.Background()); err != nil {
+		t.Fatalf("retiring daemon's exit not confirmed: %v", err)
+	}
+}
+
+// Every identity fact other than log ownership still binds a Retiring target.
+func TestRetiringTargetStillRefusesUnverifiedIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*identity)
+	}{
+		{"wrong owner", func(v *identity) { v.uid++ }}, {"wrong command", func(v *identity) { v.argv = []string{"evener", "hub", "serve"} }}, {"missing argv", func(v *identity) { v.argv = nil }}, {"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }}, {"missing generation", func(v *identity) { v.generation = "" }}, {"missing start", func(v *identity) { v.startedAt = time.Time{} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := validTarget()
+			target.Retiring = true
+			k := &kernelProcess{facts: validIdentity()}
+			k.facts.ownsLog = false
+			tt.change(&k.facts)
+			p, err := testController(k).Open(target)
+			if err == nil {
+				_ = p.Close()
+				t.Fatal("unverified identity accepted")
+			}
+			if !k.closed || k.signals != 0 {
+				t.Fatal("refused process leaked or signaled")
+			}
+		})
+	}
+}

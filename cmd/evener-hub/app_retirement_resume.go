@@ -67,7 +67,9 @@ func sameDaemonIdentity(a, b rendezvous.Entry) bool {
 // unreachability — is the only success: an open failure, a wait failure, an
 // incomplete roster scan, or an owner the roster still confirms all yield the
 // retryable lifecycle error (or the caller's context error), and no spawn is
-// attempted on this path.
+// attempted on this path. The owner is opened as a Retiring target: it
+// releases its session API log before it exits, and that window is exactly
+// when a refused turn/start lands here.
 func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezvous.Entry) error {
 	controller := cfg.DaemonProcesses
 	if controller == nil {
@@ -86,6 +88,7 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 		SessionID: sessionID,
 		StateDir:  entry.StateDir,
 		StartedAt: entry.StartedAt,
+		Retiring:  true,
 	})
 	if err != nil && !errors.Is(err, daemonprocess.ErrExited) {
 		if ctx.Err() != nil {

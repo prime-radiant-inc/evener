@@ -91,6 +91,35 @@ func TestNativeControllerRefusesReplacedLog(t *testing.T) {
 	}
 }
 
+// A daemon that has committed retirement releases its session API log and
+// then exits; the hub waits on exactly that process. The "released" child is
+// that state: it took the log lock and dropped it, and is still running.
+func TestNativeControllerConfirmsRetiringOwnerExitAfterLogRelease(t *testing.T) {
+	target, cmd := startNativeChild(t, "released")
+	target.Retiring = true
+	p, err := NewController().Open(target)
+	if err != nil {
+		t.Fatalf("Open refused the retiring owner after its log release: %v", err)
+	}
+	defer p.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := p.Wait(ctx); err == nil {
+		t.Fatal("live child declared exited")
+	}
+	if err := p.Kill(); err == nil {
+		t.Fatal("a retiring target's handle accepted a kill")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Wait(ctx); err != nil {
+		t.Fatalf("retiring owner's exit not confirmed: %v", err)
+	}
+}
+
 func startNativeChild(t *testing.T, mode string) (Target, *exec.Cmd) {
 	t.Helper()
 	dir := t.TempDir()

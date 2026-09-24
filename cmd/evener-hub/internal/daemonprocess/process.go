@@ -86,7 +86,7 @@ func judge(v identity, t Target) (Identity, error) {
 	if len(v.argv) < 2 || v.argv[1] != "serve" {
 		return IdentityUnknown, errors.New("daemon process is not a serve command")
 	}
-	if !v.ownsLog {
+	if !v.ownsLog && !t.Retiring {
 		return IdentityUnknown, errors.New("daemon process does not own the session API log")
 	}
 	return IdentityOwner, nil
@@ -98,6 +98,12 @@ type Target struct {
 	SessionID string
 	StateDir  string
 	StartedAt time.Time
+	// Retiring names a daemon that has committed retirement. Retirement
+	// releases the session API log before the process exits, so log ownership
+	// is not required evidence for it: the process is bound by its generation,
+	// owner, start time and command alone. That binding is enough to wait on
+	// the exit, never to signal it, so the handle refuses Kill.
+	Retiring bool
 }
 
 // Process owns a generation-bound OS handle. Close releases that handle.
@@ -200,6 +206,9 @@ func (p *process) Kill() error {
 	defer p.mu.Unlock()
 	if p.closed {
 		return os.ErrClosed
+	}
+	if p.target.Retiring {
+		return errors.New("refuse to signal a retiring daemon: its handle only confirms exit")
 	}
 	if err := p.verify(); err != nil {
 		if errors.Is(err, ErrExited) {
