@@ -577,12 +577,45 @@ func stableUnion(existing, added []string) []string {
 	return out
 }
 
+
+// lstatIfPossible does Lstat when the fs implements afero.Lstater (OsFs returns
+// symlink-aware info), and falls back to Stat otherwise. MemMapFs implements
+// Lstater but LstatIfPossible does Stat internally (usedLstat=false) since it has
+// no symlinks; either way the returned FileInfo is correct for IsRegular checks.
+func lstatIfPossible(fs afero.Fs, path string) (os.FileInfo, error) {
+	if lstater, ok := fs.(afero.Lstater); ok {
+		info, _, err := lstater.LstatIfPossible(path)
+		return info, err
+	}
+	return fs.Stat(path)
+}
+
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
 func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return SessionMeta{}, err
 	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
+	// Reject symlinked metadata: afero.ReadFile follows symlinks, so a
+	// symlinked .meta.json pointing outside the state root would surface
+	// metadata from an untrusted location. Use LstatIfPossible (which does
+	// Lstat on OsFs, detecting symlinks) and fall back to Stat on filesystems
+	// that do not implement afero.Lstater.
+	info, err := lstatIfPossible(fs, path)
+	if err != nil {
+		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
+	}
+	// Reject symlinks: afero.ReadFile follows them, so a symlinked .meta.json
+	// pointing outside the state root would surface metadata from an
+	// untrusted location. Do NOT reject all non-regular files here — a FIFO
+	// at this path is a deliberate synchronization barrier in retirement
+	// tests and must be allowed to block the downstream ReadFile open.
+	// listSessionMetasFS already filters non-regular entries (including
+	// FIFOs) at enumeration; this guard is defense-in-depth for direct
+	// LoadSessionMeta calls.
+	if info.Mode()&os.ModeSymlink != 0 {
+		return SessionMeta{}, fmt.Errorf("session meta %s is a symlink", id)
+	}
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
@@ -610,7 +643,11 @@ func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 
 	var metas []SessionMeta
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+		// Reject non-regular files: a symlinked .meta.json pointing outside the
+		// state root would otherwise be loaded via afero.ReadFile which follows
+		// the link. afero.ReadDir on OsFs returns Lstat-based FileInfo, so
+		// symlinks carry ModeSymlink and IsRegular returns false.
+		if !e.Mode().IsRegular() || !strings.HasSuffix(e.Name(), ".meta.json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".meta.json")
