@@ -17357,6 +17357,170 @@ describe("ConversationStore", () => {
       expect(rowById(store, "X")).toBeUndefined();
     });
 
+    // RoboRev round 4 (panel M1): the frame settlement must reconcile
+    // ownership through the merge's own identity rule, not a union of every
+    // post-frame id. A completion can reissue a KEYLESS page item WITH its
+    // transcript key — the content continues under the key, so the claim
+    // must follow it there. The union kept the old bare id's claim but
+    // never gained the key's, so the retention rules — which read the
+    // key-first identity — treated the surviving page history as unowned
+    // and an omitting rehydrate dropped it.
+    it("migrates a page item's claim to the transcript key a completion reissues it under", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The page fragment of the active turn carries a KEYLESS item: the
+      // ownership record claims its bare wire id.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "X",
+                turnId: "t1",
+                type: "agentMessage",
+                text: "page answer",
+                position: { entry: 10, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "X")).toBeDefined();
+      // The turn's full completion reissues the same content WITH its key.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "full",
+            status: "completed",
+            items: [
+              {
+                id: "X",
+                turnId: "t1",
+                transcriptKey: "K",
+                type: "agentMessage",
+                text: "page answer settled",
+                status: "completed",
+              } as ThreadItem,
+            ],
+          },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "X")).toBeDefined();
+      // The authoritative snapshot omits the item: the reissued copy is
+      // page history the model still holds, and the migrated claim — now
+      // covering the key the survivor carries — must keep it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rows(store).some((row) => row.id === "X")).toBe(true);
+    });
+
+    // RoboRev round 4 (panel M1): the same id under a DIFFERENT key is a
+    // conflicting replacement, not continuing content — the merge's own
+    // identity rule (keys compared when both sides carry one) matches the
+    // two to nothing, so both of the replaced item's spellings retire.
+    // The union used to keep the stale bare-id claim alive while the
+    // replacement held the id; every path that could read that bare-id
+    // spelling passes a frame whose settlement retires it first (the
+    // removal clears it; a keyed replacement is queried by its key), so
+    // this pins the semantics end to end rather than a reachable failure:
+    // the replacement's content is not page history, and once it leaves,
+    // the next keyless holder of the bare id inherits nothing.
+    it("a same-id different-key replacement sheds the claim: its content is not page history and a later keyless reuse cannot resurrect", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The page fragment carries a KEYED item: the claim records the key
+      // and the bare wire id.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "X",
+                turnId: "t1",
+                transcriptKey: "K1",
+                type: "agentMessage",
+                text: "page answer",
+                position: { entry: 10, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "X")).toBeDefined();
+      // The turn's full completion replaces it: the same id under a
+      // DIFFERENT key names different content, not a continuation, so the
+      // claim retires with the copy that left — the replacement is live
+      // content, never page history.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "full",
+            status: "completed",
+            items: [
+              {
+                id: "X",
+                turnId: "t1",
+                transcriptKey: "K2",
+                type: "userMessage",
+                text: "different answer",
+                status: "completed",
+              } as ThreadItem,
+            ],
+          },
+        },
+      } as AnyNotification);
+      expect(rowById(store, "X")).toBeDefined();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("other", "kept")],
+            }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rows(store).some((row) => row.id === "X")).toBe(false);
+    });
+
     // A replayed input image reaches a page with no bytes and no stamped
     // url, only its content sha. D23d: the store's own merge hydrates the
     // page against the merged MODEL's serving session — the route the hub

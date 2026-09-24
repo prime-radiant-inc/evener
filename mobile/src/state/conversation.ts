@@ -1159,26 +1159,34 @@ export function createConversationStore() {
     }
     // A frame the reducer dropped left the turns untouched.
     if (after.turns === before.turns) return;
-    const heldAfter = new Set<string>();
-    for (const turn of after.turns) {
-      for (const item of turn.items) {
-        heldAfter.add(item.transcriptKey ?? item.id);
-        heldAfter.add(item.id);
-      }
-    }
-    // RoboRev round 2: retire each absent spelling independently. A full
-    // completion can reissue a survivor under a new wire id with its key
-    // standing — the key's claim follows the content that still backs it,
-    // while the old bare id's claim retires with the copy that left, or a
-    // later keyless reuse of that id inherits page history nothing holds
-    // anymore.
+    // RoboRev round 4 (panel M1): reconcile through the package's own
+    // identity rule — the same rule the merges match by — instead of a
+    // union of every post-frame id. Content that CONTINUES under a
+    // matching after item carries its claim to the spellings the survivor
+    // holds now, so a keyless page item a completion reissues WITH a
+    // transcript key gains the key's claim, and a reissued wire id keeps
+    // the claim its key backs while the old bare id retires; a before item
+    // with no match left the model — a replacement under the same bare id
+    // with a DIFFERENT key conflicts rather than continues — and both its
+    // spellings retire, so the next holder of the bare id inherits
+    // nothing.
+    const afterItems = after.turns.flatMap((turn) => turn.items);
     for (const turn of before.turns) {
       for (const item of turn.items) {
-        if (!heldAfter.has(item.transcriptKey ?? item.id)) {
+        const survivor = afterItems.find((candidate) =>
+          itemIdentityMatches(candidate, item),
+        );
+        if (survivor === undefined) {
           pageItemIds.delete(item.transcriptKey ?? item.id);
-        }
-        if (!heldAfter.has(item.id)) {
           pageItemIds.delete(item.id);
+          continue;
+        }
+        const beforeSpellings = [item.transcriptKey ?? item.id, item.id];
+        const survivorSpellings = [survivor.transcriptKey ?? survivor.id, survivor.id];
+        if (!beforeSpellings.some((id) => pageItemIds.has(id))) continue;
+        for (const id of survivorSpellings) pageItemIds.add(id);
+        for (const id of beforeSpellings) {
+          if (!survivorSpellings.includes(id)) pageItemIds.delete(id);
         }
       }
     }
