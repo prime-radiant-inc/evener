@@ -668,7 +668,8 @@ func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
 
 // User steering that a wake cannot carry -- parked by a failed attempt, or held
 // by a Stop -- makes the wake a no-op just as an empty queue does, so it must
-// not restart the idle interval either.
+// not restart the idle interval either. The steer is a real durable one that a
+// wake would carry but for the block, so each case fails if its own gate goes.
 func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -685,11 +686,19 @@ func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root, c, settled := newSettledRetirementRoot(t)
-			root.mu.Lock()
-			root.steeringQueue = append(root.steeringQueue, steeringMessage{Text: "opaque-steer", Source: events.SteeringSourceUser})
-			root.mu.Unlock()
+			root, c, _ := newSettledRetirementRoot(t)
+			if _, err := root.AcceptClientMutationSteer(appwire.TurnSteerParams{
+				ClientMutationID: "retirement-uncarriable-steer",
+				Input:            []appwire.InputItem{{Type: "text", Text: "opaque-steer"}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !root.hasPendingUserInputToRun() {
+				t.Fatal("an accepted idle steer is not work for a wake; the block below would prove nothing")
+			}
 			tc.block(t, root)
+			// Accepting the steer was admitted work; settle again after it.
+			settled := settleRetirement(c)
 			if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
 				t.Fatalf("wake = processed %v, err %v; want the steer left for the user", processed, err)
 			}
@@ -718,10 +727,15 @@ func newSettledRetirementRoot(t *testing.T) (*Session, *RetirementController, ti
 	if err := c.AttachRoot(root); err != nil {
 		t.Fatal(err)
 	}
-	// Run's evaluate records the settled instant; set it directly.
-	settled := clk.Now()
+	return root, c, settleRetirement(c)
+}
+
+// settleRetirement records the controller's settled instant the way Run's
+// evaluate does, and returns it.
+func settleRetirement(c *RetirementController) time.Time {
+	settled := c.clock.Now()
 	c.mu.Lock()
 	c.eligibleSince = settled
 	c.mu.Unlock()
-	return root, c, settled
+	return settled
 }
