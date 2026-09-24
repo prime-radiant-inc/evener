@@ -1411,3 +1411,75 @@ All six round-11 findings fixed (3 Mediums + 3 Lows), controller-verified.
 - make vet: PASS
 - go vet -tags=evenerfuzz ./agent/: PASS
 - Full make lint: PASS (all 11 sub-lints)
+
+## Fix round 12 — RED evidence
+
+Each round-12 production fix now has a RED-proof test: the test fails on the
+reverted hunk and passes on HEAD. No production changes were made in this
+pass — only tests and this report section.
+
+### M1 — findLocalJobInProject journal Lstat error propagation
+- **Test**: `TestFindLocalJobInProject_NonErrNotExistLstatSurfaces`
+  (`agent/job_transcript_read_test.go`)
+- **Mechanism**: `findLocalJobInProject` Lstats the job journal; pre-fix masked
+  every Lstat error as not-found, post-fix only masks `os.ErrNotExist`.
+- **RED**: `findLocalJobInProject masked a non-ErrNotExist Lstat error as
+  not-found (found=false); expected a propagated 'stat journal' error`
+- **GREEN**: `ok`
+
+### M2 — Output-path IsRegular guard
+- **Test**: `TestLocateLocalJobRetainedTarget_OutputNotRegularRejected`
+  (`agent/job_transcript_read_test.go`)
+- **Mechanism**: A non-regular, non-symlink entry (a directory) at the output
+  leaf passes `symlinkErrorDeep` but is rejected by the `IsRegular` guard.
+- **RED**: `expected 'output is not a regular file' error, got nil`
+- **GREEN**: `ok`
+
+### M3 — Session-meta intermediate component walk
+- **Test**: `TestLoadSessionMetaFS_SymlinkedIntermediateDirRefused`
+  (`agent/schema/snapshot_meta_symlink_unix_test.go`, `//go:build unix`)
+- **Mechanism**: `metaComponentWalk` Lstats each intermediate component between
+  the bucket dir and the leaf, rejecting symlinks. Pre-fix had leaf-only Lstat
+  which follows intermediate symlinks; `afero.ReadFile` followed the symlinked
+  `sessions/` dir.
+- **RED**: `loadSessionMetaFS followed a symlinked sessions/ intermediate dir;
+  should refuse`
+- **GREEN**: `ok`
+
+### L4 — Prefix Lstat error propagation
+- **Tests**: `TestEnumerateBuckets_NonErrNotExistPrefixLstatPropagates` and
+  `TestValidateLayoutPrefix_NonErrNotExistPrefixLstatPropagates`
+  (`agent/transcript_lookup_test.go`)
+- **Mechanism**: Both prefix-check sites (`enumerateBuckets` and
+  `validateLayoutPrefix`) now distinguish `os.ErrNotExist` (absent → nil) from
+  other Lstat errors (propagate). Pre-fix masked all Lstat errors as absent.
+  Fixture: `<stateHome>/evener` as a regular file → Lstat of
+  `<stateHome>/evener/projects` returns ENOTDIR.
+- **RED (enumerateBuckets)**: `enumerateBuckets masked a non-ErrNotExist
+  prefix Lstat error as absent (nil, nil); expected a propagated error`
+- **RED (validateLayoutPrefix)**: `validateLayoutPrefix masked a
+  non-ErrNotExist prefix Lstat error as OK (nil); expected a propagated error`
+- **GREEN**: `ok`
+
+### L5 — current_project scope symlink refusal
+- **Test**: `TestFindBucketsWithEnumerate_CurrentProjectSymlinkedPrefixRefused`
+  (`agent/transcript_lookup_test.go`)
+- **Mechanism**: `findBucketsWithEnumerate` now calls `validateLayoutPrefix`
+  for `scope != all_projects` before returning the current bucket. Pre-fix
+  returned the bucket unvalidated, so find reported "No matching sessions"
+  while `read_transcript` and `all_projects` surfaced the explicit refusal.
+- **RED**: `findBucketsWithEnumerate returned no error for current_project
+  scope with a symlinked evener/ prefix; the security refusal must be surfaced`
+- **GREEN**: `ok`
+
+### L6 — loadSessionMetaFS no-follow open
+- **Test**: `TestLoadSessionMetaFS_SymlinkedLeafRefusedByNoFollow`
+  (`agent/schema/snapshot_meta_symlink_unix_test.go`, `//go:build unix`)
+- **Mechanism**: `readMetaFile` opens the meta leaf via `readFileNoFollowOS`
+  (single `O_NOFOLLOW` descriptor, ELOOP on symlink). Pre-fix used
+  Lstat-then-`afero.ReadFile`, which rejects a static symlink via Lstat but
+  leaves a TOCTOU window. Both reject a static symlink, but the error
+  messages differ: post-fix "refusing to follow it" vs pre-fix "is a symlink".
+- **RED**: `expected O_NOFOLLOW refusal ('refusing to follow it'), got:
+  session meta 02wMz5Txv1C3Hut0M8GCeB is a symlink`
+- **GREEN**: `ok`

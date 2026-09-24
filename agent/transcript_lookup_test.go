@@ -1880,3 +1880,91 @@ func TestFind_SiblingBucketDuplicateNotIsCurrent(t *testing.T) {
 		t.Errorf("sibling-bucket duplicate approx_turns = %v, want 99 (its own meta, not the live overlay 5)", got)
 	}
 }
+
+// --- FU3 round 12: RED tests for L4 (prefix Lstat error propagation) ---
+
+// TestEnumerateBuckets_NonErrNotExistPrefixLstatPropagates (FU3 round 12, L4)
+// asserts enumerateBuckets propagates a non-ErrNotExist Lstat error on the
+// layout prefix instead of silently degrading to "no buckets". Pre-fix, every
+// Lstat error was masked as a miss (info == nil → return nil, nil). Post-fix,
+// only os.ErrNotExist is a miss; any other Lstat error is wrapped and returned.
+// The fixture makes <stateHome>/evener a regular FILE so Lstat of
+// <stateHome>/evener/projects returns ENOTDIR (a non-ErrNotExist error):
+// evener exists (first prefix Lstat succeeds, not a symlink) but is not a
+// directory, so the second prefix Lstat cannot traverse through it.
+func TestEnumerateBuckets_NonErrNotExistPrefixLstatPropagates(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	// Make evener/ a regular file: Lstat of evener/ succeeds (not a symlink),
+	// but Lstat of evener/projects returns ENOTDIR (evener is not a directory).
+	if err := os.WriteFile(filepath.Join(sh, "evener"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := enumerateBuckets(sh)
+	if err == nil {
+		t.Fatal("enumerateBuckets masked a non-ErrNotExist prefix Lstat error as absent (nil, nil); expected a propagated error")
+	}
+	if !strings.Contains(err.Error(), "stat prefix") {
+		t.Fatalf("expected error wrapping the prefix Lstat failure ('stat prefix'), got: %v", err)
+	}
+}
+
+// TestValidateLayoutPrefix_NonErrNotExistPrefixLstatPropagates (FU3 round 12, L4)
+// asserts validateLayoutPrefix propagates a non-ErrNotExist Lstat error on the
+// layout prefix instead of silently degrading to "prefix OK". Same ENOTDIR
+// fixture as the enumerateBuckets test: <stateHome>/evener is a regular file,
+// so Lstat of <stateHome>/evener/projects returns ENOTDIR.
+func TestValidateLayoutPrefix_NonErrNotExistPrefixLstatPropagates(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	if err := os.WriteFile(filepath.Join(sh, "evener"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// stateDir needs the right path shape for stateHomeFor to resolve, but it
+	// does not need to exist (validateLayoutPrefix Lstats it first; a missing
+	// stateDir is not a symlink and not an error for the prefix check).
+	stateDir := filepath.Join(sh, "evener", "projects", "test-0000000001")
+	err := validateLayoutPrefix(stateDir)
+	if err == nil {
+		t.Fatal("validateLayoutPrefix masked a non-ErrNotExist prefix Lstat error as OK (nil); expected a propagated error")
+	}
+	if !strings.Contains(err.Error(), "stat layout prefix") {
+		t.Fatalf("expected error wrapping the prefix Lstat failure ('stat layout prefix'), got: %v", err)
+	}
+}
+
+// --- FU3 round 12: RED test for L5 (current_project scope symlink refusal) ---
+
+// TestFindBucketsWithEnumerate_CurrentProjectSymlinkedPrefixRefused (FU3 round 12,
+// L5) asserts findBucketsWithEnumerate refuses a symlinked evener/ layout prefix
+// for the current_project scope, not just all_projects. Pre-fix, the
+// current_project fast path returned the bucket unvalidated, so find reported
+// "No matching sessions" while read_transcript and all_projects surfaced the
+// explicit symlink refusal — an inconsistency. Post-fix, validateLayoutPrefix is
+// called before returning the current bucket, so all three paths agree.
+func TestFindBucketsWithEnumerate_CurrentProjectSymlinkedPrefixRefused(t *testing.T) {
+	t.Parallel()
+	// Real state home with a bucket and sessions dir.
+	realHome := t.TempDir()
+	realBucket := filepath.Join(realHome, "evener", "projects", "test-0123456789")
+	if err := os.MkdirAll(filepath.Join(realBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink evener/ in a separate home — evener/ itself is a symlink within
+	// the state root, not an ancestor above it.
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	linkedCurrent := filepath.Join(linkHome, "evener", "projects", "test-0123456789")
+
+	_, _, err := findBucketsWithEnumerate(linkedCurrent, scopeCurrentProject, enumerateBuckets)
+	if err == nil {
+		t.Fatal("findBucketsWithEnumerate returned no error for current_project scope " +
+			"with a symlinked evener/ prefix; the security refusal must be surfaced")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}
