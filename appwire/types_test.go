@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -1121,5 +1122,58 @@ func TestThreadVisionModelSetParamsDecode(t *testing.T) {
 	}
 	if p.Ref != "local:01X" || p.VisionModel != "anthropic/claude-haiku-4-5" {
 		t.Fatalf("params = %+v", p)
+	}
+}
+
+// TestEvenerDiagnosticsPluginsJSONPresence pins the plugin inventory's wire
+// contract: a nil inventory (a source that cannot report one) is absent, and an
+// explicit empty inventory is sent as [].
+func TestEvenerDiagnosticsPluginsJSONPresence(t *testing.T) {
+	nilRaw, err := json.Marshal(EvenerDiagnostics{Tools: []EvenerToolInfo{{Name: "shell", Source: "builtin"}}})
+	if err != nil {
+		t.Fatalf("marshal nil plugins: %v", err)
+	}
+	if bytes.Contains(nilRaw, []byte(`"plugins"`)) {
+		t.Fatalf("nil plugin inventory must be absent: %s", nilRaw)
+	}
+	emptyRaw, err := json.Marshal(EvenerDiagnostics{Plugins: []EvenerPluginInfo{}})
+	if err != nil {
+		t.Fatalf("marshal empty plugins: %v", err)
+	}
+	if !bytes.Contains(emptyRaw, []byte(`"plugins":[]`)) {
+		t.Fatalf("empty plugin inventory must be explicit: %s", emptyRaw)
+	}
+	var roundTrip EvenerDiagnostics
+	if err := json.Unmarshal(emptyRaw, &roundTrip); err != nil {
+		t.Fatalf("unmarshal empty plugins: %v", err)
+	}
+	if roundTrip.Plugins == nil || len(roundTrip.Plugins) != 0 {
+		t.Fatalf("empty plugin inventory round trip = %#v", roundTrip.Plugins)
+	}
+}
+
+// TestEvenerDiagnosticsPluginsDoNotReencodeTheSnapshot guards the hub's
+// liveness probe path: every probe marshals the root diagnostics (the whole
+// job, delegate, and skill inventory), so reporting a plugin inventory must
+// not cost a decode and re-encode of that snapshot on top of its encoding.
+func TestEvenerDiagnosticsPluginsDoNotReencodeTheSnapshot(t *testing.T) {
+	withoutPlugins := EvenerDiagnostics{}
+	for i := range 20 {
+		withoutPlugins.Jobs = append(withoutPlugins.Jobs, EvenerJobInfo{JobID: fmt.Sprintf("job_%d", i), JobType: "shell", Status: "completed"})
+		withoutPlugins.Skills = append(withoutPlugins.Skills, EvenerSkillInfo{Name: fmt.Sprintf("skill-%d", i)})
+	}
+	withPlugins := withoutPlugins
+	withPlugins.Plugins = []EvenerPluginInfo{{Name: "alpha"}, {Name: "beta"}}
+
+	marshalAllocs := func(d EvenerDiagnostics) float64 {
+		return testing.AllocsPerRun(20, func() {
+			if _, err := json.Marshal(d); err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+		})
+	}
+	base, plugins := marshalAllocs(withoutPlugins), marshalAllocs(withPlugins)
+	if plugins > base+2 {
+		t.Fatalf("marshaling a plugin inventory took %.0f allocations against %.0f without one; the snapshot is being re-encoded", plugins, base)
 	}
 }
