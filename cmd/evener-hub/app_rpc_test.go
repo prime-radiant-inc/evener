@@ -1611,6 +1611,9 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	toolNames := apptranscript.NewToolCallRegistry()
+	// Finding 1a (round 6): ALL communicates are deferred to the paired tool
+	// result, so the assistant turn alone renders no items — the message
+	// is recovered from CommRawArgs at the result turn.
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1623,19 +1626,20 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		}}},
 	}, toolNames)
 
-	if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "done" {
-		t.Fatalf("communicate items=%+v", items)
+	if len(items) != 0 {
+		t.Fatalf("assistant turn should defer communicate to result, got items=%+v", items)
 	}
 
+	// The result turn recovers the agentMessage from the seeded CommRawArgs.
 	results := appItemsFromReplayTurn("turn_2", 2, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       "tool_result",
-			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Content: `{"accepted":true}`},
+			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Name: "communicate", Content: `{"accepted":true}`},
 		}}},
 	}, toolNames)
-	if len(results) != 0 {
-		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	if len(results) != 1 || results[0].Type != "agentMessage" || results[0].Text != "done" {
+		t.Fatalf("communicate result should render agentMessage, got %+v", results)
 	}
 }
 

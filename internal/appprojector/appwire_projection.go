@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -798,6 +799,17 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if argsJSON == "" {
 			argsJSON = data.ArgumentsJSON
 		}
+		// Carry the call's intent onto the completed item too (#26).
+		// Reuse the START event's gated Description when available (F3 round 5).
+		// When START was never seen, suppressed, or cleared by
+		// resetTurnScopedState, fall back to GATED derivation from argsJSON
+		// — the same validation+size gate the START path uses (F4 round 6).
+		// This does NOT reintroduce ungated re-derivation: bytes the START
+		// path would reject (oversized, invalid UTF-8, or non-JSON) stay empty.
+		description := p.toolDescriptionByKey[data.CallID]
+		if description == "" && len(argsJSON) > 0 && argrepair.ValidateRawArguments([]byte(argsJSON)) == nil && json.Valid([]byte(argsJSON)) {
+			description = apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON))
+		}
 		item := appwire.ThreadItem{
 			Type:          "commandExecution",
 			ID:            p.toolItemID(data.CallID),
@@ -811,13 +823,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			OutputImages:  projectOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
-			// Carry the call's intent onto the completed item too (#26):
-			// the started item already has it, and live consumers (the web
-			// subagent activity line) render the intent from Description. Reuse the
-			// START event's gated Description rather than re-deriving from argsJSON
-			// without the size/validation gate (F3 round 5): when the START suppressed
-			// intent (oversized/rejected bytes), the END must agree, not re-derive it.
-			Description: p.toolDescriptionByKey[data.CallID],
+			Description: description,
 			// ExitCode promotes the shell tool's exit code, already riding
 			// data.ToolState end to end (agent/session_tools_shell.go:483
 			// shellToolResult), onto the settled item (wire-honesty spec Part
