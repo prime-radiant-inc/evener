@@ -2373,6 +2373,26 @@ describe("project row", () => {
     expect(screen.getByText("3")).toBeTruthy();
   });
 
+  // Project mutations are keyed by (source, project ID) - the row's menu
+  // closes over the project object - so an ownership change (a host
+  // attached or detached) must re-render the row or its actions fire with
+  // the stale source list.
+  test("an ownership change re-renders the memoized row, so actions carry the new sources", async () => {
+    const before = {
+      ...projectRailNode(apiProject({ sources: ["local", "devbox"] })),
+      id: "projectnode:p1",
+    } as ProjectRailNode;
+    const afterProject = apiProject({ sources: ["local"] });
+    const after = { ...projectRailNode(afterProject), id: "projectnode:p1" } as ProjectRailNode;
+    const acts = actions();
+    const rowInfo = info();
+    const { rerender } = render(<RailRow node={before} info={rowInfo} actions={acts} />);
+    rerender(<RailRow node={after} info={rowInfo} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(acts.onToggleFavoriteProject).toHaveBeenCalledWith(afterProject);
+  });
+
   test("menu offers 'Archive project' for an active project and calls onToggleArchiveProject", async () => {
     const acts = actions();
     const project = apiProject({ is_archived: false });

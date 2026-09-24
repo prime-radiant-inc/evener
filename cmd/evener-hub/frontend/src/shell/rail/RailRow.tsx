@@ -888,6 +888,17 @@ function ProjectRow({
   );
 }
 
+// project.sources is the project's ownership (project-level mutations are
+// keyed by (source, project ID), and the row's menu closes over the project
+// object), so the memo comparator must compare it by contents: an ownership
+// change (a host attached or detached) re-renders the row and its action
+// closures, while an unchanged list reuses the memoized row.
+function projectSourcesEqual(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 // The rail's organize-by host group row - a configured host as a synthetic
 // branch, in whichever shape the grouping puts it in ("Host, then project"
 // top group, "Project, then host" branch inside a project, or a Live-section
@@ -1127,6 +1138,7 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
     previousProject.key === nextProject.key &&
     previousProject.name === nextProject.name &&
     previousProject.working_dir === nextProject.working_dir &&
+    projectSourcesEqual(previousProject.sources, nextProject.sources) &&
     previousProject.rollup_state === nextProject.rollup_state &&
     previousProject.rollup_attn === nextProject.rollup_attn &&
     previousProject.favorite === nextProject.favorite &&
