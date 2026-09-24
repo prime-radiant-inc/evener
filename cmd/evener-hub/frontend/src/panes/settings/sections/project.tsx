@@ -119,7 +119,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   // changed) mid-load" case the legacy local `cancelled` flag did. The deps
   // include the store, so a host switch reloads, and the cwd, so another
   // project's layer is never shown for the one in the address bar.
-  const { reload } = useHostScopedLoad(
+  const { reload, retryLoad } = useHostScopedLoad(
     host,
     async (blank, isCancelled) => {
       if (!cwd) return;
@@ -141,20 +141,26 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
             .resolve(cwd)
             .catch(() => null),
         ]);
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
         setRefreshError(null);
-        if (resolved && !isCancelled()) setResolvedDefaults(resolved.effective);
+        // resolve() is best effort: a null answer means it failed, so the
+        // inherited-value labels must not keep describing the previous read.
+        setResolvedDefaults(resolved?.effective);
+        return true;
       } catch (err) {
-        if (isCancelled()) return;
+        // `false` tells the hook this run did NOT put content on screen, so the
+        // next run of the same content is a first look rather than a re-read.
+        if (isCancelled()) return false;
         if (blank) {
           setLoad({ phase: "error", message: friendlyErrorMessage(err) });
-          return;
+          return false;
         }
         // A failed refresh keeps the form and the draft in it, and says so
         // beside it: the host is attached and may stay attached, so a silent
         // pane sitting on values that may be out of date would have no way out.
         setRefreshError(friendlyErrorMessage(err));
+        return false;
       }
     },
     [cwd, store],
@@ -183,7 +189,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       {load.phase === "error" && (
         <p className={CLASS.error}>
           Failed to load project launch settings. {load.message}{" "}
-          <Button type="button" onClick={() => reload()}>
+          <Button type="button" onClick={() => retryLoad()}>
             Retry
           </Button>
         </p>

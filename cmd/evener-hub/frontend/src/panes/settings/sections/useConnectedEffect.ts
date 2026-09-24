@@ -96,7 +96,14 @@ export function useConnectedEffect(
  * retry (one that renders from its store's state) ignores it.
  */
 export interface HostScopedLoad {
+  /** Re-issues the read for the SAME content: the pane keeps what it is showing
+   * (and any draft in it), which is what a failed REFRESH needs. */
   reload: () => void;
+  /** Re-issues the read as a FIRST LOOK at this content: the pane blanks and
+   * shows its own loading or error state, which is what a failed LOAD needs.
+   * Without this, a load error's Retry took the refresh path - whose notice
+   * renders only over a ready load - so it reported nothing and the error stood. */
+  retryLoad: () => void;
 }
 
 export function useHostScopedLoad(
@@ -105,13 +112,20 @@ export function useHostScopedLoad(
   deps: readonly unknown[],
 ): HostScopedLoad {
   const attachEpoch = useHostAttachEpoch(host);
-  // The deps of the run that produced what is on screen, so the next run can
-  // tell a re-read of the same content from a look at different content. Set
-  // from the effect body, not during render: a render React discards must not
-  // claim the content as loaded.
+  // The deps of the run that SUCCEEDED for what is on screen, so the next run can
+  // tell a re-read of the same content from a look at different content.
+  //
+  // Claimed only once a run reports that it worked, never before the read has
+  // produced anything. Claiming it up front is a trap: a second invocation with
+  // the same deps (React's development double-invoke, a Fast Refresh) would then
+  // look like a re-read of content the pane is already showing, take the refresh
+  // branch, and leave the pane on "Loading..." for good, because the refresh
+  // notice renders only over a ready load. A run that FAILED must not claim it
+  // either, or the next run of the same content would take that same branch and
+  // the pane would keep the error it is already showing with nothing to clear it.
   const loadedDeps = useRef<readonly unknown[] | null>(null);
   // The run currently in flight (or the last one): its own callback and its own
-  // cancellation check, which is what makes `reload` re-issue exactly the read
+  // cancellation check, which is what makes the retries re-issue exactly the read
   // the pane is showing. Written from the effect body, never during render.
   const currentRun = useRef<{ load: typeof load; isCancelled: () => boolean } | null>(null);
   useConnectedEffect(
@@ -122,8 +136,12 @@ export function useHostScopedLoad(
         previous === null ||
         previous.length !== deps.length ||
         previous.some((value, index) => !Object.is(value, deps[index]));
-      loadedDeps.current = deps;
-      return load(blank, isCancelled);
+      return load(blank, isCancelled).then((result) => {
+        // A loader returns `false` to report that its run FAILED; anything else,
+        // including nothing at all, means the content is on screen.
+        if (result !== false) loadedDeps.current = deps;
+        return result;
+      });
     },
     // The epoch rides the restarted effect's deps only: it is not content.
     [...deps, attachEpoch],
@@ -135,5 +153,14 @@ export function useHostScopedLoad(
     // outcome itself, as it does for every other run.
     void run.load(false, run.isCancelled).catch(() => {});
   };
-  return { reload };
+  const retryLoad = (): void => {
+    const run = currentRun.current;
+    if (run === null) return;
+    // A first look at this content again: forget what was claimed, so this run is
+    // a LOAD and the pane shows its own loading/error state rather than a refresh
+    // notice it cannot render while the load is not ready.
+    loadedDeps.current = null;
+    void run.load(true, run.isCancelled).catch(() => {});
+  };
+  return { reload, retryLoad };
 }

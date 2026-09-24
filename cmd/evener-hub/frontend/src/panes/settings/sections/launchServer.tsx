@@ -99,7 +99,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // it re-runs this read when the selected host COMES BACK, not only when it
   // changes. isCancelled guards the same "component unmounted mid-load" case the
   // legacy local `cancelled` flag did.
-  const { reload } = useHostScopedLoad(
+  const { reload, retryLoad } = useHostScopedLoad(
     host,
     async (blank, isCancelled) => {
       // Different content - a host switch, or a re-registration under the same
@@ -123,20 +123,25 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
             .resolve("/")
             .catch(() => null),
         ]);
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         setLoad({ phase: "ready", options: schema.options, current });
         setRefreshError(null);
-        if (resolved && !isCancelled()) {
-          setDiagnostics(resolved.diagnostics ?? []);
-          setResolvedDefaults(resolved.effective);
-        }
+        // resolve() is best effort: a null answer means it failed, so the derived
+        // panel must not keep the previous run's warnings and inherited-value
+        // labels as though they described this read.
+        setDiagnostics(resolved?.diagnostics ?? []);
+        setResolvedDefaults(resolved?.effective);
+        return true;
       } catch (err) {
-        if (isCancelled()) return;
+        // `false` tells the hook this run did NOT put content on screen, so the
+        // next run of the same content is a first look rather than a re-read -
+        // which is what lets the load error's Retry below replace itself.
+        if (isCancelled()) return false;
         // Content this pane is not already showing has nothing to keep: the
         // failure is the load's own, and Retry below is what ends it.
         if (blank) {
           setLoad({ phase: "error", message: friendlyErrorMessage(err) });
-          return;
+          return false;
         }
         // A failed REFRESH keeps the form - and the draft in it - and reports
         // itself beside it: this host is attached (that is why we re-read it) and
@@ -144,6 +149,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
         // sitting silently on values that may be out of date is a worse answer
         // than saying so with a way to ask again.
         setRefreshError(friendlyErrorMessage(err));
+        return false;
       }
     },
     [store],
@@ -159,7 +165,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
       {load.phase === "error" && (
         <p className={CLASS.error}>
           Failed to load launch settings. {load.message}{" "}
-          <Button type="button" onClick={() => reload()}>
+          <Button type="button" onClick={() => retryLoad()}>
             Retry
           </Button>
         </p>
