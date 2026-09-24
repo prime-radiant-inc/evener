@@ -2,7 +2,15 @@
 
 import type { NavigationWatchSummary, Source } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { HostRailNode, OverflowRailNode, RailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
+import type {
+  HostRailNode,
+  OverflowRailNode,
+  RailNode,
+  RailPinSection,
+  RailProject,
+  RailSession,
+  SessionRailNode,
+} from "./railNodes";
 import {
   activeWatchCount,
   archivedCount,
@@ -91,6 +99,22 @@ test("session node memo dependencies are complete and bottom-up", () => {
   )[0];
   expect(lookupAfter).not.toBe(lookupBefore);
   expect(lookupAfter?.children[0]).toMatchObject({ id: changedChild.row_id, expanded: true });
+});
+
+test("sessionNodes marks its rows as cross-project tier roots; nesting and projects do not", () => {
+  const kid = session({ ref: "kid", row_id: "kid", state: "active" });
+  const root = session({ ref: "root", row_id: "root", children: [kid] });
+  const [live] = sessionNodes([root], closed);
+  expect(live?.crossProjectTier).toBe(true);
+  // A child under the row inherits the tier but not the mark: only the
+  // tier's own root rows carry it.
+  const inline = live?.children.find((child): child is SessionRailNode => child.kind === "session");
+  expect(inline?.crossProjectTier).toBeUndefined();
+  // A Projects-tier session always nests under its own ProjectRow, which
+  // already names the project - no cross-project line there.
+  const [projectRow] = projectNodes([project({ key: "p", sessions: [root] })], closed);
+  const nested = projectRow?.children.find((child): child is SessionRailNode => child.kind === "session");
+  expect(nested?.crossProjectTier).toBeUndefined();
 });
 
 describe("resource projection semantics", () => {
@@ -815,6 +839,54 @@ describe("host grouping (organize by)", () => {
     expect(devboxCopy).toMatchObject({ kind: "project", spawnHost: "devbox" });
     expect(devboxCopy).not.toHaveProperty("canonicalCopy");
     const [flat] = projectNodes([evener], closed);
+    expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
+  });
+
+  test("the canonical copy is the first host in rail order that has loaded rows", () => {
+    // The hub sorts first in rail order but owns no loaded rows here: the
+    // project's overflow must not render inside an empty host group, where
+    // collapsing the group hides the project's only "+N older".
+    const evener = project({
+      key: "evener",
+      sources: ["local", "devbox"],
+      sessions: [on("devbox", "d1"), on("devbox", "d2")],
+    });
+    const hosts = hostProjectNodes([evener], sources, closed);
+    const emptyCopy = hosts.find((node) => node.id === "host:local")?.children[0];
+    const rowsCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
+    expect(emptyCopy).not.toHaveProperty("canonicalCopy");
+    expect(rowsCopy).toMatchObject({ kind: "project", spawnHost: "devbox", canonicalCopy: true });
+    // A project with no loaded rows anywhere (a stub) keeps the first host
+    // in rail order, so the anchor is stable until rows land somewhere.
+    const stub = project({ key: "stub", sources: ["local", "devbox"], sessions: [] });
+    const stubHosts = hostProjectNodes([stub], sources, closed);
+    expect(stubHosts.find((node) => node.id === "host:local")?.children[0]).toMatchObject({
+      kind: "project",
+      canonicalCopy: true,
+    });
+  });
+
+  test("project-first rows name the host a launch targets, so a remote directory cannot fall back to this hub", () => {
+    const hubbed = project({
+      key: "hubbed",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d1")],
+    });
+    const remote = project({ key: "remote", sources: ["devbox"], sessions: [on("devbox", "d1")] });
+    const rows = projectNodesWithHostBranches([hubbed, remote], sources, closed);
+    // The hub owns the merged record, so its row launches here explicitly -
+    // a remembered remote host cannot survive the click. The row stays the
+    // project's ONE aggregate row, rollup and overflow included.
+    expect(rows.find((node) => node.id === "projectnode:hubbed")).toMatchObject({
+      spawnHost: "local",
+      canonicalCopy: true,
+    });
+    // A remote-owned project names its host: the spawn draft prefills it
+    // instead of silently launching a remote working_dir on this hub.
+    expect(rows.find((node) => node.id === "projectnode:remote")).toMatchObject({ spawnHost: "devbox" });
+    // The flat builder still claims no host: flat mode means no remote
+    // source exists, so every project is this hub's own.
+    const [flat] = projectNodes([remote], closed);
     expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
   });
 

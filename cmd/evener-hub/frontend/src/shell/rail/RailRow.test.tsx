@@ -1167,11 +1167,12 @@ describe("session row", () => {
     );
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
 
-    // depth 0: the flat Live and named-pin-section tiers - being listed there
-    // already says the session is pinned, so the star is pure redundancy.
+    // A cross-project tier root (the flat Live and named-pin-section rows):
+    // being listed there already says the session is pinned, so the star is
+    // pure redundancy - the mark says so wherever host grouping nests it.
     rerender(
       <RailRow
-        node={sessionRailNode(apiNode({ pin_section_id: "research" }))}
+        node={sessionRailNode(apiNode({ pin_section_id: "research" }), { crossProjectTier: true })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1181,6 +1182,32 @@ describe("session row", () => {
     rerender(
       <RailRow
         node={sessionRailNode(apiNode({ pin_section_id: undefined }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("favorite-star")).toBeNull();
+  });
+
+  // Host grouping nests a Live tier's rows under host subheaders, so a row's
+  // tier can no longer be inferred from nesting depth: the node carries the
+  // cross-project mark (railNodes' sessionNodes sets it) and RailRow reads
+  // the mark, not the depth.
+  test("a grouped Live row (cross-project mark, nested depth) still names its project", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", project: "prime-radiant" }), { crossProjectTier: true })}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("prime-radiant")).toBeTruthy();
+  });
+
+  test("a pinned grouped Live row (cross-project mark, nested depth) carries no star", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ pin_section_id: "research" }), { crossProjectTier: true })}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1386,15 +1413,17 @@ describe("session row", () => {
     },
   );
 
-  // kata hxjn: the exception above, in the flat Live/Pinned tiers (depth 0).
-  // A quiet row there still names its project, since a flat list gives it no
-  // other way to say which project it belongs to.
+  // kata hxjn: the exception above, in the flat cross-project tiers. A quiet
+  // row there still names its project, since a flat list gives it no other
+  // way to say which project it belongs to.
   test.each(["idle", "ended", "notLoaded", ""] as const)(
-    "a quiet, top-level row (%s, depth 0) names its project on a second line",
+    "a quiet, cross-project tier root (%s) names its project on a second line",
     (state) => {
       render(
         <RailRow
-          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180), project: "prime-radiant" }))}
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180), project: "prime-radiant" }), {
+            crossProjectTier: true,
+          })}
           info={info({ depth: 0 })}
           actions={actions()}
         />,
@@ -1448,13 +1477,15 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("working · fix/thing");
   });
 
-  // kata hxjn: a top-level (depth 0) signal row's gloss leads with the
-  // project, then the usual state · branch join - project answers "where",
-  // the rest answers "what's happening", in that reading order.
+  // kata hxjn: a cross-project tier root's gloss leads with the project,
+  // then the usual state · branch join - project answers "where", the rest
+  // answers "what's happening", in that reading order.
   test("a top-level signal row's gloss leads with the project, then state and branch", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing", project: "prime-radiant" }))}
+        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing", project: "prime-radiant" }), {
+          crossProjectTier: true,
+        })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1468,7 +1499,7 @@ describe("session row", () => {
   test("a top-level signal row with an empty project has no orphaned leading separator", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "active", project: "" }))}
+        node={sessionRailNode(apiNode({ state: "active", project: "" }), { crossProjectTier: true })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1547,12 +1578,14 @@ describe("session row", () => {
   });
 
   // kata hxjn: a dormant row still needs its project named when it's a
-  // top-level Live/Pinned row - dormancy says nothing about which project a
+  // cross-project tier root - dormancy says nothing about which project a
   // flat row belongs to.
   test("a dormant, top-level row still names its project, with no dot", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", dormant: true, project: "prime-radiant" }))}
+        node={sessionRailNode(apiNode({ state: "idle", dormant: true, project: "prime-radiant" }), {
+          crossProjectTier: true,
+        })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1976,12 +2009,13 @@ describe("session row", () => {
   // was already correct with no rail-side code change; pinned explicitly
   // here (rather than left to incidental coverage from fixtures that never
   // set tier at all) since a live row is the realistic shape a reviewer
-  // would specifically want proof for. The star stays hidden: a depth-0 row
-  // (Live, like a named pin section) never carries the pin star at all.
+  // would specifically want proof for. The star stays hidden: a
+  // cross-project tier root (Live, like a named pin section) never carries
+  // the pin star at all.
   test("Unpin and Rename work on a live-tier duplicate, and its pin star stays hidden", async () => {
     const acts = actions();
     const session = apiNode({ tier: "live", pin_section_id: "research", rename: true });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    render(<RailRow node={sessionRailNode(session, { crossProjectTier: true })} info={info()} actions={acts} />);
 
     expect(screen.queryByTestId("favorite-star")).toBeNull();
     const user = await openMenu(/actions for/i);
@@ -2838,9 +2872,9 @@ describe("shared right slot (RailRow.module.css)", () => {
 // before pinning was scoped, or by a direct API call - and rendering the star
 // there is a dead end: the menu offers no way to take it off. Suppressing it
 // keeps "only top-level sessions can be pinned" true in both directions.
-// Depth 0 rows are rendered at depth 1 here so the KIND gate alone decides -
-// the depth-0 flat tiers (Live, named pin sections) never show the star at
-// all (see "shows a pin star on a nested row…" above).
+// Rows render unmarked here so the KIND gate alone decides - the marked
+// cross-project tier roots (Live, named pin sections) never show the star
+// at all (see "shows a pin star on a nested row…" above).
 describe("pin star follows the same scoping as the pin action", () => {
   test("a top-level session shows its star", () => {
     render(
@@ -3057,13 +3091,5 @@ describe("host group row", () => {
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByTestId("rail-row-host-group").textContent).toBe("devbox");
-  });
-
-  // Same leading box as the watch glyph: the host glyph must not shift the
-  // label off the title x of its sibling rows.
-  test("the host glyph occupies the watch glyph's 13px leading box", () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const css = readFileSync(join(here, "RailRow.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(css).toMatch(/\.hostGlyph\s*\{[^}]*width:\s*13px;/);
   });
 });

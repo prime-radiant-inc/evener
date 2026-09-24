@@ -248,13 +248,14 @@ export { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, wat
 
 // secondLine is the row's second line in full: activityGloss above, joined
 // with the session's project when the row needs one (kata hxjn). A session
-// row only needs its project named when it is rendered FLAT, mixed in with
-// other projects' sessions - the Live and Pinned tiers, where a row's own
-// nesting depth is 0 (see below). A session nested under its own ProjectRow
-// (Projects/Test runs/Archived) is depth >= 1 there and never needs this:
-// the project it belongs to is the row it is indented under. Project leads
-// the line (state is what's happening, project is where) the same way
-// activityGloss already leads with state before branch.
+// row only needs its project named when it is the ROOT of a flat
+// cross-project tier, mixed in with other projects' sessions - the Live,
+// Needs-you, and Pinned tier roots (the node's crossProjectTier mark; see
+// SessionRow). A session nested under its own ProjectRow (Projects/Test
+// runs/Archived) never needs this: the project it belongs to is the row it
+// is indented under. Project leads the line (state is what's happening,
+// project is where) the same way activityGloss already leads with state
+// before branch.
 function secondLine(
   session: RailSession,
   showsGloss: boolean,
@@ -386,10 +387,12 @@ const NO_PROJECT_KEY = "no-project";
 // prompt, and host off window.location.search (panes/spawn/urlPrefill.ts),
 // never pane params - the spawn pane's own params type is deliberately empty
 // (see panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
-// directory. A "Host, then project" copy passes the host it nests under -
-// this hub included, since the same project's copies share one working_dir
-// and the draft's last-chosen host must not survive a launch from another
-// copy. Falls back to a bare /new only when the project has neither a
+// directory. A "Host, then project" copy passes the host it nests under,
+// and a "Project, then host" project row passes the first owning host in
+// rail order - this hub included in both cases, since the same project's
+// rows share one working_dir and the draft's last-chosen host must not
+// survive a launch from another row. Falls back to a bare /new only when
+// the project has neither a
 // working_dir nor a host to name (shouldn't happen for a real project, but
 // degrades gracefully rather than silently doing nothing) - NO_PROJECT_KEY
 // itself is excluded before this is ever called, same as every other
@@ -648,14 +651,17 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   let effectiveState = presented;
   if (effectiveState !== "errored" && effectiveState !== "restartRequired" && hasActiveWork) effectiveState = "active";
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
-  // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
-  // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
-  // Archived session is always nested under its own ProjectRow, never a depth-0
-  // SessionRow). Cross-referencing which project a Live row belongs to used to
-  // mean leaving the rail entirely, so those rows get a second line even when
-  // otherwise quiet - the one exception to the "quiet row is one line" rule
-  // above, made for exactly the fact that rule can't otherwise carry.
-  const showsProject = info.depth === 0;
+  // kata hxjn: the ROOT of a flat, cross-project tier (Live/Needs-you/Pinned
+  // - the rows sessionNodes builds, marked crossProjectTier on the node; a
+  // Projects/Test-runs/Archived session is always nested under its own
+  // ProjectRow, which already names the project). Cross-referencing which
+  // project such a row belongs to used to mean leaving the rail entirely, so
+  // those rows get a second line even when otherwise quiet - the one
+  // exception to the "quiet row is one line" rule above, made for exactly
+  // the fact that rule can't otherwise carry. The node's mark, not nesting
+  // depth: host grouping nests these rows under host subheaders, so depth
+  // stopped separating a tier root from a project row.
+  const showsProject = node.crossProjectTier === true;
   const notStarted = saysNotStarted(session, showsGloss);
   // The session's own armed watches. Not a subtree rollup: the hub keeps each
   // watch on its receiver's summary, so this is every watch the fold-out below
@@ -759,11 +765,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
       {/* Gated on the same rule as the pin action: the wire can still carry
           favorite:true on a nested or synthetic node (a decision written
           before pinning was scoped, or a direct API call), and a star on a row
-          whose menu offers no way to remove it is a dead end. Depth 0 rows -
-          the flat Live and named-pin-section tiers - never carry it at all:
-          being listed in those sections already says the session is pinned,
-          so the star there is redundancy, not information. */}
-      {session.pin_section_id !== undefined && isTopLevelSession(session) && info.depth > 0 && (
+          whose menu offers no way to remove it is a dead end. Cross-project
+          tier roots (the flat Live and named-pin-section rows, wherever host
+          grouping nests them) never carry it at all: being listed in those
+          sections already says the session is pinned, so the star there is
+          redundancy, not information. */}
+      {session.pin_section_id !== undefined && isTopLevelSession(session) && node.crossProjectTier !== true && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
           {"★"}
         </span>
@@ -819,8 +826,10 @@ function ProjectRow({
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
   // The project-wide rollup is an aggregate fact, so it reads ONCE: on the
-  // flat/project-first project row, or on the canonical host-first copy
-  // (the first in rail order, the same copy that renders the project's
+  // project rows that claim no launch host (flat, archived, test runs),
+  // or on the one aggregate row the grouped modes mark (the project-first
+  // project row, or the canonical host-first copy - the first host in
+  // rail order with loaded rows, the same copy that renders the project's
   // overflow). Every other copy claims nothing - an honest per-host count
   // would need wire support the manifest does not carry, the same line the
   // host group row itself draws.

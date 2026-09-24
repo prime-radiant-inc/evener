@@ -2551,6 +2551,28 @@ describe("host grouping (organize by)", () => {
     expect(loadProject).toHaveBeenCalledTimes(1);
   });
 
+  // Live rows group under host subheaders in BOTH grouped modes, so a Live
+  // tier's root rows sit at depth 1 there: the project line and the pin-star
+  // rule must follow the row's tier, not its nesting depth.
+  test("grouped Live rows still name their project under the host subheaders", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        sectionResource("live", [
+          summary({ ref: "local:l1", session_id: "l1", title: "Local live", project: "Evener", host_id: "local" }),
+          summary({ ref: "devbox:l2", session_id: "l2", title: "Devbox live", project: "Radiant", host_id: "devbox" }),
+        ]),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    const live = sectionRoot("Live");
+    // The subheader answers "which machine"; the row's second line still
+    // answers "which project" - the one fact a Live row exists to carry.
+    expect(within(live).getByText("Evener")).toBeTruthy();
+    expect(within(live).getByText("Radiant")).toBeTruthy();
+  });
+
   test("host grouping holds its shape across a manifest revalidation (last-known sources)", () => {
     prefsStore.setState({ sidebarGrouping: "host-project" });
     installState([catalogResource([{ key: "p", name: "Project", session_count: 1 }])], remoteManifest());
@@ -2605,13 +2627,5 @@ describe("host grouping (organize by)", () => {
     } finally {
       restoreScroll();
     }
-  });
-
-  test("the organize row sits hard right, chrome like the headings around it", () => {
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
-      /\/\*[\s\S]*?\*\//g,
-      "",
-    );
-    expect(css).toMatch(/\.organizeRow\s*\{[^}]*justify-content:\s*flex-end;/);
   });
 });

@@ -94,6 +94,13 @@ export interface SessionRailNode extends WidgetTreeNode {
     | CompletedJobsFoldRailNode
     | OverflowRailNode
   )[];
+  // Set only on the ROOT rows of a flat cross-project tier - the ones
+  // sessionNodes builds (Live, Needs-you, Pinned): those rows name their
+  // project and suppress the pin star, wherever host grouping nests them.
+  // RailRow reads this mark instead of nesting depth: host subheaders put
+  // tier roots at depth 1, where project rows sit too, so depth no longer
+  // separates the two shapes.
+  crossProjectTier?: boolean;
 }
 
 export interface JobRailNode extends WidgetTreeNode {
@@ -126,14 +133,19 @@ export interface ProjectRailNode extends WidgetTreeNode {
   children: RailNode[];
   resourceError?: string;
   retry?: () => void;
-  // The host a "Host, then project" copy nests under: the row's launch
-  // affordances target that host, not this hub. Every other variant leaves
-  // it absent - a flat or project-first row claims no host.
+  // The host a "Host, then project" copy nests under, or the first owning
+  // host in rail order on a "Project, then host" project row: the row's
+  // launch affordances target that host, not this hub. The flat variant
+  // leaves it absent - no remote source exists in flat mode, so every
+  // project is this hub's own.
   spawnHost?: string;
-  // True on the ONE copy that renders the project's aggregate facts - the
-  // overflow row and the rollup signal/badge - so they read once (on the
-  // first copy in rail order) instead of claiming per-host counts the wire
-  // does not carry. Absent everywhere else.
+  // True on the ONE row that renders the project's aggregate facts - the
+  // overflow row and the rollup signal/badge - so they read once instead of
+  // claiming per-host counts the wire does not carry: the project's own row
+  // in project-first mode, or the first rows-bearing copy in rail order in
+  // host-first. The flat, archived, and test-run project rows carry no
+  // mark - they claim no launch host, and RailRow reads their aggregate
+  // role from that absence.
   canonicalCopy?: boolean;
 }
 
@@ -261,6 +273,9 @@ type ProjectNodeCacheEntry = Readonly<{
 }>;
 const sessionChildrenCache = new WeakMap<object, WeakMap<IsExpanded, SessionRailNode["children"]>>();
 const sessionNodeCache = new WeakMap<object, WeakMap<IsExpanded, SessionNodeCacheEntry>>();
+// The crossProjectTier variant of sessionNodeCache, kept apart so one tier
+// shape's node can never serve the other (see toSessionNode).
+const crossProjectSessionNodeCache = new WeakMap<object, WeakMap<IsExpanded, SessionNodeCacheEntry>>();
 const projectChildrenCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, RailNode[]>>>();
 const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, ProjectNodeCacheEntry>>>();
 
@@ -532,22 +547,19 @@ function cacheSessionChildren(
   entries.set(isExpanded, children);
 }
 
-function toSessionNode(n: RailSession, isExpanded: IsExpanded): SessionRailNode {
+function toSessionNode(n: RailSession, isExpanded: IsExpanded, crossProjectTier = false): SessionRailNode {
   const expanded = isExpanded(n.row_id, false);
   const children = splitChildren(n, isExpanded);
-  const cached = sessionNodeCache.get(n as object)?.get(isExpanded);
+  const cache = crossProjectTier ? crossProjectSessionNodeCache : sessionNodeCache;
+  const cached = cache.get(n as object)?.get(isExpanded);
   if (cached && cached.expanded === expanded && cached.children === children) return cached.value;
-  const result: SessionRailNode = {
-    id: n.row_id,
-    kind: "session",
-    session: n,
-    expanded,
-    children,
-  };
-  let entries = sessionNodeCache.get(n as object);
+  const result: SessionRailNode = crossProjectTier
+    ? { id: n.row_id, kind: "session", session: n, expanded, children, crossProjectTier: true }
+    : { id: n.row_id, kind: "session", session: n, expanded, children };
+  let entries = cache.get(n as object);
   if (!entries) {
     entries = new WeakMap();
-    sessionNodeCache.set(n as object, entries);
+    cache.set(n as object, entries);
   }
   entries.set(isExpanded, { children, expanded, value: result });
   return result;
@@ -556,9 +568,13 @@ function toSessionNode(n: RailSession, isExpanded: IsExpanded): SessionRailNode 
 /** Builds rail nodes for a flat, childless-at-this-level session list - the
  * Needs-you, Live, and Pinned tiers, each of which is just TreeNode[] on
  * the wire. A session can still recurse into its own children (subagent
- * clusters), handled by toSessionNode regardless of which tier it's in. */
+ * clusters), handled by toSessionNode regardless of which tier it's in.
+ * Every row this returns is the root of a cross-project tier, so each one
+ * carries the crossProjectTier mark - host grouping nests these rows under
+ * subheaders, and the mark is how RailRow keeps telling a tier root from a
+ * nested row once depth stops doing it. */
 export function sessionNodes(nodes: readonly RailSession[], isExpanded: IsExpanded): SessionRailNode[] {
-  return nodes.map((n) => toSessionNode(n, isExpanded));
+  return nodes.map((n) => toSessionNode(n, isExpanded, true));
 }
 
 export function pinSectionNodes(section: RailPinSection, isExpanded: IsExpanded): SessionRailNode[] {
@@ -730,13 +746,23 @@ function projectNodesWith(
   isExpanded: IsExpanded,
   variant: string,
   childrenFor: (p: RailProject, id: string) => RailNode[],
+  spawnHostFor?: (p: RailProject) => string | undefined,
+  canonicalRow = false,
 ): ProjectRailNode[] {
   const labels = projectDisplayLabels(projects);
   return projects.map((p) => {
     const id = projectNodeExpansionKey(p.key);
     const expanded = isExpanded(id, p.default_expanded ?? false);
     const children = projectChildren(p, isExpanded, variant, () => childrenFor(p, id));
-    return cachedProjectNode(p, isExpanded, variant, { id, displayName: labels.get(p.key), expanded, children });
+    const spawnHost = spawnHostFor?.(p);
+    return cachedProjectNode(p, isExpanded, variant, {
+      id,
+      displayName: labels.get(p.key),
+      expanded,
+      children,
+      ...(spawnHost === undefined ? {} : { spawnHost }),
+      ...(canonicalRow ? { canonicalCopy: true } : {}),
+    });
   });
 }
 
@@ -966,8 +992,8 @@ function cachedHostNode(id: string, host: HostRailNode["host"], expanded: boolea
  * owned on that host. A copy is never dropped for having no loaded rows:
  * the project's hidden rows can still be that host's, and revealed rows
  * land under the host they name. The project's overflow row renders once,
- * on the first copy in rail order (the canonical copy below), so the
- * project-wide count does not claim "+N" under every host. Copy ids suffix
+ * on the first copy in rail order that has loaded rows (the canonical copy
+ * below), so the project-wide count does not claim "+N" under every host. Copy ids suffix
  * the host so two copies of one project never share expand state or
  * overflow row ids. */
 export function hostProjectNodes(
@@ -978,12 +1004,20 @@ export function hostProjectNodes(
   const labels = projectDisplayLabels(projects);
   const projectsByHost = new Map<string, RailProject[]>();
   // The host whose copy carries the project-level overflow: the FIRST in
-  // the rail order the copies render in. The overflow's count and pages are
-  // the project's own, so it must read once instead of claiming "+N older"
-  // under every host that owns the project.
+  // the rail order the copies render in that has loaded active rows. The
+  // overflow's count and pages are the project's own, so it must read once
+  // instead of claiming "+N older" under every host that owns the project -
+  // and anchoring it to a host with no rows would park it inside an empty
+  // group, where collapsing the group hides the project's only "+N older".
+  // A project no loaded row names yet keeps the first ordered host, so the
+  // anchor cannot flip copy-to-copy while rows stream in.
   const overflowHost = new Map<RailProject, string>();
   for (const p of projects) {
-    overflowHost.set(p, orderedHosts(projectHostIds(p), sources)[0]?.id ?? LOCAL_HOST);
+    const ordered = orderedHosts(projectHostIds(p), sources);
+    const withRows = ordered.find(({ id }) =>
+      p.sessions.some((n) => !isArchivedTier(n) && sessionGroupHostId(n) === id),
+    );
+    overflowHost.set(p, (withRows ?? ordered[0])?.id ?? LOCAL_HOST);
     for (const hostId of projectHostIds(p)) {
       const owned = projectsByHost.get(hostId) ?? [];
       owned.push(p);
@@ -1045,9 +1079,27 @@ export function projectNodesWithHostBranches(
   sources: readonly Source[],
   isExpanded: IsExpanded,
 ): ProjectRailNode[] {
-  return projectNodesWith(projects, isExpanded, `host-branches:${sourcesSignature(sources)}`, (p, id) =>
-    activeTierChildren(p, id, () => hostBranchNodes(p, id, sources, isExpanded)),
+  return projectNodesWith(
+    projects,
+    isExpanded,
+    `host-branches:${sourcesSignature(sources)}`,
+    (p, id) => activeTierChildren(p, id, () => hostBranchNodes(p, id, sources, isExpanded)),
+    (p) => projectLaunchHost(p, sources),
+    // The project row is the project's ONE aggregate row in this mode -
+    // rollup and overflow still read here, whatever rows its branches hold.
+    true,
   );
+}
+
+/** The host a project row's launch targets when no copy names one: the first
+ * host in rail order among the project's owners (this hub orders first).
+ * Naming it keeps a remote-owned working_dir from silently launching on this
+ * hub through the draft's remembered source, and lets useHostLaunchable hide
+ * the affordance while that host is offline - the same contract the
+ * host-first copies already follow. Flat mode claims no host on purpose: no
+ * remote source exists there, so every project is this hub's own. */
+function projectLaunchHost(p: RailProject, sources: readonly Source[]): string | undefined {
+  return orderedHosts(projectHostIds(p), sources)[0]?.id;
 }
 
 // A manifest update swaps the sources ARRAY identity while the project
