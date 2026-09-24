@@ -22,7 +22,7 @@ type APIAttemptMetaBuilder func(request *http.Request, requestBody []byte) llm.A
 // use client.Do directly.
 func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *http.Request, build APIAttemptMetaBuilder) (*http.Response, *APIAttemptCapture, error) {
 	if !llm.APIAttemptContextActive(request.Context()) {
-		llm.NoteAPIAttemptProtocol(request.Context(), build(request, nil).Protocol)
+		llm.NoteAPIAttemptProtocol(request.Context(), func() string { return build(request, nil).Protocol })
 		response, err := client.Do(request)
 		return response, nil, err
 	}
