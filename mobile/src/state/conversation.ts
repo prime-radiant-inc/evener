@@ -986,14 +986,14 @@ export function createConversationStore() {
             inherited = true;
           }
         }
-        // RoboRev round 4 (panel M2): the contribution question is the
-        // merge's own answer — replaying the fold without the page's
-        // inputs must lose content the merged item carries, the merge's
-        // field rules deciding (rank-merged status, startedAt and
-        // completedAt, text presence, every spread field). The hand-rolled
-        // field list this replaced missed the rank-promoted status and
-        // the timing fields, so genuinely contributed content could read
-        // as a duplicate and fall out of pageItemIds/itemKeys.
+        // RoboRev round 4 (panel M2), round 5: the contribution question
+        // is the merge's own answer — recorded where the fold made its
+        // keep-decisions (the non-tool survivors each identity edge
+        // carried, the supplier each tool field's selection kept), never
+        // re-derived here. The hand-rolled field list this replaced
+        // missed the rank-promoted status and the timing fields, so
+        // genuinely contributed content could read as a duplicate and
+        // fall out of pageItemIds/itemKeys.
         const contributed =
           sources.some((source) => pageInputs.has(source)) &&
           folds.itemSideContributes(item, (input) => pageInputs.has(input));

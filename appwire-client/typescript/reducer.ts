@@ -517,6 +517,14 @@ type ToolItemSourceMembership =
   | { item: ItemModel }
   | { left: ToolItemSourceMembership; right: ToolItemSourceMembership };
 type ToolItemProvenance = Partial<Record<ToolItemSource, ToolItemSourceMembership>>;
+// The recorded answer to "which inputs' content does this item carry":
+// the non-tool survivors a fold edge kept, and the supplier of each
+// tool-result field (undefined when no input distinguishably supplied it —
+// two equal values from both sides, or no value at all).
+type ItemContribution = {
+  nonTool: ReadonlySet<ItemModel>;
+  tools: Partial<Record<ToolResultField, ItemModel>>;
+};
 type ToolItemMergeContext = {
   provenance: WeakMap<ItemModel, ToolItemProvenance>;
   // The results the tool fold absorbed onto each rewritten call, keyed by
@@ -527,6 +535,14 @@ type ToolItemMergeContext = {
   // (the strip's real-source test, duplicate-reconciliation freshness)
   // treat a surviving candidate as a source the call never merged from.
   toolResultFolds: WeakMap<ItemModel, readonly ItemModel[]>;
+  // The content the fold kept, written where the fold decided to keep it
+  // (RoboRev round 5, panel Medium): one record per merged item. The
+  // identity edges record it beside the membership they already write;
+  // the tool rewrite records the winners its own scan selected, dropping
+  // the base's suppliers for the fields its candidates overrode. The
+  // contribution question reads this record; nothing re-derives the
+  // fold's decisions after the fact.
+  contributions: WeakMap<ItemModel, ItemContribution>;
 };
 type ToolCandidates = { calls: ItemModel[]; results: ItemModel[] };
 
@@ -534,6 +550,7 @@ function createToolItemMergeContext(fresh: readonly TurnModel[], older: readonly
   const context: ToolItemMergeContext = {
     provenance: new WeakMap(),
     toolResultFolds: new WeakMap(),
+    contributions: new WeakMap(),
   };
   const add = (source: ToolItemSource, turns: readonly TurnModel[]): void => {
     for (const turn of turns) {
@@ -571,6 +588,62 @@ function recordMergedToolItem(
     fresh: combineToolItemMembership(olderProvenance?.fresh, newerProvenance?.fresh),
     older: combineToolItemMembership(olderProvenance?.older, newerProvenance?.older),
   });
+  recordItemContribution(context, merged, older, newer);
+}
+
+// The fold's keep-decisions for one identity edge, written as they
+// happen. An input contributed non-tool content when the merged item
+// carries any field beyond the OTHER input's — the merge builds every
+// field from one of its two inputs, so every difference from one side is
+// the other side's keep, and two identical inputs keep nothing (which is
+// the duplicate's answer). Text counts through its presence marker: a
+// side whose text the merge dropped contributed no text, and a side that
+// restored what the other omitted did. A tool-result field's supplier is
+// the input whose value the merge kept, undefined when both sides
+// carried the same one — removing either changes nothing. Chained edges
+// resolve through the input's own record: an untouched original speaks
+// for itself, a folded one for the survivors it kept.
+function recordItemContribution(
+  context: ToolItemMergeContext,
+  merged: ItemModel,
+  older: ItemModel,
+  newer: ItemModel,
+): void {
+  const recordOf = (item: ItemModel): ItemContribution | undefined =>
+    context.contributions.get(item);
+  const resolveNonTool = (item: ItemModel): ReadonlySet<ItemModel> =>
+    recordOf(item)?.nonTool ?? new Set<ItemModel>([item]);
+  const stripToolFields = (item: ItemModel): Record<string, unknown> => {
+    const stripped: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(item)) {
+      if (!toolResultFields.includes(key as ToolResultField)) stripped[key] = value;
+    }
+    return stripped;
+  };
+  const carriedNonTool = (item: ItemModel, other: ItemModel): boolean =>
+    !sameModelFields(stripToolFields(merged), stripToolFields(other)) ||
+    itemTextPresence(merged) !== itemTextPresence(other);
+  const nonTool = new Set<ItemModel>();
+  if (carriedNonTool(older, newer)) {
+    for (const source of resolveNonTool(older)) nonTool.add(source);
+  }
+  if (carriedNonTool(newer, older)) {
+    for (const source of resolveNonTool(newer)) nonTool.add(source);
+  }
+  const tools: Partial<Record<ToolResultField, ItemModel>> = {};
+  for (const field of toolResultFields) {
+    const value = merged[field];
+    if (value === undefined) continue;
+    const fromOlder = older[field] === value;
+    const fromNewer = newer[field] === value;
+    if (fromOlder && fromNewer) continue;
+    if (fromOlder) {
+      tools[field] = recordOf(older) ? recordOf(older)?.tools[field] : older;
+    } else if (fromNewer) {
+      tools[field] = recordOf(newer) ? recordOf(newer)?.tools[field] : newer;
+    }
+  }
+  context.contributions.set(merged, { nonTool, tools });
 }
 
 function appendToolItemCandidates(
@@ -670,12 +743,19 @@ function toolFoldView(turns: TurnModel[], context?: ToolItemMergeContext): ToolF
 function preferredToolField<K extends ToolResultField>(
   item: ItemModel,
   field: K,
+  winners: Partial<Record<ToolResultField, ItemModel>>,
   ...sources: readonly (readonly ItemModel[])[]
 ): ItemModel[K] | undefined {
   for (const candidates of sources) {
     for (let index = candidates.length - 1; index >= 0; index -= 1) {
-      const value = candidates[index]?.[field];
-      if (value !== undefined) return value;
+      const candidate = candidates[index];
+      const value = candidate?.[field];
+      if (value !== undefined) {
+        // The selection's own keep-decision, written where it happens:
+        // this candidate is the source the rewritten call's field carries.
+        winners[field] = candidate;
+        return value;
+      }
     }
   }
   return item[field];
@@ -709,8 +789,9 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
         const fresh = fold.fresh.get(item.callId) ?? { calls: [], results: [] };
         const older = fold.older.get(item.callId) ?? { calls: [], results: [] };
         if (fresh.results.length > 0 || older.results.length > 0) {
+          const fieldWinners: Partial<Record<ToolResultField, ItemModel>> = {};
           const field = <K extends ToolResultField>(name: K) =>
-            preferredToolField(item, name, fresh.results, fresh.calls, older.results, older.calls);
+            preferredToolField(item, name, fieldWinners, fresh.results, fresh.calls, older.results, older.calls);
           const rewritten = copyItemTextPresence(item, {
             ...item,
             output: field("output"),
@@ -726,6 +807,33 @@ function mergeToolCallsByCallId(turns: TurnModel[], context?: ToolItemMergeConte
             recordToolFoldRewrite(context, rewritten, item);
             const absorbed = [...fresh.results, ...older.results];
             if (absorbed.length > 0) context.toolResultFolds.set(rewritten, absorbed);
+            // The rewrite's own keep-decisions: each tool field's supplier
+            // is the candidate the selection scanned, unless the base
+            // already carried the same value indistinguishably — then the
+            // candidate changed nothing and the base's own supplier
+            // stands. A field no candidate supplied keeps the base's
+            // supplier too (the base itself when it is an untouched
+            // original carrying the value). The base's non-tool content
+            // survives the rewrite verbatim, so its survivors stand as
+            // they were recorded.
+            const baseRecord = context.contributions.get(item);
+            const tools: Partial<Record<ToolResultField, ItemModel>> = {};
+            for (const name of toolResultFields) {
+              const winner = fieldWinners[name];
+              if (winner !== undefined && winner[name] !== item[name]) {
+                tools[name] = winner;
+                continue;
+              }
+              tools[name] = baseRecord
+                ? baseRecord.tools[name]
+                : item[name] !== undefined
+                  ? item
+                  : undefined;
+            }
+            context.contributions.set(rewritten, {
+              nonTool: baseRecord?.nonTool ?? new Set<ItemModel>([item]),
+              tools,
+            });
           }
           items.push(rewritten);
           continue;
@@ -1411,14 +1519,12 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   newerTurnFolds: ReadonlyMap<string, readonly string[]>;
   itemFoldSources: (item: ItemModel) => readonly ItemModel[];
   toolResultFoldSources: (item: ItemModel) => readonly ItemModel[];
-  // Whether the fold's own replay loses content when the inputs `side`
-  // names leave it — the merge's own answer to "did that side contribute",
-  // its field rules deciding (nullish fallbacks, rank-merged status, text
-  // presence, and every spread-merged field), never a consumer's
-  // re-derived list. A side holding none of the item's fold inputs
-  // contributed nothing; a side holding every input contributed
-  // everything; absorbed tool results answer through the fold's own
-  // supersession test, recorded where the absorption happened.
+  // Whether the inputs `side` names contributed content the item carries
+  // — read from the keep-decisions the fold edges recorded where they
+  // happened, never re-derived here (RoboRev round 5): the non-tool
+  // survivors each identity edge carried forward, and the supplier each
+  // tool field's selection kept, the rewrite's winners included. An item
+  // no edge folded vouches for itself.
   itemSideContributes: (item: ItemModel, side: (input: ItemModel) => boolean) => boolean;
 }
 
@@ -1900,80 +2006,23 @@ function toolResultFoldSourcesOf(context?: ToolItemMergeContext): (item: ItemMod
   return context === undefined ? () => [] : (item) => context.toolResultFolds.get(item) ?? [];
 }
 
-// The item merge's own fold-order replay: the membership's leaves — older
-// side first, then fresh in the order they folded in, exactly the order
-// itemFoldSources reads — reduced through mergePageItem the way the edges
-// combined them.
-function foldItemSpine(leaves: readonly ItemModel[]): ItemModel {
-  return leaves.reduce((accumulated, leaf) => mergePageItem(accumulated, leaf));
-}
-
 // The fold's answer to whether the inputs `side` names contributed content
-// the merged item carries: replay the merge without them and the merge's
-// own selection rules decide what was lost. Every field rule counts —
-// rank-merged status, the ??-fallback fields (startedAt and completedAt
-// included), text presence, every spread-merged field, and, for a call the
-// tool fold rewrote, the rewrite's own field selection — because the
-// comparison IS the merge's final output, not the spine it then overrode.
+// the merged item carries: the keep-decisions the fold edges recorded —
+// the non-tool survivors each identity edge carried forward, and the
+// supplier each tool field's selection kept, the rewrite's winners
+// included. An item no edge folded vouches for itself; nothing here
+// re-derives the fold's decisions after the fact.
 function itemSideContributesOf(
   context?: ToolItemMergeContext,
 ): (item: ItemModel, side: (input: ItemModel) => boolean) => boolean {
-  const sourcesOf = itemFoldSourcesOf(context);
   return (item, side) => {
-    const calls = sourcesOf(item);
-    const results = context?.toolResultFolds.get(item) ?? [];
-    const keptCalls = calls.filter((call) => !side(call));
-    const keptResults = results.filter((result) => !side(result));
-    if (keptCalls.length === calls.length && keptResults.length === results.length) {
-      return false;
-    }
-    // The item itself came from the named side when every identity leaf
-    // did: the merge would not hold it at all without them.
-    if (keptCalls.length === 0) return true;
-    // A rewritten call replays through the tool fold's own field
-    // selection on both sides; with no results left the fold would not
-    // rewrite at all, so the spine stands as the merge's answer.
-    const finish = (
-      spine: ItemModel,
-      groupCalls: readonly ItemModel[],
-      groupResults: readonly ItemModel[],
-    ): ItemModel => (groupResults.length > 0 ? toolRewriteOf(spine, groupCalls, groupResults, side) : spine);
-    const full = finish(foldItemSpine(calls), calls, results);
-    const without = finish(foldItemSpine(keptCalls), keptCalls, keptResults);
-    return !sameModelFields(full, without) || itemTextPresence(full) !== itemTextPresence(without);
+    const record = context?.contributions.get(item);
+    if (record === undefined) return side(item);
+    if ([...record.nonTool].some(side)) return true;
+    return Object.values(record.tools).some(
+      (source) => source !== undefined && side(source),
+    );
   };
-}
-
-// The tool fold's own field selection replayed for one candidate set: the
-// not-side (fresh) results then calls, then the side's, each scanned
-// last-first the way preferredToolField scans the fold view's groups,
-// with the replayed spine's own value last — the same preference the fold
-// applied when it rewrote the call. The identity leaves stand in for the
-// view's call candidates (the common case is one call per side), and a
-// same-side candidate list replays in fold order.
-function toolRewriteOf(
-  base: ItemModel,
-  calls: readonly ItemModel[],
-  results: readonly ItemModel[],
-  side: (input: ItemModel) => boolean,
-): ItemModel {
-  const freshResults = results.filter((result) => !side(result)).reverse();
-  const freshCalls = calls.filter((call) => !side(call)).reverse();
-  const sideResults = results.filter(side).reverse();
-  const sideCalls = calls.filter(side).reverse();
-  const field = <K extends ToolResultField>(name: K) =>
-    preferredToolField(base, name, freshResults, freshCalls, sideResults, sideCalls);
-  return copyItemTextPresence(base, {
-    ...base,
-    output: field("output"),
-    error: field("error"),
-    prevalOnly: field("prevalOnly"),
-    exitCode: field("exitCode"),
-    completedAt: field("completedAt"),
-    status: field("status"),
-    outputImages: field("outputImages"),
-    raw: field("raw"),
-  });
 }
 
 // The older-page merge plus its own fragment membership, for callers that

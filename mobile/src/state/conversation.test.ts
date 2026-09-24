@@ -17724,6 +17724,96 @@ describe("ConversationStore", () => {
       expect(rowById(store, "item_tool_1")).toBeUndefined();
     });
 
+    // RoboRev round 5 (panel Medium): the contribution answer must come
+    // from the fold's own keep-decisions, recorded where the fold made
+    // them. The replay re-derived those decisions after the fact, and its
+    // re-derivation was not the fold's: an identity-folded RESULT fed the
+    // same candidate groups the fold classifies by kind — and a same-callId
+    // call the fold's field selection reads but no identity fold joined was
+    // invisible to it — so a page result the fold's call precedence
+    // superseded still read as the merged call's contributor: the page
+    // claimed ownership and reported progress keys for content the fold
+    // did not keep.
+    it("does not claim a page result the tool fold's call precedence superseded", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "item_tool_1",
+                  toolName: "shell",
+                  transcriptKey: "K",
+                  callId: "call-1",
+                  status: "inProgress",
+                } as ThreadItem,
+                {
+                  type: "commandExecution",
+                  id: "item_tool_2",
+                  toolName: "shell",
+                  callId: "call-1",
+                  output: "b",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // The page carries the call's RESULT under the same transcript key:
+      // it identity-folds into the keyed call, but the fold's own field
+      // selection scans the later same-callId call first — the page
+      // result's content never survives it.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "item_tool_result_1",
+                turnId: "tp",
+                type: "commandExecution",
+                toolName: "shell",
+                transcriptKey: "K",
+                callId: "call-1",
+                output: "page result output",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The fold kept the later call's output: the page result's content
+      // lost the field selection.
+      const call = store
+        .getState()
+        .conversation?.turns.find((turn) => turn.id === "t1")
+        ?.items.find((item) => item.id === "item_tool_1");
+      expect(call).toMatchObject({ output: "b" });
+      // So the page contributed nothing the fold still carries: no
+      // progress keys name it...
+      expect(
+        loaded.status === "loaded" ? loaded.itemKeys.length : 0,
+      ).toBe(0);
+      // ...and it owns no page history: an omitting rehydrate drops the
+      // call.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "item_tool_1")).toBeUndefined();
+    });
+
     // A replayed input image reaches a page with no bytes and no stamped
     // url, only its content sha. D23d: the store's own merge hydrates the
     // page against the merged MODEL's serving session — the route the hub
