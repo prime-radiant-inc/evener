@@ -615,6 +615,46 @@ it("useConnectionDisplay: a hub move while ready does not retain content the nex
 	expect(display.result.current).toBe("wall");
 });
 
+// Round 52's retention Low: the re-arm gate's bare `!scopeMoved` term reads
+// true on every post-settle render — the scope ref has already moved — so a
+// fatal update arriving while the stale state stays ready re-armed
+// `everReady` for the new hub in the very run that should have kept the
+// fatal wall. When the fatal flag then clears on the reconnect, the dialing
+// replacement showed a banner: retained content for a hub that never
+// completed a trusted ready transition, and a remount of ready-only children
+// against the closed client the fatal wall exists to prevent. The re-arm
+// must key on readiness the new hub actually earned.
+it("useConnectionDisplay: a fatal update after a re-key does not retain a hub trust never vouched for", () => {
+	let hubId = "hub-1";
+	let state: ConnectionState = "ready";
+	let fatal = false;
+	const display = renderHook(() => useConnectionDisplay(hubId, state, fatal));
+	// Mount-already-ready: the settle earns trust and retention for hub-1.
+	display.rerender();
+	expect(display.result.current).toBe("none");
+
+	// The re-key: hubId moves while the connection still reports ready.
+	hubId = "hub-2";
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+
+	// The fatal close arrives while the stale state still reports ready:
+	// the ready render walls on the trust mismatch either way, but this
+	// effect run must not arm retention for the new hub.
+	fatal = true;
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+
+	// The replacement starts dialing: the fatal flag clears and the state
+	// drops. The wall must hold — hub-2 never completed a trusted ready
+	// transition, so nothing it never showed may banner, and the ready-only
+	// children must not remount against the closed client.
+	fatal = false;
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+});
+
 // Round 33's retention Medium: the hub move and the genuine transition into
 // ready can land in ONE committed render — the connection re-points and
 // reports ready together — and that is the new hub's own readiness, not the

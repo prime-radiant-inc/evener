@@ -3813,6 +3813,186 @@ func TestScratchReinstallAdoptsWhenAReleaseRacesTheInstall(t *testing.T) {
 	}
 }
 
+// TestScratchInstallReportsACommittedWrite pins the round-52 committed-write
+// class at the install's existing-binding upsert: the manifest's rename can
+// commit before the write reports a post-rename failure, and the install then
+// aborts over rows that are already present and current — the exact
+// sticky-error-over-committed-rows harm. The error handling must recognize
+// its own committed result.
+func TestScratchInstallReportsACommittedWrite(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const childID = "01COMMITTEDINST1"
+	const bindingID = "b-committed-install"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, childID, bindingID)
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	// The arm this test drives only runs for an environment that already
+	// carries an installed binding the manifest knows.
+	if err := env.SetScratchRetentionBinding(owner, bindingRow); err != nil {
+		t.Fatalf("install the binding on the environment: %v", err)
+	}
+
+	// The write's rename commits and only the post-rename step fails — the
+	// round-43 probe, failing exactly once.
+	var probeCalls int
+	sandbox.SetScratchManifestWriteProbeForTesting(func() error {
+		probeCalls++
+		if probeCalls == 1 {
+			return errors.New("probe: post-rename fsync failure")
+		}
+		return nil
+	})
+	t.Cleanup(func() { sandbox.SetScratchManifestWriteProbeForTesting(nil) })
+
+	if err := s.installChildScratchRetention(env, childID); err != nil {
+		t.Fatalf("the install reported a committed write as failed: %v", err)
+	}
+
+	// The premise the recognition stands on: the rows the install derives are
+	// durable, exactly as this pass wrote them.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findScratchBinding(manifest, bindingID); !ok {
+		t.Fatalf("the committed binding %q is absent", bindingID)
+	}
+	current := ""
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == childID {
+			current = consumer.CurrentBindingID
+		}
+	}
+	if current != bindingID {
+		t.Fatalf("the child's consumer row names %q, want the committed %q", current, bindingID)
+	}
+	if probeCalls == 0 {
+		t.Fatal("fixture expected the probe to fire on the install's write")
+	}
+}
+
+// TestScratchInstallReportsACommittedWriteForANewBinding is the same class at
+// the new-binding arm: a child with no rows yet gets its binding minted and
+// pinned, and the install's consumer upsert then fails post-rename over rows
+// only the committed write could have created.
+func TestScratchInstallReportsACommittedWriteForANewBinding(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const childID = "01COMMITTEDINST2"
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+
+	var probeCalls int
+	sandbox.SetScratchManifestWriteProbeForTesting(func() error {
+		probeCalls++
+		// The pin transaction's publication is the first write this probe
+		// sees; the consumer upsert is the second.
+		if probeCalls == 2 {
+			return errors.New("probe: post-rename fsync failure")
+		}
+		return nil
+	})
+	t.Cleanup(func() { sandbox.SetScratchManifestWriteProbeForTesting(nil) })
+
+	if err := s.installChildScratchRetention(env, childID); err != nil {
+		t.Fatalf("the install reported a committed write as failed: %v", err)
+	}
+
+	// Only the committed upsert can have created the consumer row naming the
+	// binding the install minted for this child — the pin never writes one.
+	installed, err := env.ScratchRetentionBinding()
+	if err != nil || installed.BindingID == "" {
+		t.Fatalf("the environment carries no installed binding: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findScratchBinding(manifest, installed.BindingID); !ok {
+		t.Fatalf("the committed binding %q is absent from the manifest", installed.BindingID)
+	}
+	current := ""
+	for _, consumer := range manifest.Consumers {
+		if consumer.SessionID == childID {
+			current = consumer.CurrentBindingID
+		}
+	}
+	if current != installed.BindingID {
+		t.Fatalf("the child's consumer row names %q, want the committed %q", current, installed.BindingID)
+	}
+	if probeCalls < 2 {
+		t.Fatalf("fixture expected the probe to fire on the install's writes, saw %d calls", probeCalls)
+	}
+}
+
+// TestScratchRoleRegistrationReportsACommittedWrite pins the same class at
+// the roles registration's upsert: the consumer row a swap writes can commit
+// while the write reports the post-rename failure, and the registration then
+// aborts over a row it already installed. The recognition must report the
+// committed registration as done.
+func TestScratchRoleRegistrationReportsACommittedWrite(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const bindingID = "b-committed-roles"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindSandbox)
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindSandbox].Retain() })
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.SetScratchRetentionBinding(owner, bindingRow); err != nil {
+		t.Fatalf("install the binding on the environment: %v", err)
+	}
+
+	// Arm the probe from the registration loop's own attempt hook so the
+	// write that fails is exactly the loop's upsert — the registration's
+	// one manifest write.
+	var probeFired bool
+	s.cfg.testOnly.scratchUpsertAttempt = func() {
+		s.cfg.testOnly.scratchUpsertAttempt = nil
+		sandbox.SetScratchManifestWriteProbeForTesting(func() error {
+			probeFired = true
+			return errors.New("probe: post-rename fsync failure")
+		})
+	}
+	t.Cleanup(func() { sandbox.SetScratchManifestWriteProbeForTesting(nil) })
+
+	if err := s.registerScratchConsumerRoles(env); err != nil {
+		t.Fatalf("the roles registration reported a committed write as failed: %v", err)
+	}
+
+	// The registration's consumer row — absent before the call, written by
+	// the very upsert that reported the failure — is durable.
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, ok := findScratchConsumer(manifest, s.id)
+	if !ok || consumer.CurrentBindingID != bindingID {
+		t.Fatalf("the committed consumer row is missing or misbound: %+v", consumer)
+	}
+	if !probeFired {
+		t.Fatal("fixture expected the probe to fire on the registration's write")
+	}
+}
+
 // TestReprovisionKeepsTheWrapperForAnOwnedSandboxScratch pins the ordering
 // the round-23 Low flags: the ownership check that preserves an environment
 // already holding a sandbox scratch must run before anything clears the

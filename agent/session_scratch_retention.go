@@ -131,6 +131,16 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 				}
 				continue
 			}
+			// A non-retryable write error may still be a committed write:
+			// the manifest rename can commit before writeScratchRetention
+			// reports a post-rename failure. When the durable manifest
+			// already carries exactly the rows this pass derived, the
+			// install is done — report success instead of aborting over
+			// rows that are already present (the round 39/43/45
+			// committed-write pattern).
+			if err != nil && scratchUpsertCommitted(owner, freshBinding, scratchConsumerPreservingRoles(fresh, sessionID, freshBinding.BindingID)) {
+				return nil
+			}
 			return err
 		}
 		return fmt.Errorf("scratch retention: install rows for %q stayed stale", sessionID)
@@ -217,6 +227,14 @@ func (s *Session) installScratchRetentionFor(env *execenv.LocalExecutionEnvironm
 				installRefusals++
 			}
 			continue
+		}
+		// A non-retryable write error may still be a committed write: the
+		// rename can commit before writeScratchRetention reports a
+		// post-rename failure. When the durable manifest already carries
+		// exactly the rows this pass derived, the install is done (the
+		// round 39/43/45 committed-write pattern).
+		if err != nil && scratchUpsertCommitted(owner, published, scratchConsumerPreservingRoles(fresh, sessionID, published.BindingID)) {
+			return nil
 		}
 		return err
 	}
@@ -620,6 +638,14 @@ func (s *Session) registerScratchConsumerRoles(env *execenv.LocalExecutionEnviro
 			}
 			continue
 		}
+		// A non-retryable write error may still be a committed write: the
+		// rename can commit before writeScratchRetention reports a
+		// post-rename failure. When the durable manifest already carries
+		// exactly the rows this pass derived, the registration is done
+		// (the round 39/43/45 committed-write pattern).
+		if err != nil && scratchUpsertCommitted(owner, freshBinding, consumer) {
+			return nil
+		}
 		return err
 	}
 	return fmt.Errorf("scratch retention: register rows for %q stayed stale", s.id)
@@ -826,6 +852,24 @@ func findScratchConsumer(manifest sandbox.ScratchManifest, sessionID string) (sa
 		}
 	}
 	return sandbox.ScratchConsumerBinding{}, false
+}
+
+// scratchUpsertCommitted recognizes an upsert whose manifest rename committed
+// before the write reported a post-rename failure: the rows this pass derived
+// are already durable, binding for binding and role for role. A concurrent
+// writer committing byte-identical rows lands in the desired state either way,
+// so a content match is success, not a false positive.
+func scratchUpsertCommitted(owner sandbox.ScratchOwner, binding sandbox.ScratchBinding, consumer sandbox.ScratchConsumerBinding) bool {
+	fresh, err := sandbox.LoadScratchRetention(owner)
+	if err != nil || fresh.Released {
+		return false
+	}
+	got, ok := findScratchBinding(fresh, binding.BindingID)
+	if !ok || !scratchBindingRowsCurrent(got, binding) {
+		return false
+	}
+	gotConsumer, ok := findScratchConsumer(fresh, consumer.SessionID)
+	return ok && scratchConsumerRowsCurrent(gotConsumer, consumer)
 }
 
 // refreshRetainedScratchConsumer converges the retained pool onto sessionID's

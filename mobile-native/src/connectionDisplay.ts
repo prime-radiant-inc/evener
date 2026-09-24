@@ -200,22 +200,24 @@ export function useConnectionDisplay(
 		}
 		if (
 			state === "ready" &&
-			(!scopeMoved || transitionedIntoReady || (trust.trusted && trust.scope === hubId))
+			(transitionedIntoReady || (trust.trusted && trust.scope === hubId))
 		) {
-			// The retention arm is gated on the same render's scopeMoved: in
-			// the re-key window the moved render still carries the previous
-			// hub's ready state, and re-arming on it would retain content for
-			// a hub that has never been ready — the reset above would be
-			// undone by the very effect run that performed it (round 32). One
-			// exception is a transition INTO ready arriving in the moved
-			// commit itself: the connection re-pointed and became ready
-			// together, and that readiness is the new hub's own — the screen
-			// it shows must retain through the next flap like any other
-			// genuinely-ready hub (round 33). The other is a return to a
-			// still-trusted scope: a scope that moved away and came back
-			// before any transition lands on a hub whose ready state still
-			// vouches for it, so the content it shows retains exactly as it
-			// would had the move never happened (round 41).
+			// The retention arm keys on readiness this hub actually earned.
+			// A post-settle ready render alone is not evidence: the scope
+			// ref settles while the connection still reports the previous
+			// hub's ready state, so arming on the settled scope would retain
+			// content for a hub that has never been ready — the reset above
+			// would be undone by a later effect run (round 32; round 52
+			// closes the post-settle window the bare `!scopeMoved` term left
+			// open, where a fatal update while the stale state stayed ready
+			// re-armed retention for the new hub and the dialing
+			// replacement showed a banner). A transition INTO ready arriving
+			// in the moved commit itself is the new hub's own readiness —
+			// the screen it shows must retain through the next flap like
+			// any other genuinely-ready hub (round 33). A return to a
+			// still-trusted scope arms on that trust: the hub's ready state
+			// still vouches for it, so the content it shows retains exactly
+			// as it would had the move never happened (round 41).
 			everReady.current = true;
 			fatalRecovery.current = false;
 		} else if (fatal) {
