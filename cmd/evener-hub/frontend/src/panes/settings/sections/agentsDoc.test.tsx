@@ -1,16 +1,22 @@
 import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { agentsDocStore, resetAgentsDocStoreForTests } from "../../../stores/agentsDoc";
+import {
+  agentsDocStore,
+  agentsDocStoreForHost,
+  resetAgentsDocHostInstancesForTests,
+  resetAgentsDocStoreForTests,
+} from "../../../stores/agentsDoc";
 import { connectionStore } from "../../../stores/connection";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { AgentsDocSection } from "./agentsDoc";
 
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
+const BETA_DOC: AgentsDocResponse = { path: "/home/b/.config/evener/AGENTS.md", exists: true, content: "# beta\n" };
 
 function connectFakeClient(doc: AgentsDocResponse = DOC): FakeClient {
   const fake = new FakeClient("ready");
@@ -51,11 +57,13 @@ function saveButton(): HTMLButtonElement {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetAgentsDocStoreForTests();
+  resetAgentsDocHostInstancesForTests();
   resetToastStoreForTests();
 });
 
 afterEach(() => {
   cleanup();
+  resetAgentsDocHostInstancesForTests();
 });
 
 test("loads the file on mount and shows its path and content", async () => {
@@ -451,4 +459,45 @@ test("a reconnect while the draft is dirty keeps the draft and offers Load curre
 
   await user.click(screen.getByRole("button", { name: "Load current" }));
   expect(editor().value).toBe("# while we were away\n");
+});
+
+// The section's own host contract, pinned without the shared frame: a
+// host-scoped parent hands it a different `host` - and therefore a different
+// store, whose document may already be cached - without unmounting it. The
+// editor's reset has to be atomic with that swap, because the document-sync
+// effect runs in the same commit and reads the draft and baseline this render
+// closes over; a draft and baseline left over from the host the user left are
+// read as "this document changed on disk" and blank the editor.
+test("a host switch shows the new host's cached document, never the previous host's draft", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    expect(forwarded.host).toBe("beta");
+    if (forwarded.method === "evener/settings/agentsDoc/get") return BETA_DOC as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+  // Beta's own file is already cached: an earlier visit to that host read it.
+  await agentsDocStoreForHost("beta").getState().fetch();
+
+  const { rerender } = render(
+    <>
+      <Toast />
+      <AgentsDocSection sectionId="agents-md" host="local" />
+    </>,
+  );
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  fireEvent.change(editor(), { target: { value: "# draft for this hub\n" } });
+  expect(editor().value).toBe("# draft for this hub\n");
+
+  rerender(
+    <>
+      <Toast />
+      <AgentsDocSection sectionId="agents-md" host="beta" />
+    </>,
+  );
+
+  await waitFor(() => expect(editor().value).toBe("# beta\n"));
+  expect(screen.queryByText(/changed on disk/)).toBeNull();
+  // The new host's document IS the baseline, so there is nothing to save.
+  expect(saveButton().disabled).toBe(true);
 });

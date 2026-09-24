@@ -65,13 +65,26 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
   // The editor's draft belongs to the host it was loaded from: switching hosts
   // hands the section the new host's store, so the previous host's draft and
   // baseline are dropped rather than shown against the new host's document.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the scoped store is a deliberate trigger-only dependency; switching hosts must reset the editor
-  useEffect(() => {
+  //
+  // Cleared DURING render, not from an effect, which is what makes the commit
+  // that swaps the store the first one that renders the new host: the two have
+  // to be atomic, because the document-sync effect below runs in that same
+  // commit and reads `draft` and `baseline` as this render closes over them. An
+  // effect-based reset lands a commit too late, so that sync reads them still
+  // belonging to the host the user left - and then either reads the new host's
+  // cached document as "changed on disk" and blanks the editor under a
+  // spurious warning, or, when that document happens to equal the old draft,
+  // adopts it as the baseline while the reset empties the draft, arming Save
+  // over an empty body. Keyed on the store rather than on `doc`, so a `changed`
+  // broadcast mid-edit is still not a reason to drop what is being typed.
+  const [editorStore, setEditorStore] = useState(store);
+  if (editorStore !== store) {
+    setEditorStore(store);
     setDraft("");
     setBaseline(null);
     setStale(false);
     setSaveError(null);
-  }, [store]);
+  }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the only trigger; draft and baseline are read at that moment, not watched
   useEffect(() => {
