@@ -228,3 +228,44 @@ test("browsing a path field on a remote host completes against THAT host, never 
   expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(false);
   expect(fake.calls.some((call) => call.method === "evener/paths/complete")).toBe(false);
 });
+
+// The pane is reached as /settings/project?cwd=<dir>: the SECTION is the
+// project. Switching hosts re-scopes that same project to the new host, so the
+// host change has to carry the route's query - dropping it leaves the pane with
+// no cwd at all, rendering "No project selected" over the project the user was
+// editing.
+test("switching hosts keeps the route's ?cwd=, re-scoping the same project to the new host", async () => {
+  setQueryCwd("/repo");
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/launch/schema", () => SCHEMA);
+  fake.on("evener/launch/getLayer", (params) =>
+    params.layer === "project" ? { systemPromptPath: "/repo/prompt.md" } : { agent: "evener" },
+  );
+  fake.on("evener/launch/resolve", () => ({ effective: { agent: "evener" }, layers: {}, provenance: {} }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string; params: { layer?: string } };
+    if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
+    if (forwarded.method === "evener/launch/getLayer")
+      return (forwarded.params.layer === "project" ? {} : { agent: "beta-agent" }) as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  render(<ProjectHostScope sectionId="project" />);
+  const user = userEvent.setup();
+  await screen.findByLabelText("Agent");
+  expect(screen.getByText("/repo")).toBeTruthy();
+
+  const select = screen.getByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+
+  expect(new URL(window.location.href).searchParams.get("cwd")).toBe("/repo");
+  expect(new URL(window.location.href).searchParams.get("host")).toBe("beta");
+  expect(screen.queryByText(/No project selected/)).toBeNull();
+  // And the same project's layer now comes from beta.
+  await screen.findByText("default: beta-agent");
+  expect(screen.getByText("/repo")).toBeTruthy();
+});
