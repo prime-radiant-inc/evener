@@ -15,6 +15,10 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
+// Registers the session panel pane types: the cards' Open-list buttons call
+// openPane("sessionTasks"), which throws on an unregistered type - without
+// this side-effect import the standalone preview's buttons are landmines.
+import "../panes/sessionPanels";
 import { TranscriptBody } from "../panes/session/transcript/TranscriptBody";
 import { connectionStore } from "../stores/connection";
 import { toggleDisclosure } from "../widgets/disclosure/disclosureStore";
