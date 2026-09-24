@@ -32,6 +32,9 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		if err := identifier.ValidateSessionID(currentSessionID); err != nil {
 			return "", "", fmt.Errorf("invalid current session ID: %w", err)
 		}
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		p := transcriptPath(currentStateDir, currentSessionID)
 		if err := symlinkErrorDeep(p, currentStateDir); err != nil {
 			return "", "", fmt.Errorf("session %q: %w", selector, err)
@@ -55,7 +58,13 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		}
 		var bucketDir string
 		if projectID == "" {
-			// local: — use current bucket
+			// local: — use current bucket. Validate the layout prefix: the
+			// bucket dir is used directly, and symlinkErrorDeep below is rooted
+			// at the bucket dir, so ancestors above it (evener/,
+			// evener/projects/) are not checked.
+			if err := validateLayoutPrefix(currentStateDir); err != nil {
+				return "", "", fmt.Errorf("transcript ref %q: %w", selector, err)
+			}
 			bucketDir = currentStateDir
 		} else {
 			// proj: — resolve sibling bucket. Lstat the joined path and reject
@@ -124,6 +133,9 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 		return "", "", fmt.Errorf("session %q is ambiguous; found in: %s",
 			selector, strings.Join(candidates, ", "))
 	case currentFound:
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return "", "", fmt.Errorf("session %q: %w", selector, err)
+		}
 		currentPath := transcriptPath(currentStateDir, selector)
 		if err := symlinkErrorDeep(currentPath, currentStateDir); err != nil {
 			return "", "", fmt.Errorf("session %q: %w", selector, err)
@@ -209,17 +221,14 @@ func symlinkErrorDeep(path, root string) error {
 // root and expose transcripts from elsewhere, so the agent never follows
 // them. The doctor's symlink policy is a separate concern.
 func enumerateBuckets(stateHome string) ([]string, error) {
-	pattern := filepath.Join(stateHome, "evener", "projects", "*")
-	matches, err := transcriptBucketGlob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("glob project buckets: %w", err)
-	}
-	// Validate the fixed layout prefix: filepath.Glob follows symlinked
-	// path components, so a symlinked evener/ or evener/projects/ ancestor
-	// (a plausible state-dir relocation) would let glob return buckets
-	// whose refs read_transcript then REJECTS with "traverses a symlink".
-	// Lstat both prefix dirs and refuse to enumerate when either is a
-	// symlink — find must not return refs read rejects.
+	// Validate the fixed layout prefix BEFORE globbing: filepath.Glob
+	// follows symlinked path components, so a symlinked evener/ or
+	// evener/projects/ ancestor (a plausible state-dir relocation) would
+	// let glob return buckets whose refs read_transcript then REJECTS with
+	// "traverses a symlink". Lstat both prefix dirs and refuse to enumerate
+	// when either is a symlink — find must not return refs read rejects.
+	// Checking before Glob also avoids calling Glob through a symlinked
+	// prefix at all.
 	for _, prefix := range []string{
 		filepath.Join(stateHome, "evener"),
 		filepath.Join(stateHome, "evener", "projects"),
@@ -231,6 +240,11 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil, nil // symlinked prefix → refuse to enumerate
 		}
+	}
+	pattern := filepath.Join(stateHome, "evener", "projects", "*")
+	matches, err := transcriptBucketGlob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("glob project buckets: %w", err)
 	}
 	// Filter to directories only. The symlink check MUST come first and
 	// MUST use Lstat (not Stat): Stat follows the symlink, clears
@@ -350,6 +364,35 @@ func refFor(projectID, sessionID string) string {
 // cross-bucket sweep, so the two cannot drift apart).
 func stateHomeFor(stateDir string) string {
 	return userdirs.StateHomeForBucketDir(stateDir)
+}
+
+// validateLayoutPrefix Lstats the stateHome/evener and stateHome/evener/projects
+// ancestors of an in-layout bucket dir, returning an error if either is a
+// symlink. This mirrors enumerateBuckets' prefix guard: symlinkErrorDeep rooted
+// at the bucket dir does not check ancestors above the bucket, so a symlinked
+// evener/ (a plausible state-dir relocation where ~/.local/state/evener itself
+// is a symlink within the state root) would let current-bucket reads resolve
+// through it while sibling reads and explicit proj: refs are rejected — an
+// inconsistency. For flat layouts (no state home), validateLayoutPrefix is a
+// no-op: there are no layout ancestors to check.
+func validateLayoutPrefix(stateDir string) error {
+	sh := stateHomeFor(stateDir)
+	if sh == "" {
+		return nil // flat layout — no layout prefix to validate
+	}
+	for _, prefix := range []string{
+		filepath.Join(sh, "evener"),
+		filepath.Join(sh, "evener", "projects"),
+	} {
+		info, _ := os.Lstat(prefix)
+		if info == nil {
+			return nil // prefix does not exist — not our concern
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("state dir %q: layout prefix %q is a symlink: symlinks are not allowed on the transcript read path", stateDir, prefix)
+		}
+	}
+	return nil
 }
 
 // transcriptPath builds the path to a transcript JSONL file.

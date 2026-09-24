@@ -50,6 +50,12 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	if stateHome == "" {
 		return localJobLocation{}, errJobNotFound(jobID)
 	}
+	// Validate the layout prefix before opening the projects directory:
+	// os.Open follows symlinks, so a symlinked evener/ ancestor would let
+	// the sibling sweep read entries from outside the state root.
+	if err := validateLayoutPrefix(currentStateDir); err != nil {
+		return localJobLocation{}, fmt.Errorf("local job %q: %w", jobID, err)
+	}
 	projectsPath := filepath.Join(stateHome, "evener", "projects")
 	dir, err := openLocalJobProjectDirectory(projectsPath)
 	if err != nil {
@@ -126,6 +132,17 @@ func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 }
 
 func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLocation, bool, error) {
+	// Validate the layout prefix: symlinkErrorDeep below is rooted at
+	// stateDir, so ancestors above it (evener/, evener/projects/) are not
+	// checked. For sibling stateDirs from the enumerate sweep, the prefix
+	// was already validated in locateLocalJob; for the current stateDir
+	// (first call), no prior validation exists. A symlinked prefix means
+	// the job journal is behind a symlink — treat as not-found (skip-
+	// worthy), not an error: an unrelated symlinked ancestor should not
+	// mask the honest "job not found" result.
+	if prefixErr := validateLayoutPrefix(stateDir); prefixErr != nil {
+		return localJobLocation{}, false, nil //nolint:nilerr // symlinked prefix is skip-worthy, not an error
+	}
 	path := filepath.Join(jobsDir(stateDir, ownerSessionID), "jobs.jsonl")
 	// Reject symlinked sessions/ dirs before reading the job journal — a
 	// symlinked sessions/ could point outside the state root.

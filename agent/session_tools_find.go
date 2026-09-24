@@ -403,8 +403,19 @@ type findCandidate struct {
 // arbitrary glob order.
 func collectCandidates(buckets []string, currentStateDir string) []findCandidate {
 	currentAbs, _ := filepath.Abs(currentStateDir)
+	// Validate the layout prefix for the current bucket: it enters this
+	// function directly (not via enumerateBuckets, which already validates
+	// the prefix for sibling buckets). symlinkErrorDeep below is rooted at
+	// the bucket, so ancestors above it (evener/, evener/projects/) are not
+	// checked. A symlinked evener/ within the state root would let metas
+	// from outside the state root surface in find + children_of results.
+	currentPrefixOK := validateLayoutPrefix(currentStateDir) == nil
 	var out []findCandidate
 	for _, bucket := range buckets {
+		bucketAbs, _ := filepath.Abs(bucket)
+		if bucketAbs == currentAbs && !currentPrefixOK {
+			continue
+		}
 		// Skip buckets whose sessions/ dir is a symlink pointing outside
 		// the state root: ListSessionMetas uses afero.ReadDir which follows
 		// symlinked directories, so metas from outside the state root would
@@ -484,6 +495,13 @@ func metaMatches(m schema.SessionMeta, needle string) bool {
 // transcript only when reached; the second return reports whether the file was
 // actually opened, so the caller counts only real opens toward the scan budget.
 func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippet, opened bool) {
+	// Validate the layout prefix for in-layout buckets: symlinkErrorDeep
+	// below is rooted at bucketDir, so ancestors above it are not checked.
+	// For sibling buckets from enumerateBuckets, the prefix was already
+	// validated; for the current bucket, this is the first check.
+	if err := validateLayoutPrefix(bucketDir); err != nil {
+		return nil, false
+	}
 	path := transcriptPath(bucketDir, sessionID)
 	// Reject symlinked transcript files (and symlinked sessions/ dirs) before
 	// reading — a symlink could point outside the state root.
@@ -517,11 +535,16 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 }
 
 // transcriptExists is a cheap stat of the transcript JSONL file (no parse).
-// Uses os.Lstat (not os.Stat) so symlinked transcript files are rejected: a
-// symlinked file would count as existing and surface in find results, but
-// read_transcript rejects it — find must not return refs read rejects.
+// Uses symlinkErrorDeep + os.Lstat so symlinked transcript files AND symlinked
+// sessions/ dirs are rejected: a symlinked file or a symlinked sessions/ parent
+// would count as existing and surface in find results, but read_transcript
+// rejects both — find must not return refs read rejects.
 func transcriptExists(bucketDir, sessionID string) bool {
-	info, err := os.Lstat(transcriptPath(bucketDir, sessionID))
+	path := transcriptPath(bucketDir, sessionID)
+	if err := symlinkErrorDeep(path, bucketDir); err != nil {
+		return false
+	}
+	info, err := os.Lstat(path)
 	if err != nil {
 		return false
 	}

@@ -796,10 +796,13 @@ func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, a
 		}
 		// Reject a symlinked api-log sidecar before opening — it is a
 		// different file from the validated transcript and can itself be a
-		// symlink pointing outside the state root. symlinkErrorDeep returns
+		// symlink pointing outside the state root. Root the guard at the
+		// bucket dir (parent of sessions/) so a symlinked sessions/ dir is
+		// caught, not just the sidecar file itself. symlinkErrorDeep returns
 		// nil for missing sidecars (legitimate), rejecting only real symlinks.
 		sidecar := apiLogPathForTranscript(path)
-		if err := symlinkErrorDeep(sidecar, filepath.Dir(sidecar)); err != nil {
+		bucketDir := filepath.Dir(filepath.Dir(path))
+		if err := symlinkErrorDeep(sidecar, bucketDir); err != nil {
 			return nil, fmt.Errorf("api-log sidecar: %w", err)
 		}
 		if parsed.AttemptID != "" {

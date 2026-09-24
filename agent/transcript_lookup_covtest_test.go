@@ -148,7 +148,11 @@ func TestEnumerateBuckets_GlobError(t *testing.T) {
 	}
 	defer func() { transcriptBucketGlob = orig }()
 
-	_, err := enumerateBuckets(t.TempDir())
+	// Create the layout prefix so the Lstat prefix checks pass and Glob
+	// is actually reached (prefix checks run before Glob after the reorder).
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "evener", "projects"), 0o755)
+	_, err := enumerateBuckets(dir)
 	if err == nil {
 		t.Fatal("expected error for glob failure")
 	}
