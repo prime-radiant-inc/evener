@@ -425,6 +425,29 @@ test("with the local hub selected, a REPLACED controller connection re-reads the
   expect(second.calls.filter((call) => call.method === "evener/launch/resolve").length).toBe(1);
 });
 
+test("with the local hub selected, a RECOVERED controller connection re-reads the pane", async () => {
+  const fake = connectFakeClient();
+  let agent = "controller-agent";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/launch/schema", () => schema("controller schema"));
+  fake.on("evener/launch/getLayer", () => ({ agent }));
+  fake.on("evener/launch/resolve", () => ({ effective: { agent }, layers: {}, provenance: {} }));
+
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("controller-agent");
+  const reads = controllerLaunchCalls(fake).filter((method) => method === "evener/launch/resolve").length;
+
+  // The connection drops and comes back on the SAME client. A change made while
+  // this browser was away was broadcast to every CONNECTED client, so this one
+  // saw no notification: the recovery itself is the signal to re-read.
+  agent = "controller-agent-2";
+  act(() => connectionStore.setState({ state: "reconnecting" }));
+  act(() => connectionStore.setState({ state: "ready" }));
+
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("controller-agent-2"));
+  expect(controllerLaunchCalls(fake).filter((method) => method === "evener/launch/resolve").length).toBe(reads + 1);
+});
+
 // A remote host that is merely AWAY (unattached) refuses evener/host/request, so
 // a pane that loaded in that window sits on its failure - the host's attachment
 // is a live session field, deliberately not part of the registration identity, so
