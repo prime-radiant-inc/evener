@@ -2543,7 +2543,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 	}
 	path := writeTestAPILog(t, dir, sessionID, records...)
 
-	summaries, totalRecords, partialTail, err := decodeAPILogSummaries(context.Background(), "", path, "last:100")
+	summaries, totalRecords, partialTail, err := decodeAPILogSummaries(context.Background(), path, "", "last:100")
 	if err != nil {
 		t.Fatalf("decode API-log summaries: %v", err)
 	}
@@ -2568,7 +2568,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 		{rangeArg: "500-600", wantCount: 1, wantFirst: 249, last: 249},
 	} {
 		t.Run(tc.rangeArg, func(t *testing.T) {
-			value, err := readAPILogSummary(context.Background(), "", path, "local:test", tc.rangeArg)
+			value, err := readAPILogSummary(context.Background(), path, "", "local:test", tc.rangeArg)
 			if err != nil {
 				t.Fatalf("read API-log range %q: %v", tc.rangeArg, err)
 			}
@@ -2884,7 +2884,7 @@ func TestReadAPILogAttemptBodyPageMakesProgressWhenInlineHeadersConsumePage(t *t
 	}
 	path := writeTestAPILog(t, dir, sessionID, attempt)
 
-	value, err := readAPILogAttempt(context.Background(), "", path, "local:test", attempt.AttemptID, "request", 0, 1024)
+	value, err := readAPILogAttempt(context.Background(), path, "", "local:test", attempt.AttemptID, "request", 0, 1024)
 	if err != nil {
 		t.Fatalf("read API-log request body page: %v", err)
 	}

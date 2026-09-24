@@ -352,7 +352,7 @@ not json
 			t.Fatalf("write temp transcript: %v", err)
 		}
 
-		result, lines, skipped, truncated, err := rawLinesForRange(path, startSeq, endSeq)
+		result, lines, skipped, truncated, err := rawLinesForRange(path, "", startSeq, endSeq)
 		if err != nil {
 			return // open/empty/scan error: no-panic floor proven for this input
 		}
@@ -620,7 +620,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
 
 	const pageBytes = 64
-	firstAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
+	firstAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatalf("first continuation = %#v, want offset %d", first.Continuation, len(firstBytes))
 	}
 
-	secondAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
+	secondAny, err := readMarkdownPage(path, "", "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

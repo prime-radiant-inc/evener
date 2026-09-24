@@ -498,13 +498,13 @@ func TestFindAPILogAttemptErrors(t *testing.T) {
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, _, _, err := findAPILogAttempt(ctx, "", "/nonexistent", "att-1")
+		_, _, _, _, err := findAPILogAttempt(ctx, "/nonexistent", "", "att-1")
 		if err == nil {
 			t.Fatal("expected error for cancelled context")
 		}
 	})
 	t.Run("nonexistent file", func(t *testing.T) {
-		_, _, _, _, err := findAPILogAttempt(context.Background(), "", "/nonexistent/path/file.jsonl", "att-1")
+		_, _, _, _, err := findAPILogAttempt(context.Background(), "/nonexistent/path/file.jsonl", "", "att-1")
 		if err == nil {
 			t.Fatal("expected error for nonexistent file")
 		}
@@ -519,13 +519,13 @@ func TestDecodeAPILogSummariesErrors(t *testing.T) {
 	t.Run("cancelled context", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, _, err := decodeAPILogSummaries(ctx, "", "/nonexistent", "last:5")
+		_, _, _, err := decodeAPILogSummaries(ctx, "/nonexistent", "", "last:5")
 		if err == nil {
 			t.Fatal("expected error for cancelled context")
 		}
 	})
 	t.Run("nonexistent file", func(t *testing.T) {
-		_, _, _, err := decodeAPILogSummaries(context.Background(), "", "/nonexistent/path/file.jsonl", "last:5")
+		_, _, _, err := decodeAPILogSummaries(context.Background(), "/nonexistent/path/file.jsonl", "", "last:5")
 		if err == nil {
 			t.Fatal("expected error for nonexistent file")
 		}
