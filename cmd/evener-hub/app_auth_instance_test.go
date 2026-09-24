@@ -692,7 +692,8 @@ func TestAuthStatusImplicitProviderResolvesPresence(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "")
 	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
-	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"})
+	key, _ := resolveEndpointFingerprintKey(ctrl.stateDir)
+	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +725,8 @@ func TestAuthStatusImplicitProviderMatchesLaunchScheme(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := writeProvidersToml(t, dir, "[models.\"*claude-opus*\"]\nauth = \"none\"\n")
 	ctrl := newTestAuthController(t, dir, t.TempDir(), tomlPath)
-	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"})
+	key, _ := resolveEndpointFingerprintKey(ctrl.stateDir)
+	resp, err := ctrl.statusLocked(appwire.AuthStatusParams{Provider: "amazon-bedrock"}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
