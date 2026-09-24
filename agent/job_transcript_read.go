@@ -166,7 +166,7 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 	// entry swapped in between this check and ReadEvents is caught here.
 	journalInfo, journalErr := os.Lstat(path)
 	if journalErr != nil {
-		return localJobLocation{}, false, nil // journal gone → not found
+		return localJobLocation{}, false, nil //nolint:nilerr // journal gone → not found (skip-worthy, not an error)
 	}
 	if !journalInfo.Mode().IsRegular() {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: journal is not a regular file", jobID, filepath.Base(stateDir))

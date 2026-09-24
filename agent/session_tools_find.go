@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -389,7 +390,7 @@ func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(stri
 	}
 	all, enumerateErr := enumerate(sh)
 	if enumerateErr != nil {
-		if enumerateErr == errSymlinkedLayoutPrefix {
+		if errors.Is(enumerateErr, errSymlinkedLayoutPrefix) {
 			return nil, "", enumerateErr
 		}
 		// Other errors (e.g. bad glob pattern): fall back to current project.

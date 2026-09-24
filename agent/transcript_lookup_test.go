@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1312,7 +1313,7 @@ func TestEnumerateBuckets_SymlinkedEvenerAncestorRejected(t *testing.T) {
 	// enumerateBuckets through the symlinked evener/ ancestor must return
 	// errSymlinkedLayoutPrefix, not nil — so find can surface the refusal.
 	buckets, err := enumerateBuckets(linkHome)
-	if err != errSymlinkedLayoutPrefix {
+	if !errors.Is(err, errSymlinkedLayoutPrefix) {
 		t.Fatalf("enumerateBuckets through symlinked evener/ ancestor: error = %v, want %v", err, errSymlinkedLayoutPrefix)
 	}
 	if len(buckets) != 0 {
@@ -1849,9 +1850,10 @@ func TestFind_SiblingBucketDuplicateNotIsCurrent(t *testing.T) {
 	var current, sibling map[string]any
 	for _, m := range matches {
 		title, _ := m["title"].(string)
-		if title == "current session" {
+		switch title {
+		case "current session":
 			current = m
-		} else if title == "sibling duplicate" {
+		case "sibling duplicate":
 			sibling = m
 		}
 	}

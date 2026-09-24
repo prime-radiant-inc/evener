@@ -621,16 +621,11 @@ func TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case err := <-done:
-		// Post-fix: the FIFO is rejected — err should be non-nil (not found,
-		// since the journal is unreadable). The key invariant: we did NOT
-		// block.
-		if err == nil {
-			// A nil error with found=false would mean the job was silently
-			// dropped, which is acceptable — but the call returned without
-			// blocking, which is what we're testing.
-		}
-		// The call returned without blocking — pass.
+	case <-done:
+		// The call returned without blocking — pass. The FIFO is rejected
+		// by the Lstat+IsRegular guard; whether err is nil (silently dropped)
+		// or non-nil (unreadable journal) is acceptable — the key invariant
+		// is that we did NOT block.
 		// TRIPWIRE: the Lstat+IsRegular guard rejects the FIFO in microseconds; 5s only fires on a genuine hang (pre-fix os.Open(FIFO) blocks forever).
 	case <-time.After(5 * time.Second):
 		t.Fatal("locateLocalJob blocked on a FIFO journal for 5s; the " +
