@@ -27,8 +27,11 @@ missed note costs nothing; a spurious finding makes a human triage noise.
 `evidence` sub-fields: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`,
 `transcriptTurns[]`, `doctorCommand` (the reproduction command — an
 `evener doctor <cmd> …` line a human can run to reproduce what the
-`doctor_evener` call surfaced), `logSnippets[]`. Redact secrets from
-evidence.
+`doctor_evener` call surfaced; when every affected session is
+non-reproducible the value is a comment-only disclosure prefixed with
+`# not reproducible:` — not executable, so consumers must check for that
+prefix rather than assuming executability), `logSnippets[]`. Redact
+secrets from evidence.
 
 ### Category
 

@@ -701,10 +701,12 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 	// finding signature for DoctorCommand's --sessions reproduction line.
 	// These are followSelector outputs that resolve via Locate (not
 	// ambiguous across buckets). Separate from SessionRefs (finding 3):
-	// SessionRefs carries agent-consumable selectors (bare sid or canonical
-	// proj: ref) for read_transcript, while DoctorCommand carries
-	// doctor-CLI-safe selectors (proj:<safe-name>:<sid> via safeTokenForRepro)
-	// for the doctor CLI's --sessions grammar.
+	// SessionRefs carries the honest session identifier (canonical proj: ref
+	// or bare sid for non-canonical buckets) for a doctor-CLI/human handle on
+	// this tree, while DoctorCommand carries doctor-CLI-safe selectors
+	// (proj:<safe-name>:<sid> via safeTokenForRepro) for the doctor CLI's
+	// --sessions grammar. Cross-bucket agent resolution of bare sids from
+	// non-canonical buckets arrives when #2205 (fu-transcript-lookup) lands.
 	doctorRefsBySig := map[string][]string{}
 	// nonReproBySig tracks non-reproducible sessions per finding signature
 	// with bucket context, so DoctorCommand's disclosure names each
@@ -740,14 +742,17 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// Computed once after Locate; reused at every read site below so the
 		// grammar scan and string build run once, not five times.
 		sel := ref
-		// agentSel is the agent-consumable selector for SessionRefs:
+		// agentSel is the honest session identifier for SessionRefs:
 		// refFor's transcript ref (proj:<canonical>:<sid> or local:<sid>)
 		// when refFor produced one, or the bare session id as a last resort
 		// (finding 3: agent-side read_transcript validates the project token
 		// with ValidateProjectID, so proj:<non-canonical>:<sid> refs that
 		// followSelector's safeTokenForRepro branch emits are rejected —
-		// SessionRefs carries the bare sid instead, which agent tools resolve
-		// cross-bucket and report ambiguity honestly).
+		// SessionRefs carries the bare sid instead, the honest session
+		// identifier and a doctor-CLI/human handle on this tree. Cross-bucket
+		// agent resolution of bare sids from non-canonical buckets arrives
+		// when #2205 (fu-transcript-lookup) removes the ValidateProjectID
+		// filter from enumerateBuckets).
 		agentSel := refFor(paths.ProjectID, paths.SessionID)
 		if agentSel == "" {
 			agentSel = paths.SessionID
@@ -831,12 +836,15 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				sessionsBySig[sig] = map[string]bool{}
 			}
 			sessionsBySig[sig][sessionKey] = true
-			// SessionRefs carries agent-consumable selectors (finding 3):
+			// SessionRefs carries the honest session identifier (finding 3):
 			// refFor's transcript ref for canonical names, or the bare
-			// session id for non-canonical names (agent tools reject
-			// proj:<non-canonical>:<sid>). The bare id is deduped when
-			// distinct sessions share a SID — the true count is in
-			// sessionsBySig and the Description, not in len(SessionRefs).
+			// session id for non-canonical names (agent-side read_transcript
+			// rejects proj:<non-canonical>:<sid> via ValidateProjectID). The
+			// bare id is the honest session handle and a doctor-CLI/human
+			// identifier on this tree (cross-bucket agent resolution arrives
+			// with #2205). It is deduped when distinct sessions share a SID —
+			// the true count is in sessionsBySig and the Description, not in
+			// len(SessionRefs).
 			f.Evidence.SessionRefs = appendUniqueString(f.Evidence.SessionRefs, agentSel)
 			// DoctorCommand carries doctor-CLI-safe selectors (finding 3):
 			// followSelector's output (canonical proj:, safeTokenForRepro
@@ -866,9 +874,10 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// True distinct session count (round 7 finding 2): sessionsBySig
 		// tracks each session by (projectID, sessionID), so two sessions
 		// sharing a SID across different buckets each count. len(SessionRefs)
-		// may be smaller because agent-consumable selectors (bare sid) dedup
-		// them — TotalSessionRefs and Summary.Sessions use trueCount so a
-		// consumer's reconciliation stays clean.
+		// may be smaller because the bare sid dedups distinct sessions
+		// sharing a SID across non-canonical buckets — TotalSessionRefs and
+		// Summary.Sessions use trueCount so a consumer's reconciliation
+		// stays clean.
 		trueCount := len(sessionsBySig[sig])
 		// The structured ref list gets the same disclosed structural cap as
 		// the prose: an envelope carrying a fleet-wide Finding would otherwise

@@ -920,14 +920,16 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 // followSelector's middle branch (safeTokenForRepro): the DoctorCommand
 // reproduction line carries doctor-consumable proj:<hex>:<sid> refs that
 // the doctor CLI round-trips fine. Round 6 (finding 3) decoupled
-// SessionRefs from DoctorCommand: SessionRefs now carries agent-consumable
-// selectors (the bare session id — agent-side read_transcript resolves
-// bare ids cross-bucket and reports ambiguity honestly), because the
+// SessionRefs from DoctorCommand: SessionRefs now carries the honest
+// session identifier (the bare session id — agent-side read_transcript
+// rejects proj:<hex>:<sid> via ValidateProjectID), because the
 // proj:<hex>:<sid> form is rejected by the agent's transcript tools
-// (ValidateProjectID fails for hex names). The bare id is shared across
-// both buckets, so it appears once (deduped); the true count (2) is in
-// the Description and Summary, and the DoctorCommand carries both proj:
-// refs for reproduction.
+// (ValidateProjectID fails for hex names). The bare id is the honest
+// session handle and a doctor-CLI/human identifier on this tree
+// (cross-bucket agent resolution arrives with #2205). It is shared
+// across both buckets, so it appears once (deduped); the true count (2)
+// is in the Description and Summary, and the DoctorCommand carries both
+// proj: refs for reproduction.
 func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 	base := t.TempDir()
 	// Hex-style legacy bucket names: shell- and comma-safe, but fail
@@ -959,12 +961,14 @@ func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 	if runTimeout == nil {
 		t.Fatalf("no run-timeout finding: %+v", res.Findings)
 	}
-	// SessionRefs carries agent-consumable selectors: the bare session id
-	// (the proj:<hex>:<sid> form is rejected by agent-side read_transcript
+	// SessionRefs carries the honest session identifier: the bare session
+	// id (the proj:<hex>:<sid> form is rejected by agent-side read_transcript
 	// because ValidateProjectID fails for hex names — finding 3). The bare
-	// id is shared across both buckets, so it appears once (deduped).
+	// id is the honest session handle and a doctor-CLI/human identifier on
+	// this tree (cross-bucket agent resolution arrives with #2205). It is
+	// shared across both buckets, so it appears once (deduped).
 	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sidA {
-		t.Errorf("run-timeout SessionRefs = %v, want [%q] (agent-consumable bare id, deduped across both hex buckets)", runTimeout.Evidence.SessionRefs, sidA)
+		t.Errorf("run-timeout SessionRefs = %v, want [%q] (honest bare id, deduped across both hex buckets)", runTimeout.Evidence.SessionRefs, sidA)
 	}
 	// The summary count must reflect 2 sessions, not 1 (the bare id is
 	// deduped in SessionRefs, but both sessions were audited).
@@ -1003,7 +1007,7 @@ func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
 // selected session (Locate resolves it; the reads use the user-supplied
 // selector). Round 3 fixed the discard bug (the selector is preserved for
 // reading). Round 6 (finding 3) decoupled SessionRefs from DoctorCommand:
-// SessionRefs carries the agent-consumable bare sid (the proj:<hex>:<sid>
+// SessionRefs carries the honest bare sid (the proj:<hex>:<sid>
 // form is rejected by agent-side read_transcript), while DoctorCommand
 // carries the doctor-consumable proj: ref.
 func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
@@ -1045,10 +1049,10 @@ func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
 	if runTimeout == nil {
 		t.Fatalf("no run-timeout finding: %+v", res.Findings)
 	}
-	// SessionRefs carries the agent-consumable bare sid (the proj:<hex>:<sid>
+	// SessionRefs carries the honest bare sid (the proj:<hex>:<sid>
 	// form is rejected by agent-side read_transcript — finding 3).
 	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sidA {
-		t.Errorf("run-timeout SessionRefs = %v, want [%q] — the agent-consumable bare id (finding 3)", runTimeout.Evidence.SessionRefs, sidA)
+		t.Errorf("run-timeout SessionRefs = %v, want [%q] — the honest bare id (finding 3)", runTimeout.Evidence.SessionRefs, sidA)
 	}
 	// DoctorCommand carries the doctor-consumable proj: ref.
 	if !strings.Contains(runTimeout.Evidence.DoctorCommand, sel) {
@@ -1321,19 +1325,18 @@ func TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted(t *te
 	}
 }
 
-// TestRunAudit_SessionRefsAgentConsumableForNonCanonicalBuckets is the
-// roborev fix round 6 finding-3 RED case: the followSelector middle branch
-// emits proj:<bucket>:<sid> for names that pass safeTokenForRepro but fail
-// identifier.ValidateProjectID (hex-style legacy names). Those refs land in
-// Finding.Evidence.SessionRefs, but the agent-side transcript tools validate
-// the project token with ValidateProjectID, so read_transcript rejects them
-// with "invalid project id" — the structured evidence field is dead weight
-// for the model that consumes it. The fix keeps the proj:<id>:<sid> form for
-// the DoctorCommand reproduction line (the doctor CLI round-trips it fine)
-// but makes SessionRefs carry agent-consumable selectors (the bare session
-// id — agent tools resolve bare ids cross-bucket and report ambiguity
-// honestly).
-func TestRunAudit_SessionRefsAgentConsumableForNonCanonicalBuckets(t *testing.T) {
+// TestRunAudit_SessionRefsHonestFormForNonCanonicalBuckets verifies that
+// hex-style legacy bucket names (e.g. 0123456789abcdef) — shell- and
+// comma-safe but failing identifier.ValidateProjectID — produce a bare
+// session id in SessionRefs (the honest session identifier and a
+// doctor-CLI/human handle on this tree) while DoctorCommand keeps the
+// proj:<hex>:<sid> form (the doctor CLI round-trips it fine). The
+// proj:<hex>:<sid> form is rejected by agent-side read_transcript
+// (ValidateProjectID fails for hex names), so it must NOT appear in
+// SessionRefs. Cross-bucket agent resolution of bare sids from
+// non-canonical buckets arrives when #2205 (fu-transcript-lookup)
+// removes the ValidateProjectID filter from enumerateBuckets.
+func TestRunAudit_SessionRefsHonestFormForNonCanonicalBuckets(t *testing.T) {
 	base := t.TempDir()
 	// Hex-style legacy bucket names: shell- and comma-safe, but fail
 	// ValidateProjectID (no readable-<10 base62> structure).
@@ -1359,10 +1362,10 @@ func TestRunAudit_SessionRefsAgentConsumableForNonCanonicalBuckets(t *testing.T)
 	if runTimeout == nil {
 		t.Fatalf("no run-timeout finding: %+v", res.Findings)
 	}
-	// SessionRefs must carry agent-consumable selectors: the bare session
-	// id. The proj:<hex>:<sid> form is rejected by the agent's transcript
-	// tools (ValidateProjectID fails for hex names), so it must NOT appear
-	// in SessionRefs (finding 3).
+	// SessionRefs must carry the honest session identifier: the bare
+	// session id. The proj:<hex>:<sid> form is rejected by the agent's
+	// transcript tools (ValidateProjectID fails for hex names), so it must
+	// NOT appear in SessionRefs (finding 3).
 	for _, ref := range runTimeout.Evidence.SessionRefs {
 		if strings.HasPrefix(ref, "proj:") {
 			t.Errorf("SessionRef %q is a proj: ref — agent-side read_transcript rejects non-canonical project ids; SessionRefs must carry the bare session id for non-canonical buckets (finding 3)", ref)
@@ -1376,7 +1379,7 @@ func TestRunAudit_SessionRefsAgentConsumableForNonCanonicalBuckets(t *testing.T)
 		}
 	}
 	if !found {
-		t.Errorf("SessionRefs %v must contain the agent-consumable bare session id %q (finding 3)", runTimeout.Evidence.SessionRefs, sidA)
+		t.Errorf("SessionRefs %v must contain the honest bare session id %q (finding 3)", runTimeout.Evidence.SessionRefs, sidA)
 	}
 	// DoctorCommand must keep the proj:<hex>:<sid> form (the doctor CLI
 	// round-trips it fine — finding 3).
