@@ -823,7 +823,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			OutputImages:  projectOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
-			Description: description,
+			Description:   description,
 			// ExitCode promotes the shell tool's exit code, already riding
 			// data.ToolState end to end (agent/session_tools_shell.go:483
 			// shellToolResult), onto the settled item (wire-honesty spec Part

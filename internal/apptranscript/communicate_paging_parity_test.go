@@ -203,7 +203,6 @@ func TestItemWindowResolvesDeferredCommunicateAcrossPageBoundary(t *testing.T) {
 	}
 }
 
-
 // TestIncrementalAppendResolvesDeferredCommunicateOnResume proves the
 // incremental index scan reconstructs CommRawArgs when a group's opener (the
 // assistant turn that seeds the deferred communicate bytes) lives in the
