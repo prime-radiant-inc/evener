@@ -428,3 +428,38 @@ test("a zero-result report says there is nothing to push and renders no rows", a
   expect(report.textContent).toBe("Nothing to push to beta: this hub has no provider-instance keys.");
   expect(within(report).queryAllByRole("listitem")).toHaveLength(0);
 });
+
+test("a host re-registered under the same name does not keep the previous registration's report", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({
+    hosts: [hostRow({ name: "beta", attached: true, address: "old.example" })],
+  }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => ({
+    host: "beta",
+    results: [{ instance: "on-beta", action: "added" }],
+  }));
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  await screen.findByRole("status", { name: "Push report for beta" });
+
+  // The registry re-registers "beta" under the SAME name at a different address:
+  // a different registration, whose own push state is its own. The selected host
+  // string does not change here, so a key on the name alone would leave the old
+  // registration's report standing under the new one.
+  await act(async () => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true, address: "new.example" })] },
+    });
+  });
+
+  expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
+});

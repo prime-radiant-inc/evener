@@ -19,7 +19,7 @@ import { errorText } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { pushHostCredentials, retryHostRead, useHostInstances } from "../../../../stores/credentials";
 import { isLocalHost } from "../../../../stores/hostRouting";
-import { isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
+import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
 import { Button, EmptyState, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostPicker } from "../../HostPicker";
@@ -142,15 +142,17 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
           <ProviderInstanceGroups instances={state.instances} availableProviders={state.availableProviders} readOnly />
         )}
       </section>
-      {/* Keyed on the host, and withheld while the host is unverifiable: the
-          action holds its whole lifetime in local state, so without the key a
-          switch would leave the previous host's pending state, report and error
-          on screen - and the failure branch names the CURRENT host, which would
-          make a late failure read as though the new host produced it. The
-          unverifiable case is the same guard the listing above takes: this
-          action sends this hub's keys, so offering it for a name the registry
-          cannot confirm is exactly what the guard exists to prevent. */}
-      {!unverifiable && <PushCredentials key={host} host={host} />}
+      {/* Keyed on the host's REGISTRATION identity, and withheld while the host
+          is unverifiable. The action holds its whole lifetime in local state, so
+          the key is what stops that state outliving the host it belongs to - and
+          it must be the identity rather than the name: a host re-registered under
+          the same name is a different registration whose own push state is its
+          own, and a name-keyed component would leave the previous registration's
+          report standing under it (the same `hostInstanceIdentity` the host-scoped
+          stores and the shared frame key on). The unverifiable case is the guard
+          the listing above takes: this action sends this hub's keys, so offering
+          it for a name the registry cannot confirm is exactly what it prevents. */}
+      {!unverifiable && <PushCredentials key={`host:${hostInstanceIdentity(host)}`} host={host} />}
     </>
   );
 }
