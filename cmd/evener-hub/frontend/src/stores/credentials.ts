@@ -12,11 +12,11 @@ import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { createStore, useStore } from "zustand";
 import { type ConnectionStoreState, connectionStore, onConnectionNotification, useConnectionStore } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
-import { hostsStore, useHostsStore } from "./hosts";
+import { type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 
 export {
@@ -95,6 +95,12 @@ export interface HostInstanceState {
    * still a different connection and the host's listing may have changed with
    * it, so a partition is current only under the generation it was read in. */
   readGeneration: number;
+  /** Whether the registry had published a snapshot when this read was issued.
+   * False means the listing was read while the registry had never answered - the
+   * spawn pane's own case, whose hosts come from the navigation manifest - and it
+   * cannot count as verified once the registry has been consulted without
+   * publishing (see useHostInstances). */
+  readPublished: boolean;
 }
 
 /** The empty partition, a module constant rather than a fresh literal: a host
@@ -110,6 +116,7 @@ export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
   registryRevision: null,
   read: false,
   readGeneration: 0,
+  readPublished: false,
 });
 
 /** PENDING_HOST_INSTANCE_STATE is what a consumer sees while there is no
@@ -185,35 +192,68 @@ export function useHostInstances(host: string): HostInstanceState {
   const revision = useHostsStore((state) => state.revision);
   const load = useHostsStore((state) => state.load);
   const reading = useHostsStore((state) => state.reading);
+  const publishedRevision = useHostsStore((state) => state.publishedRevision);
   const { client, state: connection } = useConnectionStore();
+  // "The registry has been consulted": it has answered (publishedRevision), its
+  // load has left the idle state, or a read is in flight right now. While it has
+  // NOT been consulted - a spawn-only session, where the host list comes from the
+  // navigation manifest - a listing is read and accepted on the connection alone,
+  // exactly as before.
+  const registryConsulted = publishedRevision !== null || load.phase !== "loading" || reading > 0;
   const current =
     partition.registryRevision !== null &&
     partition.registryRevision === revision &&
-    partition.readGeneration === generation;
-  // Two states hold the read back, and they are the only two:
+    partition.readGeneration === generation &&
+    // A listing read before the registry ever answered is tied to revision 0,
+    // which a never-published registry also reports: it is accepted only while
+    // the registry has NOT been consulted. Once it has - and especially when its
+    // read FAILED, where revision 0 then means "nothing was ever published" - the
+    // listing is not verified.
+    (partition.readPublished || !registryConsulted);
+  // Three states hold the read back:
   //  - the registry has FAILED (see CredentialsHostScope's unverifiable state) -
   //    its failure is what the pane shows, so a read taken then is not fetched,
-  //    and
   //  - a registry read is already on its way, whose answer is what this read
   //    would have to be stamped with, so it waits for that one rather than
   //    reading under an answer that is about to be replaced (one wasted request
-  //    per deep-link otherwise).
+  //    per deep-link otherwise), and
+  //  - the registry has been consulted without ever publishing a snapshot, so a
+  //    read now could not be tied to one. It is read only while the registry is
+  //    untouched at all - the spawn pane's own case, whose hosts come from the
+  //    navigation manifest.
   const shouldRead =
-    !isLocalHost(host) && client !== null && connection === "ready" && !current && load.phase !== "error";
-  // `revision` and `reading` are deliberate trigger-only dependencies: the effect
-  // decides with the LIVE store (a sibling's mount effect can have started a
-  // registry read in this same commit), but a registry answer or the settling of
-  // a registry read is what makes that decision change.
+    !isLocalHost(host) &&
+    client !== null &&
+    connection === "ready" &&
+    !current &&
+    load.phase !== "error" &&
+    (publishedRevision !== null || !registryConsulted);
+  // `revision`, `reading` and the phase are deliberate trigger-only dependencies:
+  // the effect decides with the LIVE store (a sibling's mount effect can have
+  // started a registry read in this same commit), but a registry answer, the
+  // settling of a registry read, or the registry coming back is what makes that
+  // decision change.
+  // The last SETTLED registry phase: `fetch` passes through "loading" on the way
+  // back, so a recovery is error -> (loading) -> ready, not error -> ready.
+  const lastSettledPhase = useRef<HostsLoadState["phase"] | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: trigger-only deps - see comment above
   useEffect(() => {
-    if (!shouldRead) return;
-    // Re-checked against the store rather than the rendered values: a sibling's
-    // own mount effect can have started a registry read in this same commit, and
-    // this read has to wait for that one.
-    const live = hostsStore.getState();
-    if (live.reading > 0 || live.load.phase === "error") return;
+    const recovered = lastSettledPhase.current === "error" && load.phase === "ready";
+    if (load.phase !== "loading") lastSettledPhase.current = load.phase;
+    if (isLocalHost(host) || client === null || connection !== "ready") return;
+    // A registry that failed and then answered again re-reads this host once: the
+    // failure is what held every read back, and an unchanged snapshot advances no
+    // revision, so nothing else would. One read per recovery - not per poll tick.
+    if (!recovered) {
+      if (!shouldRead) return;
+      // Re-checked against the store rather than the rendered values: a sibling's
+      // own mount effect can have started a registry read in this same commit, and
+      // this read has to wait for that one.
+      const live = hostsStore.getState();
+      if (live.reading > 0 || live.load.phase === "error") return;
+    }
     void fetchHost(host);
-  }, [shouldRead, host, revision, reading, generation]);
+  }, [shouldRead, host, revision, reading, generation, load.phase]);
   if (current) return partition;
   // M1: the registry has FAILED and this host has no listing for the current
   // revision. The read is held (see shouldRead), so a consumer that knows
@@ -235,7 +275,15 @@ export function useHostInstances(host: string): HostInstanceState {
 export function retryHostRead(host: string): void {
   if (isLocalHost(host)) return;
   if (hostsStore.getState().load.phase === "error") {
-    void hostsStore.getState().fetch();
+    // The registry's own failure held the read back: re-read IT, and the host's
+    // listing is read once it answers - even when its snapshot is unchanged and
+    // advanced no revision (one retry, not a poll loop).
+    void hostsStore
+      .getState()
+      .fetch()
+      .then(() => {
+        if (hostsStore.getState().load.phase !== "error") void fetchHost(host);
+      });
     return;
   }
   void fetchHost(host);
@@ -271,7 +319,8 @@ export async function fetchHost(host: string): Promise<void> {
   hostRequestVersions.set(host, version);
   const generation = hostInstancesStore.getState().generation;
   const registryRevision = hostsStore.getState().revision;
-  setHostPartition(host, (previous) => startHostRead(previous, registryRevision, generation));
+  const readPublished = hostsStore.getState().publishedRevision !== null;
+  setHostPartition(host, (previous) => startHostRead(previous, registryRevision, generation, readPublished));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
@@ -285,6 +334,7 @@ export async function fetchHost(host: string): Promise<void> {
       registryRevision,
       read: true,
       readGeneration: generation,
+      readPublished,
     }));
   } catch (err) {
     if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
@@ -299,11 +349,16 @@ export async function fetchHost(host: string): Promise<void> {
 // nothing read under a snapshot the registry has moved past is ever shown.
 // `read` is left as it was in the kept case, and false in the cleared one, so an
 // unanswered read can never pass for an empty listing.
-function startHostRead(previous: HostInstanceState, registryRevision: number, generation: number): HostInstanceState {
+function startHostRead(
+  previous: HostInstanceState,
+  registryRevision: number,
+  generation: number,
+  readPublished: boolean,
+): HostInstanceState {
   if (previous.registryRevision === registryRevision) {
-    return { ...previous, loading: true, error: null, readGeneration: generation };
+    return { ...previous, loading: true, error: null, readGeneration: generation, readPublished };
   }
-  return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision, readGeneration: generation };
+  return { ...EMPTY_HOST_INSTANCE_STATE, loading: true, registryRevision, readGeneration: generation, readPublished };
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in

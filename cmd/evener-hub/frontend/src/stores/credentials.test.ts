@@ -2815,6 +2815,63 @@ test("a remote host waits for a registry read that is in flight", async () => {
   hostsStore.getState().resetForTests();
 });
 
+// M1 (round 8): revision 0 means "nothing has been published", not "a published
+// answer at revision 0". A read taken then cannot be accepted once the registry
+// has been consulted and failed, even though the revision never moved.
+test("a read taken while the registry was idle is not current once the registry has failed", async () => {
+  const fake = connectFakeClient();
+  serveRemoteList(fake, REMOTE_LIST);
+  hostsStore.getState().resetForTests();
+
+  await fetchHost("buildbox"); // the registry is idle: nothing published
+  expect(hostPartition(hostInstancesStore.getState(), "buildbox").read).toBe(true);
+
+  // The registry is consulted and fails.
+  hostsStore.setState({ load: { phase: "error", message: "registry unavailable" } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await act(async () => {});
+  expect(result.current.read).toBe(false);
+  expect(result.current.error).toBe("registry unavailable");
+  expect(result.current.instances).toEqual([]);
+  hostsStore.getState().resetForTests();
+});
+
+// M2 (round 8): the registry failed and then came back with the SAME snapshot, so
+// nothing advanced the revision - but the failure is what held the host's read
+// back, so the host is re-read when the registry recovers.
+test("the registry recovering with an unchanged snapshot re-reads the host", async () => {
+  const fake = connectFakeClient();
+  let hostUp = false;
+  fake.on("evener/host/request", () => {
+    if (!hostUp) throw new WireError("host buildbox unreachable", -32000);
+    return REMOTE_LIST as unknown as HostForwardedResult;
+  });
+  const row = registryRow({ name: "buildbox" });
+  fake.on("evener/host/list", () => ({ hosts: [row] }));
+  hostsStore.setState({ load: { phase: "ready", hosts: [row] } });
+
+  const { result } = renderHook(() => useHostInstances("buildbox"));
+  await waitFor(() => expect(remoteReads(fake)).toBe(1));
+  await waitFor(() => expect(result.current.error).toBe("host buildbox unreachable"));
+
+  // The registry fails, then comes back with the same snapshot. (Separate acts:
+  // in the app the failure and the later retry are separate events, and this
+  // pins that the hook observes the failed phase.)
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "error", message: "registry unavailable" } });
+  });
+  hostUp = true;
+  await act(async () => {
+    await hostsStore.getState().fetch();
+  });
+
+  // The host is re-read without any revision change, and the listing returns.
+  await waitFor(() => expect(remoteReads(fake)).toBe(2));
+  await waitFor(() => expect(result.current.instances).toEqual([REMOTE_INSTANCE]));
+  hostsStore.getState().resetForTests();
+});
+
 // A reconnect on the SAME client is not a client replacement, so the registry
 // revision does not move - but the connection did, and the host's listing may
 // have changed with it. The partition is tied to the connection generation it

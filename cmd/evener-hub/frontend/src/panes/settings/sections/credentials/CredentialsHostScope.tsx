@@ -14,9 +14,9 @@
 // selecting it renders that host's own refusal/state, never a fallback to the
 // controller's listing.
 import type { ReactNode } from "react";
-import { useHostInstances } from "../../../../stores/credentials";
+import { retryHostRead, useHostInstances } from "../../../../stores/credentials";
 import { isLocalHost } from "../../../../stores/hostRouting";
-import { hostsStore, isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
+import { isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
 import { Button, EmptyState, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostPicker } from "../../HostPicker";
@@ -98,17 +98,25 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
       {!unverifiable && verified && <Diagnostics diagnostics={state.diagnostics} />}
       {/* An error is an answer: the skeleton is for "nothing, and no failure,
           yet" - beside a refusal it would read as "still working". */}
+      {/* A failure is an answer the user can act on: re-read the host (and the
+          registry, when its read is what failed - see retryHostRead), so the pane
+          never sits on an error with no way out. */}
       {state.error !== null && !unverifiable && (
-        <p className={CLASS.error}>
-          Couldn't read providers from {host}: {state.error}
-        </p>
+        <>
+          <p className={CLASS.error}>
+            Couldn't read providers from {host}: {state.error}
+          </p>
+          <Button size="sm" onClick={() => retryHostRead(host)}>
+            Retry
+          </Button>
+        </>
       )}
       {unverifiable && (
         <EmptyState
           title={`Couldn't check ${host}'s registration`}
           hint="The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the name it was selected by. Retry to read the hosts list again."
           action={
-            <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
+            <Button size="sm" onClick={() => retryHostRead(host)}>
               Retry
             </Button>
           }

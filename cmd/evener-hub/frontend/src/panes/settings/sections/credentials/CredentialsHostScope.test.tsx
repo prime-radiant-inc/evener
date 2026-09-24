@@ -7,6 +7,9 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
+  fetchHost,
+  hostInstancesStore,
+  hostPartition,
   resetCredentialsStoreForTests,
   resetHostInstancesForTests,
 } from "../../../../stores/credentials";
@@ -521,6 +524,53 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
 
   // The hosts list comes back, and Retry issues the registry's own read.
   registryDown = false;
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+});
+
+// M1 (round 8): a listing read while the registry was merely idle (the spawn
+// pane reads its hosts from the navigation manifest, so the registry may never
+// have been asked) must NOT count as verified once the registry has been
+// consulted and failed. It used to: both shared revision 0, so the pane showed
+// the listing and its `unverifiable` state was suppressed.
+test("a listing read before the registry ever answered is not verified when the registry fails", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => {
+    throw new WireError("registry unavailable", -32000);
+  });
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  // The spawn pane's own read, while the registry has never been consulted.
+  await fetchHost("beta");
+  expect(hostPartition(hostInstancesStore.getState(), "beta").read).toBe(true);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
+  expect(screen.queryByText("on-beta")).toBeNull();
+});
+
+// M2 (round 8): a read that FAILED is a reachable dead end - the registry is
+// healthy, so `unverifiable` is false, and the error branch offered no retry at
+// all. It offers one now, and it re-reads the host.
+test("a failed remote read offers a retry that re-reads the host", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  let hostUp = false;
+  fake.on("evener/host/request", () => {
+    if (!hostUp) throw new WireError("host beta unreachable", -32000);
+    return HOST_LIST;
+  });
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  expect(await screen.findByText(/host beta unreachable/)).toBeTruthy();
+
+  hostUp = true;
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
 
   expect(await screen.findByText("on-beta")).toBeTruthy();

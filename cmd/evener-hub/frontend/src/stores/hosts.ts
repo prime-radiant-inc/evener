@@ -28,6 +28,14 @@ interface HostsStoreState {
    */
   revision: number;
   /**
+   * The revision at which the registry last SUCCESSFULLY published a snapshot, or
+   * null while it never has. `revision` alone cannot tell "no snapshot has been
+   * published" from "a snapshot was published at revision 0", and a remote
+   * listing read in the first state must not pass for verified once the registry
+   * has been consulted and failed (see stores/credentials.ts's useHostInstances).
+   */
+  publishedRevision: number | null;
+  /**
    * How many registry list requests are in flight right now. A read issued
    * against the registry's CURRENT answer is what a partition records, so a
    * remote listing waits for one that is already on its way rather than reading
@@ -252,6 +260,7 @@ async function reReadAfterMutation(): Promise<void> {
 export const hostsStore = create<HostsStoreState>((set) => ({
   load: { phase: "loading" },
   revision: 0,
+  publishedRevision: null,
   reading: 0,
 
   fetch: async () => {
@@ -343,7 +352,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     latestPublishedGeneration = 0;
     lastClient = connectionStore.getState().client;
     lastPublished = null;
-    set({ load: { phase: "loading" }, revision: 0, reading: 0 });
+    set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0 });
   },
 }));
 
@@ -366,7 +375,13 @@ hostsStore.subscribe((state) => {
   const hosts = state.load.hosts;
   if (lastPublished !== null && sameSnapshot(lastPublished, hosts)) return;
   lastPublished = hosts;
-  hostsStore.setState((previous) => ({ revision: previous.revision + 1 }));
+  // The first answer - an empty list included - is an answer: it advances the
+  // revision AND records that a snapshot now exists, which is what lets a remote
+  // listing read before it stop counting as verified.
+  hostsStore.setState((previous) => ({
+    revision: previous.revision + 1,
+    publishedRevision: previous.revision + 1,
+  }));
 });
 
 export function useHostsStore<T>(selector: (state: HostsStoreState) => T): T {
