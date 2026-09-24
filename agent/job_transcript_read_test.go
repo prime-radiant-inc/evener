@@ -631,6 +631,7 @@ func TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking(t *testing.T) {
 			// blocking, which is what we're testing.
 		}
 		// The call returned without blocking — pass.
+		// TRIPWIRE: the Lstat+IsRegular guard rejects the FIFO in microseconds; 5s only fires on a genuine hang (pre-fix os.Open(FIFO) blocks forever).
 	case <-time.After(5 * time.Second):
 		t.Fatal("locateLocalJob blocked on a FIFO journal for 5s; the " +
 			"journal must be Lstat'd and required to be a regular file " +
@@ -668,6 +669,7 @@ func TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking(t *testi
 	select {
 	case err := <-done:
 		_ = err // returned without blocking — pass
+		// TRIPWIRE: the Lstat+IsRegular guard rejects the FIFO in microseconds; 5s only fires on a genuine hang (pre-fix os.Open(FIFO) blocks forever).
 	case <-time.After(5 * time.Second):
 		t.Fatal("locateLocalJobRetainedTarget blocked on a FIFO output " +
 			"file for 5s; the output path must be Lstat'd and required " +
