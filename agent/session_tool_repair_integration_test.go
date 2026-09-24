@@ -225,11 +225,13 @@ func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
 func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) {
 	// Valid JSON with extra whitespace and HTML-sensitive chars: < > &.
 	const originalArgs = `{  "intent" : "b<c & d" , "x" : 1  }`
-	// The canonical form is compact + HTML-escaped, exactly what
-	// json.Marshal(json.RawMessage(originalArgs)) produces.
-	canonical, err := json.Marshal(json.RawMessage(originalArgs))
-	if err != nil {
-		t.Fatalf("marshal canonical: %v", err)
+	// The canonical form is compact + HTML-escaped. Hard-coded (not computed
+	// via json.Marshal) so the test is independent of the same function the
+	// production code uses — a no-op json.Marshal would not hide behind the
+	// expected value matching itself.
+	const wantCanonical = `{"intent":"b\u003cc \u0026 d","x":1}`
+	if wantCanonical == originalArgs {
+		t.Fatalf("fixture is already canonical; test cannot prove non-trivial canonicalization")
 	}
 
 	s := newSession(t, withoutGitSnapshot())
@@ -263,8 +265,8 @@ func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) 
 	if len(starts) != 1 {
 		t.Fatalf("got %d ToolCallStart events, want 1", len(starts))
 	}
-	if starts[0].ArgumentsJSON != string(canonical) {
-		t.Fatalf("ArgumentsJSON = %q\nwant canonical (matches reload transcript): %q", starts[0].ArgumentsJSON, string(canonical))
+	if starts[0].ArgumentsJSON != wantCanonical {
+		t.Fatalf("ArgumentsJSON = %q\nwant canonical (matches reload transcript): %q", starts[0].ArgumentsJSON, wantCanonical)
 	}
 }
 
