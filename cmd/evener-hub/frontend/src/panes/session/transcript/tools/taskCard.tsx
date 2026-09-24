@@ -37,7 +37,7 @@
 // "#<id>" labels, and no fabricated auto-start (taskData.ts's own contract).
 import type { ItemModel, TaskRow } from "@evener/appwire-client";
 import { parseArgs, str, taskAggregateLabel } from "@evener/appwire-client";
-import { workspaceStore } from "../../../../shell/workspace";
+import { requestPaneFocus, workspaceStore } from "../../../../shell/workspace";
 import { Meter, OpenButton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -90,10 +90,11 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
 // final state. Render one status touch per ID from its last update that
 // carries ANY status: done followed by reopen must end at the reopen (the
 // card names the batch's final word, and a touched-away completion is not
-// it), while the ID's last notes-only touch annotates that final word
-// instead of displacing it - whether the note arrived before or after the
-// status (the daemon appends notes in call order either way, and freshNotes
-// on the raw path derives order-independently, so the no-raw fallback agrees
+// it), while the ID's last note-bearing touch annotates that final word
+// instead of displacing it - whether the note arrived on its own update or
+// attached to an earlier status update, before or after the final word (the
+// daemon appends notes in call order either way, and freshNotes on the raw
+// path collects any update carrying notes, so the no-raw fallback agrees
 // with it). A completion followed by a note cannot be erased into
 // suppression. Whether a status is RENDERABLE stays updateRows' own filter.
 // Ordering by each ID's final occurrence keeps distinct IDs in the order the
@@ -102,7 +103,7 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
   type Entry = { index: number; update: Record<string, unknown> };
   const latestByID = new Map<number, Entry>();
   const unmarked: { index: number; update: Record<string, unknown> }[] = [];
-  const annotating = new Map<number, Entry>();
+  const lastNotes = new Map<number, Entry>();
   for (const [index, update] of updates.entries()) {
     const id = typeof update.id === "number" ? update.id : undefined;
     if (id === undefined) {
@@ -111,19 +112,20 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
     }
     if (str(update, "status")) {
       latestByID.set(id, { index, update });
-    } else if (str(update, "notes")) {
-      annotating.set(id, { index, update });
+    }
+    if (str(update, "notes")) {
+      lastNotes.set(id, { index, update });
     }
   }
   const marked: Entry[] = [];
   for (const [id, entry] of latestByID) {
-    const note = annotating.get(id);
-    // The ID's last notes-only touch rides the row it annotates whichever
-    // order the touches arrived in, and the merged row ends at the later of
+    const note = lastNotes.get(id);
+    // The ID's last note-bearing touch rides the row it annotates
+    // whichever update carried it, and the merged row ends at the later of
     // the two. Notes follow last-wins by batch position, agreeing with
     // freshNotes' order-independent derivation on the raw path: when the
     // status word itself carries a note and is the later touch, that note
-    // stays instead of being clobbered by an earlier notes-only touch.
+    // stays instead of being clobbered by an earlier touch's note.
     if (!note) {
       marked.push(entry);
       continue;
@@ -495,15 +497,21 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
             max={progress.total}
             tone="neutral"
           />
-          {/* The whole-list affordance: the same workspace toggle the /tasks
-              palette command runs, so the card hands off to the pane that
-              owns the full plan. Hidden on surfaces with no owning session
-              (a read-only transcript pane) - a control that cannot open
-              anything must not render. */}
+          {/* The whole-list affordance: the card hands off to the pane that
+              owns the full plan. An OPEN, not the /tasks palette's toggle -
+              the label promises opening, so the click focuses the pane when
+              the reader already has it rather than closing it. Hidden on
+              surfaces with no owning session (a read-only transcript pane) -
+              a control that cannot open anything must not render. */}
           {sessionRef !== undefined && (
             <OpenButton
               label="Open task list"
-              onClick={() => workspaceStore.getState().togglePane("sessionTasks", { ref: sessionRef })}
+              onClick={() => {
+                const paneId = workspaceStore
+                  .getState()
+                  .openPane("sessionTasks", { ref: sessionRef }, { slot: "secondary" });
+                requestPaneFocus(paneId);
+              }}
             />
           )}
         </div>

@@ -1,7 +1,9 @@
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { lazy } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { workspaceStore } from "../../../../shell/workspace";
+import { registerPaneForTests } from "../../../../shell/paneRegistry";
+import { isPaneOpen, workspaceStore } from "../../../../shell/workspace";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";
 import "./taskCard"; // registers the real "task_list" descriptor
@@ -735,6 +737,60 @@ test("when both touches carry notes, the later note wins on the fallback row too
   expect(rows[0]!.textContent).not.toContain("early note");
 });
 
+test("a note on an earlier STATUS touch still rides the batch's later final word on the fallback row", () => {
+  // The note came attached to a status update, not a notes-only touch -
+  // the raw path's freshNotes carries it (it collects any update bearing
+  // notes), so the fallback must too, or the two derivations disagree
+  // about which notes belong to the call.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done", notes: "wrapped up with a caveat" },
+          { id: 1, status: "in_progress" },
+        ],
+      },
+      "Updated 1→done, 1→in_progress. Progress: 0/1 tasks complete.",
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.getAttribute("data-touch")).toBe("started");
+  expect(rows[0]!.textContent).toContain("wrapped up with a caveat");
+});
+
+test("a note on an earlier status touch still rides the raw path's row", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "done", notes: "wrapped up with a caveat" },
+          { id: 1, status: "in_progress" },
+        ],
+      },
+      "Updated 1→done, 1→in_progress. Progress: 0/1 tasks complete.",
+      {
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "bouncing task",
+            prompt: "",
+            status: "in_progress",
+            started: true,
+          },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(within(rows[0]!).getByText("wrapped up with a caveat")).toBeTruthy();
+});
+
 test("a trailing notes-only touch keeps the fallback row's completion and carries the note", () => {
   // Same batch shape with no raw (old daemon / replayed transcript): the
   // fallback row keeps the "#id" label, the done touch, and the note.
@@ -974,16 +1030,36 @@ test("the progress meter names the same condensed sentence", () => {
 });
 
 test("the footer's Open button opens the session's Tasks pane", () => {
-  const toggle = vi.spyOn(workspaceStore.getState(), "togglePane").mockImplementation(() => ({
-    paneId: "pane_tasks",
-    opened: true,
-  }));
+  const open = vi.spyOn(workspaceStore.getState(), "openPane").mockReturnValue("pane_tasks");
   renderItem(mainUpdate(), "local:s1");
   openRow();
   fireEvent.click(screen.getByRole("button", { name: "Open task list" }));
-  // The same workspace toggle the /tasks palette command runs.
-  expect(toggle).toHaveBeenCalledWith("sessionTasks", { ref: "local:s1" });
-  toggle.mockRestore();
+  // An OPEN operation, not a toggle: the label promises opening, so the
+  // click must never close a pane the reader already has.
+  expect(open).toHaveBeenCalledWith("sessionTasks", { ref: "local:s1" }, { slot: "secondary" });
+  open.mockRestore();
+});
+
+test("the footer's Open button never closes an already-open pane", () => {
+  // The real pane modules register themselves only when the app shell
+  // imports them; this suite never does, so the store's openPane needs a
+  // stub descriptor for the type this test exercises.
+  const restorePane = registerPaneForTests({
+    id: "sessionTasks",
+    title: () => "Tasks",
+    component: lazy(() => new Promise(() => {})),
+  });
+  const before = workspaceStore.getState();
+  try {
+    workspaceStore.getState().openPane("sessionTasks", { ref: "local:s1" }, { slot: "secondary" });
+    renderItem(mainUpdate(), "local:s1");
+    openRow();
+    fireEvent.click(screen.getByRole("button", { name: "Open task list" }));
+    expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "local:s1" })).toBe(true);
+  } finally {
+    workspaceStore.setState(before, true);
+    restorePane();
+  }
 });
 
 test("no Open button renders without a session ref (read-only transcript surfaces)", () => {
