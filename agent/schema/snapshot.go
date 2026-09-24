@@ -595,27 +595,25 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 		return SessionMeta{}, err
 	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
-	// Reject symlinked metadata: afero.ReadFile follows symlinks, so a
-	// symlinked .meta.json pointing outside the state root would surface
-	// metadata from an untrusted location. Use LstatIfPossible (which does
-	// Lstat on OsFs, detecting symlinks) and fall back to Stat on filesystems
-	// that do not implement afero.Lstater.
-	info, err := lstatIfPossible(fs, path)
-	if err != nil {
+	// Finding 3: validate intermediate path components (e.g. sessions/) for
+	// symlinks. A symlinked sessions/ directory pointing outside the state
+	// root would surface metadata from an untrusted location. The leaf
+	// itself is NOT checked here — it is opened with O_NOFOLLOW by
+	// readMetaFile below (finding 6), which atomically refuses a symlink at
+	// the final component and closes the Lstat-then-open TOCTOU window the
+	// previous leaf-only guard left.
+	if err := metaComponentWalk(fs, path, dir); err != nil {
 		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
 	}
-	// Reject symlinks: afero.ReadFile follows them, so a symlinked .meta.json
-	// pointing outside the state root would surface metadata from an
-	// untrusted location. Do NOT reject all non-regular files here — a FIFO
-	// at this path is a deliberate synchronization barrier in retirement
-	// tests and must be allowed to block the downstream ReadFile open.
-	// listSessionMetasFS already filters non-regular entries (including
-	// FIFOs) at enumeration; this guard is defense-in-depth for direct
-	// LoadSessionMeta calls.
-	if info.Mode()&os.ModeSymlink != 0 {
-		return SessionMeta{}, fmt.Errorf("session meta %s is a symlink", id)
-	}
-	data, err := afero.ReadFile(fs, path)
+	// Finding 6: open through a single no-follow descriptor and read from it,
+	// rather than Lstat-then-ReadFile. O_NOFOLLOW refuses a symlink at the
+	// leaf atomically (ELOOP); the descriptor is then read directly, so
+	// nothing can be swapped between the check and the bytes. Do NOT fstat
+	// for regular or use O_NONBLOCK: a FIFO at this path is a deliberate
+	// synchronization barrier in retirement tests and must be allowed to
+	// block the open. O_NOFOLLOW is harmless for FIFOs and regular files —
+	// it only refuses when the final component is a symlink.
+	data, err := readMetaFile(fs, path)
 	if err != nil {
 		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
 	}
@@ -627,6 +625,43 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 		return SessionMeta{}, fmt.Errorf("session meta ID %q does not match requested session ID %q", meta.ID, id)
 	}
 	return meta, nil
+}
+
+// metaComponentWalk Lstats each existing intermediate component of path between
+// root (exclusive) and the leaf (exclusive), returning an error if any is a
+// symlink. The leaf itself is NOT checked here — it is opened with O_NOFOLLOW
+// by readMetaFile, which atomically refuses a symlink at the final component.
+// Mirrors symlinkErrorDeep from package agent (transcript_lookup.go), scoped
+// to intermediates only and using the injected afero.Fs so it works on both
+// the real filesystem (Lstat detects symlinks) and in-memory test filesystems
+// (Stat, which never reports symlinks).
+func metaComponentWalk(fs afero.Fs, path, root string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	for dir != root && dir != "" && dir != string(filepath.Separator) && dir != "." {
+		info, _ := lstatIfPossible(fs, dir)
+		if info != nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path %q traverses a symlink (%q): symlinks are not allowed on the meta read path", path, dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return nil
+}
+
+// readMetaFile reads the meta file through a no-follow descriptor when the
+// filesystem is the real OS filesystem, closing the leaf TOCTOU window
+// (finding 6). For in-memory test filesystems (afero.MemMapFs), which have no
+// symlinks and no TOCTOU, it falls back to afero.ReadFile.
+func readMetaFile(fs afero.Fs, path string) ([]byte, error) {
+	if _, ok := fs.(*afero.OsFs); ok {
+		return readFileNoFollowOS(path)
+	}
+	return afero.ReadFile(fs, path)
 }
 
 // listSessionMetasFS is the filesystem seam beneath ListSessionMetas.
