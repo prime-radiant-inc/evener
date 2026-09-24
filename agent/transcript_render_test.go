@@ -2317,6 +2317,49 @@ func TestRenderMarkdown_HealedCommunicateSuppressesRawArgs(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdown_HealedCommunicateCardWithCustomResultTool proves the
+// writeToolCardLine branch for name=="communicate" && status=="ok" is
+// reachable: when resultToolName is customized (e.g. "reply"), a "communicate"
+// tool call is NOT the result tool, so writeAssistantContent routes it through
+// writeToolCard (not writeResultToolMessage). The healed-raw-args suppression in
+// writeToolCardLine must still fire so malformed bytes don't leak into the card.
+func TestRenderMarkdown_HealedCommunicateCardWithCustomResultTool(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{message: "world"}` // malformed JSON — bare key
+	assistantPart := llm.ContentPart{
+		Kind: llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{
+			ID:           "call_healed_comm_custom",
+			Name:         "communicate",
+			Arguments:    []byte(`{"message":"world"}`),
+			RawArguments: rawArgs,
+		},
+	}
+	resultPart := llm.ContentPart{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_healed_comm_custom",
+			Name:       "communicate",
+			IsError:    false,
+		},
+	}
+	entries := []transcript.Entry{
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantPart}}}},
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{resultPart}}}},
+	}
+	// Custom resultToolName so "communicate" is NOT the result tool → routes
+	// through writeToolCard → writeToolCardLine, exercising the branch.
+	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{resultToolName: "reply"})
+	// The raw malformed bytes must NOT appear in the tool card's input field.
+	if strings.Contains(out, rawArgs) {
+		t.Errorf("healed communicate must not show raw malformed bytes in tool card; got:\n%s", out)
+	}
+	// The tool card must render (the branch was reached).
+	if !strings.Contains(out, "`communicate`") {
+		t.Errorf("expected a communicate tool card in output; got:\n%s", out)
+	}
+}
+
 // TestRenderMarkdown_OversizedValidJSONSuppressesIntent verifies finding 4:
 // oversized valid JSON (within MaxToolArgumentBytes) must suppress intent in
 // the markdown tool card, matching the live path's suppression. Live rejects
