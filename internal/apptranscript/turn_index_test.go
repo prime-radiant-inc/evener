@@ -1066,6 +1066,63 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolSeed(t *testing.T) {
 	}
 }
 
+// TestTurnCacheRebuildsSidecarWithStaleVersion proves that a sidecar carrying
+// an old turnIndexVersion (v13, before the deferred-communicate commandExecution
+// items changed the projection output) with stale ItemCount/GroupItems is NOT
+// served: the version mismatch forces a full rebuild so the fresh counts reflect
+// the current projection. Before the bump, the identity matched and a stale
+// sidecar was reused, producing wrong item counts.
+func TestTurnCacheRebuildsSidecarWithStaleVersion(t *testing.T) {
+	entries := []transcript.Entry{assistantToolCallEntry(1, "shared", "correct_tool", `{}`)}
+	for seq := 2; seq <= 128; seq++ {
+		entries = append(entries, userEntry(seq, fmt.Sprintf("entry-%d", seq)))
+	}
+	entries = append(entries, toolResultEntry(129, "shared", "", "done"))
+	path := writeEntries(t, entries...)
+	indexPath := path + ".appwire-index.json"
+	requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
+	index, err := readTurnIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index.Version != turnIndexVersion {
+		t.Fatalf("fresh sidecar Version=%d, want %d", index.Version, turnIndexVersion)
+	}
+	// Poison the sidecar with the OLD version and a stale ItemCount.
+	index.Version = 13
+	record := &index.Records[128]
+	staleCount := record.ItemCount
+	record.ItemCount = staleCount + 999 // stale count that a rebuild must correct
+	index.IntegrityStamp = turnIndexIntegrityStamp(index)
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
+	// The stale sidecar must NOT be served: the version mismatch forces a
+	// rebuild, so the item count is recomputed from the projection (not the
+	// poisoned 999). The newest group has the user message + the merged tool
+	// item with the correct name.
+	if len(got) != 1 || len(got[0].Items) != 2 || got[0].Items[1].ToolName != "correct_tool" {
+		t.Fatalf("stale-version sidecar was reused: turns=%#v", got)
+	}
+	// Verify the rebuilt sidecar has the fresh version.
+	rebuilt, err := readTurnIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.Version != turnIndexVersion {
+		t.Fatalf("rebuilt sidecar Version=%d, want %d", rebuilt.Version, turnIndexVersion)
+	}
+	if rebuilt.Records[128].ItemCount == staleCount+999 {
+		t.Fatalf("stale ItemCount was preserved; sidecar was not rebuilt")
+	}
+}
+
 func TestTurnCacheRebuildsMissingOrCorruptSidecar(t *testing.T) {
 	path := writeNumberedTranscript(t, 8)
 	indexPath := path + ".appwire-index.json"
