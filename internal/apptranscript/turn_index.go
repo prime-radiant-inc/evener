@@ -1276,6 +1276,11 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 	if err := ctx.Err(); err != nil {
 		return nil, projected, err
 	}
+	// Flush unpaired communicates: the group's records ended with a pending
+	// communicate call whose CommRawArgs were never consumed by a paired
+	// result turn. Render each as an agentMessage, matching the full-read
+	// path's FlushUnpairedCommunicates and the live projector's preview.
+	items = append(items, flushUnpairedCommunicateItems(reg, group.turnID)...)
 	merged := mergeGroupedItems(items)
 	if len(merged) == 0 {
 		return nil, projected, nil

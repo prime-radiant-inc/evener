@@ -65,6 +65,7 @@ func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error)
 		// there. Re-positioning here would clobber the grouped ordinals.
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
+	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
 	return appTurnProjection{turns: projection.Turns, persistedEntries: entries, nextEntry: projection.NextEntry}, err
 }
 
@@ -91,6 +92,7 @@ func appTurnProjectionFromEntries(header transcript.Header, entries []transcript
 		}
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
+	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
 	return appTurnProjection{turns: projection.Turns, persistedEntries: highest, nextEntry: projection.NextEntry}, err
 }
 
