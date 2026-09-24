@@ -50,11 +50,13 @@ import type {
   WarningParams,
 } from "@evener/appwire-client";
 import type {
+  ActivityMember,
   BoundText,
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/project";
 import {
+  activityIdentity,
   attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
@@ -613,13 +615,30 @@ export function createConversationStore() {
   // seats the notice after the attachments that follow it (never between
   // the pair — see capAndTruncate), so the notice keeps the position it
   // arrived at, after the attachments row that was the nearest row then.
+  // RoboRev review round 1: a notice arriving over a CLUSTER anchors to
+  // the LAST member's identity, never the row's own top-level one — the
+  // top-level identity belongs to the FIRST member, and the R38 split
+  // resolves it there, lifting the notice above the run's later members
+  // the very moment it arrives. Every member of the displayed run was on
+  // screen when the notice landed, so the whole run stays above it; only
+  // members that join the run LATER split below it.
+  function arrivalAnchorIdentity(item: MobileTimelineItem): string {
+    const source = attachmentSourceIdentity(item);
+    if (source !== null) return source;
+    if (item.kind === "activity" && item.members) {
+      const last = item.members[item.members.length - 1];
+      if (last !== undefined) return activityIdentity(last);
+    }
+    return timelineIdentity(item);
+  }
+
   function arrivalAnchor(
     items: MobileTimelineItem[],
     noticeIdentities: ReadonlySet<string>,
   ): string | null {
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const item = items[index];
-      const identity = attachmentSourceIdentity(item) ?? timelineIdentity(item);
+      const identity = arrivalAnchorIdentity(item);
       if (!noticeIdentities.has(identity)) return identity;
     }
     return null;
@@ -669,6 +688,79 @@ export function createConversationStore() {
   // read the same window the publish will show — a notice consumes a
   // cap slot, so the overflow the honest stop reads and the window the
   // retained-turn bound trims against must both count it.
+  // R38: the row a sub-run of a split cluster re-projects as — the same
+  // shape clusterActivityRun builds: a run of one is the member's own
+  // row, a longer run is that row with the run's aggregate state and the
+  // members carried for the renderer that expands them.
+  function activityRunRow(
+    run: ActivityMember[],
+  ): Extract<MobileTimelineItem, { kind: "activity" }> | null {
+    const first = run[0];
+    if (first === undefined) return null;
+    const row: Extract<MobileTimelineItem, { kind: "activity" }> = {
+      kind: "activity",
+      id: first.id,
+      label: first.label,
+      family: first.family,
+      state: first.state,
+      detail: first.detail,
+      ...(first.transcriptKey ? { transcriptKey: first.transcriptKey } : {}),
+      ...(first.position ? { position: first.position } : {}),
+    };
+    if (run.length === 1) return row;
+    return {
+      ...row,
+      state: run.some((member) => member.state === "running")
+        ? "running"
+        : "completed",
+      members: [...run],
+    };
+  }
+
+  // R38: a cluster that absorbed the row a notice anchored to AND grew
+  // past it — later same-family members arrived after the notice — splits
+  // at the anchored member, so the notice seats at the position it
+  // arrived at, above the members that arrived later. An anchor on the
+  // LAST member needs no split (the whole-row seat already sits below
+  // it), so null keeps that seat. The caller only offers a cluster with
+  // no attachment run behind it: a notice anchored through an
+  // attachment's source identity arrived after those attachments, and a
+  // split would lift it above them.
+  function splitClusterAtAnchors(
+    item: Extract<MobileTimelineItem, { kind: "activity" }>,
+    bucketsByIdentity: ReadonlyMap<string, MobileTimelineItem[]>,
+  ): MobileTimelineItem[] | null {
+    const members = item.members;
+    if (members === undefined) return null;
+    // Only a member with members AFTER it splits the cluster: an anchor on
+    // the last member seats after the whole row as before. The common
+    // anchored publish answers that without allocating the walk.
+    let splitsBeforeLastMember = false;
+    for (let index = 0; index < members.length - 1; index += 1) {
+      const member = members[index];
+      if (member === undefined) continue;
+      if (bucketsByIdentity.get(activityIdentity(member)) !== undefined) {
+        splitsBeforeLastMember = true;
+        break;
+      }
+    }
+    if (!splitsBeforeLastMember) return null;
+    const out: MobileTimelineItem[] = [];
+    let run: ActivityMember[] = [];
+    for (const member of members) {
+      run.push(member);
+      const bucket = bucketsByIdentity.get(activityIdentity(member));
+      if (bucket === undefined) continue;
+      const row = activityRunRow(run);
+      if (row !== null) out.push(row);
+      out.push(...bucket);
+      run = [];
+    }
+    const tail = activityRunRow(run);
+    if (tail !== null) out.push(tail);
+    return out;
+  }
+
   function seatTransientWarnings(
     items: MobileTimelineItem[],
   ): MobileTimelineItem[] {
@@ -702,30 +794,51 @@ export function createConversationStore() {
       // row.
       if (noticesByAnchor.size === 0) continue;
       const identities = ownTimelineIdentities(item);
+      const bucketsByIdentity = new Map<string, MobileTimelineItem[]>();
       for (const identity of identities) {
         const bucket = noticesByAnchor.get(identity);
-        if (bucket === undefined) continue;
-        // A notice anchored through an attachment row's source identity
-        // seats after the attachments that follow the anchored row, never
-        // between them: capItems' cap cut drops a leading attachment
-        // whose source fell off the cut and only scans a LEADING RUN of
-        // attachments, so a notice seated inside that run would become
-        // the first retained row at the cut and the orphans behind it
-        // would survive — their lingering source identities then make
-        // loadOlder's F10 admission rule refuse genuine older page copies
-        // of those sources, forever. The run spans every attachment the
-        // anchored row OWNS the source of — a clustered activity carries
-        // the attachments of all its members, so a notice anchored to one
-        // member seats after them all. This is also the position the
-        // notice arrived at: the attachments row was the nearest row when
-        // it landed (RoboRev panel round 2).
-        while (index + 1 < items.length) {
-          const next = items[index + 1];
-          const source = attachmentSourceIdentity(next);
-          if (source === null || !identities.has(source)) break;
-          index += 1;
-          seated.push(next);
+        if (bucket !== undefined) bucketsByIdentity.set(identity, bucket);
+      }
+      if (bucketsByIdentity.size === 0) continue;
+      // A notice anchored through an attachment row's source identity
+      // seats after the attachments that follow the anchored row, never
+      // between them: capItems' cap cut drops a leading attachment
+      // whose source fell off the cut and only scans a LEADING RUN of
+      // attachments, so a notice seated inside that run would become
+      // the first retained row at the cut and the orphans behind it
+      // would survive — their lingering source identities then make
+      // loadOlder's F10 admission rule refuse genuine older page copies
+      // of those sources, forever. The run spans every attachment the
+      // anchored row OWNS the source of — a clustered activity carries
+      // the attachments of all its members, so a notice anchored to one
+      // member seats after them all. This is also the position the
+      // notice arrived at: the attachments row was the nearest row when
+      // it landed (RoboRev panel round 2).
+      let attachmentsEnd = index;
+      while (attachmentsEnd + 1 < items.length) {
+        const next = items[attachmentsEnd + 1];
+        const source = attachmentSourceIdentity(next);
+        if (source === null || !identities.has(source)) break;
+        attachmentsEnd += 1;
+      }
+      // R38: the cluster grew past the anchored member — split it there
+      // so the notice keeps its arrival position above the members that
+      // arrived later. Only when no attachment run follows: that notice
+      // arrived after the attachments, and the whole-row seat below them
+      // is its arrival position.
+      if (attachmentsEnd === index && item.kind === "activity") {
+        const split = splitClusterAtAnchors(item, bucketsByIdentity);
+        if (split !== null) {
+          seated.pop();
+          seated.push(...split);
+          continue;
         }
+      }
+      for (let attach = index + 1; attach <= attachmentsEnd; attach += 1) {
+        seated.push(items[attach]);
+      }
+      index = attachmentsEnd;
+      for (const bucket of bucketsByIdentity.values()) {
         seated.push(...bucket);
       }
     }
@@ -1182,9 +1295,31 @@ export function createConversationStore() {
     for (const turn of before.turns) {
       for (const item of turn.items) {
         if (!owned.has(item.transcriptKey ?? item.id)) continue;
-        const survivor = afterItems.find((candidate) =>
-          itemIdentityMatches(candidate, item),
-        );
+        // Finding-3 (the #2213 disclosed-unfixed local finding, riding this
+        // lane): the first-identity-match selection can pair a keyless
+        // same-bare-id survivor ahead of the keyed continuation and retire a
+        // claim whose original item still stands. The pairing premise — one
+        // model holding keyless {id:X} beside keyed {id:X,K} — is unreachable
+        // through every store surface: live item frames route cross-turn by
+        // identity and merge into the existing holder (findItemTurnId's
+        // final fallback searches all turns), the page and rehydrate merges
+        // identity-fold same-identity pairs into one item, and the only
+        // remaining constructor is a wire frame installing the same identity
+        // twice within one turn's item list, which no flow produces and
+        // reconcileItemDuplicates folds at the next merge anyway. The
+        // defensive find-order preference below (unchanged reference first,
+        // then the exact-key continuation, then the identity fallback) makes
+        // the walk immune to the premise without changing any reachable
+        // pairing: keyed-vs-keyed same-id survivors never match the exact-key
+        // step, and the fallback keeps the package's own rule.
+        const survivor =
+          afterItems.find((candidate) => candidate === item) ??
+          afterItems.find(
+            (candidate) =>
+              item.transcriptKey !== undefined &&
+              candidate.transcriptKey === item.transcriptKey,
+          ) ??
+          afterItems.find((candidate) => itemIdentityMatches(candidate, item));
         if (survivor === undefined) {
           pageItemIds.delete(item.transcriptKey ?? item.id);
           pageItemIds.delete(item.id);
@@ -2321,11 +2456,13 @@ export function createConversationStore() {
           // pre-bound window.
           let seatedRehydrateItems: MobileTimelineItem[] | null = null;
           // RoboRev review round 2: whether the retained history is
-          // CONTINUOUS with the refreshed window — the coverage merge's own
-          // transcript-overlap signal. The store's own paging cursor below
-          // reads it: page turn ownership alone must not pin the retained
-          // cursor (an atCap null included) across a refresh whose window
-          // shares no history with what the model retains.
+          // CONTINUOUS with the refreshed window — the real merge's
+          // transcript-overlap signal, so alias-consumed turns' directly
+          // matched items keep counting as continuity. The store's own
+          // paging cursor below reads it: page turn ownership alone must
+          // not pin the retained cursor (an atCap null included) across a
+          // refresh whose window shares no history with what the model
+          // retains.
           let retainedOverlapsWindow = false;
           if (preserveTurnHistory && currentConvForMerge !== null) {
             // The public merge folds accumulated page turns into the fresh
@@ -2825,21 +2962,44 @@ export function createConversationStore() {
               // re-merge sees that match itself, and its group membership
               // is what supplies the re-merge's overlap evidence.
               if (turn.items.length === 0) return false;
+              let foldedThroughAliasOnly = false;
               for (const item of turn.items) {
                 if (coverageInjectedRefs.has(item)) continue;
                 const output = coverageRetainedItemOutput.get(item);
                 if (output === undefined || !coverageOutputCarriesFresh.has(output)) {
                   return false;
                 }
-                // A DIRECT identity match with a fresh source of the same
-                // output: the re-merge sees it too, so the turn keeps its
-                // re-merge membership — its matched items are what supply
-                // the re-merge's transcript-overlap evidence.
+                // The package's own keep-decisions for this item through
+                // the REAL merge's view (#2152 corner a): a retained field
+                // the fresh side did not supply — alias-bridged or direct,
+                // with fold survival and the rank rule for status — keeps
+                // its claim, and the turn stays for the re-merge verdict.
+                // The gate used to accept alias consumption on output
+                // membership alone, so a reread that re-served the
+                // identity but omitted the payload still read as consumed
+                // and discarded the retained cursor.
+                if (history.olderItemAddsCoverage(item)) return false;
+                // #2152 corner b: a DIRECT identity match no longer
+                // retires the whole per-turn check. The re-merge judges a
+                // direct-matched item exactly (it sees the same identity),
+                // so the items that must keep the turn out of the re-merge
+                // are the ones it CANNOT see: those the fresh side reached
+                // solely through remembered aliases.
                 const freshSources = coverageOutputFreshSources.get(output) ?? [];
                 if (freshSources.some((fresh) => itemIdentityMatches(item, fresh))) {
-                  return false;
+                  continue;
                 }
+                foldedThroughAliasOnly = true;
               }
+              // A turn every item of which the fresh read matches directly
+              // keeps its re-merge membership: the re-merge judges it
+              // exactly, and its matched items supply the overlap evidence
+              // the store's cursor gate reads. The bail this replaces kept
+              // mixed direct+alias turns in coverageOlderTurns, and the
+              // alias-only item then claimed against a re-merge that could
+              // not see its bridge, pinning a stale cursor through a
+              // COMPLETE reread.
+              if (!foldedThroughAliasOnly) return false;
               const outputId = coverageTurnOutputId.get(turn.id);
               if (outputId === undefined) return false;
               const freshMatches = history.newerTurnFolds.get(outputId) ?? [];
@@ -2867,8 +3027,17 @@ export function createConversationStore() {
               coverageOlderTurns.length !== retainedTurnsForMerge.length
                 ? mergeTurnHistory(coverageOlderTurns, conversation.turns)
                 : history;
-            retainedOverlapsWindow = coverage.transcriptOverlap;
-            if (coverage.olderCoverage && coverage.transcriptOverlap) {
+            // RoboRev review round 2: the overlap reads the REAL merge's
+            // signal, never the claim re-merge's. The re-merge exists to
+            // judge coverage claims without the alias-consumed turns, and
+            // its overlap would drop those turns' DIRECTLY MATCHED items
+            // with them — a refresh whose only continuity was the consumed
+            // turn's direct matches would read as disjoint and reset the
+            // store's own paging cursor to the read's. The real merge
+            // judged every retained turn; its overlap is the continuity
+            // evidence, consumed or not.
+            retainedOverlapsWindow = history.transcriptOverlap;
+            if (coverage.olderCoverage && history.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
             // Strip the injected skeletons the merge did not fold away —

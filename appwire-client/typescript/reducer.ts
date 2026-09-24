@@ -607,11 +607,18 @@ function recordMergedToolItem(
 // the fold of a reissued fragment's duplicate copies must not erase the
 // page's own content. Text counts through its presence marker: a side
 // whose text the merge dropped contributed no text, and a side that
-// restored what the other omitted did. The identity anchors record every
-// input regardless — an item whose anchors all sit on one side exists
-// only because that side does. Chained edges resolve through the input's
-// own record: an untouched original speaks for itself, a folded one for
-// the suppliers it kept.
+// restored what the other omitted did. Every other field counts by the
+// merge's own rule for it — the nullish-fallback fields only by carrying a
+// value (null falls through to the other side), status by the rank chain's
+// kept value, and the spread-merged fields by property presence — so a
+// supplier set never names a side the merge would have read through to the
+// other (#2213 final-verdict Medium: strict value equality let an explicit
+// empty text and an omitted text share the supply, because both hydrate to
+// "" and the marker is invisible to Object.entries). The identity anchors
+// record every input regardless — an item whose anchors all sit on one side
+// exists only because that side does. Chained edges resolve through the
+// input's own record: an untouched original speaks for itself, a folded one
+// for the suppliers it kept.
 function recordItemContribution(
   context: ToolItemMergeContext,
   merged: ItemModel,
@@ -646,21 +653,34 @@ function recordItemContribution(
     if (fromNewer) return suppliersOf(newer, field);
     return undefined;
   };
+  // Whether one input could have supplied the value the edge kept, read by
+  // the merge's OWN rule for the field: text through its presence marker (an
+  // omitted text never supplied text, whatever its placeholder string
+  // reads), the nullish-fallback fields only by carrying a value, status by
+  // the rank chain's kept value (the merge keeps one input's status, so
+  // strict equality is its rule), and every other field by property
+  // presence — the spread keeps the newer side's own property, so a side
+  // that does not own the property never supplied the value it happens to
+  // read as.
+  const suppliedBy = (item: ItemModel, field: string, value: unknown): boolean => {
+    if (field === "text") return itemTextPresence(item) === "provided" && item.text === value;
+    if (field === "status") return item.status === value;
+    const itemValue = (item as unknown as Record<string, unknown>)[field];
+    if (freshSuppliedNullishFallbackFields.has(field)) {
+      return itemValue !== null && itemValue !== undefined && itemValue === value;
+    }
+    return Object.hasOwn(item, field) && itemValue === value;
+  };
   const nonTool = new Map<string, ReadonlySet<ItemModel>>();
   for (const [key, value] of Object.entries(merged)) {
     if (toolResultFields.includes(key as ToolResultField)) continue;
-    const set = attribute(
-      key,
-      value,
-      (older as unknown as Record<string, unknown>)[key] === value,
-      (newer as unknown as Record<string, unknown>)[key] === value,
-    );
+    const set = attribute(key, value, suppliedBy(older, key, value), suppliedBy(newer, key, value));
     if (set !== undefined) nonTool.set(key, set);
   }
   const tools: Partial<Record<ToolResultField, ReadonlySet<ItemModel>>> = {};
   for (const field of toolResultFields) {
     const value = merged[field];
-    const set = attribute(field, value, older[field] === value, newer[field] === value);
+    const set = attribute(field, value, suppliedBy(older, field, value), suppliedBy(newer, field, value));
     if (set !== undefined) tools[field] = set;
   }
   context.contributions.set(merged, { nonTool, tools, identity });
@@ -1560,6 +1580,16 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   // rewrite's winners included. An item no edge folded vouches for
   // itself.
   itemSideContributes: (item: ItemModel, side: (input: ItemModel) => boolean) => boolean;
+  // The merge's own coverage verdict for one older-input item: whether its
+  // persisted content adds coverage the fresh side lacks, judged through
+  // this merge's live view — the same host, contributor-chain, rank, and
+  // fold-survival rules the merge's own coverage walk runs per turn, never
+  // a re-derivation after the fact. Warnings never claim (the walk's own
+  // rule); an item this merge never saw as an older input claims (true),
+  // the safe direction for a caller gating on the answer. Published for the
+  // mobile store's alias-consumption gate (#2152): the store consumes this
+  // answer instead of re-deriving the field rules store-side.
+  olderItemAddsCoverage: (item: ItemModel) => boolean;
 }
 
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
@@ -1900,11 +1930,26 @@ function olderTurnAddsCoverage(
     );
   }
   return older.items.some((olderItem) => {
-    if (olderItem.type === "warning") return false;
-    const host = matchedItemHost(olderItem, groupTurn, context);
-    const matchingItems = freshContributorItems(host, matches, olderItem, context);
-    return olderItemAddsCoverage(olderItem, matchingItems, groupTurn, view, context);
+    return olderItemCoverageClaim(olderItem, groupTurn, matches, view, context);
   });
+}
+
+// The per-item claim both the per-turn walk above and the merge-bound
+// reader (mergeTurnHistoryWithContext's olderItemAddsCoverageOf) run: the
+// item's merged host and its fresh contributor chain, judged through the
+// merge's own live view. Warnings never claim — the walk's own rule,
+// owned here so every caller inherits it.
+function olderItemCoverageClaim(
+  item: ItemModel,
+  groupTurn: TurnModel,
+  freshTurns: TurnModel[],
+  view: ToolFoldView,
+  context?: ToolItemMergeContext,
+): boolean {
+  if (item.type === "warning") return false;
+  const host = matchedItemHost(item, groupTurn, context);
+  const matchingItems = freshContributorItems(host, freshTurns, item, context);
+  return olderItemAddsCoverage(item, matchingItems, groupTurn, view, context);
 }
 
 function foldTurnFragments(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel | undefined {
@@ -1959,12 +2004,22 @@ function mergeTurnHistoryWithContext(
   // below read the fold's own view of the turns they will return.
   const placed = placeCoalescedTurns(groups, older.length);
   const view = toolFoldView(placed, context);
-
+  // The per-item inputs of the coverage verdicts below, so the fold detail
+  // can answer the same question for one item on demand: the group turn and
+  // the group's fresh turns are the walk's own arguments, and the chain
+  // (host, fresh contributors) is exactly what the per-turn walk computes
+  // for each item it reaches. Item objects flow into the groups by
+  // reference, so a caller holding an older input item asks about the very
+  // object this index names.
+  const olderItemCoverageInputs = new WeakMap<ItemModel, { groupTurn: TurnModel; freshTurns: TurnModel[] }>();
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
     for (const [position, olderIndex] of group.olderIndexes.entries()) {
       const turn = older[olderIndex];
       if (turn === undefined) continue;
+      for (const item of turn.items) {
+        olderItemCoverageInputs.set(item, { groupTurn: group.turn, freshTurns });
+      }
       if (
         turn.items.some(
           (item) =>
@@ -1996,6 +2051,20 @@ function mergeTurnHistoryWithContext(
     if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
   }
 
+  // The store's alias-consumption gate (#2152) asks the package's own
+  // answer for one retained item: whether its persisted content adds
+  // coverage the fresh side lacks, judged through THIS merge's live view —
+  // the same host, contributor-chain, and fold-survival rules the walk
+  // above runs per turn, through the very function it calls — never a
+  // re-derivation after the fact. Warnings never claim (the claim's own
+  // rule), and an item this merge never saw as an older input claims —
+  // the safe direction for a caller gating on the answer.
+  const olderItemAddsCoverageOf = (item: ItemModel): boolean => {
+    const input = olderItemCoverageInputs.get(item);
+    if (input === undefined) return true;
+    return olderItemCoverageClaim(item, input.groupTurn, input.freshTurns, view, context);
+  };
+
   return {
     turns: olderContributed ? mergeToolCallsByCallId(placed, context, view) : newer,
     olderCoverage,
@@ -2005,6 +2074,7 @@ function mergeTurnHistoryWithContext(
     itemFoldSources: itemFoldSourcesOf(context),
     toolResultFoldSources: toolResultFoldSourcesOf(context),
     itemSideContributes: itemSideContributesOf(context),
+    olderItemAddsCoverage: olderItemAddsCoverageOf,
   };
 }
 

@@ -5103,6 +5103,149 @@ describe("ConversationStore", () => {
       ]);
     });
 
+    // RoboRev panel R38: a cluster can GROW past the row a notice anchored
+    // to. A later same-family activity joins the run that absorbed the
+    // anchored row, and the seating resolves the anchor through the
+    // cluster's owned identities and seats the notice after the WHOLE
+    // cluster — below the member that arrived after the notice. The
+    // cluster splits at the anchored member instead, so the notice keeps
+    // the position it arrived at, above the rows that arrived later.
+    it("seats a warning above later members when a cluster grows past its anchor row", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [commandExecItem("a-tool", "shell", "completed")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+      ]);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+      ]);
+      // A newer same-family activity arrives AFTER the notice: the
+      // projection clusters the two consecutive shell rows, so the run
+      // that absorbed the anchored row now also carries a member that
+      // arrived after the notice did.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: commandExecItem("b-tool", "shell", "completed"),
+        },
+      } as AnyNotification);
+      const after = rows(store);
+      expect(after.map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+        ["activity", "b-tool"],
+      ]);
+    });
+
+    // RoboRev review round 1: the anchor a notice records when it arrives
+    // over an ALREADY-CLUSTERED row. The cluster's top-level identity
+    // belongs to its FIRST member, so a notice that arrived after the
+    // whole displayed run anchored there — and the R38 split then lifted
+    // it above the run's later members, the same reorder the split exists
+    // to prevent, one arrival earlier. The anchor is the cluster's LAST
+    // member: every member was on screen when the notice landed, so the
+    // whole run stays above it and only members that join LATER split
+    // below it.
+    it("seats a warning after the whole cluster that was displayed when it arrived", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                commandExecItem("a-tool", "shell", "completed"),
+                commandExecItem("b-tool", "shell", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const opened = rows(store);
+      expect(
+        opened[0]?.kind === "activity"
+          ? opened[0].members?.map((member) => member.id)
+          : undefined,
+      ).toEqual(["a-tool", "b-tool"]);
+      store.getState().applyNotification({
+        method: "warning",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          title: "Provider",
+          message: "careful",
+        },
+      } as AnyNotification);
+      expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+      ]);
+      // A third same-family activity arrives AFTER the notice: the run
+      // grows past the members that were displayed at arrival.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "running" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: commandExecItem("c-tool", "shell", "completed"),
+        },
+      } as AnyNotification);
+      const after = rows(store);
+      expect(after.map((row) => [row.kind, row.id])).toEqual([
+        ["activity", "a-tool"],
+        ["failure", "warning:1"],
+        ["activity", "c-tool"],
+      ]);
+      expect(
+        after[0]?.kind === "activity"
+          ? after[0].members?.map((member) => member.id)
+          : undefined,
+      ).toEqual(["a-tool", "b-tool"]);
+    });
+
     // RoboRev panel round 2: an attachment row's own identity is GENERATED
     // from its source's wire id (`<id>:attachments`), so a notice that
     // arrives after one anchors to that generated id. The hub can reissue
@@ -6585,6 +6728,692 @@ describe("ConversationStore", () => {
         outputTokens: 30,
         scope: "loaded",
       });
+    });
+
+    // #2152 corner (a): alias consumption is not field consumption for the
+    // ITEM payloads either. The complete reread re-serves the remembered
+    // identity through the alias bridge but omits the payload itself (the
+    // sparse fragment shape), so the retained item's text survives the
+    // merge and is still history the fresh read lacks. The gate used to
+    // accept the turn on output membership alone (the fresh side reached the
+    // identity, so the output "carries fresh") and consumed it, and the
+    // re-merge never judged the item: the complete reread's absent cursor
+    // discarded the retained one and sessionTokens mislabeled a read that
+    // never carried the payload as a session total. The package's own
+    // per-item verdict must gate the consumption now.
+    it("an alias-covered item whose payload the reread omits still claims cursor coverage", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(500),
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "a",
+                  transcriptKey: "k",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(500),
+            {
+              id: "f1",
+              status: "completed",
+              items: [
+                {
+                  id: "b",
+                  transcriptKey: "k",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+
+      // The complete reread re-serves the identity keyless under the
+      // original id, but its fragment omits the text entirely (the sparse
+      // wire shape): the retained payload survives the merge into f2, so it
+      // is still history the fresh read does not carry.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(500),
+            {
+              id: "f2",
+              status: "completed",
+              items: [
+                // The sparse wire shape model-side: text "" plus the
+                // omitted marker, exactly what hydrating a text-less wire
+                // item produces.
+                markItemTextOmitted({
+                  id: "a",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                }),
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // The retained payload survived the merge into f2 — the merged model
+      // still carries it — so the gate keeps the retained cursor over the
+      // fresh read's absent one.
+      expect(conv.turns.find((turn) => turn.id === "f2")?.items).toEqual([
+        expect.objectContaining({ id: "a", text: "payload-a" }),
+      ]);
+      expect(conv.olderCursor).toBe("c1");
+      expect(sessionTokens(conv)).toEqual({
+        inputTokens: 510,
+        outputTokens: 30,
+        scope: "loaded",
+      });
+    });
+
+    // #2152 corner (b): the per-turn consumption check bailed on the first
+    // direct identity match, so a mixed direct+alias turn kept its whole
+    // membership in coverageOlderTurns and the ALIAS-ONLY item claimed
+    // against a re-merge that cannot see its bridge — the stale retained
+    // cursor survived a COMPLETE reread and sessionTokens offered "loaded"
+    // forever. The landed shape reaches the mixed turn only through the
+    // full compact chain: the page's own turn sheds to memory at a
+    // refresh whose window omits it, a sparse
+    // restore lands the content under the reissue identity with no text, a
+    // later page brings the item's real text (folding through the
+    // remembered alias, which is what makes the restored item page-owned
+    // and able to survive a covering reread's twin filter beside a
+    // directly-matched sibling), and the complete reread then re-serves the
+    // remembered identity keyless under the original id — one item of the
+    // turn alias-only, one unchanged. Both fully carried: the package's
+    // per-item verdict must consume the turn and let the complete read's
+    // absent cursor stand.
+    it("a complete reread of a mixed direct+alias turn no longer pins the stale cursor", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(100),
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page's own turn: it lands in-window under its own cursor,
+      // its rows real and page-owned until a later window omits them.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "a",
+                  transcriptKey: "k",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      // A refresh whose window crowds the page turn out: the fill it
+      // carries evicts the page's row at the seating cap, and the
+      // retained-turn bound sheds the now-windowless turn to the
+      // compact memory and remembers {a, k} — the alias world —
+      // while the store's own paging cursor stands (a rehydrate never
+      // stops paging; only a trimming loadOlder does).
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(500),
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ct")?.items).toEqual([]);
+
+      // The restore: a rehydrate re-serves the same content keyed under a
+      // NEW bare id, the sparse stripped-entry shape (no text), plus the
+      // unchanged sibling identity. The fresh side wins the fold, so the
+      // restored item carries b's identity while the compact turn's memory
+      // rides along.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(100),
+            {
+              id: "f1",
+              status: "completed",
+              items: [
+                markItemTextOmitted({
+                  id: "b",
+                  transcriptKey: "k",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                }),
+                {
+                  id: "u",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "ct")).toBe(false);
+
+      // The page that brings the item's real text: it re-serves the
+      // remembered identity keyless under the original id, folding through
+      // the remembered alias into the restored item whose sparse copy had
+      // none. That text contribution is what makes the restored alias item
+      // this page's own history — the ownership that keeps it through a
+      // later covering reread's twin filter.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt2",
+              [
+                {
+                  id: "a",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "u",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const afterPage = store
+        .getState()
+        .conversation?.turns.find((t) => t.id === "f1")
+        ?.items.find((item) => item.transcriptKey === "k");
+      expect(afterPage?.text).toBe("payload-a");
+
+      // The complete reread re-serves the remembered identity keyless under
+      // the original id — alias to the restored copy through the remembered
+      // key — and the sibling unchanged, both in the same turn. The fresh
+      // read's own cursor is null: nothing older exists.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(100),
+            {
+              id: "f2",
+              status: "completed",
+              items: [
+                {
+                  id: "a",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "u",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+            {
+              id: "rt",
+              status: "completed",
+              items: [
+                {
+                  id: "rk",
+                  transcriptKey: "PK",
+                  turnId: "rt",
+                  type: "agentMessage",
+                  text: "real text",
+                  position: { entry: 98, item: 0 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 9, outputTokens: 9 },
+            },
+            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      // Both identities folded into the reread — the alias one through the
+      // remembered key, the unchanged one directly.
+      expect(conv.turns.some((turn) => turn.id === "f1")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "f2")?.items).toEqual([
+        expect.objectContaining({ id: "a", text: "payload-a" }),
+        expect.objectContaining({ id: "u", text: "payload-u" }),
+      ]);
+      // The complete read's absent cursor stands: every item the turn held
+      // is the reread's own content, judged so by the package's own
+      // per-item verdict, not extra retained history.
+      expect(conv.olderCursor).toBeUndefined();
+      expect(sessionTokens(conv)).toEqual({
+        inputTokens: 510,
+        outputTokens: 30,
+        scope: "session",
+      });
+    });
+
+    // RoboRev review round 2: the alias-consumption exclusion must not
+    // take the turn's DIRECTLY MATCHED items out of the window-overlap
+    // evidence. The re-merge that judges coverage claims runs without the
+    // consumed turn, and reading ITS overlap made a refresh whose only
+    // continuity was the consumed turn's direct matches read as disjoint,
+    // resetting the store's own paging cursor to the read's even though
+    // the windows share history. The overlap reads the REAL merge's
+    // signal, which the exclusion never touched.
+    it("still counts a consumed mixed turn's direct matches as the refresh's window overlap", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [fillerTurn(100)],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page's own turn lands in-window; the refresh below crowds its
+      // row out and the bound sheds it to the compact memory — the alias
+      // world, without the trimming loadOlder that would stop paging.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "a",
+                  transcriptKey: "k",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [fillerTurn(500)],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ct")?.items).toEqual([]);
+
+      // The sparse restore lands the reissue identity beside the direct
+      // sibling, and the owning page brings the real text through the
+      // remembered alias — the mixed direct+alias turn.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(100),
+            {
+              id: "f1",
+              status: "completed",
+              items: [
+                markItemTextOmitted({
+                  id: "b",
+                  transcriptKey: "k",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                }),
+                {
+                  id: "u",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "ct")).toBe(false);
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt2",
+              [
+                {
+                  id: "a",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "u",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const afterPage = store
+        .getState()
+        .conversation?.turns.find((t) => t.id === "f1")
+        ?.items.find((item) => item.transcriptKey === "k");
+      expect(afterPage?.text).toBe("payload-a");
+
+      // The refresh below carries ONLY the reread turn — nothing else the
+      // model retains matches it — and its own cursor differs from the
+      // retained one. The consumed turn's direct sibling is the only
+      // window overlap; dropping it would read the refresh as disjoint
+      // and reset the store's own paging cursor to the read's.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            {
+              id: "f2",
+              status: "completed",
+              items: [
+                {
+                  id: "a",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "u",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+          ],
+          olderCursor: "c9",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c9",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.some((turn) => turn.id === "f1")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "f2")?.items).toEqual([
+        expect.objectContaining({ id: "a", text: "payload-a" }),
+        expect.objectContaining({ id: "u", text: "payload-u" }),
+      ]);
+      // The emptied filler's usage stamp still claims (the round-31 rule),
+      // and its wire-cursor preserve needs the overlap the consumed turn's
+      // direct sibling witnesses — without that evidence the read's own
+      // cursor replaced both the wire cursor and the store's paging one.
+      expect(conv.olderCursor).toBe("c2");
+      expect(store.getState().olderCursor).toBe("c2");
     });
 
     // RoboRev round 31, unmatched empty turns: an empty retained turn with
@@ -21499,6 +22328,81 @@ describe("ConversationStore", () => {
       );
       await store.getState().rehydrate(service, sink);
       expect(rowById(store, "msg-1")).toBeDefined();
+    });
+
+    // The #2213 final-verdict Medium: contribution tracking attributed
+    // text suppliers by strict value equality, so a page item whose text is
+    // explicitly provided-empty and a retained sparse item whose text the
+    // wire omitted — both hydrating to "" — recorded as sharing the text
+    // supplier. The page's text settle then read as contributing nothing,
+    // the load reported no item keys, and an omitting rehydrate dropped the
+    // loaded historical row. The attribution must follow the merge's own
+    // presence rule: the side that actually supplied text keeps the claim.
+    it("counts a page's explicitly empty text as its contribution and keeps the row through an omitting rehydrate", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // The page re-serves the call spelling text: "" explicitly — the
+      // shape the wire's own omitempty never sends but an older or mixed
+      // producer can. The retained copy's text was omitted (the sparse wire
+      // shape hydrates to ""), so the page's empty settle is the only side
+      // that supplied text.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "item_tool_1",
+                turnId: "tp",
+                type: "commandExecution",
+                toolName: "shell",
+                callId: "c1",
+                argumentsJson: '{"command":"make"}',
+                text: "",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The page's text settle is its contribution: the load must report it
+      // among the page's item keys.
+      expect(loaded.status === "loaded" ? loaded.itemKeys : []).toContain("item_tool_1");
+      // And the claim must keep the row as page history: the snapshot omits
+      // it, and an unclaimed row would go with it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, sink);
+      expect(rowById(store, "item_tool_1")).toBeDefined();
     });
 
     // RoboRev round 4 (panel M2): startedAt and completedAt fold by nullish

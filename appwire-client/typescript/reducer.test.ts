@@ -13,8 +13,10 @@ import {
   foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
+  markItemTextOmitted,
   mergeOlderItemPage,
   mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
   notificationTargetsThread,
   prependOlderTurns,
   RAW_WARNING_FRAME_MAX_CHARS,
@@ -3075,6 +3077,39 @@ test("mergeOlderItemPage drops a metadata-free consumed result-only turn", () =>
   });
 
   expect(merged.turns.map((turn) => turn.id)).toEqual(["fresh-call"]);
+});
+
+// The #2213 final-verdict Medium: contribution tracking attributed text
+// suppliers by strict value equality, so an explicitly provided empty text
+// and an omitted text — both hydrating to "" — recorded as sharing the text
+// supplier. The side that actually supplied text then held every supplier
+// only together with the side that supplied none, so itemSideContributes
+// denied it the claim and the page's contribution went unrecorded. The
+// attribution must follow mergePageItem's own presence rule: itemTextPresence
+// for text, property presence for the spread-merged fields.
+test("an explicitly provided empty text claims the text supply over an omitted-text item", () => {
+  // The page side: a hand-built item carries no presence marker, which the
+  // package reads as "provided" — the same semantics an older/mixed producer
+  // that spells text: "" gets. The retained side: the sparse wire shape,
+  // which hydrates an omitted text to "" under the omitted marker.
+  const pageItem: ItemModel = { id: "x1", turnId: "tp", type: "assistant", text: "" };
+  const retainedItem: ItemModel = markItemTextOmitted({
+    id: "x1",
+    turnId: "t1",
+    type: "assistant",
+    text: "",
+  });
+  const folds = mergeTurnHistoryWithFolds(
+    [{ id: "tp", status: "completed", items: [pageItem] }],
+    [{ id: "t1", status: "completed", items: [retainedItem] }],
+  );
+  const merged = folds.turns.flatMap((turn) => turn.items).find((item) => item.id === "x1");
+  expect(merged).toBeDefined();
+  // The merge kept the page's text (mergePageItem's presence rule: a provided
+  // text wins over an omitted one), so the page is the only side that
+  // supplied it — removing the page loses the merged item's text settle.
+  const pageInputs = new Set<ItemModel>([pageItem]);
+  expect(folds.itemSideContributes(merged!, (input) => pageInputs.has(input))).toBe(true);
 });
 
 test("mergeOlderItemPage preserves same-source call/result folding", () => {
