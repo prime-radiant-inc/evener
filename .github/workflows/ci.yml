@@ -352,12 +352,17 @@ jobs:
           AGENT_P: 4
           AGENT_SHARD_CONCURRENCY: 8
           AGENT_SHARD_PARALLEL: 2
-        # EXPERIMENT (revert before merge): memory/CPU trace during the lane.
+        # EXPERIMENT (revert before merge): per-shard times and CPU by command.
         run: |
-          free -m; nproc
+          if [ "${{ matrix.scope }}" != agent ]; then make test-race RACE_SCOPE=${{ matrix.scope }}; exit; fi
           vmstat -t 15 > "$RUNNER_TEMP/vmstat.log" &
-          make test-race RACE_SCOPE=${{ matrix.scope }}; rc=$?
-          cat "$RUNNER_TEMP/vmstat.log"
+          ( AGENT_SHARD_COUNT=8 AGENT_SHARD_NO_SURVEY=1 /usr/bin/time -v go run ./cmd/evener-dev/bin dev agent-shards -race -short -count=1 > "$RUNNER_TEMP/shards.log" 2>&1 ) &
+          pid=$!
+          .github/experiment/cpu-by-comm.sh $pid "$RUNNER_TEMP/cpu.samples"
+          rc=0; wait $pid || rc=$?
+          grep -E '^(PASS|FAIL|agent-shards)|Elapsed|User time|System time|Maximum resident' "$RUNNER_TEMP/shards.log"
+          awk '{if($3>m[$1]){m[$1]=$3; n[$1]=$2}} END{for(p in m) t[n[p]]+=m[p]; for(k in t) printf "%8.0f %s\n", t[k], k}' "$RUNNER_TEMP/cpu.samples" | sort -rn | head -15
+          awk '{print $15}' "$RUNNER_TEMP/vmstat.log" | tr '\n' ' '
           exit $rc
 
       - uses: ./.github/actions/go-cache-save
