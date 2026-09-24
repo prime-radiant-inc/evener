@@ -396,7 +396,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					afterByID[t.ID] = t
 				}
 				started := make(map[int]bool)
-				settled := make(map[int]bool)
+				// The store reports which task IDs this batch actually
+				// transitioned into a terminal status - the same per-update
+				// rule that mints CompletedAt - so the snapshot's marker and
+				// the stamp cannot disagree (a round-trip batch restamps AND
+				// reports; a reassertion does neither).
+				settled := mutation.Settled
 				var completedAny bool
 				var manuallyStartedID int
 				seenIDs := make(map[int]struct{}, len(updates))
@@ -406,11 +411,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					seenIDs[u.ID] = struct{}{}
 					status := afterByID[u.ID].Status
-					if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
+					// Only a real settle counts as completion for the
+					// auto-advance and steering below: an annotation that
+					// re-asserts an already-terminal status must not start
+					// the next task as if work had finished.
+					if settled[u.ID] {
 						completedAny = true
-						if previous[u.ID] != status {
-							settled[u.ID] = true
-						}
 					}
 					if status == taskpkg.TaskInProgress {
 						if previous[u.ID] != taskpkg.TaskInProgress {

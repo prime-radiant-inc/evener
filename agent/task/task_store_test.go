@@ -243,6 +243,58 @@ func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
 	}
 }
 
+func TestUpdate_SnapshotReportsSettledTransitions(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "a"}})
+	id := added[0].ID
+
+	// A fresh transition into terminal is a settle.
+	snap, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: id, Status: TaskDone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Settled[id] {
+		t.Errorf("fresh done: Settled = %v, want task %d reported", snap.Settled, id)
+	}
+
+	// Re-asserting the status the task already holds is an annotation, not
+	// a settle: the store keeps the original stamp, so the marker must too.
+	snap, err = s.UpdateWithSnapshot([]TaskUpdate{{ID: id, Status: TaskDone, Notes: "annotating"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Settled[id] {
+		t.Errorf("reassertion: Settled = %v, want task %d absent", snap.Settled, id)
+	}
+
+	// A batch that touches the task away from terminal and back re-settles
+	// it: the store stamps a fresh CompletedAt, and the marker must agree
+	// with the stamp or the frontend suppresses a genuine settle.
+	snap, err = s.UpdateWithSnapshot([]TaskUpdate{
+		{ID: id, Status: TaskOpen},
+		{ID: id, Status: TaskDone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Settled[id] {
+		t.Errorf("round trip: Settled = %v, want task %d re-settled", snap.Settled, id)
+	}
+	if !snap.After[0].CompletedAt.After(*snap.Before[0].CompletedAt) {
+		t.Errorf("round trip: CompletedAt not restamped: before %v after %v", snap.Before[0].CompletedAt, snap.After[0].CompletedAt)
+	}
+
+	// The combined add+update path reports settles too.
+	added2, _ := s.Append([]TaskInput{{Description: "b"}})
+	snap, err = s.ApplyBatch(nil, []TaskUpdate{{ID: added2[0].ID, Status: TaskCancelled}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Settled[added2[0].ID] {
+		t.Errorf("apply-batch cancel: Settled = %v, want task %d reported", snap.Settled, added2[0].ID)
+	}
+}
+
 func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
 	s := newTestStore(t)
 	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})

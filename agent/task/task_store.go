@@ -114,6 +114,12 @@ type TaskUpdate struct {
 type TaskUpdateSnapshot struct {
 	Before []Task
 	After  []Task
+	// Settled reports which task IDs this batch transitioned into a
+	// terminal status. It is recorded where the store mints CompletedAt -
+	// the same per-update prev != u.Status rule - so the marker and the
+	// stamp cannot disagree: a round-trip batch that re-settles a task
+	// restamps AND reports it, while a reassertion does neither.
+	Settled map[int]bool
 }
 
 // ListSummary is the transport-neutral outcome and current-work view of a task
@@ -642,19 +648,24 @@ func (s *TaskStore) UpdateWithSnapshot(updates []TaskUpdate) (TaskUpdateSnapshot
 	defer s.mu.Unlock()
 
 	before := cloneTasks(s.tasks)
-	if err := s.updateLocked(updates); err != nil {
+	settled, err := s.updateLocked(updates)
+	if err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.save(); err != nil {
 		return TaskUpdateSnapshot{}, fmt.Errorf("save: %w", err)
 	}
 	return TaskUpdateSnapshot{
-		Before: before,
-		After:  cloneTasks(s.tasks),
+		Before:  before,
+		After:   cloneTasks(s.tasks),
+		Settled: settled,
 	}, nil
 }
 
-func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
+func (s *TaskStore) updateLocked(updates []TaskUpdate) (map[int]bool, error) {
+	// Which task IDs this batch transitioned into a terminal status,
+	// recorded at the CompletedAt mint below.
+	settled := make(map[int]bool)
 	// Validate status values up front so a bad status doesn't half-apply;
 	// empty status means "no change" (see TaskUpdate).
 	for _, u := range updates {
@@ -665,7 +676,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		case TaskOpen, TaskInProgress, TaskDone, TaskCancelled:
 			// valid
 		default:
-			return fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
+			return nil, fmt.Errorf("invalid status %q for task %d: must be open, in_progress, done, or cancelled", u.Status, u.ID)
 		}
 	}
 
@@ -677,7 +688,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 	}
 	for _, u := range updates {
 		if _, exists := projected[u.ID]; !exists {
-			return fmt.Errorf("unknown task ID %d", u.ID)
+			return nil, fmt.Errorf("unknown task ID %d", u.ID)
 		}
 		if u.Status != "" {
 			projected[u.ID] = u.Status
@@ -706,9 +717,9 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 			}
 		}
 		if blockers == 1 {
-			return fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", blocker.ID, blocker.Description)
+			return nil, fmt.Errorf("only one task may be in_progress; %d %q is currently in_progress — complete or defer it in the same updates array", blocker.ID, blocker.Description)
 		}
-		return fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
+		return nil, fmt.Errorf("only one task may be in_progress at a time; update would result in %d", inProgressCount)
 	}
 
 	// Validate dependency changes against the PROJECTED graph up front — like the
@@ -734,15 +745,15 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 		}
 		for _, dep := range *u.DependsOn {
 			if dep == u.ID {
-				return fmt.Errorf("task %d cannot depend on itself", u.ID)
+				return nil, fmt.Errorf("task %d cannot depend on itself", u.ID)
 			}
 			if !known[dep] {
-				return fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
+				return nil, fmt.Errorf("task %d depends on unknown task %d", u.ID, dep)
 			}
 		}
 	}
 	if hasCycle(projDeps) {
-		return errors.New("update would create a dependency cycle")
+		return nil, errors.New("update would create a dependency cycle")
 	}
 
 	for _, u := range updates {
@@ -772,6 +783,7 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 				if u.Status == TaskDone || u.Status == TaskCancelled {
 					if prev != u.Status {
 						s.tasks[i].CompletedAt = ts
+						settled[u.ID] = true
 					}
 				} else if u.Status != "" {
 					s.tasks[i].CompletedAt = nil
@@ -781,11 +793,11 @@ func (s *TaskStore) updateLocked(updates []TaskUpdate) error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("unknown task ID %d", u.ID)
+			return nil, fmt.Errorf("unknown task ID %d", u.ID)
 		}
 	}
 
-	return nil
+	return settled, nil
 }
 
 // ApplyBatch atomically applies additions and updates as one task-list
@@ -811,7 +823,8 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 	if _, err := staged.appendLocked(adds); err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
-	if err := staged.updateLocked(updates); err != nil {
+	settled, err := staged.updateLocked(updates)
+	if err != nil {
 		return TaskUpdateSnapshot{}, err
 	}
 	if err := s.saveTasks(staged.tasks); err != nil {
@@ -819,7 +832,7 @@ func (s *TaskStore) ApplyBatch(adds []TaskInput, updates []TaskUpdate) (TaskUpda
 	}
 	s.tasks = staged.tasks
 	s.nextID = staged.nextID
-	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks)}, nil
+	return TaskUpdateSnapshot{Before: before, After: cloneTasks(s.tasks), Settled: settled}, nil
 }
 
 // validateUpdateIDsLocked enforces the task_list contract that updates in a

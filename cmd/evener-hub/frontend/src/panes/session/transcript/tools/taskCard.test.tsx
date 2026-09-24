@@ -185,6 +185,41 @@ test("a reasserted settle in a mixed batch yields only the real completion", () 
   expect(rows[0]!.textContent).toContain("real completion");
 });
 
+test("a batch that touches a task away from terminal and back renders the fresh settle", () => {
+  // done -> open -> done in one batch: the store stamps a fresh CompletedAt
+  // (the open touch cleared it, the done touch minted a new one) and the
+  // snapshot marks the task settled, so the card renders the settle as
+  // news. The marker and the stamp must agree or this batch would suppress
+  // genuine work.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, status: "open" },
+          { id: 1, status: "done" },
+        ],
+      },
+      "Updated 1→open, 1→done. Progress: 1/1 tasks complete.",
+      {
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "bounced settle",
+            prompt: "",
+            status: "done",
+            settled: true,
+            completed_at: "2026-09-23T15:00:00Z",
+            updated_at: "2026-09-23T15:00:01Z",
+          },
+        ],
+      },
+    ),
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ bounced settle");
+});
+
 test("a pure notes update on an open task renders nothing (no status changed)", () => {
   renderItem(
     taskItem({ action: "update", updates: [{ id: 6, status: "open", notes: "still blocked" }] }, "Updated 6→open.", {
