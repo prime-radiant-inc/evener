@@ -360,14 +360,22 @@ jobs:
           echo "$RESULTS"
           test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
-  tests:
+  # The gate's two waves, the root module (full suite) and every other module,
+  # took 131s and 142s one after the other on a single runner; each part runs
+  # on its own runner instead. `tests` below keeps the required check name.
+  tests-parts:
+    name: tests / ${{ matrix.scope }}
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: [root, nonroot]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
         with:
-          go-cache-kind: tests
+          go-cache-kind: tests-${{ matrix.scope }}
 
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
@@ -375,9 +383,21 @@ jobs:
       - name: Deterministic tests (full root suite; frontend covered by web job)
         env:
           LOAD_AWARE_LOAD1: "0"
-        run: ROOT_FULL=1 WEB=0 make test
+        run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
       - uses: ./.github/actions/go-cache-save
+
+  tests:
+    if: always()
+    needs: [tests-parts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both test lanes
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   fuzz:
     runs-on: ubuntu-latest
