@@ -731,15 +731,36 @@ it("renders no rows for null usage", () => {
 // loop_detection/turn_limit forced visible by a warning tone - fails here.
 const GATE_CONFIGS: { name: string; config: TranscriptDisplayConfigV1 }[] = (
 	[
-		["all off", { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" }],
-		["system events", { systemEvents: true, promptEvents: false, roundTimings: false, hookExits: "none" }],
-		["prompt events", { systemEvents: false, promptEvents: true, roundTimings: false, hookExits: "none" }],
-		["round timings", { systemEvents: false, promptEvents: false, roundTimings: true, hookExits: "none" }],
-		["hooks all", { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "all" }],
-		["hooks successful", { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "successful" }],
-		["all on", { systemEvents: true, promptEvents: true, roundTimings: true, hookExits: "all" }],
-	] as [string, Partial<TranscriptDisplayAdvancedV1>][]
-).map(([name, advanced]) => ({
+		{
+			name: "all off",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" },
+		},
+		{
+			name: "system events",
+			advanced: { systemEvents: true, promptEvents: false, roundTimings: false, hookExits: "none" },
+		},
+		{
+			name: "prompt events",
+			advanced: { systemEvents: false, promptEvents: true, roundTimings: false, hookExits: "none" },
+		},
+		{
+			name: "round timings",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: true, hookExits: "none" },
+		},
+		{
+			name: "hooks all",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "all" },
+		},
+		{
+			name: "hooks successful",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "successful" },
+		},
+		{
+			name: "all on",
+			advanced: { systemEvents: true, promptEvents: true, roundTimings: true, hookExits: "all" },
+		},
+	] satisfies { name: string; advanced: Partial<TranscriptDisplayAdvancedV1> }[]
+).map(({ name, advanced }) => ({
 	name,
 	config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, advanced),
 }));
