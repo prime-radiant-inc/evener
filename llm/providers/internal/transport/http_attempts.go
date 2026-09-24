@@ -18,9 +18,11 @@ type APIAttemptMetaBuilder func(request *http.Request, requestBody []byte) llm.A
 
 // DoWithAPIAttempts preserves the supplied client's redirect and transport
 // behavior while recording each actual RoundTrip request separately. Ordinary
-// calls without an explicit canonical group and sink use client.Do directly.
+// calls without an explicit canonical group and a sink that persists records
+// use client.Do directly.
 func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *http.Request, build APIAttemptMetaBuilder) (*http.Response, *APIAttemptCapture, error) {
 	if !llm.APIAttemptContextActive(request.Context()) {
+		llm.NoteAPIAttemptProtocol(request.Context(), build(request, nil).Protocol)
 		response, err := client.Do(request)
 		return response, nil, err
 	}
