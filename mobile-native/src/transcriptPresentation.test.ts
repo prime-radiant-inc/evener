@@ -2,12 +2,22 @@ import { expect, it } from "vitest";
 import {
 	makeTranscriptDisplayConfig,
 	presetContent,
+	projectThread as sharedProjectThread,
+	THREAD_ITEM_EVENT_KINDS,
 } from "@evener/appwire-client";
 import type {
 	MobileConversation,
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
-import type { TurnModel } from "@evener/appwire-client";
+import {
+	projectConversation,
+	systemEventProbe,
+} from "../../mobile/src/conversation/project";
+import type {
+	TranscriptDisplayAdvancedV1,
+	TranscriptDisplayConfigV1,
+	TurnModel,
+} from "@evener/appwire-client";
 import { projectNativeTranscript, usageRows } from "./transcriptPresentation";
 
 function conversation(
@@ -708,4 +718,78 @@ it("renders only the cumulative Total row when there is no derived input/output 
 
 it("renders no rows for null usage", () => {
 	expect(usageRows(null)).toEqual([]);
+});
+
+// --- the shared projector owns system-event visibility ----------------------
+//
+// D24-2: the event-kind vocabulary and the visible/hidden/critical rule belong
+// to the package's projector (transcriptProjector.ts:98-121). Native keeps neither
+// a vocabulary copy nor its own gate table: this table drives the whole
+// vocabulary through BOTH the native presentation layer and the shared
+// projector under every gate combination and requires the same verdict. A kind
+// native gates differently - notes-context absent from its hand-kept set, or
+// loop_detection/turn_limit forced visible by a warning tone - fails here.
+const GATE_CONFIGS: { name: string; config: TranscriptDisplayConfigV1 }[] = (
+	[
+		{
+			name: "all off",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" },
+		},
+		{
+			name: "system events",
+			advanced: { systemEvents: true, promptEvents: false, roundTimings: false, hookExits: "none" },
+		},
+		{
+			name: "prompt events",
+			advanced: { systemEvents: false, promptEvents: true, roundTimings: false, hookExits: "none" },
+		},
+		{
+			name: "round timings",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: true, hookExits: "none" },
+		},
+		{
+			name: "hooks all",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "all" },
+		},
+		{
+			name: "hooks successful",
+			advanced: { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "successful" },
+		},
+		{
+			name: "all on",
+			advanced: { systemEvents: true, promptEvents: true, roundTimings: true, hookExits: "all" },
+		},
+	] satisfies { name: string; advanced: Partial<TranscriptDisplayAdvancedV1> }[]
+).map(({ name, advanced }) => ({
+	name,
+	config: makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, advanced),
+}));
+
+const EVENT_KIND_CASES: { eventKind?: string; exitCode?: number }[] = [
+	...THREAD_ITEM_EVENT_KINDS.map((eventKind) => ({ eventKind })),
+	{ eventKind: "future-event" },
+	{},
+	// hook_completed is the one kind whose gate reads exitCode.
+	{ eventKind: "hook_completed", exitCode: 0 },
+	{ eventKind: "hook_completed", exitCode: 3 },
+];
+
+it.each(
+	EVENT_KIND_CASES.flatMap((kind) =>
+		GATE_CONFIGS.map((gate) => ({
+			title: `${kind.eventKind ?? "(none)"} exit=${kind.exitCode ?? "-"} gate=${gate.name}`,
+			...kind,
+			config: gate.config,
+		})),
+	),
+)("gates $title the same as the shared projector", ({ eventKind, exitCode, config }) => {
+	const model = systemEventProbe(eventKind, exitCode);
+	const nativeVisible = projectNativeTranscript(
+		projectConversation(model),
+		config,
+	).items.some((item) => item.id === "system-event-probe");
+	const sharedVisible = sharedProjectThread(model, config).turns.some((turn) =>
+		turn.entries.some((entry) => entry.id === "system-event-probe"),
+	);
+	expect(nativeVisible).toBe(sharedVisible);
 });

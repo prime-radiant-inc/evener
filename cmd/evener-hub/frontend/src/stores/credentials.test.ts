@@ -16,6 +16,8 @@ import { connectionStore } from "./connection";
 import {
   connectionGeneration,
   credentialsStore,
+  devicePollOnHost,
+  deviceStartOnHost,
   fetchHost,
   hostInstancesStore,
   hostPartition,
@@ -1885,6 +1887,49 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     });
     const result = await credentialsStore.getState().devicePoll("work", "flow-2");
     expect(result.state).toBe("pending");
+  });
+
+  test("deviceStartOnHost() routes evener/auth/device/start through evener/host/request for the selected host", async () => {
+    const fake = connectFakeClient();
+    const REMOTE_DEVICE_START = {
+      provider: "codex",
+      flowId: "flow-remote",
+      userCode: "REMOTE-CODE",
+      verificationUrl: "https://verify.example/codex",
+      intervalSeconds: 5,
+    };
+    const forwarded: HostRequestParams[] = [];
+    fake.on("evener/host/request", (params) => {
+      forwarded.push(params);
+      return REMOTE_DEVICE_START;
+    });
+
+    const result = await deviceStartOnHost("beta", "codex");
+
+    // Both the host AND the method are on the wire, so the hub forwards the
+    // start to the host that must actually run the login.
+    expect(forwarded).toEqual([{ host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } }]);
+    expect(result.userCode).toBe("REMOTE-CODE");
+    // A host-scoped start must not ALSO issue the plain, controller-scoped call.
+    expect(fake.calls.some((call) => call.method === "evener/auth/device/start")).toBe(false);
+  });
+
+  test("devicePollOnHost() routes evener/auth/device/poll through evener/host/request for the selected host", async () => {
+    const fake = connectFakeClient();
+    const REMOTE_POLL = { state: "authorized" };
+    const forwarded: HostRequestParams[] = [];
+    fake.on("evener/host/request", (params) => {
+      forwarded.push(params);
+      return REMOTE_POLL;
+    });
+
+    const result = await devicePollOnHost("beta", "codex", "flow-remote");
+
+    expect(forwarded).toEqual([
+      { host: "beta", method: "evener/auth/device/poll", params: { provider: "codex", flowId: "flow-remote" } },
+    ]);
+    expect(result.state).toBe("authorized");
+    expect(fake.calls.some((call) => call.method === "evener/auth/device/poll")).toBe(false);
   });
 
   test("a pending device poll does not discard an in-flight model refresh", async () => {

@@ -181,6 +181,12 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 // and the recovery surface is exercised on its own.
 function pendingClient() {
 	return {
+		// The screen now registers this client with the durable mutation
+		// runtime, whose registerTarget reads state and subscribes to
+		// onStateChange. The read itself stays pending, so the screen stays
+		// connected without ever opening the conversation.
+		state: "ready",
+		onStateChange: () => () => {},
 		request: () => new Promise<never>(() => {}),
 		onNotification: () => () => {},
 	};

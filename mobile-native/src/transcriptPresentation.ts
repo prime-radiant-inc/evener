@@ -11,6 +11,7 @@ import type {
 	MobileConversation,
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
+import { systemEventVisible } from "../../mobile/src/conversation/project";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -73,26 +74,6 @@ export interface NativeTranscriptPresentation {
 }
 
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
-const PROMPT_EVENTS = new Set(["system_prompt", "prompt_loaded"]);
-const KNOWN_EVENTS = new Set([
-	"system_prompt",
-	"plugin_loaded",
-	"skill_activated",
-	"hook_completed",
-	"prompt_loaded",
-	"context_compaction",
-	"compaction",
-	"turn_limit",
-	"loop_detection",
-	"goal_ended",
-	"fork_summary",
-	"round_timings",
-	"tool_repair",
-	"model_switch",
-	"error",
-	"environment",
-]);
-const CRITICAL_EVENTS = new Set(["error", "tool_repair"]);
 const MAX_ACTION_DETAIL_LENGTH = 256;
 
 function writeFileActionSummary(
@@ -192,22 +173,15 @@ function memberItem(
 	};
 }
 
+// The projector owns the event-kind vocabulary and its gate table, so native
+// asks it (project.ts's systemEventVisible) rather than keeping a second copy.
+// A steering notice carries no eventKind: the projector renders an unknown event,
+// so it stays visible exactly as before.
 function eventVisible(
 	item: Extract<MobileTimelineItem, { kind: "notice" }>,
 	config: TranscriptDisplayConfigV1,
 ): boolean {
-	if (item.tone === "warning" || item.family === "warning") return true;
-	const event = item.eventKind;
-	if (!event || !KNOWN_EVENTS.has(event)) return true;
-	if (CRITICAL_EVENTS.has(event)) return true;
-	if (event === "hook_completed") {
-		if (config.advanced.hookExits === "all") return true;
-		if (item.exitCode !== undefined && item.exitCode !== 0) return true;
-		return config.advanced.hookExits === "successful" && item.exitCode === 0;
-	}
-	if (PROMPT_EVENTS.has(event)) return config.advanced.promptEvents;
-	if (event === "round_timings") return config.advanced.roundTimings;
-	return config.advanced.systemEvents;
+	return systemEventVisible(item.eventKind, item.exitCode, config);
 }
 
 // A cumulative field's Go zero value ("0") signals absence, not a real

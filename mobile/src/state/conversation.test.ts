@@ -40,6 +40,10 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity } from "./activity";
+import type {
+  ConversationMutationRequest,
+  ConversationMutationSubmitter,
+} from "./conversationMutation";
 import { createActivityStore } from "./activity";
 import {
   createConversationStore,
@@ -1295,6 +1299,56 @@ describe("ConversationStore", () => {
         await p;
       });
     }
+
+    // The durable wiring: with a mutation submitter supplied, every
+    // conversation mutation is admitted through it at the enqueue boundary,
+    // the service transport is never called for the mutation, and the store
+    // reports admission without inventing a wire receipt.
+    for (const { kind, call, callCountField } of mutationCases) {
+      it(`${kind}: admits through the durable submitter instead of the service`, async () => {
+        const service = serviceFor(kind);
+        const requests: ConversationMutationRequest[] = [];
+        const submitter: ConversationMutationSubmitter = {
+          submit: async (request) => {
+            requests.push(request);
+            return undefined;
+          },
+        };
+        const store = createConversationStore({
+          mutationHubId: "hub-1",
+          mutationSubmitter: submitter,
+        });
+        await store.getState().open(service, "ref-1");
+        store.getState().setDraft("durable payload");
+
+        await call(store, service, textInput("durable payload"));
+
+        expect(service[callCountField]).toBe(0);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]).toMatchObject({
+          kind,
+          hubId: "hub-1",
+          targetRef: "ref-1",
+          threadId: "thread-1",
+          input: kind === "interrupt" ? [] : textInput("durable payload"),
+        });
+        expect(requests[0]?.instanceId).toBe("thread-1");
+        expect(store.getState().pendingMutation).toBeNull();
+        expect(store.getState().error).toBeNull();
+        expect(store.getState().lastAcceptedMutation).toEqual({
+          kind,
+          receipt: undefined,
+        });
+      });
+    }
+
+    it("refuses a submitter without a mutation hub id", () => {
+      expect(() =>
+        createConversationStore({
+          mutationSubmitter: { submit: async () => undefined },
+        }),
+      ).toThrow(/mutationHubId is required/);
+    });
 
     it("send has an independent capability gate from steer", async () => {
       const service = new FakeConversationService();
