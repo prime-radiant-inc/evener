@@ -129,7 +129,7 @@ func (m Message) IDString() string {
 func (m *Message) UnmarshalJSON(data []byte) error {
 	var probe struct {
 		JSONRPC *json.RawMessage `json:"jsonrpc"`
-		ID      *json.RawMessage `json:"id"`
+		ID      json.RawMessage  `json:"id"`
 		Method  string           `json:"method"`
 		Result  json.RawMessage  `json:"result"`
 		Error   json.RawMessage  `json:"error"`
@@ -140,6 +140,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	if probe.JSONRPC != nil {
 		return errors.New("jsonrpc field is not part of AppWire")
 	}
+	hasID := len(probe.ID) > 0 && string(probe.ID) != "null"
 	// A frame decoded into a reused Message must replace whatever it held, or a
 	// stale pointer survives alongside the new one and Kind() picks the wrong one.
 	*m = Message{}
@@ -151,12 +152,18 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 		m.Error = &resp
 	case len(probe.Result) > 0:
-		var resp Response
-		if err := unmarshalMessageFrame(data, &resp); err != nil {
-			return err
+		// The result stays the bytes the peer sent, taken from the probe rather
+		// than a second pass over the frame: a caller decodes it straight into
+		// its typed response, where a generic any tree would cost two more
+		// passes over the payload and round integers past 2^53.
+		resp := Response{Result: probe.Result}
+		if len(probe.ID) > 0 {
+			if err := resp.ID.UnmarshalJSON(probe.ID); err != nil {
+				return err
+			}
 		}
 		m.Response = &resp
-	case probe.Method != "" && probe.ID != nil:
+	case probe.Method != "" && hasID:
 		var req Request
 		if err := unmarshalMessageFrame(data, &req); err != nil {
 			return err
