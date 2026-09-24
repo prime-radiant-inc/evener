@@ -300,7 +300,16 @@ jobs:
         with:
           go-cache-kind: race-root-${{ matrix.part }}
 
+      # A dedicated runner's cores are all this job's, but the gate's
+      # load-aware budgets read the one-minute load average, which on a fresh
+      # runner still carries checkout and cache restore; they would start a
+      # fraction of the shards at once. Size them to the runner instead.
       - name: Test (race detector — root module, ${{ matrix.part }})
+        env:
+          HUB_SHARD_CONCURRENCY: 4
+          HUB_SHARD_PARALLEL: 2
+          CLI_SHARD_CONCURRENCY: 4
+          CLI_SHARD_PARALLEL: 2
         run: make test-race RACE_SCOPE=root RACE_ROOT_PART=${{ matrix.part }}
 
       - uses: ./.github/actions/go-cache-save
