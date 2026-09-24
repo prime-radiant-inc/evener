@@ -352,7 +352,13 @@ jobs:
           AGENT_P: 4
           AGENT_SHARD_CONCURRENCY: 8
           AGENT_SHARD_PARALLEL: 2
-        run: make test-race RACE_SCOPE=${{ matrix.scope }}
+        # EXPERIMENT (revert before merge): memory/CPU trace during the lane.
+        run: |
+          free -m; nproc
+          vmstat -t 15 > "$RUNNER_TEMP/vmstat.log" &
+          make test-race RACE_SCOPE=${{ matrix.scope }}; rc=$?
+          cat "$RUNNER_TEMP/vmstat.log"
+          exit $rc
 
       - uses: ./.github/actions/go-cache-save
 
