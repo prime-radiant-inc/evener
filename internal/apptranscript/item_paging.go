@@ -303,6 +303,10 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 		// call id — the same shape the full grouped read produces.
 		var items []appwire.ThreadItem
 		var entries []schema.Turn
+		// Shared per-group registry: CommRawArgs and LastAssistantText persist
+		// across records so the result turn receives the assistant turn's
+		// deferred communicate bytes (parity with the full read).
+		reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
 		for i := group.start; i < group.end; i++ {
 			if err := ctx.Err(); err != nil {
 				_ = file.Close()
@@ -322,7 +326,8 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			entries = append(entries, entry.Turn)
 			projectedRecords++
 			if project != nil {
-				projectedItems := project(entry.Turn, group.turnID, record.Index, &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed)})
+				reg.Names = cloneToolNames(record.ToolSeed)
+				projectedItems := project(entry.Turn, group.turnID, record.Index, reg)
 				items = append(items, projectedItems...)
 			}
 			if err := ctx.Err(); err != nil {

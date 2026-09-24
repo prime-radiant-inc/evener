@@ -843,6 +843,15 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 	// at every group start.
 	var openCalls map[string]bool
 	var openTurnID string
+	// openReg is the open logical group's shared ToolCallRegistry. Its Names
+	// map is re-seeded from each record's ToolSeed (the frozen name state at
+	// that record), but CommRawArgs and LastAssistantText persist across
+	// records within the group — the same contract the full read's single
+	// registry provides. Without this, a communicate call's deferred raw
+	// bytes (seeded on the assistant turn) never reach the paired result
+	// turn, and the rejected/healed communicate item is absent from the
+	// index's per-record ItemCount and from every bounded read.
+	var openReg *ToolCallRegistry
 	var readBytes int64
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
@@ -907,6 +916,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				record.TurnID = owner
 				if openTurnID == "" {
 					openTurnID, openCalls = openGroupState(*index)
+					openReg = &ToolCallRegistry{CommRawArgs: map[string]string{}}
 				}
 			}
 			prevKind := schema.TurnKind("")
@@ -919,15 +929,17 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			if record.StartsGroup {
 				openTurnID = record.TurnID
 				openCalls = map[string]bool{}
+				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: map[string]string{}}
 			} else if openCalls == nil || openTurnID == "" {
 				// Continues a group whose opener lives in the previously
 				// indexed prefix: reconstruct its id and accumulated calls.
 				openTurnID, openCalls = openGroupState(*index)
+				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: map[string]string{}}
 			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
-				recordNames := &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed)}
-				projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
+				openReg.Names = cloneToolNames(record.ToolSeed)
+				projectedItems = project(entry.Turn, openTurnID, entryIndex, openReg)
 				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
 					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
 				}
@@ -1233,6 +1245,10 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 	var items []appwire.ThreadItem
 	var entries []schema.Turn
 	projected := 0
+	// Shared per-group registry: CommRawArgs and LastAssistantText persist
+	// across records so the result turn receives the assistant turn's
+	// deferred communicate bytes (parity with the full read).
+	reg := &ToolCallRegistry{CommRawArgs: map[string]string{}}
 	for i := group.start; i < group.end; i++ {
 		if err := ctx.Err(); err != nil {
 			return nil, projected, err
@@ -1251,7 +1267,8 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 		if project == nil {
 			continue
 		}
-		projectedItems := project(entry.Turn, group.turnID, record.Index, &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed)})
+		reg.Names = cloneToolNames(record.ToolSeed)
+		projectedItems := project(entry.Turn, group.turnID, record.Index, reg)
 		items = append(items, projectedItems...)
 	}
 	if err := ctx.Err(); err != nil {
