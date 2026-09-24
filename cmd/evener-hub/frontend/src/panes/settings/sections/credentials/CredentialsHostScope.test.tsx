@@ -954,3 +954,79 @@ test("a sign-in failure naming the old host does not survive a host change", asy
   // Gamma's own view never wears beta's failure.
   expect(screen.queryByRole("alert")).toBeNull();
 });
+
+// L1 (roborev): "Start again" on an expired dialog set only the failure, so the
+// expired editor stayed mounted with its old code and flow: the user was left
+// with a dead flow on screen and a message about the restart that replaced it.
+// A restart clears the editor it is replacing now, and a new dialog is opened
+// only by a start that actually succeeded.
+test("a failed 'Start again' clears the expired dialog instead of leaving it standing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  let restartFails = false;
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") {
+      if (restartFails) throw new WireError('host "beta" is not attached', -32000);
+      return REMOTE_DEVICE_START;
+    }
+    if (params.method === "evener/auth/device/poll") return { state: "expired" };
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  // The flow expires, which is what offers "Start again".
+  await screen.findByText("REMOTE-CODE");
+  const startAgain = await screen.findByRole("button", { name: "Start again" }, { timeout: 3000 });
+
+  // The restart fails. The expired editor it replaced must not stay standing.
+  restartFails = true;
+  await user.click(startAgain);
+
+  expect((await screen.findByRole("alert")).textContent).toContain('host "beta" is not attached');
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByText("REMOTE-CODE")).toBeNull();
+});
+
+// L1, the other half of the same rule: a restart that DOES succeed opens the new
+// flow's dialog rather than leaving the pane with no editor at all.
+test("a successful 'Start again' opens the new flow's dialog", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  let restarted = false;
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") {
+      if (restarted) return { ...REMOTE_DEVICE_START, flowId: "flow-restart", userCode: "RESTART-CODE" };
+      return REMOTE_DEVICE_START;
+    }
+    if (params.method === "evener/auth/device/poll") return restarted ? REMOTE_POLL_PENDING : { state: "expired" };
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+
+  await screen.findByText("REMOTE-CODE");
+  const startAgain = await screen.findByRole("button", { name: "Start again" }, { timeout: 3000 });
+
+  restarted = true;
+  await user.click(startAgain);
+
+  // The new flow's own dialog, and never the expired one's code.
+  expect(await screen.findByText("RESTART-CODE")).toBeTruthy();
+  expect(screen.queryByText("REMOTE-CODE")).toBeNull();
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
