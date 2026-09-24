@@ -750,6 +750,17 @@ async function runPane(driver, section) {
         !text.includes(c.controller),
         `launch-evener: the controller's launch Agent ${JSON.stringify(c.controller)} appeared while a remote host was selected`,
       );
+      // The host-scope family panes render a staleness notice beside the (still
+      // present) form when a re-read of the host's settings fails while the host
+      // stays attached: "Could not re-read this host's launch settings." A live
+      // run must NEVER see it - it means the values on screen may be out of date,
+      // which is precisely what a passing check must not call healthy. The
+      // notice's text is deliberately unlike the "Failed to load" text other
+      // panes reject, so it needs this check of its own.
+      check(
+        !text.includes("Could not re-read"),
+        `launch-evener: the pane reported it could not re-read this host's launch settings, so the form it shows may be out of date; a live check must not call that a pass. Text was:\n${text}`,
+      );
       record.probe = `input labeled "Agent" (global launch layer)`;
       record.evidence = { agent: value };
       record.ok = true;
@@ -829,6 +840,16 @@ async function runPane(driver, section) {
       check(
         !text.includes("Failed to load project launch settings"),
         `project: the pane could not load a working directory that exists only on the selected host - which is what reading this hub instead of that host looks like; text was:\n${text}`,
+      );
+      // Alongside the load-failure rejection, reject the staleness notice: the
+      // pane keeps its form and adds "Could not re-read this host's project
+      // settings." when a re-read of the host fails while it stays attached. The
+      // values would be possibly out of date, so a healthy run must never show
+      // it; the notice's text is unlike "Failed to load", so it needs its own
+      // assertion rather than riding the one above.
+      check(
+        !text.includes("Could not re-read"),
+        `project: the pane reported it could not re-read this host's project settings, so the settings it shows may be out of date; a live check must not call that a pass. Text was:\n${text}`,
       );
       record.probe = `input labeled "Agent" at /settings/project?cwd=${c.cwd} (a path that exists only on the selected host)`;
       record.evidence = { cwd: c.cwd, agent: value };
