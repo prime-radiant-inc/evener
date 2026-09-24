@@ -64,13 +64,15 @@ export function projectedRow(
 ): MobileTimelineItem | null {
 	switch (entry.kind) {
 		case "item":
+			return rowForItem(entry.item, context);
 		case "intent":
 			// An intent is the same tool activity row; the projector's config
 			// decides intent-vs-full, and native's presentation layer (the
 			// ActivityPresentation "intent" mode) renders the difference. The
-			// row shape carries no mode field, so this is identical to a tool
-			// item and stays that way.
-			return rowForItem(entry.item, context);
+			// row shape carries no mode field, so it would otherwise be
+			// identical to a tool item — but the projector's own `failed`
+			// classification is honored here rather than re-derived.
+			return intentRow(entry, context);
 		case "thinking":
 			// A content-free placeholder: the reader sees that the agent is
 			// thinking without the thought's stream. Never the thought text.
@@ -79,6 +81,22 @@ export function projectedRow(
 			if (entry.item.type === "reasoning") return criticalReasoningRow(entry);
 			return rowForItem(entry.item, context);
 	}
+}
+
+// The projector sets intent.failed from hasItemFailure at projection time. It
+// equals commandExecution activityState's own "failed" signal today, so this
+// is a no-op for real projector output — but the adapter reads the projector's
+// classification instead of silently re-deriving, so a failed intent can never
+// render as running or completed.
+function intentRow(
+	entry: Extract<ProjectedEntry, { kind: "intent" }>,
+	context: ProjectedRowContext,
+): MobileTimelineItem | null {
+	const row = rowForItem(entry.item, context);
+	if (entry.failed && row !== null && row.kind === "activity") {
+		return { ...row, state: "failed" };
+	}
+	return row;
 }
 
 // --- per-item row construction (mirrors project.ts's projectItem) -----------

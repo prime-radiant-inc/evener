@@ -300,6 +300,16 @@ describe("projectedRow — intent entries", () => {
 		);
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
 	});
+
+	it("honors the projector's failed intent classification even when the source item carries no signal", () => {
+		// The projector sets intent.failed (hasItemFailure at projection time); the
+		// adapter must render a failed activity from that classification rather
+		// than re-deriving from the item alone.
+		const row = projectedRow(
+			intentEntry(item({ type: "commandExecution", toolName: "shell" }), { failed: true }),
+		);
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
+	});
 });
 
 describe("projectedRow — critical entries", () => {
