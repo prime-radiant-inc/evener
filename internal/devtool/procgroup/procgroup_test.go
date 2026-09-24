@@ -40,6 +40,26 @@ func reapChild(cmd *exec.Cmd) *childWait {
 	return w
 }
 
+// Start merges the group discipline into a caller-populated attr instead of
+// replacing it: the caller's attr object survives with the own-group flag
+// set on top, so a surface needing extra fields never has to choose between
+// them and the shared discipline.
+func TestStartMergesIntoCallerSysProcAttr(t *testing.T) {
+	cmd := exec.Command("true")
+	attr := &syscall.SysProcAttr{}
+	cmd.SysProcAttr = attr
+	if err := Start(cmd); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if cmd.SysProcAttr != attr {
+		t.Fatal("Start replaced the caller's SysProcAttr instead of merging into it")
+	}
+	if !attr.Setpgid {
+		t.Fatal("Start left the caller's attr without the own-group flag")
+	}
+	<-reapChild(cmd).done
+}
+
 // waitForFile polls for a fixture file the child writes once it is ready,
 // so tests synchronize on real child state instead of sleeps. It watches the
 // child's own reap alongside the file: a fixture that dies before writing —

@@ -20,14 +20,17 @@ const (
 	fuzzUnsetName = "${" + fuzzUnsetVar + "}"
 )
 
-// FuzzMCPConfigLoad drives LoadFile — the package's real .mcp.json decode seam
-// (json.Unmarshal of the config file → ParseServerMap → serverJSONToConfig with
-// ${VAR} expansion). Input is the raw config file bytes written to a temp file.
+// FuzzMCPConfigLoad drives LoadFileUntrusted — the loader arbitrary bytes
+// actually reach in production (the project's .evener/mcp.json) and the
+// package's real .mcp.json decode seam (json.Unmarshal of the config file →
+// ParseServerMap → serverJSONToConfig with ${VAR} expansion). Input is the
+// raw config file bytes written to a temp file.
 //
 // Because this is an internal (package mcpconfig) test, the oracle cross-checks
 // the returned configs against the same bytes re-decoded into the unexported
-// mcpConfigFile/mcpServerJSON shapes. For any config LoadFile accepts it asserts
-// the structural invariants ParseServerMap + serverJSONToConfig guarantee:
+// mcpConfigFile/mcpServerJSON shapes. For any config LoadFileUntrusted
+// accepts it asserts the structural invariants ParseServerMap +
+// serverJSONToConfig guarantee:
 //
 //   - one ServerConfig per server entry (no entries dropped or invented);
 //   - every entry's name survives verbatim and is non-empty;
@@ -36,13 +39,14 @@ const (
 //   - ${VAR} expansion is 1:1 — it never adds or drops an arg, env key, or
 //     header key (counts and key sets are preserved).
 //
-// And for any config LoadFile rejects it asserts the no-partial-result
+// And for any config LoadFileUntrusted rejects it asserts the no-partial-result
 // invariant: a non-nil error comes with an empty config slice.
 //
 // SAFETY: this target stays strictly within parse/expand/validate. It never
 // reaches mcpstatus.ProbeMCPStatus or anything that spawns an MCP subprocess or
 // opens a network connection — a fuzzer must never launch real servers. The
-// ${VAR} expander only consults os.LookupEnv; it does not shell out.
+// untrusted loader refuses $(command) at load, so fuzz bytes can never reach
+// the host shell; the ${VAR} expander only consults os.LookupEnv.
 func FuzzMCPConfigLoad(f *testing.F) {
 	// Drive expansion deterministically: a known-set variable (success branch)
 	// and a guaranteed-unset variable (missing-variable error branch).
@@ -73,9 +77,18 @@ func FuzzMCPConfigLoad(f *testing.F) {
 		`{"mcpServers":{"a":{"type":"http","url":"u","headers":{"H":"` + fuzzUnsetName + `"}}}}`,
 		// Known-set variable → expansion success branch.
 		`{"mcpServers":{"a":{"command":"${` + fuzzSetVar + `}","args":["pre-${` + fuzzSetVar + `}"]}}}`,
+		// $(command) in any expandable field → refused, never executed: the
+		// SAFETY contract above. A fuzzer must never reach a shell.
+		`{"mcpServers":{"a":{"command":"$(fuzz-refused)"}}}`,
+		`{"mcpServers":{"a":{"command":"x","args":["$(fuzz-refused)"]}}}`,
+		`{"mcpServers":{"a":{"command":"x","env":{"K":"$(fuzz-refused)"}}}}`,
+		`{"mcpServers":{"a":{"type":"http","url":"$(fuzz-refused)"}}}`,
+		`{"mcpServers":{"a":{"type":"http","url":"u","headers":{"H":"$(fuzz-refused)"}}}}`,
+		// A command piece that a later syntax error hides is refused too.
+		`{"mcpServers":{"a":{"command":"x","args":["$(fuzz-refused) ${unterminated"]}}}`,
 		// ${VAR:-default} on an unset variable → default branch.
 		`{"mcpServers":{"a":{"command":"pre${` + fuzzUnsetVar + `:-def}post"}}}`,
-		// Unterminated ${ → treated literally (no closing brace).
+		// Unterminated ${ → a syntax error, so the load refuses the layer.
 		`{"mcpServers":{"a":{"command":"tail-${b"}}}`,
 		// Whitespace-only type → defaulted to stdio.
 		`{"mcpServers":{"a":{"type":"  ","command":"x"}}}`,
@@ -95,7 +108,7 @@ func FuzzMCPConfigLoad(f *testing.F) {
 			t.Fatalf("write input: %v", err)
 		}
 
-		configs, err := LoadFile(path)
+		configs, err := LoadFileUntrusted(path)
 		if err != nil {
 			// Rejected config must not leak a partial result.
 			if len(configs) != 0 {

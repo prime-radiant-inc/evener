@@ -632,7 +632,7 @@ func TestAuth_Codex_StoredKeyIsNotACredential(t *testing.T) {
 		t.Fatalf("status=%+v, want no stored OAuth", got)
 	}
 	// And the gate in front of the launch agrees.
-	if err := validateProviderCredentials("openai-codex", c.reg); err == nil {
+	if err := validateProviderCredentials("openai-codex", "", c.reg); err == nil {
 		t.Fatal("the spawn gate accepted a Codex instance whose only key is in the store")
 	}
 }

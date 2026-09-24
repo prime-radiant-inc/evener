@@ -218,6 +218,14 @@ type Resolved struct {
 	Headers           map[string]string `json:"headers,omitempty"`
 	Credential        Credential        `json:"-"`
 	CredentialHeaders map[string]string `json:"-"`
+	// CredentialHeaderNames lists the credential headers the launch would
+	// actually send, names only: a presence-mode resolution exposes the
+	// names — which headers exist decides whether a stored key is sent at
+	// all — without expanding the values, whose wire material may be
+	// command-bearing and must not run on the hub's read paths (spec
+	// §10.1). Sorted; nil outside presence mode, where CredentialHeaders
+	// carries the expanded map instead.
+	CredentialHeaderNames []string `json:"-"`
 	// ShadowedEnvVar names an environment variable that is set but loses to
 	// Credential (spec §10); empty when nothing shadows it. Hidden from
 	// JSON alongside Credential - a caller that needs it re-exposes it on
