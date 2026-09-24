@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/envvars"
 )
@@ -146,6 +147,11 @@ func TestOptionsValidate(t *testing.T) {
 		"negative context window":    func(o *options) { o.window = -1 },
 		"negative probes":            func(o *options) { o.probes = -1 },
 		"more delegates than rounds": func(o *options) { o.delegates = 6 },
+		"probes without serve":       func(o *options) { o.probes = 1 },
+		"more delegates than the tree may run at once": func(o *options) {
+			o.rounds = delegateTurnLimit + 1
+			o.delegates = delegateTurnLimit + 1
+		},
 	} {
 		o := valid
 		mutate(&o)
@@ -174,6 +180,25 @@ func TestChildEnvIsolatesEvenerSettings(t *testing.T) {
 	for _, want := range []string{"PATH=/usr/bin", "HOME=/out/home", "XDG_CONFIG_HOME=/out/home/config", "TMPDIR=/out/tmp", envvars.EVENERHostTempBases.Assignment("/out/tmp"), envvars.EVENEROffline.Assignment("1")} {
 		if !slices.Contains(env, want) {
 			t.Errorf("child env lacks %q: %v", want, env)
+		}
+	}
+}
+
+// TestReportLabelsRoundsItMeasured pins the single-turn bucket labels to the
+// rounds sampled: sample k is the daemon's work on round k's answer (round 0
+// is the first answer; startup, before the first request, is not sampled).
+func TestReportLabelsRoundsItMeasured(t *testing.T) {
+	rounds := make([]time.Duration, 30)
+	msgs := make([]int, 30)
+	for i := range rounds {
+		rounds[i] = time.Millisecond
+		msgs[i] = i
+	}
+	var out strings.Builder
+	report(&out, [][]time.Duration{rounds}, [][]int{msgs})
+	for _, want := range []string{"rounds   0- 24: mean cpu/round    1.0ms  messages=24", "rounds  25- 29: mean cpu/round    1.0ms  messages=29"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("report output lacks %q:\n%s", want, out.String())
 		}
 	}
 }

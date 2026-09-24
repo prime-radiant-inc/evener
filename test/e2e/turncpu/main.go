@@ -9,7 +9,9 @@
 // /proc) consumed between answering one round and receiving the next
 // request: the daemon-side work of one tool round (stream consumption, event
 // emission, tool execution, transcript write, context management, request
-// encoding). Round 0 of the first turn carries startup and is not reported.
+// encoding). Rounds are numbered from 0, the turn's first answer; startup,
+// before the first request, is not measured, and neither is the answer that
+// ends a turn, which no request follows.
 //
 // With --serve it runs `evener serve` instead of a one-shot prompt and drives
 // --turns turns over AppWire with a subscribed client, which is how a
@@ -61,6 +63,12 @@ import (
 )
 
 const modelID = "turncpu-model"
+
+// delegateTurnLimit is the child's default cap on concurrently running
+// delegate turns (agent/tree_counter.go#defaultMaxConcurrentDelegateTurns).
+// Every delegate runs at once, so a spawn past it fails and its report never
+// comes.
+const delegateTurnLimit = 50
 
 type options struct {
 	evener      string
@@ -115,6 +123,8 @@ func (o options) validate() error {
 		return errors.New("--turns and --rounds must be at least 1")
 	case o.turns > 1 && !o.serve:
 		return errors.New("more than one turn needs --serve")
+	case o.probes > 0 && !o.serve:
+		return errors.New("--probes needs --serve")
 	case o.payloadKB < 0 || o.streamBytes < 0 || o.delegates < 0 || o.childRounds < 0 || o.window < 0 || o.probes < 0:
 		return errors.New("--payload-kb, --stream-bytes, --delegates, --child-rounds, --context-window and --probes must not be negative")
 	case o.delegates > o.rounds:
@@ -123,6 +133,8 @@ func (o options) validate() error {
 		// rounds, a multi-turn run's first turn ends short of spawning them
 		// all and its last turn never ends.
 		return fmt.Errorf("--delegates (%d) must not exceed --rounds (%d)", o.delegates, o.rounds)
+	case o.delegates > delegateTurnLimit:
+		return fmt.Errorf("--delegates (%d) must not exceed the %d delegate turns a session tree runs at once", o.delegates, delegateTurnLimit)
 	}
 	return nil
 }
@@ -467,7 +479,7 @@ func run(o options) error {
 	}
 	fmt.Printf("out: %s\nwall: %s  process cpu: %s  notifications: %d  model rounds (all sessions): %d  delegates reported: %d/%d\n",
 		o.outDir, time.Since(start).Round(time.Millisecond), processCPU.Round(time.Millisecond), notifications, prov.allRounds, prov.childDone, o.delegates)
-	report(prov.perRound, prov.messages)
+	report(os.Stdout, prov.perRound, prov.messages)
 	if prov.turn < o.turns {
 		return fmt.Errorf("session stopped after %d of %d turns (see %s)", prov.turn, o.turns, logPath)
 	}
@@ -600,9 +612,9 @@ func probeIdle(ctx context.Context, addr string, probes, pid int) error {
 }
 
 // report prints mean per-round CPU. A single turn is split into buckets of
-// rounds; several turns get one line each, so growth with the session's
-// total history is visible at a glance.
-func report(perRound [][]time.Duration, msgs [][]int) {
+// rounds, labelled by the rounds they measured; several turns get one line
+// each, so growth with the session's total history is visible at a glance.
+func report(w io.Writer, perRound [][]time.Duration, msgs [][]int) {
 	var total time.Duration
 	line := func(label string, rounds []time.Duration, lastMsgs int) {
 		var sum time.Duration
@@ -610,14 +622,14 @@ func report(perRound [][]time.Duration, msgs [][]int) {
 			sum += d
 		}
 		total += sum
-		fmt.Printf("%s: mean cpu/round %6.1fms  messages=%d\n", label, float64(sum.Microseconds())/1000/float64(max(len(rounds), 1)), lastMsgs)
+		_, _ = fmt.Fprintf(w, "%s: mean cpu/round %6.1fms  messages=%d\n", label, float64(sum.Microseconds())/1000/float64(max(len(rounds), 1)), lastMsgs)
 	}
 	if len(perRound) == 1 {
 		const bucket = 25
 		rounds, m := perRound[0], msgs[0]
 		for i := 0; i < len(rounds); i += bucket {
 			end := min(i+bucket, len(rounds))
-			line(fmt.Sprintf("rounds %3d-%3d", i+1, end), rounds[i:end], m[end-1])
+			line(fmt.Sprintf("rounds %3d-%3d", i, end-1), rounds[i:end], m[end-1])
 		}
 	} else {
 		for t, rounds := range perRound {
@@ -628,7 +640,7 @@ func report(perRound [][]time.Duration, msgs [][]int) {
 			line(fmt.Sprintf("turn %3d", t+1), rounds, last)
 		}
 	}
-	fmt.Printf("total cpu across rounds: %s\n", total.Round(time.Millisecond))
+	_, _ = fmt.Fprintf(w, "total cpu across rounds: %s\n", total.Round(time.Millisecond))
 }
 
 // cpuTime is the process's user+system CPU from /proc/<pid>/stat, in clock
