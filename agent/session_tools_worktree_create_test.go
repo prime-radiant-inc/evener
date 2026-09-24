@@ -341,6 +341,23 @@ func copyWorktreeBaseRepo(t *testing.T, dst string) {
 	copyWorktreeBaseRepoFrom(t, base, dst)
 }
 
+// TestWorktreeBaseRepoLivesOutsideItsFirstUsersTempDir pins the CI trip from
+// the round-30 run: the base repo is a package fixture that must outlive the
+// test that first builds it, so it must be placed under the temp root the
+// process started with — never under an isolated test's own t.TempDir, which
+// Go removes when that test ends, taking the fixture and every later
+// consumer's copy with it. The red reproduces when this test is the first
+// user (the -run isolation mirrors the CI ordering that made the
+// TMPDIR-isolated retirement test the builder); in a full-suite run an
+// earlier user may already have built it, and the assertion holds either way.
+func TestWorktreeBaseRepoLivesOutsideItsFirstUsersTempDir(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	base, _ := worktreeBaseRepo(t)
+	if strings.HasPrefix(filepath.Clean(base), filepath.Clean(os.TempDir())+string(os.PathSeparator)) {
+		t.Fatalf("the worktree base repo %q was built inside the isolated TMPDIR %q: the package fixture dies with this test's cleanup", base, os.TempDir())
+	}
+}
+
 func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
 	t.Helper()
 	for _, rel := range []string{

@@ -2956,7 +2956,20 @@ test.each([
     await written;
     cleanup();
     render(<Composer ref="ref_a" focused={false} />);
-    await waitFor(() => expect(textarea().textContent).toBe(submittedText));
+    // The remount restores the recovery draft through an IDB read plus a
+    // render the scheduler commits on a macrotask, while this test
+    // deliberately holds the recovery WRITE - so the projection flush
+    // cannot be the awaitable here (it would wait on the very transaction
+    // this test holds). Pump the event loop instead, bounded by turns,
+    // not wall clock: a turn completes whenever the scheduler gets CPU, so
+    // machine load cannot trip it the way waitFor's 1s ceiling did (sighted
+    // at load 900 on 16 CPUs).
+    for (let turn = 0; turn < 20 && textarea().textContent !== submittedText; turn += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+    expect(textarea().textContent).toBe(submittedText);
     if (edit !== "unchanged") {
       replaceEditorText(textarea(), "new draft");
       if (edit === "same text") replaceEditorText(textarea(), submittedText);
@@ -5430,4 +5443,33 @@ test.each([
   );
   expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
   expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+});
+
+// The whole refusal contract on Send, against real durable storage: the draft's
+// text and chip stay, the user hears why, nothing reaches the wire, and nothing
+// durable is written for the refused press - no outbox, optimistic or recovery
+// row a later reconnect could replay.
+test("a staged skill on Send to a target without skillInput keeps the draft and writes nothing durable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:skill-gate-send";
+  writeComposerDraft(ref, { text: "aimed at a target without skills /pkg:probe", skillNames: ["pkg:probe"] });
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: false }, queue: { revision: 0 } },
+  });
+  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+
+  await user.click(submitButton());
+
+  expect(getToasts().map((toast) => toast.text)).toContain(
+    "Skill selections aren't supported on this session yet; your draft is kept",
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect(textarea().textContent).toContain("aimed at a target without skills");
+  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  expect(await storage.listOutbox(ref)).toEqual([]);
+  expect(await storage.listOptimistic(ref)).toEqual([]);
+  expect(await storage.listRecovery(ref)).toEqual([]);
 });

@@ -37,6 +37,23 @@ import (
 // scrubs of product variables leave it alone.
 const RootVar = "EVENER_SANDBOXTEST_ROOT"
 
+// KeptTempVar carries the temp dir that was in force before the outermost
+// redirect, so an inheriting child's KeptTempDir names the same place. Like
+// RootVar it describes the rig, not the product.
+const KeptTempVar = "EVENER_SANDBOXTEST_KEPT_TMPDIR"
+
+// KeptTempDir is where a test keeps evidence it means to outlive the run, such
+// as a failing browser guard's screenshots and logs: the temp dir in force
+// before the redirect, which Discard does not remove. Under the make test gate
+// that is the gate's own scratch, kept when the gate fails; on CI it is the
+// runner's /tmp. Outside a redirect it is simply os.TempDir.
+func KeptTempDir() string {
+	if kept := os.Getenv(KeptTempVar); kept != "" {
+		return kept
+	}
+	return os.TempDir()
+}
+
 // HostTemp is a test binary's private temp root. While it is in place, TMPDIR
 // names a directory inside it and so does EVENER_HOST_TEMP_BASES, the world-
 // usable host temp base that session temp containers are minted in and the
@@ -61,9 +78,12 @@ func RedirectHostTemp(prefix string) (*HostTemp, error) {
 		}
 	}
 	if !h.inherited {
+		if err := h.setenv(KeptTempVar, os.TempDir()); err != nil {
+			return nil, err
+		}
 		root, err := newHostTempRoot(prefix)
 		if err != nil {
-			return nil, err
+			return nil, errors.Join(err, h.Discard())
 		}
 		h.root = root
 	}

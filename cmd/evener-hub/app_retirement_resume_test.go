@@ -1523,6 +1523,29 @@ func TestAwaitRetiredOwnerFallsBackToThreadID(t *testing.T) {
 	}
 }
 
+// TestAwaitRetiredOwnerOpensTheOwnerAsRetiring pins the flake behind
+// TestE2E_SendPromptToARetiredSession: a committed-retiring daemon releases its
+// session API log before the process exits, and the force-stop verifier treats
+// a process without that log as unverified. Opened as an ordinary target, the
+// owner in that window was refused and awaitRetiredOwner returned
+// LifecycleUnavailable("retiring") at once, so a prompt sent during retirement
+// failed instead of resuming. The owner must be opened as a Retiring target,
+// whose handle confirms exit without requiring the log.
+func TestAwaitRetiredOwnerOpensTheOwnerAsRetiring(t *testing.T) {
+	entry := rendezvous.Entry{PID: 4332, SessionID: "retiring-session", StateDir: t.TempDir(), StartedAt: time.Now()}
+	var opened daemonprocess.Target
+	controller := forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		opened = target
+		return nil, daemonprocess.ErrExited
+	})
+	if err := awaitRetiredOwner(t.Context(), hubcore.WebConfig{DaemonProcesses: controller}, entry); err != nil {
+		t.Fatalf("awaitRetiredOwner: %v", err)
+	}
+	if !opened.Retiring {
+		t.Fatalf("opened the retiring owner as %+v; want Retiring so its released API log does not refuse the exit wait", opened)
+	}
+}
+
 // TestResumeAfterConfirmedRetirementFreshReplacementIsNotAwaited is the round-7
 // regression for the replacement-daemon hang. A concurrent resume can replace
 // the retiring daemon before this retry samples the entry-time owner at

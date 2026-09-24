@@ -806,6 +806,20 @@ type RestoreSessionConfig struct {
 	// snapshot inherits the parent's answer; it does not outlive the run.
 	AgentsDocPath string
 
+	// OnRestoredTranscript, when set, receives the transcript this resume
+	// validated: the header (its SessionID already checked against the
+	// session's id), the final decoded entry list after every restore-time
+	// append, and whether a transcript was opened at all (true for a
+	// header-only one). It exists so serve can project its app identity from
+	// the one strict decode restore already did instead of re-reading the
+	// file. The session itself keeps no reference to the entries: a
+	// transcript can decode to more memory than the file holds, and a
+	// restored session -- a delegate child, a one-shot run -- would otherwise
+	// carry it for its whole life. The entries alias the slice restore goes
+	// on to fold for the delegate attention rearm right after the call, so
+	// the receiver must not mutate them.
+	OnRestoredTranscript func(header transcript.Header, entries []transcript.Entry, opened bool)
+
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
@@ -945,8 +959,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
-	// ok flag for RestoredTranscript; captured at the open so the refresh
-	// below can't flip it.
+	// opened flag for OnRestoredTranscript; captured at the open so the
+	// refresh below can't flip it.
 	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
@@ -1328,16 +1342,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		// Re-entry moved the scratch the caller's environment already owned onto
 		// this clone, and that scratch may be an adopted retained allocation the
-		// manifest references. Retain it rather than remove the durable
-		// directory a later resume reacquires; only a fresh mint this restore
-		// allocated is disposed.
-		if s.ownsReferencedRetainedScratch(reenteredEnv) {
-			if local, ok := reenteredEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.RetainSessionScratch()
-			}
-			return
-		}
-		disposeUnadoptedScratch(reenteredEnv)
+		// manifest references. Settle by the manifest, kind by kind: a
+		// referenced allocation is retained rather than removed, and only a
+		// fresh mint this restore allocated is disposed (round 83).
+		s.settleOwnedScratchByManifest(reenteredEnv)
 	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
@@ -1483,17 +1491,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// survived but whose admission did not (a metadata save failure or a
 	// crash between the input turn and the obligation persist). It runs over
 	// ALL decoded entries — after the catalog is discovered and the
-	// transcript is attached, before setRestoredTranscript publishes the
+	// transcript is attached, before OnRestoredTranscript receives the
 	// final entry list — and never repeats a covered invocation.
 	if s.reconcilePendingSkillSelections(context.Background(), transcriptEntries) && tw != nil {
 		if err := refreshFromDisk("skill selection reconciliation"); err != nil {
 			return nil, err
 		}
 	}
-	// setRestoredTranscript and the attention rearm both run after every
+	// OnRestoredTranscript and the attention rearm both run after every
 	// restore-time transcript append, so serve and the fold see the same
 	// final entry list the file holds.
-	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
+	if restoreCfg.OnRestoredTranscript != nil {
+		restoreCfg.OnRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
+	}
 	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
@@ -2561,76 +2571,23 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 	}
 }
 
-// envOwnsReferencedRetainedScratch reports whether env currently owns a
-// per-session scratch directory that the durable retention manifest for owner
-// still references. Such a directory is adopted durable state a later resume
-// reacquires, so a failure teardown must retain it — release the lease, keep
-// the directory — rather than dispose it with os.RemoveAll. A freshly
-// provisioned allocation the manifest does not reference is the restore's own
-// mint and is still disposed. An environment that is not local, has no durable
-// owner, or owns nothing is not retained.
-func envOwnsReferencedRetainedScratch(owner sandbox.ScratchOwner, env execenv.ExecutionEnvironment) bool {
-	local, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok || owner.StateDir == "" || owner.RootSessionID == "" {
-		return false
-	}
-	refs, err := local.ScratchRetentionReferences()
-	if err != nil || len(refs) == 0 {
-		return false
-	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil || manifest.Released || len(manifest.References) == 0 {
-		return false
-	}
-	referenced := make(map[string]struct{}, len(manifest.References))
-	for _, ref := range manifest.References {
-		dir, err := filepath.Abs(ref.Dir)
-		if err != nil {
-			continue
-		}
-		referenced[filepath.Clean(dir)] = struct{}{}
-	}
-	for _, ref := range refs {
-		dir, err := filepath.Abs(ref.Dir)
-		if err != nil {
-			continue
-		}
-		if _, ok := referenced[filepath.Clean(dir)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// ownsReferencedRetainedScratch is envOwnsReferencedRetainedScratch bound to
-// this session's root retention authority, so an internal failure teardown can
-// decide between retaining and disposing an environment it built.
-func (s *Session) ownsReferencedRetainedScratch(env execenv.ExecutionEnvironment) bool {
-	owner, ok := s.scratchRetentionOwner()
-	if !ok {
-		return false
-	}
-	return envOwnsReferencedRetainedScratch(owner, env)
-}
-
 // DisposeResumeScratchAfterFailure settles the per-session scratch a failed
 // resume left on the launch environment. RestoreSessionFromMetaWithConfig can
 // adopt a durable retained allocation onto env before a later initialization
 // failure, and env.DisposeUnadoptedScratch would then run os.RemoveAll over a
 // directory the root's retention manifest still references, destroying data a
 // later resume reacquires. An allocation the manifest references is therefore
-// retained (its lease released, its directory kept); anything else is the
-// restore's own fresh mint and is disposed. rootSessionID is the manifest's
-// root, exactly as the restore's own scratchRetentionOwner resolves it.
+// retained (its lease released, its directory kept); everything else is the
+// restore's own fresh mint and is disposed. The settle is per kind, so a
+// restore that adopted one kind and reprovisioned the other keeps the
+// referenced allocation and still disposes its fresh mint (round 83).
+// rootSessionID is the manifest's root, exactly as the restore's own
+// scratchRetentionOwner resolves it.
 func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *execenv.LocalExecutionEnvironment) {
 	if env == nil {
 		return
 	}
-	if envOwnsReferencedRetainedScratch(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}, env) {
-		env.RetainSessionScratch()
-		return
-	}
-	env.DisposeUnadoptedScratch()
+	settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}, env)
 }
 
 // DisposeRootScratchAfterFailure settles the per-session scratch a failed ROOT
@@ -2645,22 +2602,67 @@ func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *exece
 //
 // A failed root construction has no Session to ask for its owner, so the owner
 // is resolved from the environment's own installed binding — the root id
-// installScratchRetention published the binding under. An allocation the
-// manifest references is therefore retained (its lease released, its directory
-// kept, exactly as DisposeResumeScratchAfterFailure does for the resume path);
-// anything else is the launch's own fresh mint and is disposed. The binding is
-// read fresh here rather than passed in, so a construction that failed before
-// installScratchRetention ran still disposes its unadopted scratch.
+// installScratchRetention published the binding under. The settle is the same
+// per-kind verdict DisposeResumeScratchAfterFailure applies for the resume
+// path (round 83): an allocation the manifest references is retained (its
+// lease released, its directory kept) and everything else is the launch's own
+// fresh mint, disposed. The binding is read fresh here rather than passed in,
+// so a construction that failed before installScratchRetention ran still
+// disposes its unadopted scratch.
 func DisposeRootScratchAfterFailure(stateDir string, env *execenv.LocalExecutionEnvironment) {
 	if env == nil {
 		return
 	}
 	if binding, err := env.ScratchRetentionBinding(); err == nil {
-		owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}
-		if envOwnsReferencedRetainedScratch(owner, env) {
-			env.RetainSessionScratch()
-			return
-		}
+		settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}, env)
+		return
 	}
 	env.DisposeUnadoptedScratch()
+}
+
+// settleEnvScratchByManifest settles the per-session scratch allocations env
+// owns against the durable retention manifest for owner, one kind at a time:
+// an allocation the manifest still references is retained — its lease
+// released, its directory kept for a later resume to reacquire — and every
+// other allocation is this failure's own fresh mint and is disposed with its
+// directory. The whole-environment verdict this replaces retained every
+// allocation when any one was referenced, so a restore that adopted one kind
+// and reprovisioned the other leaked its fresh mint beside the allocation it
+// kept (round 83). env being nil, an environment that is not local, an owner
+// with no durable identity, and a manifest that cannot be read or that is
+// Released — which names nothing a later resume reacquires — all settle as
+// disposeUnadoptedScratch already did.
+func settleEnvScratchByManifest(owner sandbox.ScratchOwner, env execenv.ExecutionEnvironment) {
+	if env == nil {
+		return
+	}
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok || owner.StateDir == "" || owner.RootSessionID == "" {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil || manifest.Released || len(manifest.References) == 0 {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	referenced := make(map[string]struct{}, len(manifest.References))
+	for _, ref := range manifest.References {
+		if dir, absErr := filepath.Abs(ref.Dir); absErr == nil {
+			referenced[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	local.SettleScratchByReferences(referenced)
+}
+
+// settleOwnedScratchByManifest is settleEnvScratchByManifest bound to this
+// session's root retention authority, so an internal failure teardown can
+// settle an environment it built by the same per-kind verdict.
+func (s *Session) settleOwnedScratchByManifest(env execenv.ExecutionEnvironment) {
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	settleEnvScratchByManifest(owner, env)
 }

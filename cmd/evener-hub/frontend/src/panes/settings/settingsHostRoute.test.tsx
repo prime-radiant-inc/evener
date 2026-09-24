@@ -178,3 +178,72 @@ test("an app navigation to a settings URL carries the host the route already nam
   expect(window.location.search).toBe("?host=beta");
   expect(settingsHostStore.getState().host).toBe("beta");
 });
+
+// M (roborev round 5): the selection is part of the settings route, so leaving
+// that route must drop it. It used to outlive the route in the module store, so
+// a later hostless settings URL rendered the previous remote selection (and
+// could issue a remote read for it) before the mount sync corrected it.
+test("an app navigation off the settings route drops the remote selection", async () => {
+  connectFakeClient();
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  expect(settingsHostStore.getState().host).toBe("beta");
+
+  act(() => navigate("/"));
+
+  expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
+});
+
+// The same drop, reached the other way: a URL change the app did not build (a
+// browser Back/Forward, a direct pushState) never goes through navigate(), so
+// the settings pane's own unmount is the seam that must drop the selection.
+test("leaving the settings route by an unmount drops the remote selection", async () => {
+  connectFakeClient();
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  const view = render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  expect(settingsHostStore.getState().host).toBe("beta");
+
+  act(() => {
+    window.history.pushState({}, "", "/s/local:abc");
+  });
+  view.unmount();
+
+  expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
+});
+
+// The mirror image of the drop: clearing alone would paint LOCAL first on an
+// app-built navigation to a host-named settings URL. navigate() therefore writes
+// the target's host at the moment it changes the route, before any pane mounts.
+test("an app navigation to a host-named settings URL selects it in the same tick", () => {
+  connectFakeClient();
+  window.history.pushState({}, "", "/");
+  expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
+
+  act(() => navigate("/settings/credentials?host=beta"));
+
+  expect(settingsHostStore.getState().host).toBe("beta");
+});
+
+// The end-to-end shape of the finding: a hostless settings URL reopened after a
+// remote selection must not render - or read for - the host the URL does not
+// name. The selection is dropped on the way out, so the reopen's first render is
+// already local and issues no remote request.
+test("reopening a hostless settings URL never shows the previous remote host", async () => {
+  const fake = connectFakeClient();
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  const first = render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  // Wait until beta's own listing has landed, so the read count below is stable.
+  expect(await screen.findByText("No provider instances on beta.")).toBeTruthy();
+  const readsWithBeta = fake.calls.filter((call) => call.method === "evener/host/request").length;
+
+  act(() => navigate("/"));
+  first.unmount();
+
+  window.history.pushState({}, "", "/settings/credentials");
+  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+
+  expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
+  expect(screen.queryByRole("heading", { name: "Providers on beta" })).toBeNull();
+  // No stale remote read: the previous selection never reached a render.
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(readsWithBeta);
+});

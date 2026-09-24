@@ -453,10 +453,27 @@ Concretely:
   instance on the host" — the table row below. The local key is not pushed under
   a guessed provider.
 
-**Implementation status:** this join rule is the 07c requirement, not a present
-fact; the shipped wire types (`AuthStatusParams.Provider`,
+**Implementation status:** landed on the controller side and the wire -
+`cmd/evener-hub/app_host_credentials.go` implements this join over
+`evener/auth/status` and `evener/auth/apiKey/conditionalSet`. The pane action
+that starts a push from the remote-credentials sheet is its own follow-up change
+(the frontend bullet in this component's plan below), so this note records what
+the controller and the wire contract do, not the whole of 07c. The shipped wire
+types (`AuthStatusParams.Provider`,
 `AuthApiKeySetParams.Provider`, `InstanceEntry.Name/Base/ProviderID`,
-`appwire/types.go`) do not themselves disambiguate instance from provider.
+`appwire/types.go`) still do not disambiguate instance from provider, and they
+do not need to: the join is resolved once, locally, against `instance/list`.
+Two refinements the implementation carries beyond the rule above: the join's
+*lookup* folds case (the local store lowercases its keys, the host spells its
+instances as authored) while the `Provider` sent is the host's own spelling of
+the matched entry, and exactly one kind of entry is skipped without dialing at
+all - one whose stored value is not an API key (the store also holds the Google
+credential JSON `evener/auth/credentialJson/set` writes, which must never be
+copied to another host as a key). That skip is about the KIND of value, not about
+a scheme's capability: every other matched entry goes through `evener/auth/status`
+and `evener/auth/apiKey/conditionalSet`, and the host's own locked classification
+decides - so an instance whose scheme cannot consume a key comes back as the
+host's typed `skipped`, never judged from the instance-list snapshot.
 
 Write side (remote): for each local entry (whose key is the instance name), call
 the remote hub's **`evener/auth/apiKey/conditionalSet`** with
@@ -518,7 +535,10 @@ layer or has no credential: a working `api_key`, `credential_headers`, `oauth`,
 `adc`, or `env:<VAR>` credential is never shadowed by a pushed key. The policy
 must be applied **atomically on the host** — not from a separate
 `evener/auth/status` read — so it is a guarantee rather than a check-time
-snapshot; see the atomic contract immediately below.
+snapshot; see the atomic contract immediately below. The controller makes no
+pre-wire decision about a scheme's capability at all: its one pre-wire decision is
+about the KIND of value (an API key is sent, a credential document is not), and
+everything else the host's locked conditional set decides.
 
 **The no-clobber guarantee is atomic — the check moves host-side.** The
 two-call form (the pusher reads `evener/auth/status`, classifies, then writes
@@ -584,12 +604,16 @@ that omits the field) sends the zero value, which the host interprets as "no
 revision fence" — the source fence (`ExpectedSource`) still applies. A
 revision the controller did not observe is never fabricated.
 
-**Implementation status:** neither `evener/auth/apiKey/conditionalSet` nor the
-response field exists, and neither `AuthStatusResponse` nor `InstanceEntry`
-exposes a `ConfigRevision` today (so there is presently nothing to source
-`ExpectedRevision` from); the 07c surface above is still the racy two-call
-form. The host-side conditional set and the `ConfigRevision` exposure are
-tracked code follow-ups (see the PR comment), not present facts.
+**Implementation status:** landed on the controller side and the wire -
+`evener/auth/apiKey/conditionalSet` is in the AppWire catalog with
+`ApiKeyConditionalSetParams`/`ApiKeyConditionalSetResponse`, and
+`ConfigRevision` is exposed on both `AuthStatusResponse` and `InstanceEntry`
+(`appwire/types.go`), populated from the host's effective
+credential-configuration revision. `ExpectedRevision` is sourced from that
+field, and the controller's push calls the conditional set rather than the racy
+status-then-`apiKey/set` pair. The pane action that drives a push from the
+remote-credentials sheet is a separate follow-up change (the frontend bullet
+below), so this note records the host-side contract, not the whole of 07c.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
@@ -681,6 +705,35 @@ Decompose component 07 into four landable PRs.
   `evener/host/notification` (§"Notification envelope") and refresh only when
   the notification's `Host` matches the selected host.
 
+**Implementation status:** landed — the selected host lives in the settings
+route rather than in a per-pane selector: `useSettingsHost`
+(`cmd/evener-hub/frontend/src/panes/settings/settingsHost.ts`) reads the
+route's `host` parameter (`HOST_QUERY_PARAM`,
+`cmd/evener-hub/frontend/src/shell/routing.ts`), and the store mirrors the
+route in both directions — an app-built navigation sets the selection to the
+host its target names and drops it when the target is not a settings route, at
+the moment the history changes and before any pane renders
+(`syncSettingsHostToRoute`, registered with `navigate` in the same module) —
+so the pane and the address bar never disagree. Every host-scoped pane reaches
+the selection through the one shared frame `HostScopedSurface`
+(`cmd/evener-hub/frontend/src/panes/settings/sections/hostScopedSurface.tsx`),
+which is also what refuses an unknown or unattached host honestly: it says so
+only once the registry reports `ready`, and until then renders that host's own
+state instead of this hub's. A **remote** host's reads AND writes for each
+family go through `evener/host/request` (`hostRequest`,
+`cmd/evener-hub/frontend/src/stores/hostRouting.ts`) via one store instance
+per host — `launchConfigStoreForHost`
+(`cmd/evener-hub/frontend/src/stores/launchConfig.ts`),
+`extensionsInstanceForHost`
+(`cmd/evener-hub/frontend/src/stores/extensions.ts`) and
+`agentsDocStoreForHost` (`cmd/evener-hub/frontend/src/stores/agentsDoc.ts`) —
+rather than one store with a host-routing port, because the launch option
+schema cache is server-global and a shared instance would serve one host's
+schema for another. A `local` selection keeps today's direct path
+byte-for-byte. The stores act on an `evener/host/notification` frame only when
+its `params.host` matches the selected host.
+
+
 ### PR 07c — credential push
 
 - New file `cmd/evener-hub/app_host_credentials.go` with the push controller and
@@ -704,7 +757,8 @@ Decompose component 07 into four landable PRs.
   report is rendered from that response's `Status` (or a second, explicitly
   report-only status read), not from the pre-write capture read.
 - Add the push action to the remote-credentials pane in the frontend
-  (`src/panes/settings/sections/credentials/`).
+  (`src/panes/settings/sections/credentials/`) - its own follow-up change, not
+  part of the controller-side work the status notes above record as landed.
 - No new on-disk state on the controller.
 
 ### PR 07d — host device-login affordance + best-effort OAuth copy warning
@@ -818,9 +872,10 @@ receives a key, and the controller writes nothing.
   and reports scripted `status`/`instance/list`; assert the
   added/updated/skipped/failed matrix (a `skipped` arrives as a successful typed
   response, not a wire error), that `apiKey/clear` is never called, that
-  **every matched store key is routed through `apiKey/conditionalSet`** — the
-  controller never preflight-skips, because the classification is the host's
-  atomic operation — and that an
+  **every matched store key whose value is an API key is routed through
+  `apiKey/conditionalSet`** — the controller's only preflight skip is about the
+  KIND of value (a credential document, never a key, is not sent), so a scheme's
+  capability is never judged controller-side — and that an
   `api_key`/`credential_headers`/`env:`-resolving or OAuth/ADC instance is
   driven through the same call and asserted as a **typed `skipped` response**
   (scripted by the fake host, matching the classification table above) rather

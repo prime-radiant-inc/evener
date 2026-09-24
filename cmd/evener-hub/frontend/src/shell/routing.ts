@@ -7,7 +7,7 @@
 // history and notifying same-tab listeners is still "URL glue", just not a
 // pure function.
 
-import { HOST_QUERY_PARAM } from "../stores/settingsHost";
+import { isLocalHost, normalizeHost } from "../stores/hostRouting";
 import type { PaneTypeId } from "./paneRegistry";
 
 function refParam(params: unknown): string | null {
@@ -134,6 +134,37 @@ function splitURL(target: string): { path: string; search: string; hash: string 
     : { path: body.slice(0, searchAt), search: body.slice(searchAt), hash };
 }
 
+/** HOST_QUERY_PARAM is the settings URL's host query parameter. It lives here,
+ * with the rest of the settings route's URL contract, so the store that holds the
+ * selection can ask this module whether a route is a settings route without the
+ * two modules importing each other. */
+export const HOST_QUERY_PARAM = "host";
+
+/** isSettingsPath answers whether a pathname names a settings route - the routes
+ * urlToPane resolves as "settings", aliases included. The selected host belongs
+ * to those routes and to no others: they are the only ones that may carry a host,
+ * adopt one, or seed one. */
+export function isSettingsPath(pathname: string): boolean {
+  return urlToPane(pathname)?.type === "settings";
+}
+
+/** settingsHostRouteSync is the settings host store's mirror of an APP-BUILT
+ * navigation: navigate() calls it with the path and search it just applied, and
+ * the store sets its selection to the host that route names (the local hub off a
+ * settings route), so the two never disagree. routing.ts cannot import the store
+ * itself - the store imports isSettingsPath from this module, so the dependency
+ * runs one way only - so the store registers the one function here instead (see
+ * stores/settingsHost.ts's syncSettingsHostToRoute). A module that imports
+ * routing without pulling the store in leaves this null and navigate() simply
+ * does not mirror; every production entry point reaches the store through the
+ * settings pane registration (AppShell imports panes/settings). */
+type SettingsHostRouteSync = (pathname: string, search: string) => void;
+let settingsHostRouteSync: SettingsHostRouteSync | null = null;
+
+export function setSettingsHostRouteSync(sync: SettingsHostRouteSync | null): void {
+  settingsHostRouteSync = sync;
+}
+
 // withSettingsHost carries the host the address bar already names onto an
 // APP-BUILT navigation to a settings route (component 07b): the selected host
 // is part of that route, and the builders that cannot know it - the palette's
@@ -151,11 +182,16 @@ function withSettingsHost(target: string): string {
   // one out of itself: a non-settings URL that merely carries `?host=` (a
   // hand-typed link, another surface's own parameter) must not leak it onto a
   // settings target.
-  if (urlToPane(window.location.pathname)?.type !== "settings") return target;
+  if (!isSettingsPath(window.location.pathname)) return target;
   const params = new URLSearchParams(search);
   if (params.has(HOST_QUERY_PARAM)) return target;
-  const current = new URLSearchParams(window.location.search).get(HOST_QUERY_PARAM);
-  if (current === null) return target;
+  // The current host goes through the ONE spelling rule (hostRouting.ts's
+  // normalizeHost, the same one the store's own URL reading uses): an absent,
+  // empty, or `local` current host normalizes to the local hub, which is nothing
+  // to carry - so the target keeps the canonical hostless local URL instead of
+  // gaining a `?host=local` or a bare `?host=`.
+  const current = normalizeHost(new URLSearchParams(window.location.search).get(HOST_QUERY_PARAM));
+  if (isLocalHost(current)) return target;
   params.set(HOST_QUERY_PARAM, current);
   return `${path}?${params.toString()}${hash}`;
 }
@@ -182,5 +218,16 @@ export function navigate(pathname: string, options: { replace?: boolean; carrySe
   if (current === target) return;
   if (options.replace) window.history.replaceState({}, "", target);
   else window.history.pushState({}, "", target);
+  // Mirror the settings selection onto the route the app just chose, before any
+  // listener runs: an app-built navigation drops a remote selection it leaves
+  // behind and adopts the one its target names, so no host-scoped pane ever
+  // renders a host the current route does not name. This is the seam that sees a
+  // navigation to a settings URL BEFORE the settings pane mounts - the mount sync
+  // only runs after the first render, which would paint the previous selection
+  // for a frame (see settingsHostRouteSync above).
+  if (settingsHostRouteSync !== null) {
+    const { path, search } = splitURL(target);
+    settingsHostRouteSync(path, search);
+  }
   window.dispatchEvent(new PopStateEvent("popstate"));
 }

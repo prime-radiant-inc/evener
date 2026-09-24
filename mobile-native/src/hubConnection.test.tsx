@@ -9,6 +9,7 @@ import { act } from "react-test-renderer";
 import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
+import { clientServesHub } from "./connectionIdentity";
 import { type HubConnection, type HubTokenSource, useHubConnection } from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
@@ -230,4 +231,74 @@ it("releases the client's listener on unmount", async () => {
 	expect(fake.listenerCount).toBeGreaterThan(0);
 	hook.unmount();
 	expect(fake.listenerCount).toBe(0);
+});
+
+// Round 59's Medium: the record of which hub a client proved ready under
+// belongs to the connection layer — written at dial success, for the hub the
+// client was dialed for — so a connecting mount under any route can never
+// attribute a client to a hub it does not serve (connectionIdentity).
+it("records the hub a client was dialed for, at dial success", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook } = mount();
+	await act(async () => {});
+	act(() => fake.succeed());
+	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
+	// The dialed hub holds; every other hub is refused until a re-dial.
+	expect(clientServesHub(fake, "hub-a")).toBe(true);
+	expect(clientServesHub(fake, "hub-b")).toBe(false);
+});
+
+// Round 61's Low: proving a hub identity is what readiness establishes. A
+// client whose dial is still connecting, or failed outright, has proved
+// nothing — recording it would let a gated consumer bind a client that never
+// reached its hub.
+it("does not record a client that never proved ready", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook } = mount();
+	await act(async () => {});
+	expect(hook.result.current.state).toBe("connecting");
+	// A still-connecting client has established nothing, so it must stay
+	// unknown to the record. The record only ever withholds a client it
+	// KNOWS proved ready under a different hub, so the discriminating probe
+	// is a second hub: recorded under hub-a it would be refused for hub-b;
+	// unknown, it is not (querying hub-a cannot tell the two apart — the
+	// record passes an unknown client exactly as it passes its own).
+	expect(clientServesHub(fake, "hub-b")).toBe(true);
+	act(() => fake.fail());
+	expect(hook.result.current.state).toBe("closed");
+	// A failed dial establishes nothing either — the client stays unknown.
+	expect(clientServesHub(fake, "hub-b")).toBe(true);
+});
+
+// Round 85's follow-up: a token fetch that fails outright is this attempt's
+// terminal verdict — the catch writes "closed" to the core with no client
+// ever created, and the hook must expose it rather than derive "connecting"
+// from the client's absence: a failed reconnect is not a still-connecting
+// one, and reading it as connecting keeps the retry affordance hidden behind
+// a spinner forever. The initial pre-connection phase keeps its "connecting"
+// report, and the verdict never outlives its attempt: a fresh attempt that
+// fetches and dials fine leaves "closed" behind.
+it("reports closed, not connecting, when token acquisition fails", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook, input, setError } = mount({
+		repository: { token: () => Promise.reject(new Error("no token")) },
+	});
+	// Before the rejection settles: the initial pre-connection "connecting".
+	expect(hook.result.current).toEqual({ client: null, state: "connecting", fatal: false });
+	await act(async () => {});
+	// The token-fetch failure is terminal: closed, not still-connecting.
+	expect(hook.result.current).toEqual({ client: null, state: "closed", fatal: false });
+	// Structural: the branch connectionFailure(null) selects, not its prose.
+	expect(setError).toHaveBeenLastCalledWith(connectionFailure(null).message);
+	// The verdict belongs to this attempt only.
+	input.repository = { token: async () => "tok-ok" };
+	input.attempt = 1;
+	hook.rerender();
+	expect(hook.result.current.state).toBe("connecting");
+	await act(async () => {});
+	act(() => fake.succeed());
+	expect(hook.result.current).toEqual({ client: fake, state: "ready", fatal: false });
 });

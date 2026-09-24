@@ -7,54 +7,16 @@
 // A host that has left the registry keeps an option, so the current selection
 // stays visible; the pane consuming the selection decides what an unknown host
 // renders (CredentialsHostScope says so honestly).
-import type { HostRow } from "@evener/appwire-client";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useConnectionStore } from "../../stores/connection";
 import { isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
-import { type HostsLoadState, hostIdentity, hostsStore, useHostsStore } from "../../stores/hosts";
+import { hostsStore, isConfiguredHost, selectableHostRows, useHostsStore } from "../../stores/hosts";
 import { FormRow, Select, type SelectOption } from "../../widgets";
 import { HOST_POLL_MS } from "./sections/hosts";
 import { useConnectedEffect } from "./sections/useConnectedEffect";
 import { useSettingsHost } from "./settingsHost";
 
 export const HOST_SELECT_ID = "settings-host";
-
-/** selectableHostRows is the registry's non-removed rows, or none while it is
- * still loading or has failed. Shared by the picker and by the panes that must
- * decide what an unknown host means. */
-export function selectableHostRows(load: HostsLoadState): HostRow[] {
-  return load.phase === "ready" ? load.hosts.filter((row) => !row.removed) : [];
-}
-
-/** isConfiguredHost answers whether the registry currently lists `host`. A
- * false while the registry is still unread is ambiguous, so callers pair it
- * with the load phase (see CredentialsHostScope). */
-export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
-  return selectableHostRows(load).some((row) => row.name === host);
-}
-
-/** hostIdentityFor is the registry's identity for `host` (hosts.ts's
- * hostIdentity), or null while the registry does not list it - still being read,
- * removed, or not configured at all. Cached rows are only the current host's
- * while this matches the identity they were read under. */
-export function hostIdentityFor(load: HostsLoadState, host: string): string | null {
-  const row = selectableHostRows(load).find((candidate) => candidate.name === host);
-  return row === undefined ? null : hostIdentity(row);
-}
-
-/** useHostIdentityFor is hostIdentityFor, remembering the last identity a READY
- * registry gave the name. A registry re-read that fails, or is still in flight,
- * cannot say the name now means another host - so it must not discard the
- * identity the last successful answer established, nor flap the remote reads
- * keyed on it (a flap re-issues the host's listing once per phase). Only a ready
- * answer replaces it, including with null when the name is gone. */
-export function useHostIdentityFor(load: HostsLoadState, host: string): string | null {
-  const known = useRef<{ host: string; identity: string | null }>({ host, identity: null });
-  if (known.current.host !== host || load.phase === "ready") {
-    known.current = { host, identity: hostIdentityFor(load, host) };
-  }
-  return known.current.identity;
-}
 
 export function HostPicker() {
   const { host, selectHost } = useSettingsHost();

@@ -3,124 +3,184 @@ package registry
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"golang.org/x/net/http/httpguts"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
-var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-func isEnvNameByte(c byte) bool {
-	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-}
-
-// scanEnvRefs walks value with today's providers.toml rules (spec §10):
-// "$NAME" and "${NAME}" reference a variable, "$$" is a literal "$", a "$"
-// not followed by a name character is literal. It calls ref for every
-// reference and lit for every literal run, and returns a syntax error for an
-// unterminated "${" or an invalid name. It never echoes the value (it may
-// hold a secret).
-func scanEnvRefs(value string, lit func(string), ref func(string)) error {
-	for i := 0; i < len(value); {
-		c := value[i]
-		if c != '$' {
-			j := i
-			for j < len(value) && value[j] != '$' {
-				j++
-			}
-			lit(value[i:j])
-			i = j
-			continue
-		}
-		if i+1 >= len(value) {
-			lit("$")
-			i++
-			continue
-		}
-		next := value[i+1]
-		switch {
-		case next == '$':
-			lit("$")
-			i += 2
-		case next == '{':
-			end := strings.IndexByte(value[i+2:], '}')
-			if end < 0 {
-				return errors.New("unterminated ${ in value")
-			}
-			name := value[i+2 : i+2+end]
-			if !envNameRe.MatchString(name) {
-				// name is whatever the author put between the braces: exactly
-				// the content a misplaced secret would occupy, e.g.
-				// "${sk-live-...}" pasted where "${VAR}" belonged. Unlike
-				// every other error in this file, it must not be
-				// interpolated into the message.
-				return errors.New("invalid environment variable name in ${...} reference: must start with a letter or underscore, then only letters, digits, or underscores")
-			}
-			ref(name)
-			i += 2 + end + 1
-		case isEnvNameByte(next) && (next < '0' || next > '9'):
-			j := i + 1
-			for j < len(value) && isEnvNameByte(value[j]) {
-				j++
-			}
-			ref(value[i+1 : j])
-			i = j
-		default:
-			lit("$")
-			i++
-		}
+// checkEnvRefs validates the $-expression syntax of a config value at load
+// time — references, defaults, and command expressions — naming the field in
+// the error. It never echoes the value, which may hold a secret.
+func checkEnvRefs(value, what string) error {
+	if _, err := valueexpr.Scan(value); err != nil {
+		return fmt.Errorf("%s: %w", what, err)
 	}
 	return nil
 }
 
-// ScanConfigValue reports what a providers.toml value is made of under spec
-// §10's grammar: the variables it references, and its literal text with those
-// references removed. A caller that must refuse a literal secret standing
-// beside a reference reads both halves. Neither the result nor the error
-// echoes the value, which may hold one.
+// checkNoCommands holds the other half of the command-expression rule: a
+// command's output is credential material, so only the credential fields
+// (api_key, credential_headers) may run one. A display header or a transport
+// var minted through a command would flow into URLs, logs, and surfaces that
+// treat it as ordinary text, so those fields refuse a command outright. It
+// never echoes the value, which may hold a secret.
+func checkNoCommands(value, what string) error {
+	// The refusal keys on the command pieces alone, never on a clean scan:
+	// Scan reports what it found even when a later syntax error aborts it,
+	// and Expand executes command pieces as it walks, so a value like
+	// "$(evil) ${unterminated" would run evil before its own error surfaces.
+	if scan, _ := valueexpr.Scan(value); len(scan.Commands) > 0 {
+		return fmt.Errorf("%s: command expressions are reserved for credential fields (api_key, credential_headers); this field's value is not treated as a secret", what)
+	}
+	return nil
+}
+
+// expandEnv substitutes a value's $ expressions — references, defaults, and
+// command expressions, whose minted results come from the shared evaluator
+// cache — through lookup. It returns the unresolved pieces as valueexpr
+// reports them: a missing variable's name, or a failed command with its
+// error.
+//
+// A syntax error returns an empty value with nothing missing: every field
+// that reaches here was validated at load time, so this is unreachable in
+// practice and half an expansion is worse than none.
+func expandEnv(value string, lookup func(string) (string, bool)) (string, []valueexpr.Unresolved) {
+	expanded, unresolved, err := valueexpr.Expand(value, lookup)
+	if err != nil {
+		return "", nil
+	}
+	return expanded, unresolved
+}
+
+// commandFailurePhrase words one failed command expression for a report; the
+// evaluator's error text already carries the exit status or timeout reason.
+func commandFailurePhrase(u valueexpr.Unresolved) string {
+	return "command expression failed: " + u.Err.Error()
+}
+
+// missingReason words one "no credential" or "unresolved variable" report
+// from expandEnv's unresolved pieces: a variable was unset, or a command
+// expression failed.
+func missingReason(unresolved []valueexpr.Unresolved) string {
+	parts := make([]string, 0, len(unresolved))
+	for _, u := range unresolved {
+		if u.Command != "" {
+			parts = append(parts, commandFailurePhrase(u))
+		} else {
+			parts = append(parts, u.Name+" unset")
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ScanConfigValue reports what a providers.toml value is made of: the
+// variables it references, and its literal text with those references (and any
+// command expressions) removed. A caller that must refuse a literal secret
+// standing beside a reference reads both halves. Neither the result nor the
+// error echoes the value, which may hold one.
 func ScanConfigValue(value string) (refs []string, literal string, err error) {
-	var lit strings.Builder
-	if err := scanEnvRefs(value, func(s string) { lit.WriteString(s) }, func(name string) { refs = append(refs, name) }); err != nil {
+	scan, err := valueexpr.Scan(value)
+	if err != nil {
 		return nil, "", err
 	}
-	return refs, lit.String(), nil
+	for _, ref := range scan.Refs {
+		refs = append(refs, ref.Name)
+	}
+	return refs, scan.Literal, nil
 }
 
 // CheckCredentialHeaderValue holds the secrets boundary both authoring
-// surfaces apply to a credential header before it is written (spec §11.2):
-// every whitespace-separated token is a run of $VARIABLE references, at least
-// one of them, ahead of which at most ONE literal token may stand — the auth
-// scheme, by convention, so any scheme name works, custom ones included. That
-// refuses a value with no reference at all and a key smuggled beside one,
-// whether it is glued to the reference ("Bearer sk-live-abc$X"), standing
-// behind it, or made of letters alone so that it reads as a second scheme
-// word ("Bearer supersecret $KEY") — all of which a bare "contains a $" check
-// accepts.
+// surfaces apply to a credential header before it is written (spec §11.2).
+// The value's credential material is $VARIABLE references and $(command)
+// expressions — a command is authored config, not a secret, so both surfaces
+// (the hub's forms and `evener providers add`) accept it. Everything else is
+// held to the boundary: at most ONE literal word, an HTTP auth scheme by
+// convention (any scheme name works, custom ones included), and it must stand
+// AHEAD of the credential material, separated from it by whitespace. A
+// reference's default is literal text standing in the file, so only an auth
+// scheme word may fill one — anything else is a key at rest.
+//
+// The placement rules read order, so the boundary walks the scanner's ordered
+// pieces: a literal run behind credential material (a key smuggled behind a
+// reference), a second literal word (an alphabetic key beside one, which a
+// bare "contains a $" check accepts), a non-scheme literal (a key glued to a
+// reference, "Bearer sk-live-abc$X"), a scheme word glued to the material
+// with no separating whitespace ("Bearer$X"), and a scheme word separated
+// only by a control character (which cannot travel in a header value) are
+// all refused.
 //
 // The rule is deliberately stricter than providers.toml's own grammar, which
 // takes any syntactically valid value: a key typed into a form or an argv is
 // a key that leaked, so the file may hold shapes neither surface will author.
 // No refusal echoes the value, which may hold the secret it refused.
 func CheckCredentialHeaderValue(value string) error {
-	referenced, scheme := false, false
-	for token := range strings.FieldsSeq(value) {
-		refs, literal, err := ScanConfigValue(token)
-		switch {
-		case err != nil:
-			return err
-		case len(refs) == 0 && isAuthSchemeWord(token) && !scheme && !referenced:
-			// A scheme name carries no secret; a second literal word, or one
-			// standing behind the reference, is not a scheme name.
-			scheme = true
-		case len(refs) > 0 && literal == "":
-			referenced = true
-		default:
-			return errors.New("only an auth scheme word may be literal, ahead of the reference; the value itself must be a $VARIABLE reference, never a literal secret")
+	pieces, err := valueexpr.Pieces(value)
+	if err != nil {
+		return err
+	}
+	seenMaterial, schemeWord, schemeGlued, schemeControl := false, false, false, false
+	for _, p := range pieces {
+		switch p.Kind {
+		case valueexpr.PieceLit:
+			for token := range strings.FieldsSeq(p.Lit) {
+				if seenMaterial || schemeWord || !isAuthSchemeWord(token) {
+					return errors.New("only an auth scheme word may be literal, ahead of the reference; the value itself must be a $VARIABLE reference, never a literal secret")
+				}
+				schemeWord = true
+			}
+			// The scheme word must be separated from the credential
+			// material by a space or a tab: "Bearer$TOKEN" would glue
+			// scheme and material into one malformed value, and a control
+			// character cannot travel in a header value wherever it sits —
+			// not only as the separator — so one hiding behind a space or
+			// tab is refused too, with the same refusal instead of one
+			// demanding whitespace the value already has.
+			schemeGlued, schemeControl = false, false
+			for i := range len(p.Lit) {
+				// DEL travels with the C0 controls in a header value:
+				// httpguts.isCTL rejects it too. The literal-token rules
+				// above refuse every reachable DEL first, so this scan is
+				// the depth guard that keeps the byte out even if those
+				// rules ever loosen.
+				if p.Lit[i] != ' ' && p.Lit[i] != '\t' && (p.Lit[i] < 0x20 || p.Lit[i] == 0x7f) {
+					schemeControl = true
+				}
+			}
+			if schemeWord && len(p.Lit) > 0 {
+				switch p.Lit[len(p.Lit)-1] {
+				case ' ', '\t':
+				default:
+					schemeGlued = true
+				}
+			}
+		case valueexpr.PieceRef:
+			if schemeControl {
+				return errors.New("an auth scheme word must be separated from the credential material by a space or tab, not a control character: a header value cannot carry one")
+			}
+			if schemeGlued {
+				return errors.New("an auth scheme word must be separated from the credential material by whitespace, as in \"Bearer $TOKEN\"")
+			}
+			if p.Ref.HasDefault && p.Ref.Default != "" && !isAuthSchemeWord(p.Ref.Default) {
+				return errors.New("only an auth scheme word may stand as a reference's default; the value itself must be a $VARIABLE reference, never a literal secret")
+			}
+			seenMaterial = true
+		case valueexpr.PieceCommand:
+			if schemeControl {
+				return errors.New("an auth scheme word must be separated from the credential material by a space or tab, not a control character: a header value cannot carry one")
+			}
+			if schemeGlued {
+				return errors.New("an auth scheme word must be separated from the credential material by whitespace, as in \"Bearer $TOKEN\"")
+			}
+			seenMaterial = true
 		}
 	}
-	if !referenced {
-		return errors.New("the value must reference a $VARIABLE, never a literal secret")
+	if schemeControl {
+		return errors.New("an auth scheme word must be separated from the credential material by a space or tab, not a control character: a header value cannot carry one")
+	}
+	if !seenMaterial {
+		return errors.New("the value must reference a $VARIABLE or run a $(command), never a literal secret")
 	}
 	return nil
 }
@@ -144,9 +204,9 @@ func CheckCredentialHeaderName(name string) error {
 // string the TOML grammar spells, so a key pasted where its variable's name
 // belonged loads fine — a category error, but one a real file can hold, and
 // neither authoring surface may write it nor any client receive it. The
-// refusal does not echo the name, which may be that key.
+// refusal does not echo the name: it may be that key.
 func CheckAPIKeyEnvName(name string) error {
-	if !envNameRe.MatchString(name) {
+	if !valueexpr.ValidEnvName(name) {
 		return errors.New("api_key_env names an environment variable: a letter or underscore, then only letters, digits, or underscores")
 	}
 	return nil
@@ -167,36 +227,4 @@ func isAuthSchemeWord(token string) bool {
 		}
 	}
 	return true
-}
-
-// checkEnvRefs validates the $ENV syntax of a config value at load time;
-// what names the field in the error.
-func checkEnvRefs(value, what string) error {
-	if !strings.Contains(value, "$") {
-		return nil
-	}
-	if err := scanEnvRefs(value, func(string) {}, func(string) {}); err != nil {
-		return fmt.Errorf("%s: %w", what, err)
-	}
-	return nil
-}
-
-// expandEnv substitutes $ENV references through lookup and returns the
-// expanded value plus the names that did not resolve (each substituted by
-// the empty string). Values validated by checkEnvRefs never fail here.
-func expandEnv(value string, lookup func(string) (string, bool)) (string, []string) {
-	if !strings.Contains(value, "$") {
-		return value, nil
-	}
-	var b strings.Builder
-	var missing []string
-	_ = scanEnvRefs(value, func(s string) { b.WriteString(s) }, func(name string) {
-		v, ok := lookup(name)
-		if !ok || v == "" {
-			missing = append(missing, name)
-			return
-		}
-		b.WriteString(v)
-	})
-	return b.String(), missing
 }

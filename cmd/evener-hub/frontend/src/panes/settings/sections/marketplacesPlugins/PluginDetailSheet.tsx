@@ -9,9 +9,9 @@
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
-import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chip, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
 const CLASS = {
@@ -31,9 +31,10 @@ export interface PluginDetailSheetProps {
 }
 
 export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
-  const plugins = useExtensionsStore((s) => s.plugins);
-  const marketplaces = useExtensionsStore((s) => s.marketplaces) ?? [];
-  const browseCatalogs = useExtensionsStore((s) => s.browseCatalogs);
+  const store = useExtensionsHostStore();
+  const plugins = useExtensionsHostState((s) => s.plugins);
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
+  const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
@@ -62,17 +63,17 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   // marketplace, not once per open.
   useEffect(() => {
     if (target === null) return;
-    if (!extensionsStore.getState().browseCatalogs.has(target.marketplace)) {
-      void extensionsStore.getState().browseMarketplace(target.marketplace);
+    if (!store.getState().browseCatalogs.has(target.marketplace)) {
+      void store.getState().browseMarketplace(target.marketplace);
     }
-  }, [target]);
+  }, [target, store]);
 
   async function handleToggleEnable(currentlyEnabled: boolean) {
     if (target === null) return;
     setToggleBusy(true);
     try {
-      if (currentlyEnabled) await extensionsStore.getState().disablePlugin(target.plugin, target.marketplace);
-      else await extensionsStore.getState().enablePlugin(target.plugin, target.marketplace);
+      if (currentlyEnabled) await store.getState().disablePlugin(target.plugin, target.marketplace);
+      else await store.getState().enablePlugin(target.plugin, target.marketplace);
     } catch (err) {
       toasts.push("error", `Toggle enable failed: ${errorText(err)}`);
     } finally {
@@ -84,7 +85,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     if (target === null) return;
     setAutoUpgradeBusy(true);
     try {
-      await extensionsStore.getState().setPluginAutoUpgrade(target.plugin, target.marketplace, !currentlyAutoUpgrade);
+      await store.getState().setPluginAutoUpgrade(target.plugin, target.marketplace, !currentlyAutoUpgrade);
     } catch (err) {
       toasts.push("error", `Toggle auto-upgrade failed: ${errorText(err)}`);
     } finally {
@@ -96,7 +97,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     if (target === null) return;
     setUpgradeBusy(true);
     try {
-      await extensionsStore.getState().upgradePlugin(target.plugin, target.marketplace);
+      await store.getState().upgradePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Checked ${target.plugin} for upgrades`);
     } catch (err) {
       toasts.push("error", `Upgrade failed: ${errorText(err)}`);
@@ -109,7 +110,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
     if (target === null) return;
     setRemoveBusy(true);
     try {
-      await extensionsStore.getState().removePlugin(target.plugin, target.marketplace);
+      await store.getState().removePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Removed ${target.plugin}`);
       setPendingRemove(false);
       // onClose fires via the entry-vanished effect above once the store's

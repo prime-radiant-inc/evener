@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // commandRuntime is the narrow boundary between local command preparation and
@@ -101,7 +102,7 @@ func (c *systemCommandRuntime) Configure(config commandRuntimeConfig) {
 	if config.SysProcAttr != nil {
 		c.cmd.SysProcAttr = config.SysProcAttr
 	} else {
-		c.cmd.SysProcAttr = processGroupSysProcAttr()
+		c.cmd.SysProcAttr = procgroup.SysProcAttr()
 	}
 	c.cmd.Env = config.Env
 	if config.ExecutablePath != "" {
@@ -287,9 +288,9 @@ func cmdSignalName(cmd commandRuntime) string {
 	return reporter.SignalName()
 }
 
-func (c *systemCommandRuntime) Terminate() { terminateProcessGroup(c.PID()) }
+func (c *systemCommandRuntime) Terminate() { procgroup.Terminate(c.PID()) }
 
-func (c *systemCommandRuntime) Kill() { killProcessGroup(c.PID()) }
+func (c *systemCommandRuntime) Kill() { procgroup.Kill(c.PID()) }
 
 func wrapCommandForSandbox(cmd *exec.Cmd, wrapper *sandbox.Wrapper, dir string) {
 	cmd.ExtraFiles = nil

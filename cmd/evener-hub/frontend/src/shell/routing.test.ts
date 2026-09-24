@@ -302,3 +302,20 @@ test("navigate does not carry a host out of a session route", () => {
   expect(window.location.pathname).toBe("/settings");
   expect(window.location.search).toBe("");
 });
+
+// L-2 (round 4): the carry check only looked for an ABSENT parameter, so a
+// current `?host=local` - or an empty `?host=` - was propagated onto a settings
+// target as a non-canonical URL instead of the canonical hostless local one.
+test("navigate does not carry a local host parameter", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=local");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});
+
+test("navigate does not carry an empty host parameter", () => {
+  window.history.pushState({}, "", "/settings/credentials?host=");
+  navigate("/settings/theme");
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(window.location.search).toBe("");
+});

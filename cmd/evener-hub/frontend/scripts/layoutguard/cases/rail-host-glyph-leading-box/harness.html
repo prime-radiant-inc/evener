@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>rail-host-glyph-leading-box layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* The rail's own column width at its default 280px; the glyph boxes do
+     not depend on the column width, so one fixture is enough. */
+  .railBox {
+    width: 280px;
+    box-sizing: border-box;
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces the two real glyphed rows against the REAL classes from
+     tree.module.css and RailRow.module.css, each leading with its real
+     drawn SVG (RailRow.tsx's WatchGlyph clock and HostGlyph stacked
+     units), not a stand-in box: the whole point is the glyph boxes the CSS
+     actually renders.
+
+     - The watch row: a live watch in its receiver session's fold-out
+       (WatchRow's anatomy - WatchGlyph, then the note, no dot, no menu).
+     - The host group row: the organize-by host tier's own row (HostRow's
+       anatomy - HostGlyph, then the label, trailing chevron), the shape
+       the Live section's host subheaders share.
+
+     The glyphs are the SAME class of mark - one 13px leading box drawn on
+     the rail's 16x16 icon grid - so the boxes must measure equal. -->
+<div class="railBox">
+  <div class="section">
+    <div class="tree">
+      <div role="treeitem" class="row" id="ti-watch" aria-level="1">
+        <span class="railRow" data-testid="rail-row-watch">
+          <span class="textCol">
+            <span class="titleLine">
+              <svg data-testid="rail-row-watch-glyph" class="watchGlyph" id="watch-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"></circle><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>
+              <span class="srOnly">Watch:</span>
+              <span class="label" id="watch-label" title="refresh-model-catalog nightly">refresh-model-catalog nightly</span>
+            </span>
+            <span data-testid="rail-row-watch-status" class="activity">armed</span>
+          </span>
+        </span>
+      </div>
+      <div role="treeitem" class="row" id="ti-host" aria-expanded="true" aria-level="1">
+        <span class="railRow" data-testid="rail-row-host-group">
+          <span class="textCol">
+            <span class="titleLine">
+              <svg data-testid="rail-row-host-glyph" class="hostGlyph" id="host-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2" y="2.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" stroke-width="1.5"></rect><rect x="2" y="8.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" stroke-width="1.5"></rect><path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"></path></svg>
+              <span class="label" id="host-label">devbox</span>
+              <button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button>
+            </span>
+          </span>
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const box = (id) => {
+    const r = document.getElementById(id).getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  return {
+    watchGlyph: box("watch-glyph"),
+    hostGlyph: box("host-glyph"),
+    watchLabel: box("watch-label"),
+    hostLabel: box("host-label"),
+  };
+};
+</script>
+</body>
+</html>

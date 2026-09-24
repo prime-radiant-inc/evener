@@ -403,7 +403,7 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	}
 
 	rootEnv := execenv.NewLocalExecutionEnvironment(dir)
-	if _, err := root.adoptConsumerScratch(rootEnv, root.id); err != nil {
+	if _, _, err := root.adoptConsumerScratch(rootEnv, root.id); err != nil {
 		t.Fatalf("adopt as root: %v", err)
 	}
 	if got := rootEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
@@ -412,7 +412,7 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	// A DISTINCT consumer of the same binding must resolve the original path
 	// through the borrow branch without taking a second lease.
 	childEnv := execenv.NewLocalExecutionEnvironment(dir)
-	if _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
+	if _, _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
 		t.Fatalf("adopt as child: %v", err)
 	}
 	if got := childEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {
@@ -424,7 +424,7 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	}
 	// The distinct consumer resolves the same original allocation idempotently
 	// through the lease-less borrow branch, never by duplicating ownership.
-	if _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
+	if _, _, err := root.adoptConsumerScratch(childEnv, "child-consumer"); err != nil {
 		t.Fatalf("repeat borrow adoption: %v", err)
 	}
 	if got := childEnv.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch.Dir) {

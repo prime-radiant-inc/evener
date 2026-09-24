@@ -414,6 +414,36 @@ describe("stale sidebarMode key", () => {
   });
 });
 
+// sidebarGrouping: how the rail's session tree groups - "host-project"
+// (hosts are the top groups) or "project-host" (today's shape, hosts nested
+// inside projects). The default keeps single-host projects and hubs flat,
+// but a multi-host project changes shape out of the box - its rows sit
+// behind collapsed per-host branches - because the grouping is the
+// feature, not something the control must unlock first.
+describe("sidebarGrouping", () => {
+  test("defaults to project-host with nothing persisted", () => {
+    expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
+  });
+
+  test("setSidebarGrouping persists the raw value and updates state", () => {
+    prefsStore.getState().setSidebarGrouping("host-project");
+    expect(localStorage.getItem(KEY("sidebarGrouping"))).toBe("host-project");
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+  });
+
+  test("round-trips a persisted grouping across a fresh load", () => {
+    prefsStore.getState().setSidebarGrouping("host-project");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+  });
+
+  test("an unrecognized stored value falls back to project-host", () => {
+    localStorage.setItem(KEY("sidebarGrouping"), "by-vibe");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
+  });
+});
+
 // The docked rail's dragged width. Unlike every other pref here it carries
 // real bounds, and a value outside them would render an unusable (or
 // unrecoverable) sidebar - so the clamp is asserted on BOTH the read and the

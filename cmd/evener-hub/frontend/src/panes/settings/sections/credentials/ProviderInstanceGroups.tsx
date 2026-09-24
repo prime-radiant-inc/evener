@@ -18,30 +18,26 @@ const CLASS = {
   list: requireClass(styles.list, "ProviderInstanceGroups.module.css", "list"),
 };
 
-export interface ProviderInstanceGroupsProps {
+/** The two variants, as a type rather than a comment - the same contract
+ * InstanceRow enforces for one row: a listing that is not read-only MUST carry
+ * onSelect (or its rows render as full-width buttons that do nothing), and a
+ * read-only listing has nothing to select. */
+export type ProviderInstanceGroupsProps = {
   instances: InstanceEntry[];
   availableProviders: ProviderDescriptor[];
-  /** Read-only rows: the host-scoped view of a remote host's own listing, where
-   * nothing is actionable from this browser. */
-  readOnly?: boolean;
-  /** Called with the instance name when a row is selected. Required whenever
-   * readOnly is not set. */
-  onSelect?: (name: string) => void;
   /** Remote scope only: begins a device-code sign-in ON the selected host for a
    * Codex instance (component 07d's "Sign in on host"). Absent for the
    * controller's own listing, and never offered on a provider whose sign-in
    * needs a browser the remote host does not have. */
   onHostSignIn?: (name: string) => void;
-}
+} & ({ readOnly: true } | { readOnly?: false; onSelect: (name: string) => void });
 
-export function ProviderInstanceGroups({
-  instances,
-  availableProviders,
-  readOnly = false,
-  onSelect,
-  onHostSignIn,
-}: ProviderInstanceGroupsProps) {
+export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
+  const { instances, availableProviders, onHostSignIn } = props;
   const groups = groupByProvider(instances);
+  // The read-only variant has no onSelect to call, and the type guarantees the
+  // other variant has one - so an interactive row can never render a dead button.
+  const onSelect = props.readOnly === true ? null : props.onSelect;
   return (
     <div className={CLASS.groups}>
       {groups.map((group) => (
@@ -53,7 +49,7 @@ export function ProviderInstanceGroups({
           </div>
           <ul className={CLASS.list}>
             {group.instances.map((instance) =>
-              readOnly ? (
+              onSelect === null ? (
                 <InstanceRow
                   key={instance.name}
                   instance={instance}
@@ -63,7 +59,7 @@ export function ProviderInstanceGroups({
                   }
                 />
               ) : (
-                <InstanceRow key={instance.name} instance={instance} onSelect={() => onSelect?.(instance.name)} />
+                <InstanceRow key={instance.name} instance={instance} onSelect={() => onSelect(instance.name)} />
               ),
             )}
           </ul>

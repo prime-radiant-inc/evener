@@ -408,9 +408,11 @@ also ran ordinary tests in cmd/evener-fuzzcov and cmd/evener-fuzz-harvest; all f
 coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
-explicitly set. The CI web job runs make test-web, make build-web, and
-make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
-test so frontend tests are not duplicated.
+explicitly set. The CI web check runs as two lanes on separate runners,
+web-unit (make test-web) and web-browser (make build-web and make
+test-web-browser), and the required `web` job passes only when both do; the
+deterministic Go job runs ROOT_FULL=1 WEB=0 make test so frontend tests are
+not duplicated.
 
 Three packages run as cost-balanced shards: the agent module through
 `evener dev agent-shards`, and cmd/evener-hub and cmd/evener, beside the rest
@@ -422,7 +424,11 @@ splitting it across processes is what bounds its wall time (hub: ~80s serial,
 the package's TestMain applies with `shardrun.ConfigureRunFile` and then
 unsets, so a test that re-execs its own binary as a helper keeps its explicit
 `-test.run`. `AGENT_SHARDS=0`, `HUB_SHARDS=0` and `CLI_SHARDS=0` fall back to
-one `go test`. A TestMain that dropped that call would still pass: every
+one `go test`. `HUB_SHARDS=elsewhere` and `CLI_SHARDS=elsewhere` leave that
+package out of the run entirely, because another job runs it, and
+`ROOT_REST=0` skips the root `go test` itself: the CI race lanes use them to
+run the hub on one runner and the rest of the root module on another
+(scripts/lib/gate-root-shards.sh, `RACE_ROOT_PART`). A TestMain that dropped that call would still pass: every
 shard would just run the whole package. One that made the call before
 `flag.Parse` would let any `-test.run` on the command line override the file.
 So each sharded package pins the wiring with a one-line test,
@@ -703,7 +709,8 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   real virtualization stack and drives NATIVE scroll events: the
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
-  there.
+  there, including after content grows below the reader and after the
+  scroll port itself shrinks (the pane header growing).
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
@@ -725,13 +732,13 @@ separately rather than as a sixth `scripts/<guard>/run.mjs` case:
   REAL `evener serve` daemons compiled from `cmd/evener`'s own test binary —
   the only scripted piece sits at the external LLM provider adapter. The
   browser asserts the composer's chips, drafts, queue, steering, attachments,
-  capability-loss refusal, failed-activation retry, and offline outbox
-  behavior through real DOM gestures; the Go test asserts what the daemons
-  ACTUALLY received (provider request payloads, `<skill-context>` documents,
-  durable transcripts, held-turn choreography through the fixture's control
-  IPC). The five guards above test the frontend against scripted stores; this
-  one is the only place the frontend's skill contract is tested against the
-  daemons and hub that must honor it. It needs the BUILT frontend (the hub
+  failed-activation retry, and offline outbox behavior through real DOM
+  gestures; the Go test asserts what the daemons ACTUALLY received (provider
+  request payloads, `<skill-context>` documents, durable transcripts,
+  held-turn choreography through the fixture's control IPC). The five guards
+  above test the frontend against scripted stores; this one is the only place
+  the frontend's skill contract is tested against the daemons and hub that
+  must honor it. It needs the BUILT frontend (the hub
   serves the embedded dist), so `test-web-browser.sh` builds it when missing
   rather than skipping.
 
@@ -1364,7 +1371,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
-| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, HUB_SHARDS=0, CLI_SHARDS=0, AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. | Any race report, test failure, or setup failure is nonzero. |
+| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A bless writes every package it measured and preserves the rest of the file, so a narrowed run refreshes part of the file instead of deleting the entries it did not measure. Under CHECK=1 in a CI-shaped environment a package over 1.5x its budget or any per-test ceiling breach is nonzero too; a missing or empty budget file always exits zero. |
 

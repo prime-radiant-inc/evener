@@ -452,8 +452,11 @@ Load rules, enforced with errors that name the instance and key:
 - hub rewrites go through the registry's config writer, which writes exactly
   the entries it's given — a resolved credential is never persisted, only
   what the user authored.
-- when both `auth = bearer` and `credential_headers.Authorization` are set,
-  the header wins.
+- when both `auth = bearer` and a credential header are set, the header
+  wins. The credential follows the header the instance's merged transport
+  names — `credential_headers.Authorization` for the bearer schemes, the
+  `auth_header` entry for header auth, case-insensitive — so a row that
+  overrides `auth_header` moves the credential slot with it.
 
 `type`, `api_style`, `quirks`, `[instances.*]`, and `compat` are gone — a
 file using any of them fails to load; see
@@ -462,7 +465,10 @@ file using any of them fails to load; see
 ### Credential resolution order
 
 1. the instance's own `api_key` (literal or `$VAR`)
-2. `credential_headers.Authorization` (also suppresses any bearer)
+2. the credential header the launch's transport names —
+   `credential_headers.Authorization` for the bearer schemes, the
+   `auth_header` entry for header auth, case-insensitive (it also
+   suppresses any bearer)
 3. the credentials-store file entry under the instance name
 4. environment: the instance's resolved `APIKeyEnv`, then `<NAME>_API_KEY`
    under the uppercase rule **only for instance names that are not registry

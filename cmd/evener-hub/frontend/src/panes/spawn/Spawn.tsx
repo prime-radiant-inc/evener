@@ -2243,52 +2243,14 @@ function SpawnForm({
           </div>
         )}
 
-        <div className={CLASS.cfgDir}>
-          <button
-            type="button"
-            id="spawn-cwd"
-            className={CLASS.directoryButton}
-            aria-label={`Working directory: ${cwd || "Choose a folder"}`}
-            aria-haspopup="dialog"
-            aria-expanded={directoryOpen}
-            onClick={() => setDirectoryOpen(true)}
-          >
-            <DirectoryIcon />
-            <span className={CLASS.directoryText}>
-              <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
-              <span className={CLASS.directoryPath}>{cwd || "Choose a folder"}</span>
-            </span>
-            <span>Change…</span>
-          </button>
-          {branch !== "" && (
-            <span className={CLASS.branch} data-testid="spawn-branch">
-              {branch}
-            </span>
-          )}
-        </div>
-        {directoryOpen && (
-          <DirectoryPicker
-            key={cwd}
-            value={cwd}
-            fallbackDir={pickerFallbackDir}
-            complete={complete}
-            listRecents={listRecents}
-            validatePath={validatePath}
-            createDirectory={createDirectory}
-            onClose={() => setDirectoryOpen(false)}
-            onPick={(path) => {
-              setCwd(path);
-              commitLastWorkingDir(path);
-              setDirectoryOpen(false);
-            }}
-          />
-        )}
-
         {/* Host picker (Component 06b): rendered only when the manifest lists a
             non-local source, so the common single-host form is byte-for-byte
             unchanged. Local is preselected (the draft default). An offline host
             still renders - the reader can see it exists - but its option is
-            disabled and carries the reason in its own label. */}
+            disabled and carries the reason in its own label. The row sits
+            ABOVE the working directory: the folder list, recents, and
+            validation all come from the selected machine (hostRequest), so
+            the form reads pick-the-machine first, then the folder on it. */}
         {displayRemoteHosts.length > 0 && (
           <FormRow
             label="Host"
@@ -2349,6 +2311,47 @@ function SpawnForm({
               </div>
             )}
           </FormRow>
+        )}
+
+        <div className={CLASS.cfgDir}>
+          <button
+            type="button"
+            id="spawn-cwd"
+            className={CLASS.directoryButton}
+            aria-label={`Working directory: ${cwd || "Choose a folder"}`}
+            aria-haspopup="dialog"
+            aria-expanded={directoryOpen}
+            onClick={() => setDirectoryOpen(true)}
+          >
+            <DirectoryIcon />
+            <span className={CLASS.directoryText}>
+              <strong>{cwd ? basename(cwd) || "/" : "Working directory"}</strong>
+              <span className={CLASS.directoryPath}>{cwd || "Choose a folder"}</span>
+            </span>
+            <span>Change…</span>
+          </button>
+          {branch !== "" && (
+            <span className={CLASS.branch} data-testid="spawn-branch">
+              {branch}
+            </span>
+          )}
+        </div>
+        {directoryOpen && (
+          <DirectoryPicker
+            key={cwd}
+            value={cwd}
+            fallbackDir={pickerFallbackDir}
+            complete={complete}
+            listRecents={listRecents}
+            validatePath={validatePath}
+            createDirectory={createDirectory}
+            onClose={() => setDirectoryOpen(false)}
+            onPick={(path) => {
+              setCwd(path);
+              commitLastWorkingDir(path);
+              setDirectoryOpen(false);
+            }}
+          />
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">

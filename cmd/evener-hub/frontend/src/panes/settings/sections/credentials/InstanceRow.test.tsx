@@ -2,8 +2,19 @@ import type { InstanceEntry } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
-import styles from "./InstanceRow.module.css";
+import rawStyles from "./InstanceRow.module.css";
+
+// CSS Modules import as an index signature, so any dotted access on the imported
+// binding is `string | undefined` under noUncheckedIndexedAccess: requireClass
+// makes a missing class a loud error instead of a comparison that can never
+// fail. (Deliberately no member-access example in prose: the styles contract
+// test matches an import-bound name anywhere in the file's text.)
+const CLASS = {
+  row: requireClass(rawStyles.row, "InstanceRow.module.css", "row"),
+  rowButton: requireClass(rawStyles.rowButton, "InstanceRow.module.css", "rowButton"),
+};
 
 afterEach(cleanup);
 
@@ -311,14 +322,14 @@ describe("the read-only variant", () => {
     const { container } = render(
       <InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} readOnly />,
     );
-    expect(container.querySelector("li")?.classList.contains(styles.row!)).toBe(true);
+    expect(container.querySelector("li")?.classList.contains(CLASS.row)).toBe(true);
   });
 
   test("the tappable row keeps the chrome class plus its interactive one", () => {
     render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} onSelect={() => {}} />);
     const button = screen.getByRole("button", { name: /on-host/ });
-    expect(button.classList.contains(styles.row!)).toBe(true);
-    expect(button.classList.contains(styles.rowButton!)).toBe(true);
+    expect(button.classList.contains(CLASS.row)).toBe(true);
+    expect(button.classList.contains(CLASS.rowButton)).toBe(true);
   });
 });
 

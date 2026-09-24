@@ -84,7 +84,7 @@ export function useRetainedScreenConnection(
 	routeHubId: string,
 ): RetainedScreenConnection {
 	const { activeProfile, client, state, fatal, error, retry } = useConnection();
-	const display = useConnectionDisplay(activeProfile?.id, state, fatal);
+	const display = useConnectionDisplay(activeProfile?.id, state, fatal, client);
 	const canUseConnection = useLiveReadiness(routeHubId, client, state);
 	const renderClient = useRenderClient(client, state, activeProfile?.id);
 	return {
