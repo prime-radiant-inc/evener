@@ -288,6 +288,7 @@ function wirePageFromRows(
     ]);
   }
   const data: Turn[] = [];
+  const unsupportedKinds: string[] = [];
   for (const row of rows) {
     if (row.kind === "attachments") continue;
     const identity = {
@@ -439,9 +440,12 @@ function wirePageFromRows(
       });
       continue;
     }
-    throw new UnsupportedRowShapeError(
-      `wirePageFromRows: script the wire page for a ${row.kind} row fixture`,
-    );
+    // RoboRev round 5 (panel Low): defer the unsupported-row signal
+    // until every row has validated — a malformed SUPPORTED row after an
+    // unsupported one must fail loudly, not ride the literal fallback the
+    // refusal would trigger.
+    unsupportedKinds.push(row.kind);
+    continue;
   }
   for (const source of attachmentsBySource.keys()) {
     if (!consumedSources.has(source)) {
@@ -449,6 +453,11 @@ function wirePageFromRows(
         `wirePageFromRows: an attachments row names no source row in the same fixture (${source})`,
       );
     }
+  }
+  if (unsupportedKinds.length > 0) {
+    throw new UnsupportedRowShapeError(
+      `wirePageFromRows: script the wire page for a ${unsupportedKinds[0]} row fixture`,
+    );
   }
   return { data, nextCursor: undefined };
 }
@@ -660,6 +669,29 @@ describe("makeConversation's row-fixture conversion", () => {
     });
     expect(conv.turns).toEqual([]);
     expect(conv.items.map((row) => row.id)).toEqual(["notice-1"]);
+  });
+
+  // RoboRev round 5 (panel Low): the unsupported-row refusal must not end
+  // validation. A malformed SUPPORTED row appearing AFTER an unsupported
+  // one used to ride the literal fallback the refusal triggered — its
+  // conversion never ran, so the shape failed silently. Every row
+  // validates before the fallback fires.
+  it("fails loudly when a malformed supported row follows an unsupported one", () => {
+    expect(() =>
+      makeConversation({
+        items: [
+          {
+            kind: "notice",
+            id: "notice-1",
+            origin: "system",
+            family: "warning",
+            tone: "warning",
+            text: "careful",
+          },
+          { kind: "activity", id: "act-1", label: "shell", family: "tool", state: "failed", detail: {} },
+        ],
+      }),
+    ).toThrow(/a failed activity row needs detail.error/);
   });
 });
 
