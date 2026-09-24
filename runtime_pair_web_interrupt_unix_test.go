@@ -115,7 +115,7 @@ kill() {
 		// block even after make itself is gone.
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		_ = command.Process.Kill()
-		<-run.done
+		_ = waitForChildExit(run, tripwire)
 	})
 	if err := waitForPathOrExit(heldReady, run, readinessTripwire); err != nil {
 		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
@@ -375,7 +375,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 		_ = waitReady.Close()
 		if command.ProcessState == nil {
 			_ = command.Process.Kill()
-			<-run.done
+			_ = waitForChildExit(run, 5*time.Second)
 		}
 	})
 

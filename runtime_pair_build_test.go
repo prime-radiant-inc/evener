@@ -1293,7 +1293,7 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	t.Cleanup(func() {
 		if command.ProcessState == nil {
 			_ = command.Process.Kill()
-			<-run.done
+			_ = waitForChildExit(run, 5*time.Second)
 		}
 	})
 	if err := waitForPathOrExit(readyPath, run, readinessTripwire); err != nil {
