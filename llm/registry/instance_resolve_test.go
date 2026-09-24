@@ -579,6 +579,13 @@ func TestDisabledDefaultRowFallsBackToTheProviderShape(t *testing.T) {
 	if listing.Transport.Auth != "none" {
 		t.Fatalf("listing fetch = %q; want the provider shape the fallback sends", listing.Transport.Auth)
 	}
+	endpoint, err := r.ResolveInstanceTransport("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstanceTransport(gw): %v", err)
+	}
+	if endpoint.Transport.Auth != "none" || endpoint.Protocol != "openai-chat" {
+		t.Fatalf("endpoint view = %q/%q; want the provider's none/openai-chat shape: the identity this view feeds must not name a disabled row's endpoint", endpoint.Transport.Auth, endpoint.Protocol)
+	}
 	plain, ok := r.AuthFingerprint("gw")
 	if !ok {
 		t.Fatal("no fingerprint for gw")

@@ -762,6 +762,52 @@ func TestCredentialFromCommandExpression(t *testing.T) {
 	}
 }
 
+// The fingerprint names the wire's credential material, not the config's:
+// an api_key an effective credential header overrides never reaches a
+// request, so rotating it must not rotate the identity and prune the
+// cached live rows; an authored header that expands to nothing but a
+// scheme word is not transmitted, so its value edits are inert too.
+// Effective material still rotates — the header that owns the slot, and
+// a slot's arrival or removal.
+func TestAuthFingerprintIgnoresInertCredentialMaterial(t *testing.T) {
+	mk := func(t *testing.T, apiKey, authHeader string) (string, bool) {
+		t.Helper()
+		cfg := "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"bearer\"\n" +
+			"api_key = \"" + apiKey + "\"\n"
+		if authHeader != "" {
+			cfg += "[providers.gw.credential_headers]\n" +
+				"Authorization = \"" + authHeader + "\"\n"
+		}
+		return fixtureLoad(t, nil, cfg).AuthFingerprint("gw")
+	}
+	// An overridden api_key is inert: rotating it must not move the digest.
+	plain, ok := mk(t, "sk-inert-one", "Bearer hdr-key")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	if rotated, _ := mk(t, "sk-inert-two", "Bearer hdr-key"); plain != rotated {
+		t.Fatal("fingerprint moved with an overridden api_key rotation; the wire credential is unchanged")
+	}
+	// A header whose default fills in nothing but a scheme word is not
+	// transmitted: its inert value edits must not move the digest.
+	plain, _ = mk(t, "", "${MISSING:-Bearer}")
+	if rotated, _ := mk(t, "", "${MISSING:-Basic}"); plain != rotated {
+		t.Fatal("fingerprint moved with a scheme-word header's inert value edit; the launch transmits neither")
+	}
+	// Effective material still rotates.
+	hdrOne, _ := mk(t, "", "Bearer hdr-one")
+	if hdrTwo, _ := mk(t, "", "Bearer hdr-two"); hdrOne == hdrTwo {
+		t.Fatal("fingerprint ignored an effective header's value rotation")
+	}
+	if hdrInert, _ := mk(t, "", "${MISSING:-Bearer}"); hdrOne == hdrInert {
+		t.Fatal("fingerprint ignored a slot's inert-to-effective change")
+	}
+}
+
 // An api_key or Authorization value that expands to empty (an empty
 // ${VAR:-} default) is not a present credential: it resolves as none with a
 // warning, never as a credential whose value is the empty string.
@@ -1722,6 +1768,46 @@ func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
 	r := fixtureLoad(t, nil, config)
 	if !r.LaunchMintsCredentialCommand("gw") {
 		t.Fatal("the mint predicate missed the row's auth override: the listing's full-depth row resolution executes the api_key command under the row's bearer scheme")
+	}
+}
+
+// A glob that pins a never-send scheme (auth = none, or the codex and
+// adc schemes that read no api_key) cannot make an unseen live id
+// consume the command credential: every row it shapes resolves terminal,
+// so it must not suppress the live discovery the predicate guards.
+func TestLaunchMintsIgnoresNeverSendGlobs(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"*house*\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate refused a provider whose every row — glob-shaped or unseen — stays terminal: a none-pinning glob consumes no credential")
+	}
+}
+
+// An authored credential header that supplies the transport's auth slot
+// overrides the api_key (spec §10, the credentialWithAuth precedence),
+// so the api_key's command never evaluates at any depth: the mint
+// predicate must not count it. Counting it suppresses the hub's live
+// discovery — the picker omits rows the fetch could have served — for a
+// command no request ever runs.
+func TestLaunchMintsIgnoresOverriddenAPIKey(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.credential_headers]\n" +
+		"Authorization = \"Bearer literal-key\"\n"
+	r := fixtureLoad(t, nil, config)
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate counted an overridden api_key: the authored Authorization header owns the wire slot, so no resolution ever evaluates the command")
 	}
 }
 

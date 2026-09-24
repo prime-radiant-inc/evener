@@ -397,7 +397,10 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 // this record would execute a command expression: api_key under a scheme
 // that sends it, or any credential-header entry — each goes on the wire
 // map whatever the scheme, and the auth header's expansion runs before
-// the scheme branches (spec §10.1).
+// the scheme branches (spec §10.1). An api_key an authored credential
+// header overrides never evaluates — that header owns the transport's
+// auth slot (spec §10, the credentialWithAuth precedence) — so it does
+// not count.
 func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 	for _, v := range rec.head.CredentialHeaders {
 		if hasCommandMaterial(v) {
@@ -407,68 +410,75 @@ func (r *Registry) recordMintsCommandCredential(rec *record) bool {
 	if !hasCommandMaterial(rec.head.APIKey) {
 		return false
 	}
-	switch r.listingTransport(rec).Auth {
-	case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
-		// The provider scheme never sends api_key, but a row can pin
-		// its own: the listing resolves every row at full depth through
-		// the row's merged transport, so the predicate must cover the
-		// schemes the rows can actually reach, not only the one the
-		// listing's transport carries. Every row means the full id set
-		// the listing resolves — exact catalog rows plus the cached
-		// live ids — and a row of either kind that overrides onto a
-		// scheme that sends api_key mints; rows that stay terminal do
-		// not.
-		for _, id := range modelIDs(rec, r.LiveModels(rec.name)) {
-			rowRes, err := r.resolveLayersMode(rec, Ref{Model: id}, nil, resolveTransport)
-			if err != nil {
-				continue
-			}
-			switch rowRes.Transport.Auth {
-			case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
-			default:
-				return true
-			}
-		}
-		// The ids the scan can name are the ones the registry already
-		// holds. A live listing can also return an id no layer has ever
-		// seen, and with no row or glob naming it, that id resolves
-		// through the provider's own transport — the same fallback
-		// ResolveInstance falls back to (spec §8.1). When that fallback
-		// sends api_key, the command is reachable no matter how
-		// terminal every known row is, so the fetch must be refused.
-		switch rec.head.Transport.Auth {
+	// apiKeyEvaluates reports whether a launch through transport t would
+	// evaluate the api_key's command. The scheme must send it, and the
+	// transport's auth slot must not be supplied by an authored
+	// credential header: every row is judged through the transport it
+	// would actually launch — the listing's own, each known id's merged
+	// row, and the provider head an unseen live id falls back to.
+	apiKeyEvaluates := func(t Transport) bool {
+		switch t.Auth {
 		case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
-		default:
-			return true
+			return false
 		}
-		// A glob can pin that unseen row onto a scheme the api_key
-		// travels with; an auth-bearing glob means the predicate
-		// cannot vouch for the listing's rows, so the command key
-		// counts as mintable.
-		if r.recordGlobPinsAuth(rec) {
-			return true
-		}
-		return false
+		return !r.authorizationMode(rec, t, true).present
 	}
-	return true
+	if apiKeyEvaluates(r.listingTransport(rec)) {
+		return true
+	}
+	for _, id := range modelIDs(rec, r.LiveModels(rec.name)) {
+		rowRes, err := r.resolveLayersMode(rec, Ref{Model: id}, nil, resolveTransport)
+		if err != nil {
+			continue
+		}
+		if apiKeyEvaluates(rowRes.Transport) {
+			return true
+		}
+	}
+	// The ids the scan can name are the ones the registry already
+	// holds. A live listing can also return an id no layer has ever
+	// seen, and with no row or glob naming it, that id resolves
+	// through the provider's own transport — the same fallback
+	// ResolveInstance falls back to (spec §8.1).
+	if apiKeyEvaluates(rec.head.Transport) {
+		return true
+	}
+	// A glob can pin that unseen row onto a scheme the api_key travels
+	// with; an auth-bearing glob means the predicate cannot vouch for
+	// the listing's rows, so the command key counts as mintable.
+	if r.recordGlobPinsAuth(rec) {
+		return true
+	}
+	return false
 }
 
 // recordGlobPinsAuth reports whether any glob this record can replay —
-// top-level or provider-scoped — sets a transport auth: the ids a scan
-// can name are the ones the registry already holds, but a live listing
-// may return an id no layer has ever seen, and that row resolves
-// through the globs too.
+// top-level or provider-scoped — pins a transport auth the api_key
+// travels with: the ids a scan can name are the ones the registry
+// already holds, but a live listing may return an id no layer has ever
+// seen, and that row resolves through the globs too. Globs pinning a
+// never-send scheme (none, and the codex and adc schemes that read no
+// api_key) shape rows that stay terminal, so they cannot make a row
+// consume the credential and do not count.
 func (r *Registry) recordGlobPinsAuth(rec *record) bool {
 	for _, rows := range r.topGlobs {
 		for pattern, m := range rows {
 			if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
-				return true
+				switch m.Transport.Auth {
+				case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+				default:
+					return true
+				}
 			}
 		}
 	}
 	for pattern, m := range rec.head.Models {
 		if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
-			return true
+			switch m.Transport.Auth {
+			case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+			default:
+				return true
+			}
 		}
 	}
 	return false
@@ -539,18 +549,13 @@ func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
 		transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
 		return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
 	}
-	res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport)
-	if err == nil {
+	if res, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
 		return res, nil
 	}
 	transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
 }
 
-// ResolveInstanceModelFacts resolves one model reference at facts depth:
-// every advertised fact and the transport, with no credential stage —
-// a hub-side surface that must not mint reads its descriptors here (spec
-// §10.1: the child alone runs credential commands).
 // ResolveInstanceModelFacts resolves one model row's advertised facts —
 // every fact, no credential materialized (spec §10.1) — the depth the
 // hub's read-only views use. An empty instance names the default

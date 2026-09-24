@@ -578,14 +578,42 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 				_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
 			}
 		}
+	case AuthNone:
+		// The none scheme derives no credential from any slot, so no
+		// winner material exists. The credential-header loop below
+		// still covers the headers the launch transmits whatever the
+		// scheme.
 	default:
+		// The winner is judged with the same precedence
+		// credentialWithAuth applies (spec §10): an authored header
+		// supplying the transport's auth slot owns it — the api_key it
+		// overrides never reaches a request — and a slot that expands to
+		// nothing is terminal without a value. Only effective,
+		// transmitted material hashes; inert material must not rotate
+		// the identity and prune the cached live rows. An authored but
+		// inert slot still marks its presence: adding or removing it
+		// changes which layer is terminal, so it rotates the digest —
+		// its value edits do not.
+		auth := r.authorizationMode(rec, t, true)
 		switch {
+		case auth.present:
+			_, _ = fmt.Fprintf(sum, "%s\x01", auth.key)
+			raw := h.CredentialHeaders[auth.key]
+			if !auth.commandBorne {
+				if v, missing := expandEnv(raw, r.env); len(missing) == 0 && (v == "" || auth.noMaterial) {
+					_, _ = fmt.Fprintf(sum, "inert\x01")
+					break
+				}
+			}
+			hashSlot(raw)
 		case h.APIKey != "":
+			if !hasCommandMaterial(h.APIKey) {
+				if v, missing := expandEnv(h.APIKey, r.env); len(missing) == 0 && (v == "" || r.schemeWordDefault(h.APIKey)) {
+					_, _ = fmt.Fprintf(sum, "api-key-inert\x01")
+					break
+				}
+			}
 			hashSlot(h.APIKey)
-		case authHeaderKey(h.CredentialHeaders, authHeaderName(t)) != "":
-			key := authHeaderKey(h.CredentialHeaders, authHeaderName(t))
-			_, _ = fmt.Fprintf(sum, "%s\x01", key)
-			hashSlot(h.CredentialHeaders[key])
 		default:
 			// The store is terminal only on a hit, mirroring the
 			// resolution order: the hub always wires one, so a miss that
@@ -608,9 +636,23 @@ func (r *Registry) AuthFingerprint(instance string) (string, bool) {
 			}
 		}
 	}
+	// The transmitted credential headers hash under the same drop rules
+	// expandCredentialHeaders applies (the credentialHeaderNames
+	// judgment): a raw-empty entry is the authored removal, and an entry
+	// whose expansion is empty, missing, or nothing but a scheme word
+	// never reaches the wire, so none of them rotate the identity.
 	for _, k := range slices.Sorted(maps.Keys(h.CredentialHeaders)) {
+		v := h.CredentialHeaders[k]
+		if v == "" {
+			continue
+		}
+		if !hasCommandMaterial(v) {
+			if e, missing := expandEnv(v, r.env); len(missing) != 0 || e == "" || r.schemeWordDefault(v) {
+				continue
+			}
+		}
 		_, _ = fmt.Fprintf(sum, "%s\x01", k)
-		hashSlot(h.CredentialHeaders[k])
+		hashSlot(v)
 	}
 	// The provider-level headers are the fallback's request shape: the
 	// fetch sends them when there is no default row to resolve through
