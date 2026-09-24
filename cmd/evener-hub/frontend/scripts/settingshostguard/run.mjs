@@ -76,8 +76,8 @@ const CHILD_EXIT_GRACE_MS = 2_000;
 const VIEWPORT = { width: 1440, height: 1000 };
 
 // The settings panes the harness visits, in tour order. "project" is not a
-// settings-nav row (it needs ?cwd=) but is a valid dispatch target; it is
-// visited only when the fixture supplies a cwd.
+// settings-nav row (it needs ?cwd=) but is a valid dispatch target: it is
+// visited through the route, with the working directory the fixture names.
 const PANES = [
   "credentials",
   "agents-md",
@@ -635,15 +635,33 @@ async function runPane(driver, section) {
       return record;
     }
     case "project": {
-      const cwd = expect.projectCwd ?? null;
-      await driver.openPane(section, { cwd });
-      const text = await driver.settingsText();
+      // This pane used to assert structure alone - any non-empty region - because
+      // its body needs a working directory to say anything at all. The fixture
+      // now supplies one that exists ONLY on the selected host, holding a
+      // project-layer agent value seeded there, so the pane is held to the same
+      // provenance as the seeded-value panes: render THAT host's value, and do
+      // not fall back to this hub, which cannot even resolve the path.
+      const c = expect.project;
       check(
-        typeof text === "string" && text.length > 0,
-        "project: the pane rendered no content with a remote host selected",
+        c !== undefined &&
+          typeof c.cwd === "string" &&
+          c.cwd.length > 0 &&
+          typeof c.hostAgent === "string" &&
+          c.hostAgent.length > 0,
+        "project: the fixture must provide {project: {cwd, hostAgent}} - a working directory that exists only on the selected host, and the value seeded in its project layer - so this pane can assert host provenance instead of structure",
       );
-      record.probe = `Host picker value + pane body at /settings/project?cwd=${cwd ?? "<none>"}`;
-      record.evidence = { cwd, textExcerpt: text.slice(0, 400) };
+      await driver.openPane(section, { cwd: c.cwd });
+      const value = await driver.waitPage(
+        `(() => { const el = ${labeledInputExpr("Agent")}; return el === null ? null : (el.value.includes(${JSON.stringify(c.hostAgent)}) ? el.value : null); })()`,
+        { label: `the project pane to render the value seeded only on the selected host (${JSON.stringify(c.hostAgent)})` },
+      );
+      const text = await driver.settingsTextWithValues();
+      check(
+        !text.includes("Failed to load project launch settings"),
+        `project: the pane could not load a working directory that exists only on the selected host - which is what reading this hub instead of that host looks like; text was:\n${text}`,
+      );
+      record.probe = `input labeled "Agent" at /settings/project?cwd=${c.cwd} (a path that exists only on the selected host)`;
+      record.evidence = { cwd: c.cwd, agent: value };
       record.ok = true;
       return record;
     }

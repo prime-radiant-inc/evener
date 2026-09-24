@@ -104,6 +104,20 @@ const (
 
 	hostSettingsUIHostMCPConfig       = "/host/mcp-7c1.json"
 	hostSettingsUIControllerMCPConfig = "/controller/mcp-9d2.json"
+
+	// The project pane's seed. The working directory is created only on the HOST,
+	// under its per-run directory, and holds a project-layer launch file naming an
+	// agent unlike any other value in this check. This hub cannot resolve that
+	// path at all, so a pane that renders the sentinel can only have read the
+	// SELECTED host - the same provenance the seeded-value panes get, which the
+	// project pane could not have while it asserted structure alone.
+	//
+	// The project LAYER is not trust-gated (internal/launchconfig/resolver.go
+	// loads it unconditionally), unlike the in-repo layer, which needs a trust
+	// record in the host's own project metadata - the reason `inrepo` still
+	// asserts structure.
+	hostSettingsUIProjectAgent = "host-project-agent-5b2"
+	hostSettingsUIProjectDir   = "project-cwd"
 )
 
 // hostSettingsUIGate returns the t.Skip reason when the live settings-UI check
@@ -207,6 +221,13 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	host.mustRun("chmod 600 " + shellquote.RemoteWord(credsPath))
 	host.writeFile(hostAgentsDocPath, []byte(hostSettingsUIHostAgentsDoc))
 	host.writeFile(cfgRoot+"/launch.toml", []byte(hostSettingsUIHostLaunchTOML))
+	// The project pane's host-only working directory: it exists on the host and
+	// nowhere else, and its project-layer launch file names an agent no other
+	// value in this check uses.
+	projectCwd := filepath.Join(hostDir, hostSettingsUIProjectDir)
+	host.mustRun("mkdir -p " + shellquote.RemoteWord(filepath.Join(projectCwd, ".evener")))
+	host.writeFile(filepath.Join(projectCwd, ".evener", "launch.local.toml"),
+		[]byte("agent = \""+hostSettingsUIProjectAgent+"\"\n"))
 	host.writeFile(configPath, []byte(fmt.Sprintf("addr = %q\nhub_state_root = %q\nplugin_auto_upgrade = false\n", hostSettingsUIAddr, hostDir+"/state")))
 
 	// The two files this check must leave untouched: the host's REAL credential
@@ -358,7 +379,7 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	})
 
 	expectPath := filepath.Join(artifactRoot, "expect.json")
-	if err := os.WriteFile(expectPath, settingsUIExpectJSON(), 0o600); err != nil {
+	if err := os.WriteFile(expectPath, settingsUIExpectJSON(projectCwd), 0o600); err != nil {
 		t.Fatalf("write the runner fixture %s: %v", expectPath, err)
 	}
 
@@ -494,7 +515,9 @@ func assertHubServesBuiltSPA(t *testing.T, addr, token string) {
 
 // settingsUIExpectJSON is the fixture the runner asserts against: the host's
 // seeded values it must find, and the controller's values it must never see.
-func settingsUIExpectJSON() []byte {
+// projectCwd is the working directory the host (and only the host) holds, with
+// hostSettingsUIProjectAgent in its project layer.
+func settingsUIExpectJSON(projectCwd string) []byte {
 	doc := map[string]any{
 		"credentials": map[string]string{"hostText": hostSettingsUIHostInstance, "controllerText": hostSettingsUIControllerInstance},
 		"agentsMd": map[string]string{
@@ -506,6 +529,7 @@ func settingsUIExpectJSON() []byte {
 		"skillsDir":   map[string]string{"host": hostSettingsUIHostSkillsDir, "controller": hostSettingsUIControllerSkillsDir},
 		"pluginsDir":  map[string]string{"host": hostSettingsUIHostPluginsDir, "controller": hostSettingsUIControllerPluginsDir},
 		"mcpConfig":   map[string]string{"host": hostSettingsUIHostMCPConfig, "controller": hostSettingsUIControllerMCPConfig},
+		"project":     map[string]string{"cwd": projectCwd, "hostAgent": hostSettingsUIProjectAgent},
 	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
