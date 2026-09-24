@@ -169,11 +169,17 @@ func deletionFenceErrorForGroup(cfg hubcore.WebConfig, aliases []string) error {
 	return nil
 }
 
-// deletionTargetState reads the retained deletion state for one stable target.
-// It is a package-level seam so cancellation-ordering tests can publish a
-// deletion between two checks made by a single request; production reads the
-// durable store directly.
-var deletionTargetState = func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
+// deletionTargetLookup reads the retained deletion state for one stable target.
+type deletionTargetLookup func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool)
+
+// deletionTargetState is the deletion-state lookup requests use. It is a
+// package-level seam so cancellation-ordering tests can publish a deletion
+// between two checks made by a single request; production reads the durable
+// store directly. Work that runs in the background, past the request that
+// started it, captures the lookup once when it is built instead of reading
+// this variable live (see newHubRelayFunctions): a test restoring the seam must
+// not race with, or be answered by, a relay some earlier test left running.
+var deletionTargetState deletionTargetLookup = func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
 	return store.TargetState(ref, threadID)
 }
 
@@ -183,10 +189,15 @@ var deletionTargetState = func(store *hubcore.DeletionStore, ref, threadID strin
 // the message belongs to the ref the client asked about — naming the resolved
 // id would report an identity the request never mentioned.
 func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, clientMutationID string) error {
+	return deletionTargetState.fenceError(cfg, ref, threadID, reportRef, clientMutationID)
+}
+
+// fenceError is deletionFenceErrorNaming answered by this lookup.
+func (lookup deletionTargetLookup) fenceError(cfg hubcore.WebConfig, ref, threadID, reportRef, clientMutationID string) error {
 	if cfg.DeletionStore == nil {
 		return nil
 	}
-	if _, deleted := deletionTargetState(cfg.DeletionStore, ref, threadID); !deleted {
+	if _, deleted := lookup(cfg.DeletionStore, ref, threadID); !deleted {
 		return nil
 	}
 	if reportRef == "" {
