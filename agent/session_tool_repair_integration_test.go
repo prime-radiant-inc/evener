@@ -9,7 +9,11 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -360,5 +364,167 @@ func TestSession_RepairedThenDeniedCallStillEmitsRepairedEvent(t *testing.T) {
 	}
 	if len(repaired) == 0 || repaired[0].ToolName != "widget" {
 		t.Fatalf("EventToolCallRepaired not emitted for repaired-then-denied call: %+v", repaired)
+	}
+}
+
+// TestExecTool_RejectedCommunicateLiveVsReload drives a REAL ProcessInput session
+// through a REJECTED communicate call (malformed args that RepairJSON cannot heal →
+// PrevalOnly rejection) and pins BOTH sides of the contract:
+//
+//	(a) LIVE: execTool rejects the call before dispatch (PrevalErr), so the
+//	    communicate Exec function never runs and the session emits NO
+//	    EventCommunicate for the rejected call (live suppression). A second,
+//	    valid communicate call in the same turn DOES emit EventCommunicate,
+//	    proving the suppression is call-specific, not a blanket block.
+//
+//	(b) RELOAD: the persisted transcript, projected through ProjectTurn (the
+//	    hub's reload/projection path), renders the rejected communicate as a
+//	    commandExecution tool/error item — NOT an agentMessage — with the raw
+//	    bytes surfaced in ArgumentsJSON per the IsError && PrevalOnly gate at
+//	    apptranscript.go:670. This fails if the projection regresses to the old
+//	    agentMessage behavior or the gate widens back to IsError alone.
+//
+// No fabricated live side, no mocks beyond the scripted in-process adapter, no
+// synthetic ProjectTurn construction: the transcript is written by the real
+// session and read back from disk.
+func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
+	// Trailing comma is unrepairable by RepairJSON (it deliberately does not fix
+	// trailing commas), so prepareToolCall sets PrevalErr → execTool returns a
+	// PrevalOnly error result without calling the communicate Exec function.
+	const malformedArgs = `{"message":"hi","end_turn":true,}`
+	rejectedCall := llm.ToolCallData{
+		ID:        "call_rej_comm",
+		Name:      "communicate",
+		Arguments: json.RawMessage(malformedArgs),
+		Type:      "function",
+	}
+	// Sanity: confirm RepairJSON cannot heal these bytes, so the test exercises
+	// a genuine PrevalOnly rejection (not a healed call).
+	if repaired, changes := repair.RepairJSON([]byte(malformedArgs)); len(changes) != 0 || json.Valid(repaired) {
+		t.Fatalf("test seed %q must be unrepairable (RepairJSON changes=%d valid=%v)", malformedArgs, len(changes), json.Valid(repaired))
+	}
+
+	// Step 0: the model emits the malformed communicate call (rejected).
+	// Step 1: the model emits a valid communicate (end_turn=true) so the turn
+	// ends cleanly and the live side emits exactly one EventCommunicate — for
+	// the recovered call, NOT the rejected one.
+	recoveredCall := communicateCall("call_ok_comm", "recovered")
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(rejectedCall) },
+			func(req llm.Request) llm.Response { return toolCallResponse(recoveredCall) },
+		},
+	}
+	sess := newSession(t, withAdapter(f), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		StateDir:         t.TempDir(), // enables transcript persistence for reload
+	}))
+
+	// Drain all events the session emits; filter for EventCommunicate.
+	var commEvents []events.CommunicateData
+	var allEvents []events.SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			allEvents = append(allEvents, ev)
+			if ev.Kind == events.EventCommunicate {
+				if d, ok := ev.Data.(events.CommunicateData); ok {
+					commEvents = append(commEvents, d)
+				}
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "call communicate", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-done
+
+	// (a) LIVE: no EventCommunicate for the rejected call. The recovered call
+	// (end_turn=true) DID deliver, so exactly one EventCommunicate is expected.
+	for _, d := range commEvents {
+		if d.CallID == "call_rej_comm" {
+			t.Fatalf("live emitted EventCommunicate for rejected call (must be suppressed): %+v", d)
+		}
+	}
+	if len(commEvents) != 1 {
+		t.Fatalf("want exactly 1 EventCommunicate (for the recovered call), got %d: %+v", len(commEvents), commEvents)
+	}
+	if commEvents[0].CallID != "call_ok_comm" {
+		t.Fatalf("EventCommunicate CallID = %q, want call_ok_comm (the recovered call)", commEvents[0].CallID)
+	}
+
+	// (b) RELOAD: read the persisted transcript from disk and project it through
+	// ProjectTurn — the hub's reload/projection path. The rejected communicate
+	// must render as a commandExecution tool/error item, NOT an agentMessage.
+	transcriptPath := sess.TranscriptPath()
+	if transcriptPath == "" {
+		t.Fatal("session has no transcript path; StateDir was not set")
+	}
+	// The registry must be shared across all turns: the assistant turn seeds
+	// CommRawArgs (the raw malformed bytes) and the tool-results turn reads
+	// them to render the rejected communicate. A per-turn registry would lose
+	// that cross-turn linkage.
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+
+	// Find the rejected communicate item across all projected turns. It must
+	// be a commandExecution (tool/error), not an agentMessage.
+	var rejItem *appwire.ThreadItem
+	for i := range turns {
+		for j := range turns[i].Items {
+			item := &turns[i].Items[j]
+			if item.CallID == "call_rej_comm" {
+				rejItem = item
+			}
+		}
+	}
+	if rejItem == nil {
+		t.Fatalf("rejected communicate (call_rej_comm) not found in projected turns; turns=%+v", turns)
+	}
+	if rejItem.Type != "commandExecution" {
+		t.Fatalf("rejected communicate Type = %q, want commandExecution (not agentMessage) — the IsError && PrevalOnly gate must render it as a tool/error item", rejItem.Type)
+	}
+	if rejItem.Status != appwire.TurnStatusFailed {
+		t.Errorf("rejected communicate Status = %q, want %q", rejItem.Status, appwire.TurnStatusFailed)
+	}
+	if !rejItem.PrevalOnly {
+		t.Error("rejected communicate PrevalOnly = false, want true (the gate is IsError && PrevalOnly)")
+	}
+	// The raw malformed bytes must surface in ArgumentsJSON — that is the
+	// "raw bytes surfaced per the IsError && PrevalOnly gate" contract.
+	if rejItem.ArgumentsJSON != malformedArgs {
+		t.Errorf("rejected communicate ArgumentsJSON = %q, want raw malformed bytes %q", rejItem.ArgumentsJSON, malformedArgs)
+	}
+	if rejItem.ToolName != "communicate" {
+		t.Errorf("rejected communicate ToolName = %q, want communicate", rejItem.ToolName)
+	}
+
+	// The recovered (healed) communicate must render as an agentMessage — the
+	// same message live delivered — proving the gate distinguishes rejected
+	// from healed, not a blanket tool-error render. A healed communicate
+	// renders as agentMessage (not commandExecution), so it carries Text, not
+	// CallID — match on the delivered message text instead.
+	var recoveredAgentMsg bool
+	for i := range turns {
+		for j := range turns[i].Items {
+			item := &turns[i].Items[j]
+			if item.Type == "agentMessage" && item.Text == "recovered" {
+				recoveredAgentMsg = true
+			}
+		}
+	}
+	if !recoveredAgentMsg {
+		t.Errorf("recovered communicate did not render as agentMessage{Text: %q}; the healed call should deliver the same message live delivered", "recovered")
 	}
 }
