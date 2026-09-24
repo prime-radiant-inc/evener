@@ -48,6 +48,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -93,6 +94,9 @@ func main() {
 	flag.IntVar(&o.probes, "probes", 0, "with --serve, after the turns finish probe the idle daemon this many times the way the hub does (fresh connection, initialize, thread/list with subagents, thread/read) and report CPU and bytes per probe")
 	flag.BoolVar(&o.serve, "serve", false, "run evener serve and drive it over AppWire with a subscribed client")
 	flag.Parse()
+	if runtime.GOOS != "linux" {
+		log.Fatalf("turncpu: reads CPU time from /proc, so it runs only on Linux (not %s)", runtime.GOOS)
+	}
 	if err := o.validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "turncpu: %v\n", err)
 		flag.Usage()
@@ -111,8 +115,8 @@ func (o options) validate() error {
 		return errors.New("--turns and --rounds must be at least 1")
 	case o.turns > 1 && !o.serve:
 		return errors.New("more than one turn needs --serve")
-	case o.payloadKB < 0 || o.streamBytes < 0 || o.delegates < 0 || o.childRounds < 0:
-		return errors.New("--payload-kb, --stream-bytes, --delegates and --child-rounds must not be negative")
+	case o.payloadKB < 0 || o.streamBytes < 0 || o.delegates < 0 || o.childRounds < 0 || o.window < 0 || o.probes < 0:
+		return errors.New("--payload-kb, --stream-bytes, --delegates, --child-rounds, --context-window and --probes must not be negative")
 	case o.delegates > o.rounds:
 		// Delegates are spawned one per round of the first turn, and the last
 		// turn runs until every one has reported: with more delegates than
@@ -403,10 +407,13 @@ func run(o options) error {
 	if err != nil {
 		return err
 	}
+	// Held across Start so a request the child makes before its pid is
+	// recorded waits for it instead of being measured against pid 0.
+	prov.mu.Lock()
 	if err := cmd.Start(); err != nil {
+		prov.mu.Unlock()
 		return err
 	}
-	prov.mu.Lock()
 	prov.pid = cmd.Process.Pid
 	prov.mu.Unlock()
 	addrCh := make(chan string, 1)
@@ -469,8 +476,9 @@ func run(o options) error {
 
 // childEnv is inherited with every EVENER_ setting dropped (a developer's
 // providers.toml path, model or state dir would point the run away from the
-// scripted provider and --out), and HOME, XDG dirs and temp bases moved under
-// --out.
+// scripted provider and --out), HOME, XDG dirs and temp bases moved under
+// --out, and the registry kept offline so no models.dev refresh adds network
+// work to the measurement.
 func childEnv(inherited []string, home, configDir, tmpBase string) []string {
 	env := slices.DeleteFunc(slices.Clone(inherited), func(kv string) bool {
 		return strings.HasPrefix(kv, "EVENER_")
@@ -482,6 +490,7 @@ func childEnv(inherited []string, home, configDir, tmpBase string) []string {
 		"XDG_CACHE_HOME="+filepath.Join(home, "cache"),
 		"TMPDIR="+tmpBase,
 		envvars.EVENERHostTempBases.Assignment(tmpBase),
+		envvars.EVENEROffline.Assignment("1"),
 	)
 }
 

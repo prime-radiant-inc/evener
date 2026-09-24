@@ -143,6 +143,8 @@ func TestOptionsValidate(t *testing.T) {
 		"negative stream bytes":      func(o *options) { o.streamBytes = -1 },
 		"negative delegates":         func(o *options) { o.delegates = -1 },
 		"negative child rounds":      func(o *options) { o.childRounds = -1 },
+		"negative context window":    func(o *options) { o.window = -1 },
+		"negative probes":            func(o *options) { o.probes = -1 },
 		"more delegates than rounds": func(o *options) { o.delegates = 6 },
 	} {
 		o := valid
@@ -169,7 +171,7 @@ func TestChildEnvIsolatesEvenerSettings(t *testing.T) {
 			t.Errorf("child env carries the inherited %q", kv)
 		}
 	}
-	for _, want := range []string{"PATH=/usr/bin", "HOME=/out/home", "XDG_CONFIG_HOME=/out/home/config", "TMPDIR=/out/tmp", envvars.EVENERHostTempBases.Assignment("/out/tmp")} {
+	for _, want := range []string{"PATH=/usr/bin", "HOME=/out/home", "XDG_CONFIG_HOME=/out/home/config", "TMPDIR=/out/tmp", envvars.EVENERHostTempBases.Assignment("/out/tmp"), envvars.EVENEROffline.Assignment("1")} {
 		if !slices.Contains(env, want) {
 			t.Errorf("child env lacks %q: %v", want, env)
 		}
