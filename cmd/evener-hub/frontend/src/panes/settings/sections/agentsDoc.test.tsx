@@ -501,3 +501,43 @@ test("a host switch shows the new host's cached document, never the previous hos
   // The new host's document IS the baseline, so there is nothing to save.
   expect(saveButton().disabled).toBe(true);
 });
+
+// The sharper half of the same race, pinned deterministically (rerender is
+// act-wrapped, so the commit order is the real one): the new host's cached
+// document happens to equal what this hub's draft holds. The stale sync then
+// adopts THAT as the baseline while the reset empties the draft, arming Save
+// over an EMPTY body - which would write this hub's file-as-empty to the host
+// just switched to. Asserted before the value on purpose: a value assertion
+// would fail first and hide the hazard.
+test("a host switch whose document equals the old draft never arms Save over an empty body", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    expect(forwarded.host).toBe("beta");
+    if (forwarded.method === "evener/settings/agentsDoc/get") return BETA_DOC as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+  await agentsDocStoreForHost("beta").getState().fetch();
+
+  const { rerender } = render(
+    <>
+      <Toast />
+      <AgentsDocSection sectionId="agents-md" host="local" />
+    </>,
+  );
+  await waitFor(() => expect(editor().value).toBe("# hi\n"));
+  // The draft equals the document beta's store already holds.
+  fireEvent.change(editor(), { target: { value: "# beta\n" } });
+  expect(editor().value).toBe("# beta\n");
+
+  rerender(
+    <>
+      <Toast />
+      <AgentsDocSection sectionId="agents-md" host="beta" />
+    </>,
+  );
+
+  await waitFor(() => expect(saveButton().disabled).toBe(true));
+  expect(editor().value).toBe("# beta\n");
+  expect(screen.queryByText(/changed on disk/)).toBeNull();
+});
