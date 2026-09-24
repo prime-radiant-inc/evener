@@ -221,6 +221,19 @@ func symlinkErrorDeep(path, root string) error {
 // root and expose transcripts from elsewhere, so the agent never follows
 // them. The doctor's symlink policy is a separate concern.
 func enumerateBuckets(stateHome string) ([]string, error) {
+	// Validate the glob pattern for well-formedness BEFORE the prefix
+	// not-exists shortcut below. A stateHome containing unmatched glob
+	// metacharacters (e.g. an unterminated "[" character class) makes
+	// filepath.Glob return ErrBadPattern. Without this check the prefix
+	// Lstat would treat the malformed root as a plain not-exists and return
+	// (nil, nil), silently accepting a root that previously surfaced the
+	// Glob error. filepath.Match uses the same pattern syntax as Glob, so
+	// it detects the same ErrBadPattern without touching the filesystem
+	// (it cannot follow a symlinked prefix the way Glob would).
+	pattern := filepath.Join(stateHome, "evener", "projects", "*")
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return nil, fmt.Errorf("glob project buckets: %w", err)
+	}
 	// Validate the fixed layout prefix BEFORE globbing: filepath.Glob
 	// follows symlinked path components, so a symlinked evener/ or
 	// evener/projects/ ancestor (a plausible state-dir relocation) would
@@ -241,7 +254,6 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 			return nil, nil // symlinked prefix → refuse to enumerate
 		}
 	}
-	pattern := filepath.Join(stateHome, "evener", "projects", "*")
 	matches, err := transcriptBucketGlob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,6 +156,22 @@ func TestEnumerateBuckets_GlobError(t *testing.T) {
 	_, err := enumerateBuckets(dir)
 	if err == nil {
 		t.Fatal("expected error for glob failure")
+	}
+}
+
+// TestEnumerateBuckets_RejectsMalformedGlobRoot pins the fuzz oracle's
+// contract: a stateHome whose path contains unmatched glob metacharacters
+// (e.g. an unterminated "[" character class) must be REJECTED with the same
+// ErrBadPattern filepath.Glob would surface, not silently accepted as
+// "no buckets" via the prefix not-exists shortcut.
+func TestEnumerateBuckets_RejectsMalformedGlobRoot(t *testing.T) {
+	t.Parallel()
+	_, err := enumerateBuckets("[")
+	if err == nil {
+		t.Fatal("enumerateBuckets accepted a malformed glob root")
+	}
+	if !errors.Is(err, filepath.ErrBadPattern) {
+		t.Fatalf("enumerateBuckets(\"[\") error = %v, want filepath.ErrBadPattern", err)
 	}
 }
 
