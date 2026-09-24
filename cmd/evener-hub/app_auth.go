@@ -18,7 +18,6 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/valueexpr"
-	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -748,6 +747,21 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 	return out, nil
 }
 
+// storedCommandExpressionError is the refusal every stored-key surface gives
+// a $(command) expression value: the store never expands one, so a command
+// stored as a key would be sent as the literal text and fail at the server
+// with no local hint. It points at the field that authors expressions
+// instead. Only a well-formed command expression refuses: a literal key
+// whose odd $ bytes merely look like a mistyped expression is text the
+// store may hold, and refusing it would reject a legitimate secret with a
+// message about expressions.
+func storedCommandExpressionError(value string) error {
+	if scan, _ := valueexpr.Scan(value); len(scan.Commands) > 0 {
+		return appwire.InvalidParams("a stored key is a literal secret and is never expanded: put a $(command) expression on the instance's credential header instead, as in Authorization=Bearer $(get-gateway-token)")
+	}
+	return nil
+}
+
 func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 	if strings.TrimSpace(params.Value) == "" {
@@ -755,13 +769,9 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}
 	// A stored key is a literal secret the transports send verbatim: the store
 	// never expands $(command) expressions, so one stored here would be sent
-	// as the literal text and fail at the server with no local hint. Point at
-	// the field that authors expressions instead. Only a well-formed command
-	// expression refuses: a literal key whose odd $ bytes merely look like a
-	// mistyped expression is text the store may hold, and refusing it would
-	// reject a legitimate secret with a message about expressions.
-	if scan, _ := valueexpr.Scan(params.Value); len(scan.Commands) > 0 {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams("a stored key is a literal secret and is never expanded: put a $(command) expression on the instance's credential header instead, as in Authorization=Bearer $(get-gateway-token)")
+	// as the literal text and fail at the server with no local hint.
+	if err := storedCommandExpressionError(params.Value); err != nil {
+		return appwire.AuthStatusResponse{}, err
 	}
 	// The fingerprint key is resolved once, before the credential lock is taken:
 	// resolving it can repair the key file (an inter-process lock and a write),
@@ -842,13 +852,15 @@ func skipConditionalSet(resp *appwire.ApiKeyConditionalSetResponse, reason strin
 //     changed underneath the client is never clobbered.
 //   - A scheme whose credential a file-layer key must not shadow — Codex
 //     OAuth, gcp-adc, auth-none — or a credential that now resolves from
-//     providers.toml (api_key/credential_headers), the environment, or an
-//     authored header the instance's own scheme would otherwise derive —
-//     comes back as a successful typed "skipped" with a reason, matching the
+//     providers.toml (api_key/credential_headers), the environment — comes
+//     back as a successful typed "skipped" with a reason, matching the
 //     design's classification table, so the push report shows a skip, not an
 //     error. A non-key-capable scheme is classified before the ExpectedSource
 //     fence, which guards a layer such a scheme can never write (see the
-//     ordering note in the body).
+//     ordering note in the body). An authored credential header that supplies
+//     the instance's auth-header slot is itself the instance's credential —
+//     the registry reads that slot case-insensitively and classifies it
+//     "credential_headers" — so the providers.toml case covers it.
 //   - A non-empty ExpectedSource that no longer equals the instance's resolved
 //     source is refused with a typed Conflict, for the schemes and sources the
 //     write could actually land in.
@@ -860,6 +872,13 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 	name := normalizeAuthProvider(params.Provider)
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.ApiKeyConditionalSetResponse{}, appwire.InvalidParams("value is required")
+	}
+	// The same stored-key contract as ApiKeySet, before any fence or
+	// classification: a $(command) expression stored as the key would be
+	// sent as the literal text, and reporting it added or updated would
+	// describe a credential that fails at the first request.
+	if err := storedCommandExpressionError(params.Value); err != nil {
+		return appwire.ApiKeyConditionalSetResponse{}, err
 	}
 	resp := appwire.ApiKeyConditionalSetResponse{}
 	// The revision fence is keyed with the same hub-held key the endpoint
@@ -922,15 +941,6 @@ func (c *hubAuthController) ApiKeyConditionalSet(params appwire.ApiKeyConditiona
 			return skipConditionalSet(&resp, fmt.Sprintf("%s resolves its credential from providers.toml (%s), which outranks the file layer", name, source))
 		case strings.HasPrefix(source, "env:"):
 			return skipConditionalSet(&resp, fmt.Sprintf("the host's environment supplies %s's credential (%s), which a stored key would silently replace", name, source))
-		// The source string names the Authorization entry alone
-		// (registry.credential reads that one key), so an instance whose own
-		// auth header is supplied by an authored credential_headers entry under
-		// any other name — or any other case — still resolves "store" or
-		// "none" here. But credentialHeaderWins makes that authored header win
-		// over any key the scheme would derive, so a key this set stores is one
-		// nothing ever sends: ask the predicate itself, not the source string.
-		case resolvedOK && llm.CredentialHeaderShadowsKey(resolved):
-			return skipConditionalSet(&resp, name+"'s own auth header is supplied by its authored credential_headers in providers.toml, which win over any key a push could store")
 		// An authored credential that resolves to nothing is terminal: the
 		// registry returns "none" at its layer without consulting the file store
 		// or the environment (registry.credential), which is why the source

@@ -363,6 +363,27 @@ func TestAuth_ConfigRevisionCoversTheCredentialDestination(t *testing.T) {
 // instance resolves "none" (registry.credential returns there without
 // consulting the file store or the environment) while a stored key is never
 // read. Reported as "added" it is a live credential that is dead.
+// TestAuth_ApiKeyConditionalSet_RefusesCommandExpression pins the stored-key
+// contract on the conditional surface too: the store never expands
+// $(command) expressions, so a push carrying one would store the literal
+// text, report success over a usable key, and send the expression verbatim
+// at the first request. The refusal is the same one ApiKeySet gives, before
+// any fence or classification, so nothing is written and the client is
+// pointed at the authoring surface for expressions.
+func TestAuth_ApiKeyConditionalSet_RefusesCommandExpression(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	ctrl := newTestAuthController(t, dir, stateDir, writeProvidersToml(t, dir, bearerInstanceToml))
+
+	_, err := ctrl.ApiKeyConditionalSet(appwire.ApiKeyConditionalSetParams{Provider: "work-ant", Value: "$(get-gateway-token)"})
+	if err == nil || !strings.Contains(err.Error(), "credential header") {
+		t.Fatalf("err = %v; want a refusal pointing at the credential header field", err)
+	}
+	if _, has := loadStoredKey(t, dir, "work-ant"); has {
+		t.Fatal("a refused expression must not be stored")
+	}
+}
+
 func TestAuth_ApiKeyConditionalSet_SkipsAnAuthoredCredentialThatResolvesToNothing(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -958,13 +979,14 @@ func TestAuth_ApiKeyConditionalSet_ClassifiesNonWritableSchemes(t *testing.T) {
 }
 
 // TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey pins
-// the classification spec §10 needs and the source string alone cannot express:
-// the registry names only the Authorization entry, so an instance whose own
-// auth header is supplied by an authored credential_headers entry resolves
-// "none" or "store" — the two sources the conditional set treats as writable —
-// while the authored header wins over any key (credentialHeaderWins), so the
-// key such a set persists is one nothing ever sends. Reporting "added"/"updated"
-// here reports a live credential that is dead.
+// the classification spec §10 needs on the authored-header shapes: this PR's
+// resolver reads the transport's auth-header slot — whatever header the
+// scheme writes, in whatever case its author wrote it — as the credential
+// slot, so an authored header that resolves IS the instance's credential,
+// resolves source "credential_headers", and owns the wire slot a stored key
+// would be sent to. The providers.toml classification skips those pushes —
+// reporting "added"/"updated" here would report a live credential that is
+// dead — while the control case (no authored header) still writes.
 func TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -972,16 +994,10 @@ func TestAuth_ApiKeyConditionalSet_SkipsWhenTheAuthoredHeaderShadowsTheKey(t *te
 		instance string
 		// stored is a key written through the auth surface before the
 		// conditional set, which makes the instance resolve from "store" rather
-		// than "none" — the other writable classification.
-		//
-		// The source sanity values follow this PR's resolver, which reads
-		// the transport's auth-header slot — whatever header the scheme
-		// writes, in whatever case its author wrote it — as the credential
-		// slot: an authored header that resolves IS the instance's
-		// credential and shadows a seeded store (spec §10), so the
-		// header-authored cases resolve "credential_headers" whether or not
-		// a key was stored first. The skip under test is unchanged: the
-		// authored header owns the wire slot a stored key would be sent to.
+		// than "none" — the other writable classification. The header-authored
+		// cases resolve "credential_headers" whether or not a key was stored
+		// first: the authored header shadows a seeded store too (spec §10), so
+		// the over-store cases pin the same skip.
 		stored string
 		// wantScheme pins the auth scheme the fixture must actually resolve, so a
 		// case cannot pass by skipping for some reason other than the header it
