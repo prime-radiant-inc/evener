@@ -1,0 +1,58 @@
+name: Restore Go caches
+description: >-
+  Restore this job kind's newest Go build and module caches, and record the
+  key and paths .github/actions/go-cache-save needs. Run it after Go is
+  installed; run go-cache-save after the job's last Go build or test step.
+inputs:
+  kind:
+    description: >-
+      Which build this job does. Jobs whose compiled output differs (race and
+      non-race tests, lint, vet) must use different kinds so each restores a
+      cache full of the entries it actually uses.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The key ends in the commit, so every save on main is a new entry and
+    # every run restores the newest entry for its kind by prefix. The Go
+    # version is in the prefix because a toolchain bump makes every older
+    # entry dead weight. The module cache rides in the same entry, so it holds
+    # the modules this kind downloads and picks up new ones on every save.
+    - name: Resolve Go cache key
+      id: keys
+      shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+      run: |
+        prefix="go-${KIND}-${ImageOS}-$(go env GOARCH)-$(go env GOVERSION)-"
+        {
+          echo "build-dir=$(go env GOCACHE)"
+          echo "mod-dir=$(go env GOMODCACHE)"
+          echo "prefix=$prefix"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "GO_BUILD_CACHE_DIR=$(go env GOCACHE)"
+          echo "GO_MOD_CACHE_DIR=$(go env GOMODCACHE)"
+          echo "GO_CACHE_KEY=${prefix}${GITHUB_SHA}"
+          echo "GO_CACHE_RESTORED_AT=$(date +%s)"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore Go build and module caches
+      id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ${{ steps.keys.outputs.build-dir }}
+          ${{ steps.keys.outputs.mod-dir }}
+        key: ${{ steps.keys.outputs.prefix }}${{ github.sha }}
+        restore-keys: ${{ steps.keys.outputs.prefix }}
+
+    # A re-run on a main commit whose entry this kind already saved restores
+    # that exact key. go-cache-save then skips the save: actions/cache/save
+    # would archive the whole cache only to have the reservation refused and
+    # logged, without failing the job.
+    - name: Record exact cache hit
+      shell: bash
+      env:
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: echo "GO_CACHE_EXACT_HIT=$HIT" >> "$GITHUB_ENV"
