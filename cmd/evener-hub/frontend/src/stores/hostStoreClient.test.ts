@@ -53,3 +53,25 @@ test("delivers only the frames wrapped for its host, unwrapped to the plain meth
 
   expect(seen).toEqual([{ method: "evener/plugin/updated", params: { revision: 1 } }]);
 });
+
+// A caller's per-call deadline is what the LOCAL port's own request honours
+// (AppwireClient.request's opts). The remote port dropped it on the floor: the
+// forwarded call then ran under the client's DEFAULT_REQUEST_TIMEOUT_MS, so a
+// caller who asked for a longer budget (stores/hosts.ts's own HOST_GATE_TIMEOUT_MS
+// is 35 minutes) silently got the 30s default instead - the failure mode of
+// timing out under a budget that was never honoured. The deadline now rides the
+// one call that actually carries the caller's wait, evener/host/request itself.
+test("a caller's timeoutMs rides the forwarded call rather than being dropped", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => ({ data: [] }) as never);
+
+  await remoteHostStoreClient("beta").request("model/list", {}, { timeoutMs: 1234 });
+
+  expect(fake.calls).toEqual([
+    {
+      method: "evener/host/request",
+      params: { host: "beta", method: "model/list", params: {} },
+      opts: { timeoutMs: 1234 },
+    },
+  ]);
+});

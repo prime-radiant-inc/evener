@@ -36,9 +36,16 @@ export type HostStoreClient = Pick<AppwireClient, "request" | "onNotification">;
  *     controller's own plain frames, which reach the local stores instead - are
  *     dropped.
  *
- * The per-call `opts` AppwireClient.request accepts has no evener/host/request
- * equivalent, and none of the host-scoped stores pass one (they call with
- * method and params only), so it is not forwarded. */
+ * The per-call `opts` AppwireClient.request accepts has no deadline field on
+ * the wire - evener/host/request's params are {host, method, params} - so the
+ * caller's deadline is carried by the ONE call that carries the caller's wait,
+ * the proxy request itself (stores/hostRouting.ts's hostRequest), rather than
+ * being dropped: a caller asking for a longer budget than the client's own
+ * default would otherwise silently run under that default instead. The bound is
+ * then the whole forwarded round trip (the SSH hop plus the remote hub's
+ * handling), the closest equivalent the wire admits, and a deadline error names
+ * evener/host/request rather than the method it forwarded. None of the
+ * host-scoped stores pass one today (they call with method and params only). */
 export function remoteHostStoreClient(host: string): HostStoreClient {
   return {
     request: async <M extends MethodName>(
@@ -46,14 +53,13 @@ export function remoteHostStoreClient(host: string): HostStoreClient {
       params: MethodTypes[M]["params"],
       opts?: { timeoutMs?: number },
     ): Promise<MethodTypes[M]["result"]> => {
-      void opts;
       const client = connectionStore.getState().client;
       if (!client) {
         throw new Error(
           `host ${host} store: no client connected; call connectionStore.getState().connect(client) first`,
         );
       }
-      return hostRequest(client, host, method, params);
+      return hostRequest(client, host, method, params, opts);
     },
     onNotification: (cb) =>
       onConnectionNotification((n) => {
