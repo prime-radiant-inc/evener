@@ -117,6 +117,16 @@ test-native-bundle: native-preflight
 test-api-package:
 	@cd appwire-client/typescript && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
 
+# The module sets a scope selects, shared by `make test` (TEST_SCOPE) and
+# `make test-race` (RACE_SCOPE). Every set derives from GO_MODULES, so a new
+# module joins each scope it belongs to without an edit here.
+SCOPE_MODULES_all := $(GO_MODULES)
+SCOPE_MODULES_root := .
+SCOPE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
+SCOPE_MODULES_agent := $(filter agent,$(GO_MODULES))
+SCOPE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
+TEST_SCOPE ?= all
+
 # test covers the Go modules AND the frontend. The frontend gate runs as a third
 # concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
 # re-enter this Makefile's test-web target); it is node work, so it overlaps the
@@ -134,9 +144,13 @@ test-api-package:
 ## requires: Scripted/fake external boundaries for default tests; runs ZERO
 ##   fuzz-family tests, even at reduced depth. WEB=0 skips the frontend
 ##   stream.
+##   TEST_SCOPE picks the Go modules: all (default), root (the root module
+##   alone) or nonroot (every other module); CI runs root and nonroot on
+##   separate runners.
 ## fails-when: Any module, frontend stream, or setup failure is nonzero.
 test:
-	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
+	@case "$(TEST_SCOPE)" in all|root|nonroot) ;; *) echo "make test: TEST_SCOPE must be all, root, or nonroot (got $(TEST_SCOPE))" >&2; exit 2;; esac; \
+		MODULES="$(strip $(SCOPE_MODULES_$(TEST_SCOPE)))" MAKE="$(MAKE)" scripts/gate/run-module-tests.sh -short -count=1
 
 ## Alias for `make test`.
 test-short:
@@ -169,11 +183,6 @@ merge-approval-gate:
 # instead of paying it twice.
 RACE_SCOPE ?= all
 RACE_ROOT_PART ?= all
-RACE_MODULES_all := $(GO_MODULES)
-RACE_MODULES_root := .
-RACE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
-RACE_MODULES_agent := $(filter agent,$(GO_MODULES))
-RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ## The permanent -race gate across every non-fuzz module.
 ## proves: Data races in the non-fuzz modules surface; frontend is
 ##   intentionally not duplicated.
@@ -193,7 +202,7 @@ test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
 		case "$(RACE_ROOT_PART)" in all) hub=1; cli=1; rest=1;; hub) hub=1; cli=elsewhere; rest=0;; rest) hub=elsewhere; cli=1; rest=1;; *) echo "make test-race: RACE_ROOT_PART must be all, hub, or rest (got $(RACE_ROOT_PART))" >&2; exit 2;; esac; \
 		test "$(RACE_ROOT_PART)" = all || test "$(RACE_SCOPE)" = root || { echo "make test-race: RACE_ROOT_PART=$(RACE_ROOT_PART) needs RACE_SCOPE=root" >&2; exit 2; }; \
-		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
+		modules="$(strip $(SCOPE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
 		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 \
 		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
