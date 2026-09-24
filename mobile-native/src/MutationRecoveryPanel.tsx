@@ -409,17 +409,17 @@ export function MutationRecoveryPanel({
 							</Copy>
 						) : null}
 						<View style={styles.row}>
-								{offersRestore ? (
+							{offersRestore ? (
 								<Action
-										disabled={!restorable}
+									disabled={!restorable}
 									onPress={() => {
-											if (restorable) actions.onRestore(row);
+										if (restorable) actions.onRestore(row);
 									}}
 								>
-										Restore to draft
+									Restore to draft
 								</Action>
-								) : null}
-								<Action onPress={() => actions.onDiscard(row)}>Discard</Action>
+							) : null}
+							<Action onPress={() => actions.onDiscard(row)}>Discard</Action>
 						</View>
 						{offersRestore && !restorable ? (
 							<Copy muted>
