@@ -115,7 +115,9 @@ kill() {
 		// block even after make itself is gone.
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		_ = command.Process.Kill()
-		_ = waitForChildExit(run, tripwire)
+		if err := waitForChildExit(run, tripwire); errors.Is(err, errChildExitTimeout) {
+			t.Errorf("cleanup did not reap make test-web: %v", err)
+		}
 	})
 	if err := waitForPathOrExit(heldReady, run, readinessTripwire); err != nil {
 		t.Fatalf("held npm check did not become ready: %v; output = %s", err, output.String())
@@ -375,7 +377,9 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob boo
 		_ = waitReady.Close()
 		if command.ProcessState == nil {
 			_ = command.Process.Kill()
-			_ = waitForChildExit(run, 5*time.Second)
+			if err := waitForChildExit(run, 5*time.Second); errors.Is(err, errChildExitTimeout) {
+				t.Errorf("cleanup did not reap make test-web: %v", err)
+			}
 		}
 	})
 
