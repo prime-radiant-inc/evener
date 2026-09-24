@@ -865,11 +865,11 @@ func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
 // DoctorCommand).
 func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 	// Bucket names that pass projectTokenOK but are unsafe in a comma-joined
-	// --sessions reproduction line: a comma (CLI splits it), a space (shell
-	// word-break), and a '$' (shell expansion).
-	// --sessions reproduction line: a comma (CLI splits it), a space (shell
-	// word-break), a '$' (shell expansion), and a '*' (shell glob expansion).
-	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b", "a\x0bb", "a\x0cb", "a:b"} {
+	// --sessions reproduction line: a comma (CLI splits it), a space, vertical
+	// tab, or form feed (shell word-break), a '$' (shell expansion), a '*'
+	// (shell glob), a '%' (cmd.exe variable expansion), and a '^' (cmd.exe
+	// escape character).
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b", "a\x0bb", "a\x0cb"} {
 		t.Run(bucketName, func(t *testing.T) {
 			base := t.TempDir()
 			bucket := stateHomeBucket(base, bucketName)
@@ -907,11 +907,56 @@ func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
 			// The ref must not contain a comma (which would split into an
 			// invalid selector) or a space/shell metacharacter (injection).
 			for _, ref := range splitRefs {
-				if strings.ContainsAny(ref, ", \t\x0b\x0c$\x00*?[]%^:") {
+				if strings.ContainsAny(ref, ", \t\x0b\x0c$\x00*?[]%^") {
 					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
 				}
 			}
 		})
+	}
+}
+
+// TestRunAudit_ColonNamedBucketRoundTripsViaProjRef verifies that a bucket
+// name containing a colon (e.g. "a:b") — which passes safeTokenForRepro
+// because the colon is the proj:<id>:<sid> grammar separator, not a shell
+// or comma-joined-grammar injection vector — emits a proj:a:b:<sid> ref in
+// DoctorCommand that round-trips through Locate. The selector parser cuts at
+// the LAST colon (parseSelector, selector.go), so proj:a:b:<sid> parses to
+// projectID="a:b", sid=<sid> — the colon in the bucket name is preserved.
+// Round 14 finding 1 incorrectly added ':' to safeTokenForRepro's reject
+// set; this test (and the removal of ':' from that set) inverts that error.
+func TestRunAudit_ColonNamedBucketRoundTripsViaProjRef(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, "a:b")
+	writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatalf("no findings — the check should trip")
+	}
+	dc := res.Findings[0].Evidence.DoctorCommand
+
+	// DoctorCommand must carry proj:a:b:<sid> — the colon in the bucket
+	// name is the grammar separator, not an injection vector.
+	wantRef := "proj:a:b:" + sidA
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	if !strings.HasPrefix(dc, prefix) {
+		t.Fatalf("DoctorCommand = %q, want prefix %q", dc, prefix)
+	}
+	sessionsValue := strings.TrimPrefix(dc, prefix)
+	if sessionsValue != wantRef {
+		t.Fatalf("DoctorCommand --sessions = %q, want %q (colon-named bucket should emit proj:a:b:<sid>)", sessionsValue, wantRef)
+	}
+	// The ref must round-trip through Locate: parseSelector cuts at the last
+	// colon, so proj:a:b:<sid> resolves to projectID="a:b", sid=<sid>.
+	if _, err := Locate(base, wantRef); err != nil {
+		t.Errorf("Locate(base, %q) failed: %v (proj: ref with colon in bucket name must round-trip)", wantRef, err)
 	}
 }
 
