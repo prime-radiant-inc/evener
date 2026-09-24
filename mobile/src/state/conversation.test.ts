@@ -21501,6 +21501,81 @@ describe("ConversationStore", () => {
       expect(rowById(store, "msg-1")).toBeDefined();
     });
 
+    // The #2213 final-verdict Medium: contribution tracking attributed
+    // text suppliers by strict value equality, so a page item whose text is
+    // explicitly provided-empty and a retained sparse item whose text the
+    // wire omitted — both hydrating to "" — recorded as sharing the text
+    // supplier. The page's text settle then read as contributing nothing,
+    // the load reported no item keys, and an omitting rehydrate dropped the
+    // loaded historical row. The attribution must follow the merge's own
+    // presence rule: the side that actually supplied text keeps the claim.
+    it("counts a page's explicitly empty text as its contribution and keeps the row through an omitting rehydrate", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  id: "item_tool_1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "c1",
+                  argumentsJson: '{"command":"make"}',
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // The page re-serves the call spelling text: "" explicitly — the
+      // shape the wire's own omitempty never sends but an older or mixed
+      // producer can. The retained copy's text was omitted (the sparse wire
+      // shape hydrates to ""), so the page's empty settle is the only side
+      // that supplied text.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "item_tool_1",
+                turnId: "tp",
+                type: "commandExecution",
+                toolName: "shell",
+                callId: "c1",
+                argumentsJson: '{"command":"make"}',
+                text: "",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The page's text settle is its contribution: the load must report it
+      // among the page's item keys.
+      expect(loaded.status === "loaded" ? loaded.itemKeys : []).toContain("item_tool_1");
+      // And the claim must keep the row as page history: the snapshot omits
+      // it, and an unclaimed row would go with it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, sink);
+      expect(rowById(store, "item_tool_1")).toBeDefined();
+    });
+
     // RoboRev round 4 (panel M2): startedAt and completedAt fold by nullish
     // fallback — the merged item carries the page's copy when the retained
     // side has none — but the hand-rolled field list never named them, so a

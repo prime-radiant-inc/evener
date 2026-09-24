@@ -607,11 +607,18 @@ function recordMergedToolItem(
 // the fold of a reissued fragment's duplicate copies must not erase the
 // page's own content. Text counts through its presence marker: a side
 // whose text the merge dropped contributed no text, and a side that
-// restored what the other omitted did. The identity anchors record every
-// input regardless — an item whose anchors all sit on one side exists
-// only because that side does. Chained edges resolve through the input's
-// own record: an untouched original speaks for itself, a folded one for
-// the suppliers it kept.
+// restored what the other omitted did. Every other field counts by the
+// merge's own rule for it — the nullish-fallback fields only by carrying a
+// value (null falls through to the other side), status by the rank chain's
+// kept value, and the spread-merged fields by property presence — so a
+// supplier set never names a side the merge would have read through to the
+// other (#2213 final-verdict Medium: strict value equality let an explicit
+// empty text and an omitted text share the supply, because both hydrate to
+// "" and the marker is invisible to Object.entries). The identity anchors
+// record every input regardless — an item whose anchors all sit on one side
+// exists only because that side does. Chained edges resolve through the
+// input's own record: an untouched original speaks for itself, a folded one
+// for the suppliers it kept.
 function recordItemContribution(
   context: ToolItemMergeContext,
   merged: ItemModel,
@@ -646,21 +653,34 @@ function recordItemContribution(
     if (fromNewer) return suppliersOf(newer, field);
     return undefined;
   };
+  // Whether one input could have supplied the value the edge kept, read by
+  // the merge's OWN rule for the field: text through its presence marker (an
+  // omitted text never supplied text, whatever its placeholder string
+  // reads), the nullish-fallback fields only by carrying a value, status by
+  // the rank chain's kept value (the merge keeps one input's status, so
+  // strict equality is its rule), and every other field by property
+  // presence — the spread keeps the newer side's own property, so a side
+  // that does not own the property never supplied the value it happens to
+  // read as.
+  const suppliedBy = (item: ItemModel, field: string, value: unknown): boolean => {
+    if (field === "text") return itemTextPresence(item) === "provided" && item.text === value;
+    if (field === "status") return item.status === value;
+    const itemValue = (item as unknown as Record<string, unknown>)[field];
+    if (freshSuppliedNullishFallbackFields.has(field)) {
+      return itemValue !== null && itemValue !== undefined && itemValue === value;
+    }
+    return Object.hasOwn(item, field) && itemValue === value;
+  };
   const nonTool = new Map<string, ReadonlySet<ItemModel>>();
   for (const [key, value] of Object.entries(merged)) {
     if (toolResultFields.includes(key as ToolResultField)) continue;
-    const set = attribute(
-      key,
-      value,
-      (older as unknown as Record<string, unknown>)[key] === value,
-      (newer as unknown as Record<string, unknown>)[key] === value,
-    );
+    const set = attribute(key, value, suppliedBy(older, key, value), suppliedBy(newer, key, value));
     if (set !== undefined) nonTool.set(key, set);
   }
   const tools: Partial<Record<ToolResultField, ReadonlySet<ItemModel>>> = {};
   for (const field of toolResultFields) {
     const value = merged[field];
-    const set = attribute(field, value, older[field] === value, newer[field] === value);
+    const set = attribute(field, value, suppliedBy(older, field, value), suppliedBy(newer, field, value));
     if (set !== undefined) tools[field] = set;
   }
   context.contributions.set(merged, { nonTool, tools, identity });
