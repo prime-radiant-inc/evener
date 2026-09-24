@@ -890,6 +890,9 @@ type Session struct {
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
+	// attentionFoldCursor is the incremental fold of this Session's own
+	// transcript behind its attention reads. Guarded by attentionMu.
+	attentionFoldCursor delegateAttentionFoldCursor
 	// rootAttentionWakeIDs is a process-local wake cache keyed by unresolved
 	// attention IDs from the root transcript. The transcript fold remains the
 	// sole durable authority; restart rebuilds this map from that fold.
