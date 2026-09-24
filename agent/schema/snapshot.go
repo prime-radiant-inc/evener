@@ -577,7 +577,6 @@ func stableUnion(existing, added []string) []string {
 	return out
 }
 
-
 // lstatIfPossible does Lstat when the fs implements afero.Lstater (OsFs returns
 // symlink-aware info), and falls back to Stat otherwise. MemMapFs implements
 // Lstater but LstatIfPossible does Stat internally (usedLstat=false) since it has

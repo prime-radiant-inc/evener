@@ -1689,7 +1689,7 @@ func TestListSessionMetas_SymlinkedMetaJSONRejected(t *testing.T) {
 	}
 	for _, m := range metas {
 		if m.ID == sid {
-			t.Fatalf("symlinked .meta.json for %q surfaced in ListSessionMetas; " +
+			t.Fatalf("symlinked .meta.json for %q surfaced in ListSessionMetas; "+
 				"symlinked metadata from outside the state root must be rejected", sid)
 		}
 	}

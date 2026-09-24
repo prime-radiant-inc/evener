@@ -5,9 +5,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -609,8 +609,8 @@ func TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking(t *testing.T) {
 	if err := os.Remove(journalPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(journalPath, 0o644); err != nil {
-		t.Fatal(err)
+	if err := exec.Command("mkfifo", journalPath).Run(); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
 	}
 
 	// Run the lookup under a bounded timeout so a hang FAILS FAST instead
@@ -656,8 +656,8 @@ func TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking(t *testi
 	if err := os.Remove(outputPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(outputPath, 0o644); err != nil {
-		t.Fatal(err)
+	if err := exec.Command("mkfifo", outputPath).Run(); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
 	}
 
 	done := make(chan error, 1)
