@@ -44,7 +44,14 @@ export function createNativeMutationHost(
 		submitter: runtime,
 		start: () => {
 			if (startPromise !== undefined) return startPromise;
-			unregister = runtime.registerTarget(hubId, targetRef, client);
+			try {
+				unregister = runtime.registerTarget(hubId, targetRef, client);
+			} catch (error) {
+				// A client the runtime cannot bind is a startup failure like any
+				// other: report it as a rejected promise so a caller's catch owns
+				// it, rather than throwing out of the caller's synchronous flow.
+				return Promise.reject(error);
+			}
 			startPromise = runtime.start().catch((error) => {
 				// Keep the registration: the runtime retries its own start on
 				// the next submission, and a mutation admitted after that

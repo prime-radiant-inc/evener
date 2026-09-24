@@ -1001,12 +1001,22 @@ export function ConversationScreen({
 	// admission must always have this screen's client bound.
 	useEffect(() => {
 		if (!client || !connected) return;
-		const host = createNativeMutationHost(
-			getNativeMutationRuntime(),
-			route.params.hubId,
-			route.params.ref,
-			client,
-		);
+		let host: NativeMutationHost;
+		try {
+			host = createNativeMutationHost(
+				getNativeMutationRuntime(),
+				route.params.hubId,
+				route.params.ref,
+				client,
+			);
+		} catch {
+			// The mutations database or the client binding could not be created.
+			// Leave the screen mounted with no host rather than crashing the
+			// conversation; a later reconnect or remount retries, and a mutation
+			// submitted meanwhile surfaces its own failure through the store.
+			mutationHostRef.current = null;
+			return;
+		}
 		mutationHostRef.current = host;
 		void host.start().catch(() => undefined);
 		return () => {

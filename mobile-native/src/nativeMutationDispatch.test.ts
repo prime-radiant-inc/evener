@@ -16,7 +16,12 @@
 
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type {
+	AppwireClientLike,
+	Thread,
+	ThreadCapabilities,
+	ThreadReadResponse,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createConversationStore } from "../../mobile/src/state/conversation";
@@ -295,4 +300,24 @@ test("a failed host startup keeps the registration so a later admission still di
 		).toHaveLength(1);
 	});
 	await host.stop();
+});
+
+test("a synchronous registration failure rejects the start promise instead of throwing", async () => {
+	// A client the runtime cannot bind (no onStateChange) makes registerTarget
+	// throw synchronously. start() must surface that as a rejected promise, not
+	// throw out of the caller's effect and crash the conversation screen.
+	const opened = openSqliteSyncDouble();
+	openDatabases.push(opened.database);
+	const runtime = new NativeMutationRuntime(opened.port, {
+		createMutationId: () => "mutation-1",
+		now: () => 1,
+	});
+	const unboundClient = { state: "ready" } as unknown as AppwireClientLike;
+	const host = createNativeMutationHost(runtime, "hub-1", "ref-1", unboundClient);
+
+	let started!: Promise<void>;
+	expect(() => {
+		started = host.start();
+	}).not.toThrow();
+	await expect(started).rejects.toThrow();
 });
