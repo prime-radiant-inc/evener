@@ -198,6 +198,7 @@ type serveDeps struct {
 	notifyContext    func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
 	startCPUProfile  func(string) (func(), error)
 	startTrace       func(string) (func(), error)
+	startLivePprof   func() (addr string, stop func(), err error)
 	register         func(*rvreg.Registration, string, rendezvous.Entry) error
 	serveHTTP        func(*http.Server, net.Listener) error
 	provisionSandbox func(*execenv.LocalExecutionEnvironment, *agent.SessionConfig, string) error
@@ -275,6 +276,7 @@ func defaultServeDeps() serveDeps {
 		drainWaitExpiry: func() <-chan time.Time { return time.After(shutdownDrainWaitBudget) },
 		subscriberCount: func(s serveServer, id string) int { return s.(*server.Server).AppSubscriberCount(id) },
 		notifyContext:   signal.NotifyContext, startCPUProfile: cmdutil.StartCPUProfile, startTrace: cmdutil.StartTrace,
+		startLivePprof:                cmdutil.StartLivePprof,
 		register:                      func(r *rvreg.Registration, dir string, entry rendezvous.Entry) error { return r.Register(dir, entry) },
 		rendezvousRetryPause:          func() <-chan time.Time { return time.After(rendezvousRemovalRetryPause) },
 		serveHTTP:                     func(s *http.Server, l net.Listener) error { return s.Serve(l) },
@@ -486,6 +488,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("trace: %w", err)
 		}
 		defer stop()
+	}
+	pprofAddr, stopPprof, pprofErr := deps.startLivePprof()
+	if pprofErr != nil {
+		return pprofErr
+	}
+	defer stopPprof()
+	if pprofAddr != "" {
+		fmt.Fprintf(os.Stderr, "pprof listening on http://%s/debug/pprof/\n", pprofAddr)
 	}
 
 	// Resolve working directory.
@@ -1972,6 +1982,7 @@ func printServeEnvVars(w io.Writer) {
 		envvars.EVENERHubSpawned,
 		envvars.EVENERAllowedDecisions,
 		envvars.EVENERProvidersConfig,
+		envvars.EVENERPprofAddr,
 	} {
 		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", v.Name, v.Summary)
 	}
