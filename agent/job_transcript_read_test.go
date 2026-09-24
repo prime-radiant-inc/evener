@@ -671,3 +671,79 @@ func TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking(t *testi
 			"to be a regular file before reading")
 	}
 }
+
+// TestFindLocalJobInProject_NonErrNotExistLstatSurfaces (FU3 round 12, M1)
+// asserts findLocalJobInProject propagates a non-ErrNotExist Lstat error on the
+// job journal instead of masking it as "not found". Pre-fix, every Lstat error
+// (including EACCES/ENOTDIR) was masked as a skip-worthy miss, hiding genuine
+// unreadability. Post-fix, only os.ErrNotExist is a miss; any other Lstat error
+// is wrapped and returned. The fixture makes the owner sessions dir a regular
+// file so os.Lstat of jobs.jsonl under it returns ENOTDIR (a non-ErrNotExist,
+// root-independent error); symlinkErrorDeep ignores Lstat errors (it only
+// checks the symlink bit), so it returns nil and the journal-site Lstat
+// discipline is the code path exercised.
+func TestFindLocalJobInProject_NonErrNotExistLstatSurfaces(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	bucket := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Make the owner sessions dir a regular FILE so Lstat of the journal path
+	// below it returns ENOTDIR — a non-ErrNotExist error that must propagate.
+	ownerDir := jobsDir(bucket, owner) // <bucket>/sessions/<owner>
+	if err := os.MkdirAll(filepath.Dir(ownerDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, found, err := findLocalJobInProject(bucket, owner, jobID)
+	if err == nil {
+		t.Fatalf("findLocalJobInProject masked a non-ErrNotExist Lstat error as not-found (found=%v); expected a propagated 'stat journal' error", found)
+	}
+	if found {
+		t.Fatal("expected found=false, got true")
+	}
+	if !strings.Contains(err.Error(), "stat journal") {
+		t.Fatalf("expected error wrapping the journal Lstat failure ('stat journal'), got: %v", err)
+	}
+}
+
+// TestLocateLocalJobRetainedTarget_OutputNotRegularRejected (FU3 round 12, M2)
+// pins the output-path hybrid guard's enforced invariant — the Lstat'd output
+// must be a regular file — without over-claiming the documented residual TOCTOU
+// window (a swap between the Lstat and jobstore's internal by-path open is
+// explicitly NOT closed; the round-12 fix documented it, not closed it). A
+// non-regular, non-symlink entry (a directory) at the output leaf passes
+// symlinkErrorDeep but is rejected by the IsRegular guard.
+func TestLocateLocalJobRetainedTarget_OutputNotRegularRejected(t *testing.T) {
+	t.Parallel()
+	sh := t.TempDir()
+	bucket := filepath.Join(sh, "evener", "projects", localJobCurrentProject)
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Replace the output file with a directory: non-symlink (passes
+	// symlinkErrorDeep) but non-regular (caught by the IsRegular guard).
+	outputPath := filepath.Join(jobsDir(bucket, owner), "jobs", jobID+".log")
+	if err := os.Remove(outputPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outputPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := locateLocalJobRetainedTarget(bucket, jobID)
+	if err == nil {
+		t.Fatal("expected 'output is not a regular file' error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected 'output is not a regular file' error, got: %v", err)
+	}
+}
