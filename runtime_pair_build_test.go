@@ -934,6 +934,135 @@ func TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard(t *testing.T) {
 	}
 }
 
+// TestMakeTestWebBrowserInterruptWaitsForGuardSetup pins that an interrupt
+// landing while the retirement guard is still preparing its private Go home
+// waits for the setup step in flight, then stops before the guard starts. A
+// guard shell that died on the TERM left that step (here the copy of the
+// ambient go env) running with no one waiting for it, still writing into the
+// scratch after the gate, and the test's TempDir cleanup, had moved on.
+//
+// The held cp and a BASH_ENV wrapper around the gate's wait builtin append to
+// one log, so the order is the evidence: the gate's wait for the guard shell
+// must not return before the step that shell was running has finished.
+func TestMakeTestWebBrowserInterruptWaitsForGuardSetup(t *testing.T) {
+	const tripwire = 30 * time.Second
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
+	orderLog := filepath.Join(fixture.root, "setup-order.log")
+	release := filepath.Join(fixture.root, "setup.release")
+	ambientGoEnv := filepath.Join(fixture.root, "ambient-go-env")
+	writeTestFile(t, ambientGoEnv, nil, 0o644)
+	// Only the private-home copy of this exact file is held; every other cp
+	// passes straight through.
+	writeTestFile(t, filepath.Join(fixture.fakeBin, "cp"), []byte(`#!/bin/sh
+if [ "$1" = "$EVENER_TEST_CP_HOLD" ]; then
+	printf 'cp-held %s\n' "$PPID" >> "$EVENER_TEST_SETUP_ORDER"
+	while [ ! -f "$EVENER_TEST_SETUP_RELEASE" ]; do :; done
+	printf 'cp-done\n' >> "$EVENER_TEST_SETUP_ORDER"
+fi
+exec /bin/cp "$@"
+`), 0o755)
+	bashEnv := filepath.Join(fixture.root, "wait-order-shell")
+	writeTestFile(t, bashEnv, []byte(`wait() {
+	local status
+	printf 'wait %s\n' "$*" >> "$EVENER_TEST_SETUP_ORDER"
+	builtin wait "$@"; status=$?
+	printf 'waited %s\n' "$*" >> "$EVENER_TEST_SETUP_ORDER"
+	return "$status"
+}
+`), 0o644)
+
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"BROWSER_GUARD_CONCURRENCY=7",
+		"BASH_ENV="+bashEnv,
+		"GOENV="+ambientGoEnv,
+		"EVENER_TEST_CP_HOLD="+ambientGoEnv,
+		"EVENER_TEST_SETUP_ORDER="+orderLog,
+		"EVENER_TEST_SETUP_RELEASE="+release,
+	)
+	var output syncBuffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start make test-web-browser: %v", err)
+	}
+	run := startChild(command)
+	finished := false
+	t.Cleanup(func() {
+		_ = os.WriteFile(release, nil, 0o644)
+		if !finished {
+			if err := waitForChildExit(run, tripwire); errors.Is(err, errChildExitTimeout) {
+				_ = command.Process.Kill()
+			}
+		}
+	})
+	orderLines := func() []string {
+		data, _ := os.ReadFile(orderLog)
+		return strings.Split(strings.TrimSpace(string(data)), "\n")
+	}
+	// awaitLine polls the order log for want. TRIPWIRE: each line is written
+	// milliseconds after the step before it; the ceiling only bounds a hang,
+	// and the gate's own exit ends the wait early.
+	awaitLine := func(want func(string) bool) (string, error) {
+		deadline := time.Now().Add(tripwire)
+		for {
+			for _, line := range orderLines() {
+				if want(line) {
+					return line, nil
+				}
+			}
+			select {
+			case <-run.done:
+				return "", fmt.Errorf("gate exited (%v) first", run.err)
+			default:
+			}
+			if time.Now().After(deadline) {
+				return "", fmt.Errorf("not within %s", tripwire)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	held, err := awaitLine(func(line string) bool { return strings.HasPrefix(line, "cp-held ") })
+	if err != nil {
+		t.Fatalf("the retirement guard's setup never reached the held cp: %v; output = %s", err, output.String())
+	}
+	guardShell := strings.TrimPrefix(held, "cp-held ")
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal make test-web-browser: %v", err)
+	}
+	// The gate signals every running guard before it waits for any, so once it
+	// waits for the guard shell, that shell has been sent its TERM.
+	if _, err := awaitLine(func(line string) bool { return line == "wait "+guardShell }); err != nil {
+		t.Fatalf("the interrupted gate never waited for the retirement guard's shell %s: %v; order = %q; output = %s", guardShell, err, orderLines(), output.String())
+	}
+	writeTestFile(t, release, nil, 0o644)
+	if err := waitForChildExit(run, tripwire); err == nil {
+		t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
+	} else if errors.Is(err, errChildExitTimeout) {
+		t.Fatalf("make test-web-browser did not finish after the setup step was released: %v; output = %s", err, output.String())
+	}
+	finished = true
+
+	order := orderLines()
+	done, waited := slices.Index(order, "cp-done"), slices.Index(order, "waited "+guardShell)
+	if done < 0 || waited < 0 || waited < done {
+		t.Fatalf("the gate stopped waiting for the retirement guard's shell before its setup step finished; order = %q", order)
+	}
+	logData, err := os.ReadFile(fixture.logPath)
+	if err != nil {
+		t.Fatalf("read fake toolchain log: %v", err)
+	}
+	if strings.Contains(string(logData), "npm run retirementguard") {
+		t.Fatalf("the retirement guard started after the gate was interrupted; log = %q", logData)
+	}
+}
+
 // TestMakeTestWebBrowserSecondInterruptStopsWaiting pins the escape hatch
 // from that wait: a second signal while the gate is waiting for a still-running
 // skill guard exits at once rather than waiting out its go test.
@@ -1242,6 +1371,7 @@ func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/private-go-home.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/scratch-lib.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/load-aware-workers.sh", 0o644)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/lib/owned-jobs.sh", 0o644)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/web-preflight.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web.sh", 0o755)
 	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/web/test-web-browser.sh", 0o755)

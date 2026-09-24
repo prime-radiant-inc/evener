@@ -13,6 +13,7 @@ set -u
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$script_dir/../lib/scratch-lib.sh"
+. "$script_dir/../lib/owned-jobs.sh"
 
 cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
 
@@ -34,14 +35,6 @@ forget_pid() {
 	done
 }
 
-owned_job_is_running() {
-	local pid="$1" candidate
-	for candidate in $(jobs -pr); do
-		[ "$candidate" = "$pid" ] && return 0
-	done
-	return 1
-}
-
 stop_checks() {
 	local pid wait_status previous_stopping
 	previous_stopping=$stopping
@@ -56,7 +49,7 @@ stop_checks() {
 		while :; do
 			if wait "$pid" 2>/dev/null; then wait_status=0; else wait_status=$?; fi
 			# Negative and 127 statuses mean Bash no longer owns a child it can
-			# reap, even if its copied job table still reports that PID as running.
+			# reap.
 			if [ "$wait_status" -lt 0 ] || [ "$wait_status" -eq 127 ]; then break; fi
 			owned_job_is_running "$pid" || break
 		done
@@ -119,6 +112,7 @@ trap finish EXIT
 trap 'interrupted 129' 1; trap 'interrupted 130' 2; trap 'interrupted 143' 15
 
 scratch_dir dir evener-test-web
+owned_jobs_list="$dir/running-jobs"
 
 for c in typecheck test lint; do
 	check_dir="$dir/$c"
