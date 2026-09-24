@@ -132,7 +132,12 @@ function ProvidersScreenBody({
       setSignIn(null);
       return;
     }
-    const connection = ready ? client : null;
+    // The same authorization the open arm applies: `ready` alone says the
+    // connection reports a client, not that the client serves THIS hub —
+    // in the re-key window the previous hub's still-ready client would
+    // otherwise run the flow's exchanges against the hub the route
+    // re-keyed away from (connectionIdentity's record, round 58).
+    const connection = canUseConnection() ? client : null;
     signIn.flow.setConnection(connection);
     // A sign-in started from behind the banner never started: with no
     // connection its first start() was a no-op, so the exchange resumes
@@ -146,7 +151,7 @@ function ProvidersScreenBody({
       signIn.flow.getSnapshot().phase === "idle"
     )
       void signIn.flow.start();
-  }, [signIn, activeProfile?.id, client, state, ready, writesRefused]);
+  }, [signIn, activeProfile?.id, client, state, writesRefused, canUseConnection]);
   if (activeProfile?.id !== route.params.hubId)
     return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
   if (display === "wall")

@@ -195,7 +195,7 @@ function HubSettings({
 	const transitionRecovered = useRef<{
 		client: ConversationClientLike;
 	} | null>(null);
-	const refreshedAtReady = useRef(connectionState === "ready");
+	const recoveredForClient = useRef<ConversationClientLike | null>(null);
 	// useFocusEffect covers a screen the user comes back to; a passive
 	// reconnect never refocuses it, and the client a manual retry replaces
 	// this one with is still connecting when the focus effect re-runs, so
@@ -203,17 +203,37 @@ function HubSettings({
 	// ready. The overview store keeps the last successful load through a
 	// failed refresh (hubOverview.ts), so the banner over stale-but-shown
 	// data stays usable meanwhile; this is the recovery read: one refresh and
-	// one upgrade reconcile per transition back to ready. The seed counts a
-	// mount that is already ready as refreshed: the focus read below is the
-	// read it owes, and a ready "transition" that never happened must not
-	// fire a second refresh and reconcile on top of it.
+	// one upgrade reconcile per transition back to ready. The focus read is
+	// live-gated, and the live predicate settles in the parent's effect
+	// AFTER this screen's own effects run: a mount that is already ready
+	// under a pairing the predicate has not settled yet (a re-keyed body
+	// remounting under the new hub's fresh client) sees its focus read
+	// refused with no ready transition ever coming after it, so the
+	// transition arm below reads exactly when the predicate it shares with
+	// the focus read refuses - while the screen is focused, authorized here
+	// means the focus read is coming in this same commit and refused here
+	// means it refuses there too. An unfocused screen has no focus read
+	// coming at all: an authorization it holds is not a read anyone owes, so
+	// the arm reads for it (round 23). The render gates that let this screen
+	// mount are the trust authority for that arm, not the deferred-request
+	// predicate.
 	useEffect(() => {
 		if (connectionState !== "ready") {
-			refreshedAtReady.current = false;
+			recoveredForClient.current = null;
 			return;
 		}
-		if (refreshedAtReady.current) return;
-		refreshedAtReady.current = true;
+		// The gate keys on the client, not the readiness alone: a replacement
+		// client can arrive while the state never leaves ready — a state-keyed
+		// boolean would stay consumed for it — and its pairing's focus read is
+		// refused while it settles, with no later event left to re-run it. Each
+		// newly paired ready client is therefore its own recovery event
+		// (round 39).
+		if (recoveredForClient.current === client) return;
+		recoveredForClient.current = client;
+		// Only a focused screen's authorization means the focus effect is
+		// about to read in this same commit; an unfocused screen's is a
+		// pairing nothing else will use until the user comes back.
+		if (canUseConnection() && focused) return;
 		// A transition the screen is focused through owes the focus path's
 		// read too: the client replacement that re-runs the focus effect
 		// makes both effects fire in this one commit, and the note is what
@@ -221,7 +241,7 @@ function HubSettings({
 		if (focused) transitionRecovered.current = { client };
 		void model.getState().refresh();
 		void upgrade.reconcileAfterReconnect();
-	}, [client, connectionState, focused, model, upgrade]);
+	}, [client, connectionState, focused, model, upgrade, canUseConnection]);
 	useFocusEffect(
 		useCallback(() => {
 			// The blur/dep-change cleanup runs before any later callback and
