@@ -271,7 +271,16 @@ jobs:
           echo "$RESULTS"
           test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
-  race-root:
+  # The root module's race run is two lanes on separate runners: cmd/evener-hub
+  # (its ~2100 mostly serial tests, as 12 shards) and everything else. On one
+  # 4-core runner the two competed for the same cores under -race's slowdown.
+  # `race-root`, the required check, passes only when both lanes do.
+  race-root-parts:
+    name: race-root / ${{ matrix.part }}
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [hub, rest]
     runs-on: ubuntu-latest
     steps:
       - name: Record pull request candidate identity
@@ -289,12 +298,35 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
         with:
-          go-cache-kind: race-root
+          go-cache-kind: race-root-${{ matrix.part }}
 
-      - name: Test (race detector — root module)
-        run: make test-race RACE_SCOPE=root
+      # A dedicated runner's cores are all this job's, but the gate's
+      # load-aware budgets read the one-minute load average, which on a fresh
+      # runner still carries checkout and cache restore; they would start a
+      # fraction of the shards (and too few root packages) at once. Size them
+      # to the runner instead.
+      - name: Test (race detector — root module, ${{ matrix.part }})
+        env:
+          ROOT_P: 4
+          HUB_SHARD_CONCURRENCY: 4
+          HUB_SHARD_PARALLEL: 2
+          CLI_SHARD_CONCURRENCY: 4
+          CLI_SHARD_PARALLEL: 2
+        run: make test-race RACE_SCOPE=root RACE_ROOT_PART=${{ matrix.part }}
 
       - uses: ./.github/actions/go-cache-save
+
+  race-root:
+    if: always()
+    needs: [race-root-parts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both root race lanes
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   race-module-shards:
     name: race-modules / ${{ matrix.scope }}
