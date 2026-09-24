@@ -369,8 +369,17 @@ jobs:
         with:
           go-cache-kind: tests
 
+      # EXPERIMENT (do not merge): the budgets the gate computes on a fresh
+      # runner, and how busy the runner is while the waves run.
       - name: Deterministic tests (full root suite; frontend covered by web job)
-        run: ROOT_FULL=1 WEB=0 make test
+        run: |
+          cat /proc/loadavg; nproc
+          bash -c '. scripts/lib/gate-budgets.sh && gate_source_helper scripts/lib/load-aware-workers.sh && gate_init_budgets && echo "ROOT_P=$ROOT_P AGENT_P=$AGENT_P AGENT_PARALLEL=$AGENT_PARALLEL" && env | grep _SHARD_ | sort | tr "\n" " "'
+          echo
+          vmstat -t 10 > "$RUNNER_TEMP/vmstat.log" &
+          rc=0; ROOT_FULL=1 WEB=0 make test || rc=$?
+          awk 'NR>2 {printf "%s/%s ", $1, $15}' "$RUNNER_TEMP/vmstat.log"; echo
+          exit $rc
 
       - uses: ./.github/actions/go-cache-save
 
