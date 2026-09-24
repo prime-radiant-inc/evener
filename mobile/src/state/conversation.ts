@@ -1182,9 +1182,31 @@ export function createConversationStore() {
     for (const turn of before.turns) {
       for (const item of turn.items) {
         if (!owned.has(item.transcriptKey ?? item.id)) continue;
-        const survivor = afterItems.find((candidate) =>
-          itemIdentityMatches(candidate, item),
-        );
+        // Finding-3 (the #2213 disclosed-unfixed local finding, riding this
+        // lane): the first-identity-match selection can pair a keyless
+        // same-bare-id survivor ahead of the keyed continuation and retire a
+        // claim whose original item still stands. The pairing premise — one
+        // model holding keyless {id:X} beside keyed {id:X,K} — is unreachable
+        // through every store surface: live item frames route cross-turn by
+        // identity and merge into the existing holder (findItemTurnId's
+        // final fallback searches all turns), the page and rehydrate merges
+        // identity-fold same-identity pairs into one item, and the only
+        // remaining constructor is a wire frame installing the same identity
+        // twice within one turn's item list, which no flow produces and
+        // reconcileItemDuplicates folds at the next merge anyway. The
+        // defensive find-order preference below (unchanged reference first,
+        // then the exact-key continuation, then the identity fallback) makes
+        // the walk immune to the premise without changing any reachable
+        // pairing: keyed-vs-keyed same-id survivors never match the exact-key
+        // step, and the fallback keeps the package's own rule.
+        const survivor =
+          afterItems.find((candidate) => candidate === item) ??
+          afterItems.find(
+            (candidate) =>
+              item.transcriptKey !== undefined &&
+              candidate.transcriptKey === item.transcriptKey,
+          ) ??
+          afterItems.find((candidate) => itemIdentityMatches(candidate, item));
         if (survivor === undefined) {
           pageItemIds.delete(item.transcriptKey ?? item.id);
           pageItemIds.delete(item.id);
