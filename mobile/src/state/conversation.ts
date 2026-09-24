@@ -989,8 +989,8 @@ export function createConversationStore() {
         }
         // RoboRev round 4 (panel M2), round 5: the contribution question
         // is the merge's own answer — recorded where the fold made its
-        // keep-decisions (the non-tool survivors each identity edge
-        // carried, the supplier each tool field's selection kept), never
+        // keep-decisions (the supplier sets per surviving field, and the
+        // identity anchors a side holding all of owns outright), never
         // re-derived here. The hand-rolled field list this replaced
         // missed the rank-promoted status and the timing fields, so
         // genuinely contributed content could read as a duplicate and

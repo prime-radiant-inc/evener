@@ -17846,6 +17846,241 @@ describe("ConversationStore", () => {
       expect(rowById(store, "item_tool_1")).toBeUndefined();
     });
 
+    // RoboRev round 5, review round 1: an item whose content arrives only
+    // from the page — here as two identical copies a reissued fragment
+    // carries, folding into an identity skeleton the retained window
+    // remembers — is page-carried no matter what identical-input
+    // deduplication does to the field-level keep-decisions. The second
+    // identical fold erased the first copy's recorded supply, so a
+    // brand-new page item read as contributing nothing and an omitting
+    // rehydrate dropped history the page alone supplied.
+    it("counts a page-introduced item whose identical fragments fold together", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "agentMessage",
+                  id: "N1",
+                  turnId: "t1",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            // The page's fragment for the SAME turn carries the new item
+            // twice — the duplicated copies a reissue delivered — and the
+            // fold coalesces them with the remembered skeleton into one
+            // item whose every content-bearing input is a page input.
+            wireTurnFragment("t1", [
+              {
+                id: "N1",
+                turnId: "t1",
+                type: "agentMessage",
+                text: "page only",
+                status: "completed",
+              } as ThreadItem,
+              {
+                id: "N1",
+                turnId: "t1",
+                type: "agentMessage",
+                text: "page only",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The fold coalesced the skeleton and both page copies into one item.
+      const n1Items =
+        store.getState().conversation?.turns.flatMap((turn) => turn.items) ?? [];
+      expect(n1Items.filter((item) => item.id === "N1")).toHaveLength(1);
+      expect(rowById(store, "N1")).toBeDefined();
+      // The page alone introduced the item: it reports its keys...
+      expect(
+        loaded.status === "loaded" ? loaded.itemKeys.length : 0,
+      ).toBeGreaterThan(0);
+      // ...and owns it as history an omitting rehydrate keeps.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "N1")).toBeDefined();
+    });
+
+    // RoboRev round 5, review round 1: a supplier whose content a LATER
+    // fold replaced must not ride the non-tool set forward. The page
+    // supplies the text, an earlier retained fragment the startedAt, and a
+    // later retained fragment replaces the text: the startedAt survives
+    // the chain but the page's content does not, so the page contributed
+    // nothing and must claim nothing.
+    it("drops a page supplier a later retained fragment replaced", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "agentMessage",
+                  id: "X",
+                  status: "completed",
+                  startedAt: 1758000000000,
+                } as ThreadItem,
+                {
+                  type: "agentMessage",
+                  id: "X",
+                  text: "retained 2",
+                  status: "completed",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "X",
+                turnId: "tp",
+                type: "agentMessage",
+                text: "page text",
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The fold kept the later fragment's text and the earlier fragment's
+      // startedAt: the page's text is gone.
+      const merged = store
+        .getState()
+        .conversation?.turns.find((turn) => turn.id === "t1")
+        ?.items.find((item) => item.id === "X");
+      expect(merged).toMatchObject({
+        text: "retained 2",
+        startedAt: "2025-09-16T05:20:00.000Z",
+      });
+      // So the page reports no keys...
+      expect(
+        loaded.status === "loaded" ? loaded.itemKeys.length : 0,
+      ).toBe(0);
+      // ...and owns nothing an omitting rehydrate would keep.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "X")).toBeUndefined();
+    });
+
+    // RoboRev round 5, review round 1: the rewrite's selection, not the
+    // base's history, names a tool field's supplier. A page result whose
+    // output equals the later retained call's still loses the field to
+    // that call — the selection scanned it — so the page must not keep the
+    // supply the base's earlier fold recorded.
+    it("does not keep a page supplier the selection's equal-value winner covers", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "item_tool_1",
+                  toolName: "shell",
+                  transcriptKey: "K",
+                  callId: "call-1",
+                  status: "inProgress",
+                } as ThreadItem,
+                {
+                  type: "commandExecution",
+                  id: "item_tool_2",
+                  toolName: "shell",
+                  callId: "call-1",
+                  output: "b",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "item_tool_result_1",
+                turnId: "tp",
+                type: "commandExecution",
+                toolName: "shell",
+                transcriptKey: "K",
+                callId: "call-1",
+                output: "b",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      const call = store
+        .getState()
+        .conversation?.turns.find((turn) => turn.id === "t1")
+        ?.items.find((item) => item.id === "item_tool_1");
+      expect(call).toMatchObject({ output: "b" });
+      // The retained call covers the output without the page: no keys...
+      expect(
+        loaded.status === "loaded" ? loaded.itemKeys.length : 0,
+      ).toBe(0);
+      // ...and no page history an omitting rehydrate keeps.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "item_tool_1")).toBeUndefined();
+    });
+
     // A replayed input image reaches a page with no bytes and no stamped
     // url, only its content sha. D23d: the store's own merge hydrates the
     // page against the merged MODEL's serving session — the route the hub
