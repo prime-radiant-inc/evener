@@ -1,12 +1,12 @@
 diff --git a/internal/apptranscript/apptranscript.go b/internal/apptranscript/apptranscript.go
-index a50c606602..0d581cb850 100644
+index 26d9c8e54a..ebd894ede6 100644
 --- a/internal/apptranscript/apptranscript.go
 +++ b/internal/apptranscript/apptranscript.go
-@@ -562,7 +562,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
- 				}
- 				toolNames[part.ToolCall.ID] = part.ToolCall.Name
- 				if part.ToolCall.Name == "communicate" {
--					if text := CommunicateMessageFromArguments(part.ToolCall.Arguments); text != "" && !EchoesAssistantText(lastAssistantText, text) {
+@@ -603,7 +603,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
+ 					if text == "" && part.ToolCall.RawArguments != "" {
+ 						reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.RawArguments
+ 					}
+-					if text != "" && !EchoesAssistantText(lastAssistantText, text) {
 +					if text != "" {
  						items = append(items, appwire.ThreadItem{
  							Type:   "agentMessage",
