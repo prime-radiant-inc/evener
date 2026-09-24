@@ -496,6 +496,40 @@ test("a cancellation holds the settled slot, struck, with its fresh note", () =>
   expect(within(row).getByText("superseded by #5").className).toContain("note");
 });
 
+test("a stampless snapshot's settled slot names the task this call completed, not list order", () => {
+  // Legacy rows carry no completed_at, so every settle key ties and the
+  // window used to fall back to the LAST settled row in list order - which
+  // can be a different, older task than the one this call just completed,
+  // while the folded summary names the right one. The touched terminal task
+  // wins the tie so both views agree, and the call's fresh note rides the
+  // row it belongs to.
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "done", notes: "just finished" }] },
+      "Updated 1→done. Progress: 1/1 tasks complete.",
+      {
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "the one just completed",
+            prompt: "",
+            status: "done",
+            settled: true,
+          },
+          { id: 2, type: "implement", description: "still open", prompt: "", status: "open" },
+          { id: 3, type: "implement", description: "older done", prompt: "", status: "done" },
+        ],
+      },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows[0]!.textContent).toContain("the one just completed");
+  expect(rows[0]!.textContent).toContain("just finished");
+  expect(rows[0]!.textContent).not.toContain("older done");
+});
+
 test("the window shrinks when slots are empty: no settled task, no next task", () => {
   const { unmount } = renderItem(
     taskItem({ action: "update", updates: [{ id: 1, status: "in_progress" }] }, "Updated 1→in_progress.", {

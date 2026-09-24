@@ -72,6 +72,9 @@ export interface TouchedRow {
   touch: MutationTouch;
   label: string; // description (append; update when state is known) or "#<id>" (update, state absent)
   note?: string;
+  // The wire task id an update row touched; append rows mint no
+  // client-visible id. Drives the window's tie-break preference.
+  id?: number;
 }
 
 export interface Progress {
@@ -216,6 +219,7 @@ function updateRows(item: ItemModel, updates: Record<string, unknown>[]): Touche
       touch,
       label: taskLabel(state, id),
       note: str(update, "notes") || undefined,
+      id,
     });
   }
   // The daemon may advance a DIFFERENT task to in_progress as a side effect
@@ -318,16 +322,19 @@ function taskMutationRecap(item: ItemModel): string {
 // most recently SETTLED task (done or cancelled - a cancellation is the
 // plan's most recent "finished" event and belongs in the first slot rather
 // than vanishing), the in-progress task, and the first open task in list
-// order. Timestamps order the settled slot, with list position breaking ties
-// - a snapshot without timestamps therefore falls back to the LAST settled
-// row in list order, the same degradation the panel gives.
+// order. Timestamps order the settled slot; `prefer` (the terminal task
+// THIS call settled) breaks ties first, so a stampless legacy snapshot
+// names the task the folded line just named instead of a list-order
+// stranger; remaining ties (including all-absent stamps, when the call
+// settled nothing) fall back to the LAST settled row in list order, the
+// same degradation the panel gives.
 export interface TaskWindow {
   settled?: TaskRow;
   current?: TaskRow;
   next?: TaskRow;
 }
 
-export function stateWindow(tasks: TaskRow[] | null): TaskWindow {
+export function stateWindow(tasks: TaskRow[] | null, prefer?: number): TaskWindow {
   if (!tasks) return {};
   const settledAll = tasks.filter((task) => task.status === "done" || task.status === "cancelled");
   // Only the terminal stamp orders settles: updatedAt advances on any later
@@ -353,11 +360,24 @@ export function stateWindow(tasks: TaskRow[] | null): TaskWindow {
     const fraction = parts?.[2]?.padEnd(9, "0") ?? "000000000";
     return at + Number(fraction.slice(0, 3)) + Number(`0.${fraction.slice(3)}`);
   };
-  // >= makes the later list entry win a tie, so equal/absent timestamps
-  // resolve to the most recent settle in list order rather than the first.
+  // Ties (equal or absent timestamps) resolve first to the preferred task,
+  // then to the later list entry - the most recent settle in list order
+  // rather than the first.
+  const winsTie = (candidate: TaskRow, current: TaskRow): boolean => {
+    if (prefer === undefined) return true;
+    if (candidate.id === prefer && current.id !== prefer) return true;
+    if (current.id === prefer && candidate.id !== prefer) return false;
+    return true;
+  };
   let settled: TaskRow | undefined;
   for (const task of settledAll) {
-    if (settled === undefined || settleKey(task) >= settleKey(settled)) settled = task;
+    if (settled === undefined) {
+      settled = task;
+      continue;
+    }
+    const key = settleKey(task);
+    const best = settleKey(settled);
+    if (key > best || (key === best && winsTie(task, settled))) settled = task;
   }
   return {
     settled,
@@ -451,7 +471,10 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
     remaining: progress?.remaining,
   });
   const state = parseTaskState(item.raw);
-  const win = stateWindow(state);
+  // The terminal task this call settled wins the window's stampless tie -
+  // the body must name the same task the folded line does.
+  const settledTouch = touched.find((row) => row.touch === "done" || row.touch === "cancelled");
+  const win = stateWindow(state, settledTouch?.id);
   const fresh = freshNotes(item);
   return (
     <div className={CLASS.card} data-testid="task-card">

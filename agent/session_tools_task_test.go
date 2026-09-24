@@ -187,6 +187,23 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 	})
 }
 
+func TestTaskTool_MixedAddAndNonTerminalUpdateCarriesProgress(t *testing.T) {
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "existing"}})
+	result := h.call(t, map[string]any{
+		"add":    []map[string]any{{"description": "new task", "type": "implement", "prompt": "p"}},
+		"update": []map[string]any{{"id": 1, "status": "open", "notes": "reopened with a note"}},
+	})
+	if result.IsError {
+		t.Fatalf("mixed add+update failed: %s", result.Output)
+	}
+	// This call renders a card (its added rows), and the card's footer -
+	// aggregate, meter, and the Open-list affordance - derives from the
+	// Progress footer; every successful mutation output must carry it.
+	if !strings.Contains(result.Output, "Progress:") {
+		t.Fatalf("mixed add+non-terminal update output = %q, want a Progress footer", result.Output)
+	}
+}
+
 func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 	t.Run("terminal reassertion is not a settle", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "wrap up", Prompt: "wrap up"}})

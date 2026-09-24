@@ -438,9 +438,14 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
+					summary := taskpkg.Summarize(mutation.After)
+					deps.emit(events.EventTaskUpdated, taskUpdatedData(summary, "", epoch, revision))
 					return tool.StateResult{
-						Output: formatMutationAck(len(adds), updates),
+						// Every successful mutation output carries Progress:
+						// the card's footer (aggregate, meter, and the
+						// Open-list affordance) renders from it, so a mixed
+						// add + non-terminal update must not lose the footer.
+						Output: fmt.Sprintf("%s Progress: %s.", formatMutationAck(len(adds), updates), summary.ProgressText()),
 						State:  taskToolStateSnapshot(mutation.After, started, settled),
 					}, nil
 				}
