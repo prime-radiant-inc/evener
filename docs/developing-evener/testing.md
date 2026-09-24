@@ -469,6 +469,13 @@ The driver writes a screenshot per pane and a machine-readable `result.json`
 into an artifact directory; it is kept on failure, and on a pass only with
 `EVENER_SSH_E2E_UI_KEEP_ARTIFACTS` set.
 
+That directory is created under the test process's own temp root, which the
+harness removes when the process exits — so a kept artifact directory there does
+not outlive the run, and the check says so rather than implying otherwise. To
+actually keep the screenshots and `result.json`, name a base outside that root
+with `EVENER_SSH_E2E_UI_ARTIFACT_DIR` (alongside
+`EVENER_SSH_E2E_UI_KEEP_ARTIFACTS`).
+
 The non-mutation guard can be seen to fail on purpose, as the push check's can:
 with `EVENER_SSH_E2E_UI_GUARD_DISPOSABLE=1` the guard compares the disposable
 store instead of the host's real one, so the run trips it without the host's

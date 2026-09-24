@@ -379,15 +379,24 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	// confusingly at the first selector.
 	assertHubServesBuiltSPA(t, stack.addr, stack.token)
 
-	// The artifact directory: kept on failure for triage, removed on success
-	// unless explicitly kept.
-	artifactRoot, err := os.MkdirTemp("", "settingshostguard-")
+	// The artifact directory. By default it is created under THIS PROCESS's temp
+	// root, which the harness removes when the process exits — so "kept" would be a
+	// promise this code cannot keep. EVENER_SSH_E2E_UI_ARTIFACT_DIR names a base
+	// outside that root, and the keep message below says which of the two happened
+	// rather than implying the screenshots outlived the run.
+	artifactBase := os.Getenv("EVENER_SSH_E2E_UI_ARTIFACT_DIR")
+	artifactRoot, err := os.MkdirTemp(artifactBase, "settingshostguard-")
 	if err != nil {
 		t.Fatalf("artifact root: %v", err)
 	}
+	artifactsSurvive := artifactBase != ""
 	t.Cleanup(func() {
 		if t.Failed() || os.Getenv("EVENER_SSH_E2E_UI_KEEP_ARTIFACTS") != "" {
-			t.Logf("artifacts kept at %s", artifactRoot)
+			if artifactsSurvive {
+				t.Logf("artifacts kept at %s (outside the run's temp root, so they outlive this process)", artifactRoot)
+			} else {
+				t.Logf("artifacts written to %s — that path is inside this run's temp root and is removed when the process exits; set EVENER_SSH_E2E_UI_ARTIFACT_DIR to a directory outside it, with EVENER_SSH_E2E_UI_KEEP_ARTIFACTS, to keep the screenshots and result.json", artifactRoot)
+			}
 			return
 		}
 		_ = os.RemoveAll(artifactRoot)
