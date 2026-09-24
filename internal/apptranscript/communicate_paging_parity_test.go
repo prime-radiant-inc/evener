@@ -384,3 +384,110 @@ func TestItemWindowFlushesUnpairedCommunicate(t *testing.T) {
 		t.Errorf("item-window keys = %v, want full read keys %v", windowKeys, wantKeys)
 	}
 }
+
+// TestIncrementalAppendSuppressesEchoedCommunicateOnResume proves the
+// incremental index scan reconstructs LastAssistantText when a group's
+// opener (the assistant turn that seeds the deferred communicate bytes AND
+// sets LastAssistantText) lives in the previously indexed prefix and the
+// paired result turn is appended later. The healed-communicate branch
+// (apptranscript.go ProjectTurn) suppresses an echoed agentMessage when the
+// healed message equals the assistant text the model already showed
+// (EchoesAssistantText(reg.LastAssistantText, msg)). The full read's single
+// shared registry carries LastAssistantText across records, so the echo is
+// suppressed. Before the fix, the resumed scan's openReg had empty
+// LastAssistantText (replayCommRawArgs returned only CommRawArgs), so the
+// echo was NOT suppressed — the result record's ItemCount was +1 vs the full
+// read, the item-window deficit check fired, and the resumed item-window
+// read hard-errored.
+func TestIncrementalAppendSuppressesEchoedCommunicateOnResume(t *testing.T) {
+	const rawArgs = `{message: "the answer"}` // malformed JSON — bare key, healed
+	// Group opener: user + assistant turn that shows "the answer" as visible
+	// text AND issues a communicate call whose raw bytes echo that same text.
+	// The communicate is healed (Arguments={}, RawArguments=rawArgs); when the
+	// paired result arrives (IsError=false), the healed message "the answer"
+	// matches the assistant text — the full read suppresses the echo.
+	opener := []transcript.Entry{
+		userEntry(1, "do the thing"),
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "the answer"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_echo",
+				Name:         "communicate",
+				Arguments:    json.RawMessage(`{}`),
+				RawArguments: rawArgs,
+			},
+			}}}}},
+	}
+	path := writeEntries(t, opener...)
+	cache := NewTurnCache()
+	// Cold read: builds the index over the opener records.
+	if _, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
+		ThreadRef: "local:th_comm_echo",
+		Limit:     40,
+	}, boundedTestProjector); err != nil {
+		t.Fatalf("cold: %v", err)
+	}
+
+	// Append the result turn (healed, IsError=false, no PrevalOnly) and a
+	// closing assistant text turn. The result turn's healed communicate
+	// message echoes the assistant text — the full read suppresses it.
+	suffix := []transcript.Entry{
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_echo",
+				Name:       "communicate",
+				IsError:    false,
+			}},
+		}}}},
+		assistantTextEntry(4, "all done"),
+	}
+	for _, e := range suffix {
+		appendFile(t, path, marshalEntryLine(t, e))
+	}
+
+	// Warm resume: the item-window read must NOT hard-error. Before the fix,
+	// openReg.LastAssistantText was empty, the echo was not suppressed, the
+	// result record's ItemCount was +1 vs the fresh full read, and the
+	// deficit check (item_paging.go) returned a hard error.
+	window, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
+		ThreadRef: "local:th_comm_echo",
+		Limit:     40,
+	}, boundedTestProjector)
+	if err != nil {
+		t.Fatalf("warm resume item-window read hard-errored (echoed communicate deficit): %v", err)
+	}
+
+	// Fresh full read: the shared registry carries LastAssistantText, so the
+	// echo is suppressed. The resumed scan must agree.
+	fresh := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	if len(fresh) != 1 {
+		t.Fatalf("full read produced %d turns, want 1", len(fresh))
+	}
+
+	// The echoed healed agentMessage must NOT appear in the resumed window's
+	// candidates. The assistant's own ContentText "the answer" is a legitimate
+	// agentMessage (one occurrence); the healed communicate echo would be a
+	// SECOND agentMessage with the same text — the full read suppresses it via
+	// EchoesAssistantText, and the resumed scan must match. Count the
+	// occurrences: exactly 1 (the assistant text), not 2 (assistant text + echo).
+	echoCount := 0
+	for _, c := range window.Candidates {
+		if c.Item.Type == "agentMessage" && c.Item.Text == "the answer" {
+			echoCount++
+		}
+	}
+	if echoCount != 1 {
+		t.Errorf("resume agentMessage count for %q = %d, want 1 (assistant text only, echo suppressed)", "the answer", echoCount)
+	}
+
+	// Parity: the resumed window's candidate keys must match the fresh full
+	// read's turn keys.
+	wantKeys := keysFor(fresh[0])
+	var windowKeys []string
+	for _, c := range window.Candidates {
+		windowKeys = append(windowKeys, c.Item.TranscriptKey)
+	}
+	if !reflect.DeepEqual(windowKeys, wantKeys) {
+		t.Errorf("resume keys = %v, want full read keys %v", windowKeys, wantKeys)
+	}
+}

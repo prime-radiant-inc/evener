@@ -916,7 +916,8 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				record.TurnID = owner
 				if openTurnID == "" {
 					openTurnID, openCalls = openGroupState(*index)
-					openReg = &ToolCallRegistry{CommRawArgs: replayCommRawArgs(file, *index, project)}
+					commRawArgs, lastAssistantText := replayCommRawArgs(file, *index, project)
+					openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText}
 				}
 			}
 			prevKind := schema.TurnKind("")
@@ -936,7 +937,8 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 				// and deferred communicate bytes (CommRawArgs) by
 				// re-projecting the group's records from the transcript.
 				openTurnID, openCalls = openGroupState(*index)
-				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: replayCommRawArgs(file, *index, project)}
+				commRawArgs, lastAssistantText := replayCommRawArgs(file, *index, project)
+				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText}
 			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
@@ -1824,22 +1826,27 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 
 // replayCommRawArgs re-projects the open group's records from the indexed
 // prefix to reconstruct the deferred communicate raw bytes (CommRawArgs) the
-// assistant turn seeded. The incremental scan initializes openReg with empty
+// assistant turn seeded, AND the LastAssistantText the last assistant turn in
+// the group set. The incremental scan initializes openReg with empty
 // CommRawArgs when a group continues from the previously indexed prefix, so
 // a rejected/healed communicate's result turn appended later would miss the
-// deferred bytes and its ItemCount would diverge from the full read. This
-// helper reads the group's records from the transcript file and re-projects
-// them with a fresh registry, then returns only the CommRawArgs map — the
-// same state the full read's single registry would carry. It is called only
-// on the continuation path (not on StartsGroup, where openReg is fresh by
-// definition), and only when project != nil (the scan is counting items).
-func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryProjector) map[string]string {
+// deferred bytes and its ItemCount would diverge from the full read. Likewise,
+// without LastAssistantText the healed-communicate echo-suppression branch
+// (EchoesAssistantText) would not fire on the continuation path, producing an
+// echoed agentMessage the full read suppresses — again diverging ItemCount.
+// This helper reads the group's records from the transcript file and re-projects
+// them with a fresh registry, then returns the CommRawArgs map AND
+// LastAssistantText — the same state the full read's single registry would
+// carry. It is called only on the continuation path (not on StartsGroup, where
+// openReg is fresh by definition), and only when project != nil (the scan is
+// counting items).
+func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryProjector) (map[string]string, string) {
 	if project == nil {
-		return map[string]string{}
+		return map[string]string{}, ""
 	}
 	n := index.recordCount()
 	if n == 0 {
-		return map[string]string{}
+		return map[string]string{}, ""
 	}
 	// Walk back to the group's start record.
 	startIdx := n - 1
@@ -1854,16 +1861,16 @@ func replayCommRawArgs(file *os.File, index turnIndexDisk, project BoundedEntryP
 		record := index.recordAt(i)
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
-			return reg.CommRawArgs
+			return reg.CommRawArgs, reg.LastAssistantText
 		}
 		entry, err := transcript.DecodeEntry(raw)
 		if err != nil {
-			return reg.CommRawArgs
+			return reg.CommRawArgs, reg.LastAssistantText
 		}
 		reg.Names = cloneToolNames(record.ToolSeed)
 		project(entry.Turn, record.TurnID, record.Index, reg)
 	}
-	return reg.CommRawArgs
+	return reg.CommRawArgs, reg.LastAssistantText
 }
 
 // recordAtKindTurn reconstructs a record's turn kind for the fallback id
