@@ -54,7 +54,7 @@ type appTurnProjection struct {
 }
 
 func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error) {
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	entries := 0
 	projection, err := apptranscript.ItemTurnProjectionFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > entries {
@@ -63,7 +63,7 @@ func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error)
 		// Positioning is apptranscript's now: TurnsFromFile groups entries
 		// into logical turns and assigns each item its Position/TranscriptKey
 		// there. Re-positioning here would clobber the grouped ordinals.
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
 	return appTurnProjection{turns: projection.Turns, persistedEntries: entries, nextEntry: projection.NextEntry}, err
 }
@@ -83,13 +83,13 @@ func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) (
 }
 
 func appTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry) (appTurnProjection, error) {
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	highest := 0
 	projection, err := apptranscript.ItemTurnProjectionFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > highest {
 			highest = entryIndex
 		}
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
 	return appTurnProjection{turns: projection.Turns, persistedEntries: highest, nextEntry: projection.NextEntry}, err
 }

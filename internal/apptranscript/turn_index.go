@@ -230,12 +230,12 @@ func (c *TurnCache) TurnCountFromFile(path string, maxLineBytes int, project Bou
 }
 
 func fullProjector(project BoundedEntryProjector) EntryProjector {
-	toolNames := map[string]string{}
+	reg := NewToolCallRegistry()
 	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		if project == nil {
 			return nil
 		}
-		return project(turn, turnID, turnIndex, toolNames)
+		return project(turn, turnID, turnIndex, reg)
 	}
 }
 
@@ -926,7 +926,7 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			var projectedItems []appwire.ThreadItem
 			if project != nil {
-				recordNames := cloneToolNames(record.ToolSeed)
+				recordNames := &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed)}
 				projectedItems = project(entry.Turn, openTurnID, entryIndex, recordNames)
 				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
 					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
@@ -1251,7 +1251,7 @@ func projectIndexedGroup(ctx context.Context, path string, index turnIndexDisk, 
 		if project == nil {
 			continue
 		}
-		projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+		projectedItems := project(entry.Turn, group.turnID, record.Index, &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed)})
 		items = append(items, projectedItems...)
 	}
 	if err := ctx.Err(); err != nil {

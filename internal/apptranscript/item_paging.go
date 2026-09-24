@@ -322,7 +322,7 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			entries = append(entries, entry.Turn)
 			projectedRecords++
 			if project != nil {
-				projectedItems := project(entry.Turn, group.turnID, record.Index, cloneToolNames(record.ToolSeed))
+				projectedItems := project(entry.Turn, group.turnID, record.Index, &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed)})
 				items = append(items, projectedItems...)
 			}
 			if err := ctx.Err(); err != nil {

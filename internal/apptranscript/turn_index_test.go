@@ -1356,7 +1356,7 @@ func TestTurnCacheCanceledProjectionPreservesValidItemIndexIdentity(t *testing.T
 	cache := NewTurnCache()
 	armed := false
 	var cancel context.CancelFunc
-	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 		items := boundedTestProjector(turn, turnID, turnIndex, toolNames)
 		if armed {
 			armed = false
@@ -1396,7 +1396,7 @@ func TestTurnCacheCanceledAppendScanDoesNotPublishResolverState(t *testing.T) {
 	cache := NewTurnCache()
 	armed := false
 	var cancel context.CancelFunc
-	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 		items := boundedTestProjector(turn, turnID, turnIndex, toolNames)
 		if armed && turn.Kind == schema.TurnToolResults {
 			cancel()
@@ -1586,21 +1586,21 @@ func reportIndexWriteMetrics(b *testing.B, copied, serialized, persisted int64) 
 }
 
 func sequentialTestProjector() EntryProjector {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return boundedTestProjector(turn, turnID, turnIndex, toolNames)
 	}
 }
 
-func boundedTestProjector(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
+func boundedTestProjector(turn schema.Turn, turnID string, turnIndex int, reg *ToolCallRegistry) []appwire.ThreadItem {
+	return ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
 }
 
-func projectionKeepingAllEntries(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+func projectionKeepingAllEntries(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 	return boundedTestProjector(turn, turnID, turnIndex, toolNames)
 }
 
-func projectionKeepingOddEntries(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+func projectionKeepingOddEntries(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 	if turnIndex%2 == 0 {
 		return nil
 	}

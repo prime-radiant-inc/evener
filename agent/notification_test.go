@@ -317,7 +317,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("direct steering owner=%q, want notification turn %q and not prior user turn %q", persistedOwner, starts[0].TurnID, priorTurnID)
 	}
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, nil, nil, nil)
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
 	liveEntries := make([]transcript.Entry, len(liveHistory))
 	for i, turn := range liveHistory {

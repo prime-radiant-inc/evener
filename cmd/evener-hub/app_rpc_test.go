@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
@@ -1609,7 +1610,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1650,7 +1651,7 @@ func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
 				ToolState:  []byte(`{"job_id":"job_1","status":"running"}`),
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 || items[0].ToolName != "delegate_send" || items[0].Output != "started delegate turn" {
 		t.Fatalf("tool result items=%+v", items)
@@ -1669,7 +1670,7 @@ func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -1691,7 +1692,7 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -1709,7 +1710,7 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
 		t.Fatalf("web_search items=%+v", items)
 	}
@@ -1736,7 +1737,7 @@ func TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected userMessage, got %+v", items)
 	}
@@ -1760,7 +1761,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 0 {
 		t.Fatalf("legacy commandExecution transcript part should be ignored, got %+v", items)
@@ -1768,7 +1769,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1802,7 +1803,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 				MediaType: "image/png",
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1830,7 +1831,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1850,7 +1851,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1864,7 +1865,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	checkpoint := appItemsFromReplayTurn("turn_4", 4, schema.Turn{
 		Kind:    "CHECKPOINT",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 	if len(checkpoint) != 1 {
 		t.Fatalf("checkpoint items=%+v", checkpoint)
 	}
@@ -1875,7 +1876,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	summary := appItemsFromReplayTurn("turn_5", 5, schema.Turn{
 		Kind:    "SUMMARY",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 	if len(summary) != 1 {
 		t.Fatalf("summary items=%+v", summary)
 	}

@@ -84,7 +84,7 @@ func TestTranscriptItemKeysMatchLiveAndIndexedHistory(t *testing.T) {
 		path,
 		appTranscriptMaxLineBytes,
 		apptranscript.ItemWindowOptions{ThreadRef: "local:th_key_parity", Limit: len(items)},
-		func(schema.Turn, string, int, map[string]string) []appwire.ThreadItem {
+		func(schema.Turn, string, int, *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
 			return append([]appwire.ThreadItem(nil), items...)
 		},
 	)

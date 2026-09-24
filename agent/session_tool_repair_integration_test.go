@@ -159,14 +159,15 @@ func TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent(t *testing.T) 
 	}
 }
 
-// TestExecTool_OversizedValidJSONDivergesIntent proves finding A direction 2:
-// oversized VALID JSON sets RawArgumentsRejected (ValidateRawArguments rejects
-// on byte length) so the live path suppresses intent, but on the reload path
-// the oversized bytes never reach assistantHistoryMessage's !json.Valid branch,
-// so RawArguments stays "" and reload WOULD show intent. Both directions must be
-// gated consistently. This test pins the live safety suppression (no intent)
-// that the fix must preserve.
-func TestExecTool_OversizedValidJSONDivergesIntent(t *testing.T) {
+// TestExecTool_OversizedValidJSONSuppressesIntent proves finding 4: oversized
+// VALID JSON is rejected by ValidateRawArguments (byte length), so the live path
+// suppresses intent (Description=""). The reload side now applies the same
+// size gate via tool.ValidateRawArguments in the projection (see
+// TestProjectTurn_OversizedValidJSONSuppressesIntent) and in the markdown
+// rendering (see TestRenderMarkdown_OversizedValidJSONSuppressesIntent), so
+// both paths suppress intent consistently. This test pins the live safety
+// suppression (no intent) that the fix preserves.
+func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
 	// Valid JSON object but over the 2 MiB MaxToolArgumentBytes limit.
 	large := strings.Repeat("x", 2*1024*1024+10)
 	originalArgs := []byte(`{"intent":"a","bar":"` + large + `"}`)

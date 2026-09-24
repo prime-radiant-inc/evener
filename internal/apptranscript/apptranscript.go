@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -19,6 +20,25 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// ToolCallRegistry threads per-call metadata across ProjectTurn calls so the
+// result turn can recover state set on the assistant turn. Names maps a call
+// ID to the tool name (for results with Name omitted); CommRawArgs carries
+// deferred communicate raw bytes from the assistant turn to the paired result
+// turn. Kept as separate maps so name resolution and raw-argument display are
+// independent — a communicate result with Name="" must still resolve to
+// "communicate", not to deferred raw bytes.
+type ToolCallRegistry struct {
+	Names             map[string]string
+	CommRawArgs       map[string]string
+	LastAssistantText string
+}
+
+// NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
+// initialized.
+func NewToolCallRegistry() *ToolCallRegistry {
+	return &ToolCallRegistry{Names: map[string]string{}, CommRawArgs: map[string]string{}}
+}
+
 // EntryProjector converts one already-decoded transcript turn into AppWire
 // items. The caller (the item reader or turn index's scan/range readers) has
 // already decoded the entry's raw JSON once — for its own Usage/Timestamp/
@@ -28,10 +48,10 @@ type EntryProjector func(turn schema.Turn, turnID string, turnIndex int) []appwi
 
 // BoundedEntryProjector converts one already-decoded transcript turn into
 // AppWire items. The supported bounded-reader contract is a named adapter that
-// calls ProjectTurn. Its toolNames argument is mutable, ephemeral state for
+// calls ProjectTurn. Its reg argument is mutable, ephemeral state for
 // that record only; callers must not inspect unrelated history.
 // EntryProjector remains the full-read contract for existing callers.
-type BoundedEntryProjector func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
+type BoundedEntryProjector func(turn schema.Turn, turnID string, turnIndex int, reg *ToolCallRegistry) []appwire.ThreadItem
 
 // ImageProjector converts transcript image content into an AppWire image item.
 type ImageProjector func(image llm.ImageData) appwire.InputItem
@@ -319,7 +339,7 @@ func UserFacingText(msg llm.Message) string {
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
-func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
+func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector) (out []appwire.ThreadItem) {
 	// A persisted message has the entry's recorded instant, not a duration.
 	defer func() {
 		if turn.Timestamp.IsZero() {
@@ -336,8 +356,14 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
-	if toolNames == nil {
-		toolNames = map[string]string{}
+	if reg == nil {
+		reg = NewToolCallRegistry()
+	}
+	if reg.Names == nil {
+		reg.Names = map[string]string{}
+	}
+	if reg.CommRawArgs == nil {
+		reg.CommRawArgs = map[string]string{}
 	}
 	if invariant.Enabled {
 		// Every item ProjectTurn emits belongs to the turn it was asked to
@@ -560,7 +586,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				if part.ToolCall == nil {
 					continue
 				}
-				toolNames[part.ToolCall.ID] = part.ToolCall.Name
+				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
 				if part.ToolCall.Name == "communicate" {
 					text := CommunicateMessageFromArguments(part.ToolCall.Arguments)
 					// A communicate with Arguments={} and RawArguments set is
@@ -569,16 +595,13 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					// malformed JSON the tool never ran) AND a repaired-malformed
 					// communicate that was healed and executed successfully
 					// (assistantHistoryMessage sets RawArguments for any
-					// invalid-JSON original). Thread the raw bytes into the
-					// paired tool result, which carries the error/PrevalOnly
-					// status that disambiguates: a rejected communicate surfaces
-					// its raw bytes there; a healed-and-executed one delivered its
-					// message live and renders nothing. Store the raw bytes in
-					// toolNames (keyed by call ID) so the result turn can recover
-					// them â a communicate result always carries its own name, so
-					// the map's name-fallback role is never exercised for it.
+					// invalid-JSON original). Defer the raw bytes to the paired
+					// tool result, which carries the error/PrevalOnly status that
+					// disambiguates. Store them in CommRawArgs (separate from
+					// Names) so a communicate result with Name="" still resolves
+					// to "communicate", not to raw bytes.
 					if text == "" && part.ToolCall.RawArguments != "" {
-						toolNames[part.ToolCall.ID] = part.ToolCall.RawArguments
+						reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.RawArguments
 					}
 					if text != "" && !EchoesAssistantText(lastAssistantText, text) {
 						items = append(items, appwire.ThreadItem{
@@ -595,7 +618,13 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				// Rejected call: show raw bytes, skip intent (mirrors #2162).
 				argumentsJSON := part.ToolCall.SentArguments()
 				description := ""
-				if part.ToolCall.RawArguments == "" {
+				// Suppress intent when RawArguments is set (invalid JSON) OR when
+				// the arguments exceed the size cap (oversized valid JSON is
+				// rejected by ValidateRawArguments on the live path, which
+				// suppresses Description there). The durable record only sets
+				// RawArguments for !json.Valid, so oversized valid JSON has
+				// RawArguments="" and would otherwise show intent on reload.
+				if part.ToolCall.RawArguments == "" && argrepair.ValidateRawArguments(part.ToolCall.Arguments) == nil {
 					description = ToolIntentFromArguments(part.ToolCall.Arguments)
 				}
 				item := appwire.ThreadItem{
@@ -617,6 +646,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				items = append(items, item)
 			}
 		}
+		reg.LastAssistantText = lastAssistantText
 		return items
 	case schema.TurnTool, schema.TurnToolResults:
 		var items []appwire.ThreadItem
@@ -626,27 +656,54 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			}
 			name := part.ToolResult.Name
 			if name == "" {
-				name = toolNames[part.ToolResult.ToolCallID]
+				name = reg.Names[part.ToolResult.ToolCallID]
 			}
 			if name == "communicate" {
-				// A rejected communicate (Arguments={}, RawArguments set) was
-				// deferred from the assistant turn. The result's IsError
-				// confirms the call was rejected â surface the raw bytes now,
-				// mirroring the SentArguments precedence used elsewhere. A
-				// healed-and-executed communicate (IsError=false) delivered its
-				// message live and renders nothing, matching live.
-				if part.ToolResult.IsError {
-					if rawArgs, ok := toolNames[part.ToolResult.ToolCallID]; ok && rawArgs != "" && rawArgs != "communicate" {
+				// A rejected communicate (IsError=true, PrevalOnly=true) was
+				// never executed — live suppresses it entirely (no
+				// EventCommunicate). Render the raw bytes as a tool/error item,
+				// not an agentMessage, so the user does not see an "assistant
+				// message" the assistant never said. A runtime failure
+				// (IsError=true, PrevalOnly=false) executed and returned an
+				// error; its raw bytes are not the delivered message, so do not
+				// surface them.
+				if part.ToolResult.IsError && part.ToolResult.PrevalOnly {
+					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
 						items = append(items, appwire.ThreadItem{
-							Type:   "agentMessage",
-							ID:     fmt.Sprintf("item_assistant_comm_%d_%d", turnIndex, i),
-							TurnID: turnID,
-							Text:   rawArgs,
-							Status: appwire.TurnStatusCompleted,
+							Type:          "commandExecution",
+							ID:            fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
+							TurnID:        turnID,
+							ToolName:      "communicate",
+							CallID:        part.ToolResult.ToolCallID,
+							ArgumentsJSON: rawArgs,
+							Status:        appwire.TurnStatusFailed,
+							PrevalOnly:    true,
 						})
 					}
 				}
-				delete(toolNames, part.ToolResult.ToolCallID)
+				// A healed communicate (IsError=false) delivered its message
+				// live. The durable record stores Arguments={} + RawArguments,
+				// so CommunicateMessageFromArguments returns "". Recover the
+				// delivered message by repairing RawArguments with the same
+				// RepairJSON machinery the live path used (read-only reuse via
+				// argrepair), then extract the message — reload then renders
+				// the same text live delivered.
+				if !part.ToolResult.IsError {
+					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
+						repaired := argrepair.RepairJSON([]byte(rawArgs))
+						if msg := CommunicateMessageFromArguments(repaired); msg != "" && !EchoesAssistantText(reg.LastAssistantText, msg) {
+							items = append(items, appwire.ThreadItem{
+								Type:   "agentMessage",
+								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
+								TurnID: turnID,
+								Text:   msg,
+								Status: appwire.TurnStatusCompleted,
+							})
+						}
+					}
+				}
+				delete(reg.Names, part.ToolResult.ToolCallID)
+				delete(reg.CommRawArgs, part.ToolResult.ToolCallID)
 				continue
 			}
 			item := appwire.ThreadItem{

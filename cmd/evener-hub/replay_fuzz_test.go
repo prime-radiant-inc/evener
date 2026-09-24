@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -176,11 +177,25 @@ func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte,
 		if p.ToolResult.Name != "communicate" {
 			continue
 		}
-		if p.ToolResult.IsError && commRawArgs != "" {
-			liveEvents = append(liveEvents, events.New(events.CommunicateData{Message: commRawArgs}))
+		// A rejected communicate (IsError=true, PrevalOnly=true) was never
+		// executed — live emits nothing for it (communicate's Exec fn never
+		// runs; the projector suppresses communicate start/end). The reload
+		// side renders a commandExecution tool error, which the allow-list in
+		// normalizeMetamorphic skips (it is a reload-only rendering with no
+		// live event path, like web_search).
+		if p.ToolResult.IsError {
+			continue
 		}
-		// A healed communicate (IsError=false) delivered its message live, not
-		// the raw bytes; the synthesizer models that by emitting nothing.
+		// A healed communicate (IsError=false) delivered its message live.
+		// Repair the raw bytes with the same RepairJSON machinery the live
+		// path used, extract the message, and emit it as a CommunicateData —
+		// matching what live delivered and what reload now recovers.
+		if commRawArgs != "" {
+			repaired := argrepair.RepairJSON([]byte(commRawArgs))
+			if msg := apptranscript.CommunicateMessageFromArguments(repaired); msg != "" {
+				liveEvents = append(liveEvents, events.New(events.CommunicateData{Message: msg}))
+			}
+		}
 	}
 	proj := appprojector.NewAppEventProjector("thread", "local:thread")
 	var notes []appprojector.AppNotification
@@ -191,7 +206,7 @@ func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte,
 
 	// Reload side: project both turns with a shared toolNames map, the way the
 	// hub's full-transcript read threads the map across entries.
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
 	aReconstructed, ok := decodeTranscriptTurn(acanonBytes)
 	if !ok {
 		t.Fatalf("hub decode rejected assistant entry: %s", acanonBytes)
@@ -231,16 +246,16 @@ func TestHubReplay_RejectedCommunicateLiveVsReload(t *testing.T) {
 	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
 	escaped := strings.ReplaceAll(rawArgs, `"`, `\"`)
 	assistantJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c6","name":"communicate","arguments":{},"raw_arguments":"` + escaped + `"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
-	resultJSON := []byte(`{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c6","name":"communicate","content":"invalid","is_error":true}}]},"timestamp":"2026-06-01T10:00:01Z"}}`)
+	resultJSON := []byte(`{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c6","name":"communicate","content":"invalid","is_error":true,"preval_only":true}}]},"timestamp":"2026-06-01T10:00:01Z"}}`)
 	checkLiveVsReloadMultiEntry(t, assistantJSON, resultJSON, rawArgs)
 }
 
 // TestHubReplay_RepairedCommunicateLiveVsReload verifies that a healed
 // communicate (Arguments={}, RawArguments=malformed, IsError=false result)
-// renders NOTHING on both live and reload. The assistant turn defers the raw
-// bytes; the result turn's success confirms the call was healed, so no raw
-// fallback fires. Live delivered the healed message (not the raw bytes), and
-// reload now matches by rendering nothing from the raw bytes.
+// renders the SAME healed message on both live and reload. Live repairs the
+// raw bytes and emits EventCommunicate{Message:"hello"}; reload recovers the
+// same message by repairing RawArguments with RepairJSON (read-only reuse).
+// Both sides emit agentMessage{Text:"hello"}, so the metamorphic passes.
 func TestHubReplay_RepairedCommunicateLiveVsReload(t *testing.T) {
 	const rawArgs = `{message: "hello"}` // malformed JSON — bare key, healed
 	escaped := strings.ReplaceAll(rawArgs, `"`, `\"`)
@@ -279,7 +294,7 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	if !ok {
 		t.Fatalf("hub decode rejected the canonical entry: %s", canonBytes)
 	}
-	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil, apptranscript.ToolResultOutputImages))
+	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages))
 
 	if eq, a, b := jsonEqItems(t, live, reload); !eq {
 		t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
@@ -377,7 +392,7 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 				continue
 			}
 			// communicate results are suppressed live (its start was suppressed).
-			// On reload, a communicate result is skipped here too â the raw
+			// On reload, a communicate result is skipped here too — the raw
 			// fallback (if any) was deferred from the assistant turn and is
 			// surfaced by ProjectTurn's result-gated branch, not by this
 			// synthesizer. The single-entry metamorphic sees a lone result turn
@@ -491,6 +506,14 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 		//     renders web_search ONLY on reload (added in ec96619c). 4a covers its
 		//     carry-through fidelity.
 		if it.Type == "commandExecution" && it.ToolName == "web_search" {
+			continue
+		}
+		//   - rejected communicate: live suppresses communicate start/end for
+		//     rejected calls (the Exec fn never runs), so nothing renders live;
+		//     reload emits a commandExecution tool error so the user sees what
+		//     was rejected. This is a reload-only rendering with no live event
+		//     path, like web_search above.
+		if it.Type == "commandExecution" && it.ToolName == "communicate" && it.PrevalOnly {
 			continue
 		}
 		//   - redacted thinking: there is no live reasoning-summary delta for
