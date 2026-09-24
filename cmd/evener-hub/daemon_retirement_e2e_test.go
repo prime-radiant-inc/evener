@@ -80,14 +80,7 @@ const (
 // by the awaited event -- this only decides how long a silent stream is treated
 // as a hang rather than a slow runner.
 func daemonRetirementScaleBudget(base, slowest time.Duration) time.Duration {
-	budget := base
-	if scaled := daemonRetirementWatchdogGrowth * slowest; scaled > budget {
-		budget = scaled
-	}
-	if budget > daemonRetirementWatchdogCeiling && daemonRetirementWatchdogCeiling > base {
-		budget = daemonRetirementWatchdogCeiling
-	}
-	return budget
+	return max(base, min(daemonRetirementWatchdogGrowth*slowest, daemonRetirementWatchdogCeiling))
 }
 
 // daemonRetirementProcessEvent mirrors the event line the cmd/evener helper
@@ -253,11 +246,7 @@ func (e *daemonRetirementProcessEvents) add(ev daemonRetirementProcessEvent) {
 	}
 	now := time.Now()
 	e.mu.Lock()
-	if !e.lastEventAt.IsZero() {
-		if gap := now.Sub(e.lastEventAt); gap > e.slowestReaction {
-			e.slowestReaction = gap
-		}
-	}
+	e.observeReactionLocked(now.Sub(e.lastEventAt))
 	e.lastEventAt = now
 	e.all = append(e.all, ev)
 	e.mu.Unlock()
@@ -282,10 +271,15 @@ func (e *daemonRetirementProcessEvents) closed() <-chan struct{} { return e.stop
 // belongs to. The family watchdog scales its tripwire to the slowest one.
 func (e *daemonRetirementProcessEvents) noteReaction(d time.Duration) {
 	e.mu.Lock()
+	e.observeReactionLocked(d)
+	e.mu.Unlock()
+}
+
+// observeReactionLocked keeps the slowest reaction seen; the caller holds e.mu.
+func (e *daemonRetirementProcessEvents) observeReactionLocked(d time.Duration) {
 	if d > e.slowestReaction {
 		e.slowestReaction = d
 	}
-	e.mu.Unlock()
 }
 
 // watchdogBudget is the hang-tripwire budget for a wait on this stream.
@@ -298,16 +292,11 @@ func (e *daemonRetirementProcessEvents) watchdogBudget() time.Duration {
 // budgetLocked sizes the tripwire from the current observation; the caller
 // holds e.mu.
 func (e *daemonRetirementProcessEvents) budgetLocked() time.Duration {
-	return daemonRetirementScaleBudget(e.baseBudgetLocked(), e.slowestReaction)
-}
-
-// baseBudgetLocked is the tripwire floor: the test-only override when set,
-// otherwise the production daemonRetirementWatchdog.
-func (e *daemonRetirementProcessEvents) baseBudgetLocked() time.Duration {
+	base := daemonRetirementWatchdog
 	if e.testOnlyBaseBudget > 0 {
-		return e.testOnlyBaseBudget
+		base = e.testOnlyBaseBudget
 	}
-	return daemonRetirementWatchdog
+	return daemonRetirementScaleBudget(base, e.slowestReaction)
 }
 
 func (e *daemonRetirementProcessEvents) history() []daemonRetirementProcessEvent {
@@ -717,9 +706,7 @@ func (f *daemonRetirementProcessFixture) watchdogBudget() time.Duration {
 	f.mu.Unlock()
 	budget := daemonRetirementWatchdog
 	for _, handle := range handles {
-		if b := handle.events.watchdogBudget(); b > budget {
-			budget = b
-		}
+		budget = max(budget, handle.events.watchdogBudget())
 	}
 	return budget
 }
@@ -831,10 +818,12 @@ func (f *daemonRetirementProcessFixture) waitDaemonExit() error {
 	if err != nil {
 		return err
 	}
+	timer := time.NewTimer(handle.events.watchdogBudget())
+	defer timer.Stop()
 	select {
 	case <-handle.events.closed():
 		return nil
-	case <-time.After(handle.events.watchdogBudget()):
+	case <-timer.C:
 		return fmt.Errorf("daemon pid %d never exited; events %+v", handle.entry.PID, handle.events.history())
 	}
 }
@@ -1331,6 +1320,8 @@ func (f *daemonRetirementProcessFixture) directExitCode(handle *daemonRetirement
 	if handle.waitErr == nil {
 		return -1, errors.New("handle was not started by the fixture")
 	}
+	exitTimer := time.NewTimer(handle.events.watchdogBudget())
+	defer exitTimer.Stop()
 	select {
 	case err := <-handle.waitErr:
 		if err == nil {
@@ -1340,7 +1331,7 @@ func (f *daemonRetirementProcessFixture) directExitCode(handle *daemonRetirement
 			return exitErr.ExitCode(), nil
 		}
 		return -1, err
-	case <-time.After(handle.events.watchdogBudget()):
+	case <-exitTimer.C:
 		return -1, fmt.Errorf("direct serve pid %d never exited", handle.entry.PID)
 	}
 }
