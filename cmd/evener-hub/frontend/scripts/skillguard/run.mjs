@@ -36,6 +36,7 @@ import {
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
 import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
@@ -236,6 +237,11 @@ export class Driver {
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
     this.milestonePath = milestonePath;
+    // How slow THIS machine has proven to be: every wait's budget is sized
+    // from the slowest reaction a completed wait has already observed, so a
+    // loaded runner gets a proportional hang tripwire instead of the fixed
+    // floor (see budgets.mjs).
+    this.reactions = new ReactionBudget();
     this.failures = [];
     this.chromeBinary = null;
     this.chromeArgv = [];
@@ -660,8 +666,23 @@ export class Driver {
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
     const startedAt = Date.now();
-    let deadline = startedAt + timeoutMs;
+    // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
+    // budget: a run that has already proven this machine slow widens it (up to
+    // the ceiling), so a correct-but-slow reaction under load is not read as a
+    // wedged page. The wait is still released ONLY by the awaited condition --
+    // the budget decides only how long silence is tolerated (see budgets.mjs).
+    const budgetMs = this.reactions.deadline(timeoutMs);
+    let deadline = startedAt + budgetMs;
     let heldSince = null;
+    // A completed wait is the driver's observation of how slow the app is on
+    // this machine. With settleMs the reaction is the time to the FIRST hold --
+    // the settle window that follows is a proof barrier, not a reaction --
+    // and without it the condition held at this poll, which is now.
+    const settled = (value) => {
+      const reactedAt = settleMs > 0 ? heldSince : Date.now();
+      this.reactions.observe(reactedAt - startedAt);
+      return value;
+    };
     let settleAccounted = false;
     // When the previous poll ATTEMPT landed, success or failure: the span a
     // failure excludes from the proof is measured from here.
@@ -687,7 +708,7 @@ export class Driver {
       readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
       if (held) {
-        if (settleMs <= 0) return value;
+        if (settleMs <= 0) return settled(value);
         if (heldSince === null) {
           heldSince = now;
           if (!settleAccounted) {
@@ -695,7 +716,7 @@ export class Driver {
             deadline = Math.max(deadline, now + settleMs);
           }
         }
-        if (now - heldSince >= settleMs) return value;
+        if (now - heldSince >= settleMs) return settled(value);
       } else if (!errored) {
         heldSince = null;
       }
@@ -707,7 +728,7 @@ export class Driver {
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
         const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
         throw new Error(
-          `timed out after ${timeoutMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));

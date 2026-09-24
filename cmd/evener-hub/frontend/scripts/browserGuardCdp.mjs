@@ -18,6 +18,8 @@
 // server on 9180 or the shared MCP Chrome. Every page load is pinned to the
 // guard's OWN loopback Vite origin by assertGuardOrigin.
 
+import os from "node:os";
+
 /**
  * Wrap a CDP operation with a timeout to prevent infinite hangs.
  *
@@ -164,10 +166,50 @@ function describeAttempts(attempts, lastAttempt) {
  * one of these and hands its signal down, and for a poll that signal is the
  * ONLY thing bounding total wall time: the attempt cap inside waitForHttp is a
  * backstop, not a clock.
+ *
+ * This is an ENVIRONMENT TRIPWIRE, not an assertion about startup time: the
+ * phase still ends only when the awaited event arrives, and the deadline only
+ * decides how long silence is read as "broken" rather than "slow". A FIXED
+ * floor therefore failed correct startups on loaded runners (runs 33803871850
+ * and 34257184696: "browser startup deadline exceeded after 30000ms" on a cold,
+ * contended machine). The announcement half was widened to
+ * CHROME_ANNOUNCEMENT_DEADLINE_MS; the endpoint/vite poll kept the bare floor.
+ * It is now load-aware: the floor on an idle machine, widening with the
+ * machine's oversubscription toward the announcement budget's ceiling.
  */
 export const STARTUP_DEADLINE_MS = 30000;
+export const STARTUP_DEADLINE_CAP_MS = 120000;
 
-export function createStartupDeadline(ms = STARTUP_DEADLINE_MS) {
+/**
+ * The startup deadline for a machine whose 1-minute load is `load1` over
+ * `cores` cores.
+ *
+ * Pressure is load per core, clamped to [0, 1]: an idle or lightly loaded box
+ * keeps the floor, a box at or past one runnable task per core gets the
+ * ceiling, and everything between interpolates. The signal is load AVERAGE, so
+ * it reflects contention that is already underway rather than a single
+ * instantaneous sample. An unreadable load (or a platform whose loadavg is
+ * meaningless, e.g. Windows) is treated as idle and keeps the floor -- an
+ * unknown machine must never look MORE pressured than it is.
+ */
+export function startupDeadlineMs({
+  floorMs = STARTUP_DEADLINE_MS,
+  capMs = STARTUP_DEADLINE_CAP_MS,
+  load1 = os.loadavg()[0],
+  cores = os.availableParallelism(),
+} = {}) {
+  // availableParallelism accounts for CPU affinity and, where the platform
+  // exposes one, a cgroup CPU quota -- the same effective-core signal
+  // scripts/lib/load-aware-workers.sh derives from nproc and the cgroup quota.
+  // An unreadable signal is treated as idle (pressure 0): an unknown machine
+  // must never look more pressured than it is.
+  const coresReadable = Number.isFinite(cores) && cores >= 1;
+  const load = Number.isFinite(load1) && load1 > 0 ? load1 : 0;
+  const pressure = coresReadable ? Math.min(1, load / cores) : 0;
+  return Math.round(floorMs + (capMs - floorMs) * pressure);
+}
+
+export function createStartupDeadline(ms = startupDeadlineMs()) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`browser startup deadline exceeded after ${ms}ms`)), ms);
   return {

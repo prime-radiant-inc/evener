@@ -2,7 +2,9 @@ import type {
   AskQuestionRef,
   ItemImage,
   ItemModel,
+  ThreadItemEventKind,
   ThreadModel,
+  TranscriptDisplayConfigV1,
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
@@ -33,6 +35,7 @@ import {
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
+  projectThread,
 } from "@evener/appwire-client";
 
 // --- the conversation native holds -------------------------------------------
@@ -167,32 +170,154 @@ const WARNING_STEERING_KINDS = new Set([
   "provider-failure",
 ]);
 
-// systemMessage eventKinds that warrant a warning tone.
-const WARNING_EVENT_KINDS = new Set(["loop_detection", "turn_limit", "error"]);
+// A system notice's family, keyed by the package projector's own event-kind
+// vocabulary. That vocabulary is `ThreadItemEventKind` (transcriptProjector.ts's
+// KNOWN_EVENT_KINDS, re-exported as THREAD_ITEM_EVENT_KINDS), so this record is
+// exhaustive: a new wire kind fails to compile until it is classified, and a kind
+// outside the vocabulary stays "unknown-system". The family is the one native
+// grouping concept the projector has no counterpart for, so it survives here
+// while the visible/hidden/critical decision is the projector's own (see
+// systemEventVisible). Every kind that warrants a warning *tone* is exactly a
+// family-"warning" kind, so the tone is derived from the family below.
+const SYSTEM_NOTICE_FAMILY_ENTRIES: Record<ThreadItemEventKind, NoticeFamily> = {
+  system_prompt: "hidden-instruction",
+  prompt_loaded: "hidden-instruction",
+  environment: "system-prelude",
+  round_timings: "diagnostic",
+  loop_detection: "warning",
+  turn_limit: "warning",
+  error: "warning",
+  plugin_loaded: "lifecycle",
+  skill_activated: "lifecycle",
+  hook_completed: "lifecycle",
+  context_compaction: "lifecycle",
+  compaction: "lifecycle",
+  goal_ended: "lifecycle",
+  fork_summary: "lifecycle",
+  tool_repair: "lifecycle",
+  model_switch: "lifecycle",
+  "notes-context": "lifecycle",
+};
 
-const HIDDEN_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
-const PRELUDE_EVENT_KINDS = new Set(["environment"]);
-const DIAGNOSTIC_EVENT_KINDS = new Set(["round_timings"]);
-const LIFECYCLE_EVENT_KINDS = new Set([
-  "plugin_loaded",
-  "skill_activated",
-  "hook_completed",
-  "context_compaction",
-  "compaction",
-  "goal_ended",
-  "fork_summary",
-  "tool_repair",
-  "model_switch",
-]);
+// The exhaustive Record above is checked at compile time; this Map is the
+// lookup, so a name that collides with an Object.prototype member
+// ("constructor", "toString", "__proto__") misses instead of answering with a
+// prototype value.
+const SYSTEM_NOTICE_FAMILY = new Map<string, NoticeFamily>(
+  Object.entries(SYSTEM_NOTICE_FAMILY_ENTRIES),
+);
 
-function systemFamily(eventKind: string | undefined): NoticeFamily {
-  if (eventKind && WARNING_EVENT_KINDS.has(eventKind)) return "warning";
-  if (eventKind && HIDDEN_EVENT_KINDS.has(eventKind))
-    return "hidden-instruction";
-  if (eventKind && PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
-  if (eventKind && DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
-  if (eventKind && LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
-  return "unknown-system";
+function systemNoticeFamily(eventKind: string | undefined): NoticeFamily {
+  if (eventKind === undefined || eventKind === "") return "unknown-system";
+  return SYSTEM_NOTICE_FAMILY.get(eventKind) ?? "unknown-system";
+}
+
+// The projector reads only `turns` from a ThreadModel to classify a system
+// event, so the probe carries inert values for the rest of the required shape.
+const SYSTEM_EVENT_PROBE: Omit<ThreadModel, "turns"> = {
+  ref: "system-event-probe",
+  threadId: "system-event-probe",
+  name: "system-event-probe",
+  status: { type: "idle" },
+  modelProvider: "",
+  model: "",
+  visionModel: "",
+  askPending: false,
+  pendingEscalations: [],
+  queue: null,
+  tasks: null,
+  jobsUpdatedAt: null,
+  jobsTreeRevision: null,
+  lastFrameAt: 0,
+  capabilities: {
+    send: false,
+    steer: false,
+    interrupt: false,
+    compact: false,
+    clear: false,
+    forkFromTurn: false,
+    shutdown: false,
+    changeModel: false,
+    changeVisionModel: false,
+    sharedNotes: false,
+    queue: false,
+    goal: false,
+    rename: false,
+  },
+  goal: null,
+  humanNote: "",
+  agentNote: "",
+  sessionUrls: [],
+  contextUsed: 0,
+  contextWindow: 0,
+  contextPressure: 0,
+  usage: null,
+  workMillis: 0,
+  reasoningEffortLevels: [],
+  supportsReasoning: false,
+  cwd: "",
+};
+
+// The projector's own visible/hidden/critical decision for one system event,
+// consumed rather than re-derived: its gate sets (transcriptProjector.ts:98-121)
+// are internal to the package, so native asks the exported projectThread instead
+// of copying them. A one-item probe thread answers "did this event survive".
+//
+// The verdict depends only on the event kind, the exit-code class, and the four
+// advanced gates (systemDecision reads nothing else), so one result per distinct
+// input is cached: a transcript's notices re-check the same handful of keys on
+// every re-projection instead of rebuilding a probe thread each time.
+const SYSTEM_EVENT_VISIBILITY = new Map<string, boolean>();
+
+function exitCodeClass(exitCode: number | undefined): string {
+  if (exitCode === undefined) return "?";
+  return exitCode === 0 ? "0" : "!";
+}
+
+// A one-item thread for classifying a single system event. projectThread reads
+// only `turns`, so the rest of the required shape is inert.
+export function systemEventProbe(
+  eventKind: string | undefined,
+  exitCode: number | undefined,
+): ThreadModel {
+  return {
+    ...SYSTEM_EVENT_PROBE,
+    turns: [
+      {
+        id: "system-event-probe",
+        status: "completed",
+        items: [
+          {
+            id: "system-event-probe",
+            turnId: "system-event-probe",
+            type: "systemMessage",
+            text: "",
+            eventKind,
+            exitCode,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function systemEventVisible(
+  eventKind: string | undefined,
+  exitCode: number | undefined,
+  config: TranscriptDisplayConfigV1,
+): boolean {
+  // The projector renders a kind outside its vocabulary unconditionally, and
+  // SYSTEM_NOTICE_FAMILY is exactly that vocabulary, so answer without a probe
+  // (and keep the cache below bounded to the known kinds).
+  if (eventKind === undefined || eventKind === "" || !SYSTEM_NOTICE_FAMILY.has(eventKind))
+    return true;
+  const advanced = config.advanced;
+  const key = `${eventKind}\u0000${exitCodeClass(exitCode)}\u0000${advanced.hookExits}\u0000${advanced.promptEvents ? 1 : 0}${advanced.roundTimings ? 1 : 0}${advanced.systemEvents ? 1 : 0}`;
+  const cached = SYSTEM_EVENT_VISIBILITY.get(key);
+  if (cached !== undefined) return cached;
+  const visible = projectThread(systemEventProbe(eventKind, exitCode), config).turns[0]?.entries.length === 1;
+  SYSTEM_EVENT_VISIBILITY.set(key, visible);
+  return visible;
 }
 
 function isUserMessage(item: ItemModel): boolean {
@@ -481,17 +606,18 @@ function projectItem(
 
   // System message — notice.
   if (isSystemMessage(item)) {
-    const tone: NoticeTone =
-      item.eventKind && WARNING_EVENT_KINDS.has(item.eventKind)
-        ? "warning"
-        : "system";
+    const family = systemNoticeFamily(item.eventKind);
+    // A family-"warning" kind is exactly the set that warrants a warning tone
+    // (loop_detection, turn_limit, error), so the tone follows the family rather
+    // than a second event-kind table.
+    const tone: NoticeTone = family === "warning" ? "warning" : "system";
     return {
       kind: "final",
       item: {
         kind: "notice",
         id: item.id,
         origin: "system",
-        family: systemFamily(item.eventKind),
+        family,
         tone,
         text: item.text,
         ...(item.eventKind ? { eventKind: item.eventKind } : {}),
