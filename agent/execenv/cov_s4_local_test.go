@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/fuzz/fault"
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // --- Glob (was 0%) -------------------------------------------------------
@@ -690,10 +691,10 @@ func TestListDirectory_DeepRecursionAndFlags(t *testing.T) {
 
 func TestProcessGroupGuards_NonPositivePID(t *testing.T) {
 	// pid <= 0 must be a no-op (never signals the whole session process group).
-	terminateProcessGroup(0)
-	terminateProcessGroup(-1)
-	killProcessGroup(0)
-	killProcessGroup(-42)
+	procgroup.Terminate(0)
+	procgroup.Terminate(-1)
+	procgroup.Kill(0)
+	procgroup.Kill(-42)
 }
 
 // --- gitpath: DirsFromRootToCwd -----------------------------------------

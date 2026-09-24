@@ -75,7 +75,8 @@ const CLASS = {
   testResult: requireClass(styles.testResult, "InstanceSheet.module.css", "testResult"),
 };
 
-const LITERAL_HEADER_ERROR = "Credential header must reference a $VARIABLE, never a literal secret.";
+const LITERAL_HEADER_ERROR =
+  "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -1078,7 +1079,7 @@ export function InstanceSheet({
               <FormRow
                 label="Credential header"
                 htmlFor={`${ids}-credentialheader`}
-                help="NAME=VALUE; the value must reference a $VARIABLE, never a literal secret."
+                help="NAME=VALUE; the value must reference a $VARIABLE or run a $(command), never a literal secret."
               >
                 <Input
                   id={`${ids}-credentialheader`}

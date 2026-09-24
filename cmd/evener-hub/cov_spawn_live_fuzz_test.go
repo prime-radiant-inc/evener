@@ -82,7 +82,7 @@ func FuzzSpawnLiveContracts(f *testing.F) {
 			"local": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://x", Auth: registry.AuthNone}},
 		})
 		for _, provider := range []string{"", "unknown", "openai", "local", "ollama"} {
-			_ = validateProviderCredentials(provider, gateReg)
+			_ = validateProviderCredentials(provider, "", gateReg)
 		}
 
 		responses := []string{

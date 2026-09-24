@@ -712,6 +712,124 @@ test("an expanded row of a descriptor WITHOUT summaryWhenExpanded keeps its summ
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
 });
 
+test("a function-form summaryWhenExpanded derives its swap text from the item", () => {
+  // The task card's expanded line recaps THIS call's change, so the swap
+  // text must be derivable per item, the way summary() itself is - the
+  // static string form still serves a descriptor whose placeholder is fixed
+  // (shell's "Ran a shell command").
+  registerToolRenderer({
+    match: "tci_summary_fn",
+    summary: () => "did a thing",
+    summaryWhenExpanded: (item) => `did a thing to ${item.id}`,
+    body: () => <div>body text</div>,
+    autoExpand: () => true,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_summary_fn" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing to item_1");
+});
+
+test("a foldByDefault descriptor settles folded even at activity level, and opens on click", () => {
+  // Activity (the app's default level) force-expands every body through the
+  // config default, so a card whose collapsed line already carries the news -
+  // the task card - needs a per-descriptor opt-out to land as one quiet
+  // line. The reader's own toggle still opens it, and it still wins afterward
+  // (the shared disclosure store), exactly like any other row.
+  registerToolRenderer({
+    match: "tci_fold_by_default",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_by_default" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
+test("foldByDefault still settles closed when the descriptor also sets autoExpand", () => {
+  // The two flags answer different questions: foldByDefault is the posture
+  // claim ("the collapsed line carries the news"), autoExpand the
+  // settle-moment nudge. The posture claim wins - a descriptor setting
+  // both must land folded, or "the fallback stays closed at every level"
+  // has an exception and the quiet-line contract is half-true.
+  registerToolRenderer({
+    match: "tci_fold_auto",
+    summary: () => "the news",
+    foldByDefault: true,
+    autoExpand: () => true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_auto" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+});
+
+test("an errored tool row still force-expands under a foldByDefault descriptor", () => {
+  // foldByDefault beats posture defaults, not attribution: "only failure
+  // earns the eye" survives the fold, or a failed task_list call would
+  // hide its error behind the quiet-line posture (the task card's own
+  // failed-mutation test catches exactly this at the card level).
+  registerToolRenderer({
+    match: "tci_fold_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(
+    <ToolCallItem item={item({ toolName: "tci_fold_fail", error: "task 9 not found" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByText("task 9 not found")).toBeTruthy();
+});
+
+test("a row whose failure is corroborated after it settled still force-opens", () => {
+  // `failed` is read reactively (like superseded), not only stashed at the
+  // settle transition: a row that settled clean but later turns out to have
+  // failed opens the moment the failure is known. The force-open is
+  // attribution, not a settle-time posture, and the fold cannot hide it.
+  registerToolRenderer({
+    match: "tci_late_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  const view = render(<ToolCallItem item={item({ toolName: "tci_late_fail" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  view.rerender(
+    <ToolCallItem item={item({ toolName: "tci_late_fail", error: "late boom" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByText("late boom")).toBeTruthy();
+});
+
+test("a foldByDefault descriptor stays folded under the full preset's open baseline, and still opens on click", () => {
+  // Full is the strongest force-open the app has: entering the level
+  // establishes an open disclosure baseline for the whole scope, and only an
+  // explicit store entry outranks a baseline. foldByDefault is the
+  // descriptor's claim that its collapsed line already carries the news, so
+  // its posture must hold there too - settled folded, with the reader's own
+  // click still winning (the explicit entry beats everything).
+  registerToolRenderer({
+    match: "tci_fold_full",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "tci_fold_full_scope",
+    <ToolCallItem item={item({ toolName: "tci_fold_full" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);

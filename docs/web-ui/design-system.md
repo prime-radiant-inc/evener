@@ -390,6 +390,40 @@ breaks the run rather than being spanned by it. Disclosure state goes through th
 disclosure store, so a reader's choice survives re-projection and the transcript's
 expand-all/collapse-all baselines reach it; the body mounts only while open.
 
+**Task status renders through one glyph family, shared by both task surfaces.** `TaskCheck`
+(`src/panes/session/transcript/tools/taskCheck.tsx`) is also transcript grammar rather than a
+widget, but unlike ToolRunGroup it serves TWO surfaces: the transcript's inline task card
+(`tools/taskCard.tsx`) and the tasks pane (`chrome/TasksPanel.tsx`), which the 2026-09
+task-rendering rework put on one grammar. It is a 16px square box drawn in the same line-art
+contract ToolIcon uses (stroke currentColor, 1.75, round caps/joins), the inner mark naming the
+state: plus = added, check = done, ✕ = cancelled, arrow = started, empty box = pending (not
+started yet — distinct from cancelled's ✕, so "won't happen" reads differently from "hasn't
+happened yet"). The glyph alone carries subtle semantic colour — the one scoped, user-approved
+exception to the cards' neutral ground (2026-07-31 tasklist renderer spec): done = `--alive`,
+started = `--accent`, added/cancelled/pending = `--ink-mid`. Text stays on the ink scale;
+done and cancelled read through strikethrough + low ink, never colour, and a cancelled glyph
+stays neutral — the attention hues are off limits for a routine reprioritization.
+
+The inline card is a WINDOW onto the plan, not a changelog (2026-09 rework, Jesse's ruleset):
+it settles folded at every verbosity level (descriptor `foldByDefault` — the level's
+expand-details default does not open it, only the reader's click does, which then persists
+through the shared disclosure store), so a run of task updates reads as quiet one-liners. The
+folded summary line names only the most recent update, mark + label (`→ Build the harness`);
+opening the row swaps that line for a recap sentence of the call's whole change
+(`Completed "Decide the folded line"; started "Build the harness"` — verbs Completed, Started,
+Added, Dropped, sentence case) and the body shows at most three slots joined by a hairline
+spine: most-recently-settled (done or cancelled; timestamps order it, list position breaks
+ties), in-progress, next. A note renders only when THIS call added it, set in the prose face —
+the note is the agent's own sentence. The footer keeps the aggregate sentence + meter and
+carries the whole-list affordance: an "Open task list" control that opens (and focuses) the
+session's Tasks pane and never closes it — an open operation, not the `/tasks` palette
+command's toggle — hidden where no session owns the card. An update
+that changes no task status renders nothing at all. The tasks pane keeps its grouped
+full-list structure — settled/in-progress/open groups, timestamps, meta, prompt disclosure,
+the full notes timeline — but renders its rows on the same TaskCheck family, its live row's
+latest note bare in the prose face (the "latest" label chip is gone), and its notes timeline
+in the same prose treatment.
+
 ---
 
 ## Directory selection: one shared interaction

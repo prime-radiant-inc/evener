@@ -285,8 +285,9 @@ func releaseURL(repoURL, release, asset string) string {
 // maxExtractedBytes caps total uncompressed output across one archive
 // extraction. Binaries are ~100MB installed; a highly compressible entry
 // could otherwise expand the 128MB download cap into disk exhaustion while
-// ignoring the operation deadline inside a single entry copy.
-const maxExtractedBytes = int64(512 << 20)
+// ignoring the operation deadline inside a single entry copy. A var so the
+// bomb tests can prove the cap with a small archive.
+var maxExtractedBytes = int64(512 << 20)
 
 // ctxReader returns a reader that stops the copy when ctx expires, so a
 // single large entry cannot outlive the overall upgrade deadline.

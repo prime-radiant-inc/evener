@@ -14,7 +14,26 @@ permissions:
   contents: read
 
 jobs:
-  web:
+  # The frontend gate runs as two lanes on separate runners, because its two
+  # halves share nothing: the unit/type/lint checks, and the production build
+  # plus the real-browser guards. Each takes about three minutes; run one
+  # after the other on one runner they took over six. `web`, the required
+  # check, passes only when both lanes do.
+  web-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/evener-hub/frontend/package-lock.json
+
+      - name: Typecheck, unit tests, and lint
+        run: make test-web
+
+  web-browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,8 +55,8 @@ jobs:
         with:
           kind: web
 
-      - name: Test, build, and browser guards
-        run: make test-web && make build-web && make test-web-browser
+      - name: Build and browser guards
+        run: make build-web && make test-web-browser
 
       - uses: ./.github/actions/go-cache-save
 
@@ -54,10 +73,22 @@ jobs:
           name: skillguard-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/skillguard-browser-*/artifacts/**
           retention-days: 7
-          # The step also fires when make test-web or make build-web is what
-          # failed, and then there is nothing to collect: say so quietly
-          # instead of adding a warning that reads like a second failure.
+          # The step also fires when make build-web is what failed, and then
+          # there is nothing to collect: say so quietly instead of adding a
+          # warning that reads like a second failure.
           if-no-files-found: ignore
+
+  web:
+    if: always()
+    needs: [web-unit, web-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both frontend lanes
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   native:
     runs-on: ubuntu-latest

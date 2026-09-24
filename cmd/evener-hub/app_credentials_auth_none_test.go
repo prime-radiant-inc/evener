@@ -45,7 +45,7 @@ func TestAuthSchemesNeedingNothing_EveryCredentialGateAgrees(t *testing.T) {
 				},
 			}, nil)
 
-			if err := validateProviderCredentials(instanceName, c.reg); err != nil {
+			if err := validateProviderCredentials(instanceName, "", c.reg); err != nil {
 				t.Fatalf("the launch preflight refused an auth = %q instance with no credential: %v", auth, err)
 			}
 			status, err := c.Status(appwire.AuthStatusParams{Provider: instanceName})
@@ -91,7 +91,7 @@ func TestAuthSchemeExemptionBelongsToTheInstance(t *testing.T) {
 	if got := client.callCount(); got != 0 {
 		t.Errorf("probe calls = %d, want 0: an instance with no credential must not be probed", got)
 	}
-	if err := validateProviderCredentials("ollama", c.reg); err == nil {
+	if err := validateProviderCredentials("ollama", "", c.reg); err == nil {
 		t.Error("the launch preflight accepted a key-authenticated instance with no key")
 	}
 }
