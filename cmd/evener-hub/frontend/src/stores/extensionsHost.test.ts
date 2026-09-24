@@ -189,3 +189,27 @@ test("an attach report on an unchanged registration keeps the instance", () => {
 
   expect(extensionsInstanceForHost("beta").store).toBe(instance.store);
 });
+
+// And for the merged marketplaces/plugins/launch-layer instance, whose three
+// cores each wire a subscription at start(): a host the registry does not list
+// keeps no instance at all - the previous registration's cores are disposed and
+// nothing replaces them - and a caller is handed the shared refusing store
+// rather than one that would read that host's catalogs.
+test("a host the registry reports gone keeps no instance and refuses instead of dialing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => ({ marketplaces: [MARKETPLACE] }) as never);
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
+  await extensionsInstanceForHost("beta").store.getState().fetchMarketplaces();
+  const dialed = fake.calls.length;
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  const gone = extensionsInstanceForHost("beta");
+  // A marketplaces FETCH never throws (the core tracks the failure in state),
+  // so the refusal is what the call leaves behind - and, above all, that it
+  // dialed nothing for a host the registry does not list.
+  await gone.store.getState().fetchMarketplaces();
+  expect(fake.calls.length).toBe(dialed);
+  expect(gone.store.getState().marketplacesError).toMatch(/not registered/);
+  expect(extensionsInstanceForHost("beta").store).toBe(gone.store);
+});

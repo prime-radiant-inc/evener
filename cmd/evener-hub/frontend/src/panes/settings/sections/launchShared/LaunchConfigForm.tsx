@@ -13,8 +13,9 @@
 // component exposes via onSaved rather than rendering itself).
 //
 // It DOES own the host boundary: `current` and `onSave` both describe the host
-// selected now, and this form is handed a new host without being unmounted, so
-// the draft is reseeded whenever `host` changes (see the seeding below).
+// selected now, and this form is handed a new host - or a re-registered one -
+// without being unmounted, so the draft is reseeded whenever the per-host store
+// INSTANCE behind it changes (see `draftOwner` and the seeding below).
 
 import {
   asEnvObjects,
@@ -80,6 +81,14 @@ export interface LaunchConfigFormProps {
   /** The host whose own model catalog the modelPicker/modelList fields offer
    * (component 07b). Omitted = the local hub, so a direct render is today's. */
   host?: string;
+  /** The per-host store instance the parent resolved for this host. The form's
+   * draft BELONGS to that instance, not to the host's name: a host removed and
+   * re-added under the same name is a different registration, whose instance
+   * (stores/launchConfig.ts's hostEntry) carries a different `current`,
+   * `onSave` and `paths`, so a draft typed for the old registration is reseeded
+   * rather than written to the new one. A caller with no instance to hand over
+   * (a direct render, a test) keeps the host name as the owner. */
+  draftOwner?: object;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   onSaved?: (resolved: LaunchConfigResolved) => void;
 }
@@ -105,6 +114,7 @@ export function LaunchConfigForm({
   validatePath,
   paths,
   host,
+  draftOwner,
   onSave,
   onSaved,
 }: LaunchConfigFormProps) {
@@ -112,26 +122,32 @@ export function LaunchConfigForm({
   const [state, setState] = useState<LaunchFormState>(() => buildFormState(supportedOptions, current));
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // The draft belongs to ONE host. A host-scoped parent hands this form a
-  // different host - and with it a different `current`, a different `onSave`
-  // and a different `paths` - while it stays mounted (the frame above a real
-  // pane remounts the body on a switch, and this form's own contract has to
-  // hold on its own too): a draft seeded once would then be shown as the new
-  // host's settings and submitted to the NEW host by Save.
+  // The draft belongs to ONE per-host store instance. A host-scoped parent
+  // hands this form a different instance - with it a different `current`, a
+  // different `onSave` and a different `paths` - while it stays mounted (the
+  // frame above a real pane remounts the body on a switch, and this form's own
+  // contract has to hold on its own too), and a re-registration under the same
+  // NAME does the same: stores/launchConfig.ts builds a new instance for the new
+  // registration. A draft seeded once would then be shown as the new
+  // registration's settings and submitted to it by Save.
   //
   // Reseeded DURING render rather than from an effect, which is what makes the
-  // commit that carries the new host the first one that renders it: an effect
-  // lands after that commit is painted, leaving a frame in which the old host's
-  // values stand under the new host's selection. Reset on the host and NOT on
-  // `current`: a same-host re-render (a refetch, a reconnect) brings a
-  // referentially new `current` and must not throw away what is being typed.
-  const [seededHost, setSeededHost] = useState<string | undefined>(host);
+  // commit that carries the new owner the first one that renders it: an effect
+  // lands after that commit is painted, leaving a frame in which the old
+  // registration's values stand under the new one. Reset on the OWNER and not on
+  // `current`: a same-host re-read (a refetch, a reconnect) brings a
+  // referentially new `current` from the SAME instance and must not throw away
+  // what is being typed. The host NAME alone is not the owner either - it is
+  // unchanged across a re-registration - so a caller that has the instance hands
+  // it over, and one that does not keeps today's name-keyed behavior.
+  const owner: object | string | undefined = draftOwner ?? host;
+  const [seededOwner, setSeededOwner] = useState<object | string | undefined>(owner);
   const [status, setStatusText] = useState("");
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
-  if (seededHost !== host) {
-    setSeededHost(host);
+  if (seededOwner !== owner) {
+    setSeededOwner(owner);
     setState(buildFormState(supportedOptions, current));
     setFieldErrors({});
     setStatusText("");
@@ -144,8 +160,9 @@ export function LaunchConfigForm({
   // concurrent rendering, so a render-phase clearTimeout can cancel a timer for
   // a reseed no commit ever carried out. An effect's cleanup also runs on the
   // edge a render can never reach - the form going away - which is what keeps a
-  // save's timer from outliving the form. It runs exactly once per host change.
-  useEffect(() => () => clearTimeout(clearTimerRef.current), [host]);
+  // save's timer from outliving the form. It runs exactly once per owner change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: owner is the trigger, not a read - the cleanup it gates clears a timer armed by the owner before it
+  useEffect(() => () => clearTimeout(clearTimerRef.current), [owner]);
 
   function setStatus(text: string): void {
     clearTimeout(clearTimerRef.current);

@@ -151,3 +151,33 @@ test("an attach report on an unchanged registration keeps the document store", (
 
   expect(agentsDocStoreForHost("beta")).toBe(store);
 });
+
+// The same rule, where the leak is a subscription rather than a stale cache: a
+// per-host instance wires a `changed` subscription at creation, so an entry kept
+// for a host the registry does not list keeps that host's subscription alive for
+// a file nothing can reach. The registry's answer is that there is no such
+// registration: nothing is kept, the previous registration's instance is
+// unwired, and what a caller is handed refuses rather than dialing.
+test("a host the registry reports gone keeps no instance and refuses instead of dialing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => DOC as never);
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
+  const registered = agentsDocStoreForHost("beta");
+  await registered.getState().fetch();
+  const dialed = fake.calls.length;
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  const gone = agentsDocStoreForHost("beta");
+  await expect(gone.getState().fetch()).rejects.toThrow(/not registered/);
+  expect(fake.calls.length).toBe(dialed);
+  expect(agentsDocStoreForHost("beta")).toBe(gone);
+
+  // The evicted instance is unwired: a broadcast for that host now lands
+  // nowhere, so nothing behind it keeps refetching for a host that is gone.
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: { host: "beta", method: "evener/settings/agentsDoc/changed", params: { ...DOC, content: "late" } },
+  } as AnyNotification);
+  expect(registered.getState().doc?.content).toBe(DOC.content);
+});

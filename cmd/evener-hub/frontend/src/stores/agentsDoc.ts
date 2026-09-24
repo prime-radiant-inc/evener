@@ -225,6 +225,25 @@ interface AgentsDocHostEntry {
 
 const hostInstances = new Map<string, AgentsDocHostEntry>();
 
+/** goneAgentsDocInstance is what a lookup for a host the registry does not list
+ * returns: ONE shared instance over a port that refuses every read and write and
+ * subscribes to nothing, so a host that is not registered is not dialed and no
+ * subscription is left behind for a file nothing can reach. It is shared rather
+ * than built per lookup - building one per call would itself wire a subscription
+ * per call for a host that does not exist. */
+const goneAgentsDocInstance = createAgentsDocInstance({
+  requireClient() {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no AGENTS.md store");
+  },
+  read: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no AGENTS.md store");
+  },
+  write: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no AGENTS.md store");
+  },
+  onNotification: () => () => {},
+});
+
 /** agentsDocStoreForHost returns the AGENTS.md document store for `host`: the
  * controller's own singleton for the local hub (and for an absent host), and a
  * per-host instance for a remote one. Its reads and writes go through
@@ -236,6 +255,18 @@ export function agentsDocStoreForHost(host: string | null | undefined): StoreApi
   const name = host as string;
   const registration = currentHostRegistration(name);
   const recorded = hostInstances.get(name);
+  // The registry does not list this host: nothing is kept for it. The instance
+  // this replaces belongs to a registration the registry no longer names, so its
+  // `changed` subscription (and its reconnect subscriber) is unwired before it
+  // is dropped - a null-registration placeholder would have kept that alive for
+  // a document nothing can reach, and would have dialed that host on any read.
+  if (registration === null) {
+    if (recorded !== undefined) {
+      recorded.instance.dispose();
+      hostInstances.delete(name);
+    }
+    return goneAgentsDocInstance.store;
+  }
   if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
     // The first answer after an instance was built before the registry had one
     // identifies it from here on; every other unchanged answer is the same one.

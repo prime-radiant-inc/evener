@@ -170,6 +170,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
           validatePath={(path, kind) => store.getState().validatePath(path, kind)}
           paths={paths}
           host={host}
+          draftOwner={store}
           onSave={(config) => store.getState().setLayer(cwd, "project", config)}
           onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
         />

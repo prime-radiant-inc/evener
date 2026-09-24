@@ -122,8 +122,6 @@ test("a re-render for the SAME host keeps the user's unsaved edits", async () =>
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("alpha-agent-edited");
 });
 
-
-
 /** The form alone, WITHOUT <Toast/>: the toast widget runs a timer of its own
  * whose teardown would be counted under the same spy, and the toast store is a
  * module singleton, so a save's toast does not need the widget mounted. */
@@ -190,4 +188,91 @@ test("a host switch tears the status timer down exactly once", async () => {
   );
   expect(clear).toHaveBeenCalledTimes(1);
   clear.mockRestore();
+});
+
+/** The form with the per-host store instance its parent resolved. */
+function renderOwnedForm(
+  host: string,
+  current: LaunchConfigLayer,
+  draftOwner: object,
+  onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>,
+) {
+  return render(
+    <LaunchConfigForm
+      options={SCHEMA.options}
+      layer="global"
+      current={current}
+      successToast="Launch defaults saved"
+      validatePath={async (path) => ({ valid: true, path })}
+      host={host}
+      draftOwner={draftOwner}
+      onSave={onSave}
+    />,
+  );
+}
+
+// The draft belongs to the per-host STORE INSTANCE, not to the host's name. A
+// host removed and re-added under the same name is a different registration -
+// stores/launchConfig.ts's hostEntry builds a NEW instance for it, with a new
+// `current`, a new `onSave` and new `paths` - while the name is unchanged. Keyed
+// on the name, a draft typed for the old registration survives the swap and Save
+// writes it to the NEW one.
+test("a re-registration under the same name re-seeds the draft, so Save emits the NEW registration's values", async () => {
+  const onSave = vi.fn(async (_config: LaunchConfigLayer) => RESOLVED);
+  const firstRegistration = { instance: "first" };
+  const secondRegistration = { instance: "second" };
+  const { rerender } = renderOwnedForm("beta", { agent: "beta-agent" }, firstRegistration, onSave);
+  const user = userEvent.setup();
+  const agent = screen.getByLabelText("Agent") as HTMLInputElement;
+  expect(agent.value).toBe("beta-agent");
+  await user.clear(agent);
+  await user.type(agent, "typed-for-the-old-registration");
+  expect(agent.value).toBe("typed-for-the-old-registration");
+
+  // Removed and re-added under the same name: a different instance, so a
+  // different registration to write to.
+  rerender(
+    <LaunchConfigForm
+      options={SCHEMA.options}
+      layer="global"
+      current={{ agent: "beta-agent-new" }}
+      successToast="Launch defaults saved"
+      validatePath={async (path) => ({ valid: true, path })}
+      host="beta"
+      draftOwner={secondRegistration}
+      onSave={onSave}
+    />,
+  );
+
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-new");
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+  expect(onSave).toHaveBeenCalledTimes(1);
+  expect(onSave.mock.calls[0]?.[0]).toEqual({ agent: "beta-agent-new" });
+});
+
+// The other half of the same rule, and the reason the instance - not a revision
+// or a refetch counter - is the owner: this host's pane re-reading its layer
+// hands the form a referentially new `current` while the instance is the same,
+// and that must not throw away what is being typed.
+test("a re-read for the SAME instance keeps the user's unsaved edits", async () => {
+  const onSave = vi.fn(async (_config: LaunchConfigLayer) => RESOLVED);
+  const registration = { instance: "first" };
+  const { rerender } = renderOwnedForm("beta", { agent: "beta-agent" }, registration, onSave);
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText("Agent"), "-edited");
+
+  rerender(
+    <LaunchConfigForm
+      options={SCHEMA.options}
+      layer="global"
+      current={{ agent: "beta-agent" }}
+      successToast="Launch defaults saved"
+      validatePath={async (path) => ({ valid: true, path })}
+      host="beta"
+      draftOwner={registration}
+      onSave={onSave}
+    />,
+  );
+
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-edited");
 });

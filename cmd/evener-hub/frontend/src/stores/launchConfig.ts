@@ -8,7 +8,7 @@
 // alive across the session, since the schema is server-global.
 
 import type { LaunchConfigStoreState } from "@evener/appwire-client";
-import { createLaunchConfigStore, type LaunchConfigStore } from "@evener/appwire-client";
+import { createLaunchConfigStore, type LaunchConfigClient, type LaunchConfigStore } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectedClientPort } from "./connection";
 import { isLocalHost } from "./hostRouting";
@@ -45,6 +45,20 @@ interface LaunchConfigHostEntry {
 
 const hostStores = new Map<string, LaunchConfigHostEntry>();
 
+/** goneLaunchConfigStore is what a lookup for a host the registry does not list
+ * returns: ONE shared store whose port refuses every call, so nothing a caller
+ * reaches here can read or write a host that is not registered. It holds no
+ * cache and no subscription, which is why it is shared rather than built per
+ * lookup - an instance per call would build something for a host that does not
+ * exist. */
+const goneClient: LaunchConfigClient = {
+  request: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no launch-config store");
+  },
+  onNotification: () => () => {},
+};
+const goneLaunchConfigStore = createLaunchConfigStore(goneClient);
+
 /** launchConfigStoreForHost returns the launch-config gateway for `host`: the
  * controller's singleton for the local hub (and for an absent host), and a
  * per-host instance for a remote one. */
@@ -64,6 +78,16 @@ export function launchConfigStoreForHost(host: string | null | undefined): Launc
 function hostEntry(name: string): LaunchConfigHostEntry {
   const registration = currentHostRegistration(name);
   const recorded = hostStores.get(name);
+  // The registry does not list this host: no instance is kept for it. Left as a
+  // null-registration placeholder, the entry would hold a live store - one that
+  // dials that host for every read - behind a host that is not registered, and
+  // it would hold it for as long as the host stayed gone. The entry goes (so a
+  // re-add builds a fresh one, as it always did) and the shared refusing store
+  // is handed back.
+  if (registration === null) {
+    hostStores.delete(name);
+    return { store: goneLaunchConfigStore, registration: null };
+  }
   if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
     // The first answer after an instance was built before the registry had one
     // identifies it from here on; every other unchanged answer is the same one.

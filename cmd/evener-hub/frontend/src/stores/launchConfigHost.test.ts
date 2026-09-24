@@ -204,3 +204,27 @@ test("a host resolved before the registry answered is kept when the registry ide
   await launchConfigStoreForHost("beta").getState().schema();
   expect(reads).toBe(1);
 });
+
+// A host the registry no longer lists is not registered to serve anything. The
+// null-registration placeholder the instance map used to keep left a live store
+// behind it for a host that does not exist - one that would happily DIAL that
+// host for a read - instead of the registry's answer, which is that there is no
+// such registration. Nothing is kept for it, and what a caller is handed refuses
+// rather than reading or writing a hub the registry does not know.
+test("a host the registry reports gone keeps no instance and refuses instead of dialing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => schema("beta") as never);
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "beta.example:22" })] } });
+  await launchConfigStoreForHost("beta").getState().schema();
+  const dialed = fake.calls.length;
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  const gone = launchConfigStoreForHost("beta");
+  await expect(gone.getState().schema()).rejects.toThrow(/not registered/);
+  expect(fake.calls.length).toBe(dialed);
+  // Nothing is cached for a host the registry does not list: the next lookup is
+  // the same refusing store, not a live instance built for a registration that
+  // does not exist.
+  expect(launchConfigStoreForHost("beta")).toBe(gone);
+});

@@ -158,6 +158,30 @@ const hubClient = {
 const localInstance = buildExtensionsInstance(hubClient, launchConfigStore.getState());
 export const extensionsStore = localInstance.store;
 
+/** goneInstance is what a lookup for a host the registry does not list returns:
+ * ONE shared instance whose three cores run over a port that refuses every call
+ * and subscribes to nothing. Nothing kept for the previous registration, and
+ * nothing built per lookup (each core's `start()` wires a subscription, so an
+ * instance per call would wire three of them for a host that does not exist). */
+const goneClient = {
+  request: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no extensions store");
+  },
+  onNotification: () => () => {},
+} satisfies MarketplacesClient & PluginsClient & LaunchLayerClient;
+const gonePaths: ExtensionsPathActions = {
+  validatePath: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no paths");
+  },
+  createDirectory: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no paths");
+  },
+  completePaths: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no paths");
+  },
+};
+const goneInstance = buildExtensionsInstance(goneClient, gonePaths);
+
 // The hub broadcasts a change to every CONNECTED client, so a change made
 // while this browser was disconnected reaches it as nothing at all: the
 // notification each core follows cannot recover it, and the reconnect can.
@@ -194,12 +218,22 @@ interface ExtensionsHostEntry {
 
 const hostInstances = new Map<string, ExtensionsHostEntry>();
 
+/** syncInstance tells one instance's three cores which connection is current.
+ * A repeat of the connection it already has is a no-op (their own
+ * connectionChanged says so), so this is safe to call on every transition. */
+function syncInstance(instance: ExtensionsInstance, state: Pick<ConnectionStoreState, "client" | "state">): void {
+  instance.marketplaces.connectionChanged(state.client, state.state);
+  instance.plugins.connectionChanged(state.client, state.state);
+  instance.launchLayer.connectionChanged(state.client, state.state);
+}
+
 function syncHostInstances(state: Pick<ConnectionStoreState, "client" | "state">): void {
-  for (const entry of hostInstances.values()) {
-    entry.instance.marketplaces.connectionChanged(state.client, state.state);
-    entry.instance.plugins.connectionChanged(state.client, state.state);
-    entry.instance.launchLayer.connectionChanged(state.client, state.state);
-  }
+  for (const entry of hostInstances.values()) syncInstance(entry.instance, state);
+  // The shared gone instance is not an entry - a host the registry does not list
+  // keeps nothing - but its cores still have to see the connection: without it
+  // they hold "no connection" and a call on them would return before reaching
+  // the refusing port at all.
+  syncInstance(goneInstance, state);
 }
 connectionStore.subscribe(syncHostInstances);
 
@@ -222,6 +256,18 @@ export function extensionsInstanceForHost(host: string | null | undefined): Exte
   const name = host as string;
   const registration = currentHostRegistration(name);
   const recorded = hostInstances.get(name);
+  // The registry does not list this host: nothing is kept for it. A
+  // null-registration placeholder would have held a live instance - three cores
+  // with three live subscriptions, each willing to read that host's catalogs -
+  // behind a host that is not registered; instead the previous registration's
+  // cores are disposed and the entry goes (so a re-add builds a fresh one).
+  if (registration === null) {
+    if (recorded !== undefined) {
+      disposeHostInstance(recorded.instance);
+      hostInstances.delete(name);
+    }
+    return goneInstance;
+  }
   if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
     // The first answer after an instance was built before the registry had one
     // identifies it from here on; every other unchanged answer is the same one.
