@@ -1790,17 +1790,19 @@ Rules, enforced at load with errors that name the instance and key:
   `registry` restates rather than importing from `llm` — `llm` imports
   `registry`, and the clamp passes an unrankable level through untouched, so
   an unchecked typo would reach the provider
-- `$ENV` expansion in `api_key`, `credential_headers`, and `vars` uses
-  today's `$NAME` / `${NAME}` / `$$` rules and happens at resolve time, so one
-  instance's missing variable never blocks another. An unset variable in
-  `api_key` or `credential_headers` yields an empty `Credential` with
-  `Warnings: no credential (<NAME> unset)` and the first-request error
-  (§5.2, so `inspect` keeps working); an unset variable in `vars` or a
-  template yields `Warnings: unresolved variable <NAME>` and the
-  first-request error (§4.2). In `headers` an unset variable **drops the header**
-  (that is how the optional `OpenAI-Organization`/`OpenAI-Project` headers
-  work; today it is an error, `apikey.go:261-276`); an empty-string value
-  removes an inherited header of that name.
+- `$ENV` expansion in `api_key`, `credential_headers`, `headers`, and
+  `vars` uses the $-expression grammar in §10.1 and happens at resolve
+  time, so one instance's missing expression never blocks another. A
+  missing variable in `api_key` or `credential_headers` yields an empty
+  `Credential` with `Warnings: no credential (<NAME> unset)` and the
+  first-request error (§5.2, so `inspect` keeps working); a missing
+  variable in `vars` or a template yields `Warnings: unresolved variable
+  <NAME>` and the first-request error (§4.2). In `headers` an unresolved
+  expression **drops the header** (that is how the optional
+  `OpenAI-Organization`/`OpenAI-Project` headers work); in
+  `credential_headers` it drops the header with a warning naming it, so an
+  auth failure has a local explanation. An empty-string value removes an
+  inherited header of that name.
 - **credential inheritance stops at the endpoint**: an instance that sets
   a literal `base_url` different from its base's `base_url` (compared after
   substituting the curated defaults, so copying the default URL verbatim
@@ -1843,11 +1845,136 @@ instance's key into the child (`env.go:56-60`, deleted with the roster).
 The remedy is by hand: edit the file or move it aside; the hub never
 rewrites or deletes it.
 
+### 10.1 The $-expression grammar
+
+One parser owns the grammar — `internal/valueexpr` — and every config
+surface that expands `$` expressions uses it: `api_key`,
+`credential_headers`, `headers`, and `vars` here, and every field MCP
+server config expands (command, args, env values, url, headers). That is
+why providers.toml and MCP config accept the same forms.
+
+The forms:
+
+- `$NAME` and `${NAME}` — an environment variable reference. A variable
+  that is unset or empty-but-set counts as missing: an empty credential
+  never resolves as a present one.
+- `${NAME:-default}` — a reference with a default, POSIX `:-` semantics:
+  the default fills a missing (unset or empty) variable, and is literal
+  text, never re-expanded. A default that fills in nothing but an auth
+  scheme word carries no credential: `${KEY:-Bearer}` with KEY unset
+  resolves as no credential with a warning, because a bare scheme word
+  is never credential material.
+- `$(command)` — a command expression. The interior is opaque to the
+  parser — the shell owns its syntax at run time — and the command's
+  whitespace-trimmed stdout is the value, verbatim: extracting the exact
+  value is the command's job, which is why a gateway's "run this to get a
+  token" recipe pipes through what it needs. The expression ends at the
+  first `)` that brings the paren depth back to zero; quotes are not
+  parsed, so a literal `)` inside a quoted argument ends the expression
+  early — restructure the command or wrap it in a helper script.
+- `$$` — a literal `$`.
+
+Evaluation. References and commands expand when the value's other
+expressions expand: at resolve time, per request on the agent path. A
+command runs through the host shell with the process environment, no TTY,
+a closed stdin (a prompting command reads EOF instead of hanging), and a
+30-second deadline that kills the whole process group; a bounded drain
+grace (at most five seconds) then closes captured pipes a straggler
+still holds, so the caller's worst-case wait is thirty-five seconds
+(amended 2026-09-23: the drain grace is part of the documented bound).
+Platforms that cannot put a command's whole tree in one process group —
+the builds outside linux and darwin — refuse a `$(command)` at
+evaluation rather than run it uncontained (amended 2026-09-23): a
+deadline kill that reaches only the direct child would leave the run's
+bounds a fiction.
+Results are cached
+per command text — instances sharing a command share one mint — until a
+JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a
+five-minute TTL; concurrent callers single-flight onto one run.
+The hub resolves command expressions only on the agent path: the launch
+preflight, the instance listings, and the load-time fingerprints all count
+a command-bearing credential as present — or, for a fingerprint, as its
+authored text — and never execute it, and the hub's live-model prefetch
+is refused outright for a command-credentialed instance, whose listing
+the hub cannot fetch without spending the mint — the last-known rows
+stay. (Amended 2026-09-23: the pane's credential-test probe is the one
+deliberate exception — the user asks the hub to exercise the credential,
+so the probe resolves the command once, on demand, and carries the mint
+on its one model-list request; every other hub-side resolution is
+automatic and refused.)
+The child alone runs credential commands, so a hub-side execution would
+mint a second token for stateful or one-time commands and prompt the
+user's password manager with no session launched, a transient failure
+there would block a launch the child's own retry would survive, and a
+fingerprint keyed on the minted value would rotate with the cache TTL and
+prune the cached live rows on every rollover (amended 2026-09-22: the
+contract now covers the listings, the live-model prefetch, and the
+fingerprints, not only the preflight).
+
+Failure. A failed command behaves like an unset variable: the value
+resolves to nothing and the warning carries the command's exit status and
+first stderr line, so an auth failure has a local explanation; the next
+resolution retries, nothing is negatively cached.
+
+Security. A command's output is a credential: it is cached in memory
+exactly like a resolved key, never logged, never serialized. A failure
+carries the exit status and the command's own stderr — never its stdout,
+and never the command text. Commands run with the evener process's
+environment and privileges, not under a session sandbox: the config file
+is trusted input, the same trust as an `api_key` line, and that includes
+a sandboxed session's token command running unsandboxed. Trusted input is
+the whole of the rule (amended 2026-09-22): in providers.toml only the
+credential fields — `api_key` and `credential_headers` — accept a
+`$(command)`, because only their values are treated as secrets; display
+`headers` and transport `vars` refuse one at load, since their values
+reach URLs and logs as ordinary text. In MCP config only the layers the
+user authors directly — the global `mcp.json` and `--mcp-config` files —
+accept one: the project's `.evener/mcp.json` is model-writable and plugin
+configs are third-party content, so both refuse a command at load rather
+than run it on the host.
+
+Authoring. The hub's authoring surfaces accept `$VARIABLE` references and
+`$(command)` expressions alike, plus a single auth-scheme word ahead of
+the credential material, separated from it by whitespace, and an
+auth-scheme word as a reference's default; a command is authored config, not a secret. The placement rules
+read order through the scanner's pieces, so a literal word behind
+credential material and a second literal word stay refused. The
+stored-key form is the one surface that refuses command expressions:
+the store never expands them, so one stored there would be sent as the
+literal text — the refusal points at the credential-header field
+(amended 2026-09-22).
+
+Compatibility (amended 2026-09-21 with the shared parser; 2026-09-22 with
+the row-merged credential slot):
+
+- `$` followed by `(` used to be silently literal in every value; it is
+  a command expression now. Escape with `$$`: `$$(echo)` writes a literal
+  `$(echo)`.
+- `${NAME:-default}` used to be a load error in providers.toml; it is a
+  reference form now.
+- MCP config: a bare `$NAME` used to pass through as literal text and now
+  expands; an unterminated `${` used to pass through as literal text and
+  is a load error now; a `:-` default filled only an unset variable and
+  now fills an empty one too (POSIX `:-`); and the contents of a
+  `${...}` used to be looked up verbatim, so a brace text outside
+  `[A-Za-z_][A-Za-z0-9_]*` — `${MY-VAR}`, `${MY.VAR}` — used to expand
+  (or fill its default) and is a load error now: the shared parser
+  validates reference names (added 2026-09-22).
+- Both files gain the `$$` escape.
+- The credential slot used to read `credential_headers.Authorization`
+  unconditionally; it now comes from the header the row-merged transport
+  sends (`Authorization` for the bearer schemes, the `auth_header` entry
+  for header auth, case-insensitive), so a row whose transport overrides
+  `auth_header` moves the credential slot with it.
+
 Credential resolution order, for every scheme that takes a key: the
 instance's own `api_key` (a literal or `$VAR`, today's
-`load_client.go:74-77` rule that the file wins); else a
-`credential_headers.Authorization` (which also suppresses any bearer); else
-the credentials-store file entry under the instance name; else the
+`load_client.go:74-77` rule that the file wins); else the credential
+header the launch's merged transport names —
+`credential_headers.Authorization` for the bearer schemes, the
+`auth_header` entry for header auth, matched case-insensitively (which
+also suppresses any bearer); else the credentials-store file entry under
+the instance name; else the
 environment: the instance's resolved `APIKeyEnv` (which the endpoint stop
 above empties), plus `<NAME>_API_KEY` under the §6.2 uppercase rule **only
 for instance names that are not registry ids** (so `[providers.anthropic]

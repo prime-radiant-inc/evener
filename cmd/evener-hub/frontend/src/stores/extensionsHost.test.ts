@@ -213,3 +213,40 @@ test("a host the registry reports gone keeps no instance and refuses instead of 
   expect(gone.store.getState().marketplacesError).toMatch(/not registered/);
   expect(extensionsInstanceForHost("beta").store).toBe(gone.store);
 });
+
+/** Puts the connection through a reconnect cycle, keeping the client. */
+async function reconnect(): Promise<void> {
+  connectionStore.setState({ state: "reconnecting" });
+  connectionStore.setState({ state: "ready" });
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+// The same removal, where the leak keeps THREE live cores (marketplaces, plugins
+// and the launch layer), each of which `syncHostInstances` keeps feeding
+// connectionChanged - so a removed host's instance goes on forwarding
+// evener/host/request for a host the registry no longer lists, on every
+// reconnect, for the rest of the session. Nothing evicts it lazily: the frame
+// renders its own note for a host that is gone instead of the body, so no pane
+// calls this accessor for it again.
+test("a host removed while a pane is mounted is evicted, so nothing of it survives", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => ({ marketplaces: [MARKETPLACE] }) as never);
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
+  const mounted = extensionsInstanceForHost("beta");
+  await mounted.store.getState().fetchMarketplaces();
+  const dialed = fake.calls.length;
+
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  // A wrapped update for that host is not this instance's business any more...
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: { host: "beta", method: "evener/plugin/updated", params: {} },
+  } as never);
+  await Promise.resolve();
+
+  // ...and a reconnect issues no request for a host the registry no longer lists.
+  await reconnect();
+  expect(fake.calls.length).toBe(dialed);
+});

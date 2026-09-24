@@ -6,10 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 
@@ -286,18 +284,21 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, new
 }
 
 // instanceIdentity fingerprints what a live listing is fetched from:
-// the provider, protocol, fully resolved endpoint routing (base URL
-// plus the protocol models endpoint -- a models_endpoint change
-// re-points the fetch as surely as a base_url change), and a
-// non-secret fingerprint of the credential material behind the source
-// label. A Reload that removes, renames, re-points, or re-credentials
-// an instance changes its identity, and rows fetched from the old
-// transport must not publish into the new one. Display fields
-// (default, warnings, vars) do not affect where rows come from and
-// are not part of it. The fingerprint hashes the secret bytes
-// themselves (SHA-256, in-memory only), so even a same-length rotation
-// changes the identity; only the digest enters the identity string,
-// never the secrets.
+// the provider, the protocol and endpoint routing the listing's own
+// resolve carries (the default row's, falling back to the provider's
+// own shape — a models_endpoint, base_url, or row protocol change
+// re-points the fetch all the same), and a non-secret fingerprint of
+// the credential material behind the source label. A Reload that
+// removes, renames, re-points, or re-credentials an instance changes
+// its identity, and rows fetched from the old transport must not
+// publish into the new one. Display fields (default, warnings, vars)
+// do not affect where rows come from and are not part of it. The
+// fingerprint hashes stable material (SHA-256, in-memory only) so even
+// a same-length rotation changes the identity, while command-bearing
+// material contributes its authored text — the minted value rotates
+// with the cache TTL, and an identity that followed it would prune the
+// cached live rows on every rollover and force a re-fetch. Only the
+// digest enters the identity string, never the secrets.
 func instanceIdentity(r *registry.Registry, name string) string {
 	inst, ok := r.Instance(name)
 	if !ok {
@@ -305,17 +306,29 @@ func instanceIdentity(r *registry.Registry, name string) string {
 	}
 	endpoint := ""
 	authprint := ""
-	if res, err := r.ResolveInstance(name); err == nil {
+	proto := inst.Protocol
+	// The endpoint view the listing resolves through: row-aware and
+	// mint-free, the same shape ResolveInstanceListing fetches with.
+	if res, err := r.ResolveInstanceTransport(name); err == nil {
 		endpoint = res.Transport.ModelsEndpoint
-		authprint = authFingerprint(res)
+		proto = res.Protocol
+		if fp, ok := r.AuthFingerprint(name); ok {
+			authprint = fp
+		}
 		if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
 			authprint += "\x00" + oauthAccountFingerprint(r.StateRoot(), name)
 		}
 		if res.Transport.Auth == registry.AuthGCPADC {
-			authprint += "\x00" + adcFingerprint(r, res)
+			// A stored credential JSON outranks the ADC file (spec
+			// §4.2) and already rotates the identity through
+			// AuthFingerprint; the file's bytes count only when the
+			// file is the material the launch would actually read.
+			if pres, perr := r.ResolveInstancePresence(name); perr != nil || pres.Credential.Source != "store" {
+				authprint += "\x00" + adcFingerprint()
+			}
 		}
 	}
-	return strings.Join([]string{inst.ProviderID, inst.Protocol, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
+	return strings.Join([]string{inst.ProviderID, proto, inst.BaseURL, endpoint, inst.Auth, inst.CredentialSource, authprint}, "\x00")
 }
 
 // CredentialConfigRevision returns name's effective credential-configuration
@@ -351,7 +364,14 @@ func CredentialConfigRevision(key []byte, r *registry.Registry, name string) str
 	if len(key) == 0 || r == nil || strings.TrimSpace(name) == "" {
 		return ""
 	}
-	res, err := r.ResolveInstance(name)
+	// Presence depth: the revision covers the credential's source label
+	// and the credential-header names, neither of which needs the value
+	// materialized — and the status and listing paths that serve this
+	// digest render on every pane refresh, where a full resolve could
+	// execute a command expression (spec §10.1). Every path that feeds
+	// CredentialConfigRevisionResolved resolves at this same depth, so
+	// one configuration MACs to one revision wherever it is read.
+	res, err := r.ResolveInstancePresence(name)
 	if err != nil {
 		return ""
 	}
@@ -429,30 +449,8 @@ func CredentialConfigRevisionResolved(key []byte, res registry.Resolved) string 
 	// sent" and "a stored key is dead". The value is the layer's name, never its
 	// variable or a secret.
 	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "authoredLayer", res.Credential.AuthoredLayer)
-	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "credentialHeaders", strings.Join(res.CredentialHeaderNames, ","))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// authFingerprint hashes the resolved authentication material
-// non-reversibly (SHA-256 over the actual secret bytes and the stable
-// account-identity fields, never the lengths alone): a same-length key
-// rotation, an OAuth account swap, or a header change alters the
-// fingerprint, so rows fetched under the old credential never publish
-// into the newly-credentialed instance. The digest never leaves the
-// process — it lives only in identity strings compared in-memory — so a
-// strong hash of the value is safe where a length was not sufficient.
-func authFingerprint(res registry.Resolved) string {
-	sum := sha256.New()
-	cred := res.Credential
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", cred.Source, cred.Value)
-	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", res.Transport.Auth, res.Transport.AuthHeader)
-	for _, k := range slices.Sorted(maps.Keys(res.CredentialHeaders)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.CredentialHeaders[k])
-	}
-	for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
-		_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", k, res.Headers[k])
-	}
-	return hex.EncodeToString(sum.Sum(nil))
 }
 
 // oauthAccountFingerprint folds the Codex OAuth record's stable
@@ -509,15 +507,11 @@ func oauthAccountFingerprint(stateRoot, instance string) string {
 // in-memory only) into the identity: an ADC account swap rewrites the
 // file behind a stable source label ("adc", no credential value in the
 // resolution), so without it rows fetched under the old account publish
-// into the newly-credentialed instance. A stored credential JSON
-// outranks the file (spec §4.2) and already feeds authFingerprint
-// through the resolved value; the file hash covers only the ADC branch.
-// Missing/unreadable contributes nothing: the source label already
-// distinguishes "no ADC" from "ADC".
-func adcFingerprint(r *registry.Registry, res registry.Resolved) string {
-	if res.Credential.Source == "store" {
-		return ""
-	}
+// into the newly-credentialed instance. The caller decides whether the
+// file is the material the launch reads at all — a stored credential
+// JSON outranks it (spec §4.2). Missing/unreadable contributes
+// nothing: the source label already distinguishes "no ADC" from "ADC".
+func adcFingerprint() string {
 	// No public accessor reaches the registry's injected env from
 	// here: the hub runs with the real process environment, and that
 	// lookup is what the authenticator resolves, so read it directly

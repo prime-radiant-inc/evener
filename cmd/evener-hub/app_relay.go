@@ -419,6 +419,12 @@ func relayNotificationRoutingKey(notification appwire.Notification, sourceID str
 
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
 	relayIdleInterval := hubRelayIdleInterval
+	// The relay's background goroutines fence against the lookup captured
+	// here, never the live seam: they outlive the request that started them.
+	relayTargetState := deletionTargetState
+	backgroundFenceError := func(ref, threadID string) error {
+		return relayTargetState.fenceError(cfg, ref, threadID, ref, "")
+	}
 	retryClock := newRelayRetryClock()
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
@@ -762,7 +768,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					cancelGuard()
 				}
 				if lockErr == nil {
-					if deletionFenceError(cfg, target.ref, target.threadID, "") == nil {
+					if backgroundFenceError(target.ref, target.threadID) == nil {
 						server.Broadcast(target.relayKey, notification.Method, notification.Params)
 					}
 					release()
@@ -1274,7 +1280,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				publish, release := commandFunctions(existing, state)
 				return existing, state, publish, release, nil
 			}
-			relayCtx, cancelRelay := context.WithCancel(context.Background())
+			// The server owns the canonical relay: its Shutdown ends the
+			// fan-out rather than leaving it to an idle tick.
+			relayCtx, cancelRelay := context.WithCancel(server.Lifetime())
 			handle := &hubRelayHandle{
 				ready:         make(chan struct{}),
 				ctx:           relayCtx,
@@ -1580,6 +1588,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			existing := relayedThreads[relayKey]
 			if existing == nil {
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
+				// relayCtx keeps the starting request's values but not its
+				// cancellation, since the relay outlives that request. The
+				// server that serves the relay owns it instead, from the first
+				// subscribe on: its Shutdown ends the relay rather than leaving
+				// it to an idle tick, which never comes while a subscriber stays
+				// registered. The hook is released once the relay itself ends.
+				stopOnServerShutdown := context.AfterFunc(server.Lifetime(), cancelRelay)
+				context.AfterFunc(relayCtx, func() { stopOnServerShutdown() })
 				// Label every attach this relay issues with its own key. A source
 				// that keys its subscriptions by remote thread identity uses it to
 				// tell this relay re-attaching from a second relay that reached the
@@ -1653,6 +1669,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
+			cancelRelay()
 			return err
 		}
 		relayMu.Unlock()
@@ -1886,12 +1903,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			subscribeForRecovery := func() (hubRelaySubscriptionResult, bool) {
 				result := make(chan hubRelaySubscriptionResult, 1)
 				go func() {
-					if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
+					if err := backgroundFenceError(subscribeParams.Ref, threadID); err != nil {
 						result <- hubRelaySubscriptionResult{err: err}
 						return
 					}
 					notifications, err := subscribeRelayRecovery(relayCtx, source, recoveryParams)
-					if fenceErr := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); fenceErr != nil {
+					if fenceErr := backgroundFenceError(subscribeParams.Ref, threadID); fenceErr != nil {
 						err = fenceErr
 					}
 					result <- hubRelaySubscriptionResult{notifications: notifications, err: err}

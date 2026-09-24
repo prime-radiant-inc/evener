@@ -20,6 +20,7 @@ import { LOCAL_HOST } from "../../../../stores/hostRouting";
 import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";
+import { useHostScopedLoad } from "../useConnectedEffect";
 import { BrowseSection } from "./BrowseSection";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
@@ -108,20 +109,13 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
     });
   }
 
-  // Mirrors DirListSetting's own mount-effect shape (see that component's
-  // comment): waits for the shared client to actually be ready before
-  // firing the one initial fetch, since AppShell mounts the pane tree
-  // independently of the connect() handshake completing.
-  useEffect(() => {
-    let started = false;
-    function tryStart() {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      void store.getState().fetchMarketplaces();
-      void store.getState().fetchPlugins();
-    }
-    tryStart();
-    return connectionStore.subscribe(tryStart);
+  // useHostScopedLoad, which is that mount shape (wait for the shared client to
+  // actually be ready, since AppShell mounts the pane tree independently of the
+  // connect() handshake completing) and re-issues this read when the selected
+  // host changes - or comes BACK after being away, which is what would otherwise
+  // leave this pane on the failure its away host answered with.
+  useHostScopedLoad(host, async () => {
+    await Promise.all([store.getState().fetchMarketplaces(), store.getState().fetchPlugins()]);
   }, [store]);
 
   function handleSegmentChange(segment: SegmentId) {

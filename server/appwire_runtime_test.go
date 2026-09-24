@@ -567,6 +567,53 @@ func TestAppDiagnosticsFromDetailedStatus_DelegatesLossless(t *testing.T) {
 	}
 }
 
+// A statusOnly thread/list is what the hub's liveness probe asks for every few
+// seconds per daemon. Its root diagnostics carry only what a probe reads --
+// jobs, watches, and each delegate's identity and lifecycle -- and none of the
+// catalog or per-delegate payload (task text, final message, structured
+// result) that make a full answer megabytes on a session with many delegates.
+// A plain list is unchanged.
+func TestThreadListStatusOnlyCarriesProbeDiagnosticsOnly(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	exitCode := 0
+	srv.mu.Lock()
+	srv.appEnvelope.Detailed = &DetailedStatus{
+		Tools:  []ToolInfo{{Name: "read_file", Source: "builtin"}},
+		Skills: []SkillInfo{{Name: "skill", Description: "a skill"}},
+		Jobs:   []JobStatusInfo{{JobID: "job_shell", JobType: "shell", Status: "completed", ExitCode: &exitCode, Command: "make", Intent: "build"}},
+		Delegates: []DelegateStatusInfo{{
+			DelegateID: "dlg_1", OwnerSessionID: "root", RootSessionID: "root", ChildSessionID: "child-1",
+			Lifecycle: "idle", Phase: "idle", Status: "idle", Task: "a long task", Description: "desc",
+			Message: json.RawMessage(`"final report"`), StructuredResult: json.RawMessage(`{"k":"v"}`),
+		}},
+		Watches:   []agent.WatchStatusInfo{{ID: "watch-root", Source: "timer"}},
+		TurnSlots: &TurnSlotStatus{InUse: 1, Cap: 50},
+	}
+	srv.mu.Unlock()
+
+	full, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	if got := full.Data[0].Evener.Diagnostics; got == nil || len(got.Tools) != 1 || len(got.Delegates) != 1 || got.Delegates[0].Task != "a long task" {
+		t.Fatalf("plain list root diagnostics = %+v, want the full answer", got)
+	}
+
+	slim, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{StatusOnly: true})
+	if err != nil {
+		t.Fatalf("statusOnly thread/list: %v", err)
+	}
+	want := &appwire.EvenerDiagnostics{
+		Jobs:      []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "completed", ExitCode: &exitCode, Command: "make", Intent: "build"}},
+		Delegates: []appwire.EvenerDelegateInfo{{DelegateID: "dlg_1", ChildSessionID: "child-1", Lifecycle: "idle"}},
+		Watches:   []appwire.EvenerWatchInfo{{ID: "watch-root", Source: "timer"}},
+	}
+	if got := slim.Data[0].Evener.Diagnostics; !reflect.DeepEqual(got, want) {
+		t.Fatalf("statusOnly root diagnostics = %+v, want %+v", got, want)
+	}
+}
+
 func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	records := []appserver.SequencedNotification{
 		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"turn_1","status":"inProgress"}}`)}},

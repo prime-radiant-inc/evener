@@ -218,7 +218,7 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 // has to come from the same resolution - otherwise the first key for a
 // credential-requiring provider would be refused as a moved endpoint.
 func resolvedInstanceFor(r *registry.Registry, id string, hidden bool) (registry.Instance, bool) {
-	resolved, err := r.ResolveInstance(id)
+	resolved, err := r.ResolveInstancePresence(id)
 	if err != nil {
 		return registry.Instance{}, false
 	}
@@ -413,7 +413,12 @@ func resolvedRowInstance(r *registry.Registry, inst registry.Instance) (registry
 	if r == nil {
 		return registry.Resolved{}, false
 	}
-	resolved, err := r.ResolveInstance(inst.Name)
+	// Presence depth: the row's destination and the credential's source
+	// label, with no value materialized and no command expression executed
+	// (spec §10.1) — the pane renders this on every refresh, and the
+	// revision the entry serves resolves at this same depth so one
+	// configuration MACs to one revision wherever it is read.
+	resolved, err := r.ResolveInstancePresence(inst.Name)
 	if err != nil {
 		return registry.Resolved{}, false
 	}

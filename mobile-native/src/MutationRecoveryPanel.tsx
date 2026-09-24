@@ -45,6 +45,12 @@ export interface NativeMutationRecoveryRow {
 	 * reconstitute here. Restore is withheld for such a row rather than
 	 * silently dropping the image. */
 	carriesAttachments: boolean;
+	/** Whether the record-aware fence offers Restore for this row at all,
+	 * independent of the composer. `actions` carries Restore only when the
+	 * converter result also allows it, so a row that offers Restore while its
+	 * actions lack it is offered-but-blocked: the panel still shows the
+	 * disabled affordance and the caller's hint. */
+	restoreOffered: boolean;
 	record: MutationRecoveryRecord<MutationAttachmentRef>;
 	actions: readonly NativeMutationRecoveryAction[];
 }
@@ -106,29 +112,58 @@ export function recoveredComposerText(
 	return input.filter(isTextInputItem).map((item) => item.text).join("\n");
 }
 
-// A rejected row restores only when there is text to restore; an orphaned row
-// has no daemon message to replay and is only ever discarded. The discard
-// offer is always present, so a row can never be stuck with no way out.
+// Whether a record can offer a restore at all, independent of the composer: a
+// rejected, non-interrupt mutation whose text a restore can write and which
+// carries no attachment a text-only restore would drop. A Stop's interrupt is
+// never restorable - it carries no composer text to replay - so the fence is
+// explicit rather than inferred from the text alone. This is the record-aware
+// half of the fence; the screen owns the other half - whether the composer can
+// accept a restore right now - and passes its result in, so no converter logic
+// lives here.
+export function recordOffersRestore(
+	record: MutationRecoveryRecord<MutationAttachmentRef>,
+): boolean {
+	return (
+		record.recoveryKind === "rejected" &&
+		record.method !== "turn/interrupt" &&
+		recoveredComposerText(record).length > 0 &&
+		!recordCarriesAttachments(record)
+	);
+}
+
+// The action derivation. Restore cannot be obtained without BOTH an explicit
+// record that passes the record-aware fence AND an explicit converter result:
+// neither has a default, so a caller cannot reach Restore by omission. The
+// discard offer is always present, so a row can never be stuck with no way out.
 export function nativeMutationRecoveryActions(
-	status: NativeMutationRecoveryStatus,
-	hasText: boolean,
-	carriesAttachments = false,
+	record: MutationRecoveryRecord<MutationAttachmentRef>,
+	canRestore: boolean,
 ): readonly NativeMutationRecoveryAction[] {
-	if (status === "rejected" && hasText && !carriesAttachments)
-		return ["restore", "discard"];
+	if (recordOffersRestore(record) && canRestore) return ["restore", "discard"];
 	return ["discard"];
+}
+
+// The recovery records one exact target owns; the projection layers each
+// record's actions on top. A count that needs only which rows exist uses this
+// directly, since the converter result cannot change the number of rows.
+function targetRecoveryRecords(
+	targetKey: string,
+	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null,
+): MutationRecoveryRecord<MutationAttachmentRef>[] {
+	if (snapshot === null) return [];
+	return snapshot.recovery.filter((record) => record.targetRef === targetKey);
 }
 
 export function projectNativeMutationRecovery(
 	targetKey: string,
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null,
+	canRestore: (record: MutationRecoveryRecord<MutationAttachmentRef>) => boolean,
 ): NativeMutationRecoveryRow[] {
-	if (snapshot === null) return [];
 	const rows: NativeMutationRecoveryRow[] = [];
-	for (const record of snapshot.recovery) {
-		if (record.targetRef !== targetKey) continue;
+	for (const record of targetRecoveryRecords(targetKey, snapshot)) {
 		const text = recoveredComposerText(record);
 		const carriesAttachments = recordCarriesAttachments(record);
+		const restoreOffered = recordOffersRestore(record);
 		rows.push({
 			targetKey,
 			clientMutationId: record.clientMutationId,
@@ -140,12 +175,9 @@ export function projectNativeMutationRecovery(
 				: { reason: record.recoveryReason }),
 			text,
 			carriesAttachments,
+			restoreOffered,
 			record,
-			actions: nativeMutationRecoveryActions(
-				record.recoveryKind,
-				text.length > 0,
-				carriesAttachments,
-			),
+			actions: nativeMutationRecoveryActions(record, canRestore(record)),
 		});
 	}
 	return rows.sort(
@@ -156,9 +188,10 @@ export function projectNativeMutationRecovery(
 }
 
 export interface MutationRecoveryActions {
-	/** Whether the composer can accept a restore right now: recovery must not
-	 * silently do nothing when an existing draft or image would be clobbered. */
-	canRestore(row: NativeMutationRecoveryRow): boolean;
+	/** Whether the composer can accept a restore of this record right now:
+	 * recovery must not silently do nothing when an existing draft or image
+	 * would be clobbered. */
+	canRestore(record: MutationRecoveryRecord<MutationAttachmentRef>): boolean;
 	/** Why a restore is currently blocked, for an accurate disabled-restore
 	 * hint; falls back to a generic sentence when the caller supplies none. */
 	restoreHint?(row: NativeMutationRecoveryRow): string | null;
@@ -312,10 +345,7 @@ export function useRecoveryPanel({
 		loading: projection.loading || (connected && runtime === null),
 		error,
 		failed: error !== null && error !== undefined,
-		count: projectNativeMutationRecovery(
-			targetKey,
-			projection.snapshot,
-		).length,
+		count: targetRecoveryRecords(targetKey, projection.snapshot).length,
 		retry,
 		discard,
 	};
@@ -356,7 +386,11 @@ export function MutationRecoveryPanel({
 		if (loading) return <Copy muted>Loading delivery status…</Copy>;
 		return <Copy muted>Recovery is unavailable.</Copy>;
 	}
-	const rows = projectNativeMutationRecovery(targetKey, snapshot);
+	const rows = projectNativeMutationRecovery(
+		targetKey,
+		snapshot,
+		(record) => actions.canRestore(record),
+	);
 	return (
 		<View style={{ gap: 12 }}>
 			{failure}
@@ -364,8 +398,12 @@ export function MutationRecoveryPanel({
 				<Copy muted>No messages need recovery.</Copy>
 			) : null}
 			{rows.map((row) => {
-				const offersRestore = row.actions.includes("restore");
-				const restorable = offersRestore && actions.canRestore(row);
+				// The record-aware fence decides whether Restore is offered at all;
+				// the converter result already folded into row.actions decides
+				// whether it is actionable now. A record-eligible row the composer
+				// cannot accept still shows a disabled Restore with the caller's hint.
+				const offersRestore = row.restoreOffered;
+				const restorable = row.actions.includes("restore");
 				return (
 					<View
 						key={row.clientMutationId}
@@ -379,19 +417,17 @@ export function MutationRecoveryPanel({
 							</Copy>
 						) : null}
 						<View style={styles.row}>
-							{row.actions.map((action) => (
+							{offersRestore ? (
 								<Action
-									key={action}
-									disabled={action === "restore" && !restorable}
+									disabled={!restorable}
 									onPress={() => {
-										if (action === "restore") {
-											if (restorable) actions.onRestore(row);
-										} else actions.onDiscard(row);
+										if (restorable) actions.onRestore(row);
 									}}
 								>
-									{action === "restore" ? "Restore to draft" : "Discard"}
+									Restore to draft
 								</Action>
-							))}
+							) : null}
+							<Action onPress={() => actions.onDiscard(row)}>Discard</Action>
 						</View>
 						{offersRestore && !restorable ? (
 							<Copy muted>

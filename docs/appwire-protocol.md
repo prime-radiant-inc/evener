@@ -1937,6 +1937,7 @@ _(no fields)_
 | `statuses` | `[]string` | yes |  |
 | `sourceIds` | `[]string` | yes |  |
 | `includeSubagents` | `bool` | yes |  |
+| `statusOnly` | `bool` | yes |  |
 
 
 ### `ThreadListResponse`

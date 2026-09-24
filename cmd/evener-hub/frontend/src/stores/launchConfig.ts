@@ -10,10 +10,16 @@
 import type { LaunchConfigStoreState } from "@evener/appwire-client";
 import { createLaunchConfigStore, type LaunchConfigClient, type LaunchConfigStore } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import { connectedClientPort } from "./connection";
+import { connectedClientPort, onConnectionNotification, onConnectionReplacedOrRecovered } from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
-import { currentHostRegistration, type HostRegistration, hostRegistrationChanged } from "./hosts";
+import {
+  currentHostRegistration,
+  type HostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+} from "./hosts";
 
 // The port's `request` is async so a call before connect() rejects, as a real
 // client's would, rather than throwing at the call site.
@@ -67,6 +73,45 @@ export function launchConfigStoreForHost(host: string | null | undefined): Launc
   return hostEntry(host as string).store;
 }
 
+/**
+ * onLaunchConfigUpdated subscribes `handler` to `host`'s own launch-config
+ * CHANGE, which is what lets a mounted launch-config pane converge when the
+ * configuration moves underneath it:
+ *
+ *   - A REMOTE host's own evener/launch/updated reaches this browser wrapped in
+ *     evener/host/notification, tagged with the host that owns it (the hub's
+ *     relayHostNotifications fan-out). It is unwrapped here through the same
+ *     host-bound port every read of that host already goes through
+ *     (remoteHostStoreClient), so a change tagged with any OTHER host - and the
+ *     controller's own plain frames - never reaches this subscription. Handling
+ *     the wrapper at the client seam rather than bypassing it is what makes the
+ *     tag load-bearing.
+ *
+ *   - The LOCAL hub's launch config is this browser's own, and its
+ *     evener/launch/updated arrives plainly over the connection the shared port
+ *     follows across a client swap (onConnectionNotification). It has no host
+ *     registration and so no attach epoch (stores/hosts.ts), which is why a
+ *     REPLACED controller connection or a RECOVERY is its second signal: a
+ *     change made while this browser was away carried no notification it saw.
+ *
+ * The handler fires once per notification; coalescing a burst is the caller's
+ * business (see useLaunchConfigRefresh). */
+export function onLaunchConfigUpdated(host: string, handler: () => void): () => void {
+  if (isLocalHost(host)) {
+    const stopNotifications = onConnectionNotification((n) => {
+      if (n.method === "evener/launch/updated") handler();
+    });
+    const stopConnection = onConnectionReplacedOrRecovered(handler);
+    return () => {
+      stopNotifications();
+      stopConnection();
+    };
+  }
+  return remoteHostStoreClient(host).onNotification((n) => {
+    if (n.method === "evener/launch/updated") handler();
+  });
+}
+
 /** hostEntry is the one accessor of the per-host cache and the ONE place a
  * re-registration is noticed: an instance whose recorded registration the
  * registry no longer gives is dropped and a fresh one built, so a host removed
@@ -78,14 +123,14 @@ export function launchConfigStoreForHost(host: string | null | undefined): Launc
 function hostEntry(name: string): LaunchConfigHostEntry {
   const registration = currentHostRegistration(name);
   const recorded = hostStores.get(name);
-  // The registry does not list this host: no instance is kept for it. Left as a
-  // null-registration placeholder, the entry would hold a live store - one that
-  // dials that host for every read - behind a host that is not registered, and
-  // it would hold it for as long as the host stayed gone. The entry goes (so a
-  // re-add builds a fresh one, as it always did) and the shared refusing store
-  // is handed back.
-  if (registration === null) {
-    hostStores.delete(name);
+  // The registry says this host is not configured (stores/hosts.ts's
+  // registrySaysHostGone - the same answer the eviction subscription above acts
+  // on): no instance is kept for it, so a lookup that races that subscription -
+  // or one made before this module was loaded - cannot rebuild one and hand out
+  // a store that dials a host nothing lists. The shared refusing store is handed
+  // back instead, and a re-add builds a fresh instance as it always did.
+  if (registrySaysHostGone(hostsStore.getState().load, name)) {
+    evictHostEntry(name);
     return { store: goneLaunchConfigStore, registration: null };
   }
   if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
@@ -101,6 +146,27 @@ function hostEntry(name: string): LaunchConfigHostEntry {
   hostStores.set(name, entry);
   return entry;
 }
+
+/** evictHostEntry drops `host`'s instance. createLaunchConfigStore holds no
+ * subscription (its port is used for `request` alone), so there is nothing to
+ * unwind: the cached schema goes with the entry. */
+function evictHostEntry(name: string): void {
+  hostStores.delete(name);
+}
+
+// The registry's own transition evicts - never a lookup. A host that leaves the
+// registry is rendered as the frame's own refusal instead of its body
+// (hostScopedSurface.tsx), so nothing calls this module's accessor for it again:
+// left to the accessor, its entry (and the schema it cached) would sit in this
+// map for the rest of the session. Only the registry's ANSWERED "gone" evicts
+// (stores/hosts.ts's registrySaysHostGone), so a host that is merely unattached,
+// or one whose read has not answered yet, is never dropped.
+hostsStore.subscribe(() => {
+  const load = hostsStore.getState().load;
+  for (const name of [...hostStores.keys()]) {
+    if (registrySaysHostGone(load, name)) evictHostEntry(name);
+  }
+});
 
 /** resetLaunchConfigHostStoresForTests drops every per-host instance between
  * tests. No production code should call this. */

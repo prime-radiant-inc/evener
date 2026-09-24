@@ -575,7 +575,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			if !prepared && item.snapshot != nil {
-				item.snapshot.Apply([]appserver.SequencedNotification{record})
+				item.snapshot.ApplyCommitted(record, params)
 			}
 			committed = append(committed, record)
 		}
@@ -646,7 +646,7 @@ func (s *Server) finishProcessing() {
 			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			if !prepared && item.snapshot != nil {
-				item.snapshot.Apply([]appserver.SequencedNotification{record})
+				item.snapshot.ApplyCommitted(record, params)
 			}
 			committed = append(committed, record)
 		}
@@ -819,7 +819,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			if !prepared && item.snapshot != nil {
-				item.snapshot.Apply([]appserver.SequencedNotification{record})
+				item.snapshot.ApplyCommitted(record, params)
 			}
 			committed = append(committed, record)
 		}
@@ -1302,9 +1302,13 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
 
-func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	diagnostics := appDiagnosticsFromDetailedStatus
+	if params.StatusOnly {
+		diagnostics = appStatusDiagnosticsFromDetailedStatus
+	}
 	s.mu.RLock()
-	data := []appwire.Thread{s.appThreadLocked()}
+	data := []appwire.Thread{s.appThreadWithDiagnosticsLocked(diagnostics)}
 	ids := make([]string, 0, len(s.appDescendants))
 	for id := range s.appDescendants {
 		ids = append(ids, id)
@@ -2456,6 +2460,14 @@ func (s *Server) appThread() appwire.Thread {
 }
 
 func (s *Server) appThreadLocked() appwire.Thread {
+	return s.appThreadWithDiagnosticsLocked(appDiagnosticsFromDetailedStatus)
+}
+
+// appThreadWithDiagnosticsLocked assembles the thread snapshot with its
+// diagnostics block projected from the envelope's detailed status by
+// diagnostics, so a caller that needs only part of the block never builds the
+// rest.
+func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus) *appwire.EvenerDiagnostics) appwire.Thread {
 	status := s.status
 	sourceID := s.appSourceID
 	threadID := s.appThreadID
@@ -2476,9 +2488,9 @@ func (s *Server) appThreadLocked() appwire.Thread {
 	}
 	pressure := envelope.ContextPressure
 	metrics := envelope.ContextMetrics
-	var diagnostics *appwire.EvenerDiagnostics
+	var threadDiagnostics *appwire.EvenerDiagnostics
 	if envelope.Detailed != nil {
-		diagnostics = appDiagnosticsFromDetailedStatus(*envelope.Detailed)
+		threadDiagnostics = diagnostics(*envelope.Detailed)
 	}
 	queue := envelope.Queue
 	pendingMutations := envelope.PendingMutations
@@ -2523,7 +2535,7 @@ func (s *Server) appThreadLocked() appwire.Thread {
 			ContextWindow:         metrics.Window,
 			ContextRemaining:      metrics.Remaining,
 			Capabilities:          s.appCapabilitiesLocked(status.State, processing),
-			Diagnostics:           diagnostics,
+			Diagnostics:           threadDiagnostics,
 			Queue:                 queue,
 			PendingMutations:      pendingMutations,
 			Tasks:                 taskAggregate,
@@ -2599,21 +2611,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 		})
 	}
 	for _, job := range ds.Jobs {
-		out.Jobs = append(out.Jobs, appwire.EvenerJobInfo{
-			JobID:            job.JobID,
-			JobType:          job.JobType,
-			Status:           job.Status,
-			Reason:           job.Reason,
-			ExhaustionBudget: job.ExhaustionBudget,
-			ExhaustionLimit:  job.ExhaustionLimit,
-			Resumable:        job.Resumable,
-			ExitCode:         job.ExitCode,
-			OutputBytes:      job.OutputBytes,
-			TranscriptRef:    job.TranscriptRef,
-			Command:          job.Command,
-			Intent:           job.Intent,
-			Task:             job.Task,
-		})
+		out.Jobs = append(out.Jobs, appJobFromDetailedStatus(job))
 	}
 	for _, delegate := range ds.Delegates {
 		out.Delegates = append(out.Delegates, appDelegateFromDetailedStatus(delegate))
@@ -2628,6 +2626,45 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 	}
 	out.Agents = append(out.Agents, ds.Agents...)
 	return out
+}
+
+// appStatusDiagnosticsFromDetailedStatus projects only what a liveness probe
+// reads (a statusOnly thread/list): jobs, watches, and each delegate's identity
+// and lifecycle. It skips the tool, skill and plugin catalogs and every
+// delegate's task, final message and structured result, which make the full
+// block megabytes on a session with many delegates.
+func appStatusDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnostics {
+	out := &appwire.EvenerDiagnostics{}
+	for _, job := range ds.Jobs {
+		out.Jobs = append(out.Jobs, appJobFromDetailedStatus(job))
+	}
+	for _, delegate := range ds.Delegates {
+		out.Delegates = append(out.Delegates, appwire.EvenerDelegateInfo{
+			DelegateID: delegate.DelegateID, ChildSessionID: delegate.ChildSessionID, Lifecycle: delegate.Lifecycle,
+		})
+	}
+	for _, watch := range ds.Watches {
+		out.Watches = append(out.Watches, appWatchFromDetailedStatus(watch))
+	}
+	return out
+}
+
+func appJobFromDetailedStatus(job JobStatusInfo) appwire.EvenerJobInfo {
+	return appwire.EvenerJobInfo{
+		JobID:            job.JobID,
+		JobType:          job.JobType,
+		Status:           job.Status,
+		Reason:           job.Reason,
+		ExhaustionBudget: job.ExhaustionBudget,
+		ExhaustionLimit:  job.ExhaustionLimit,
+		Resumable:        job.Resumable,
+		ExitCode:         job.ExitCode,
+		OutputBytes:      job.OutputBytes,
+		TranscriptRef:    job.TranscriptRef,
+		Command:          job.Command,
+		Intent:           job.Intent,
+		Task:             job.Task,
+	}
 }
 
 func appWatchFromDetailedStatus(watch agent.WatchStatusInfo) appwire.EvenerWatchInfo {

@@ -1133,7 +1133,7 @@ func TestClientMutation_IncorporationFailureCrashBoundariesRecoverWithoutDuplica
 
 // TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery
 // pins the restore→serve handoff across the failure-recovery append: the
-// entries RestoredTranscript exposes must match what readTranscriptFull sees
+// entries OnRestoredTranscript hands over must match what readTranscriptFull sees
 // in the same file, because serve projects exactly that retained list (the
 // daemon's turn snapshot and the projector's live-turn-id fence are seeded
 // from it). A restore that retained the pre-recovery list would seed serve one
@@ -1176,12 +1176,13 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			}
 			sess.Close()
 
-			restored := restoreQueuePersistTestSession(t, dir, id)
+			var captured restoredTranscriptCapture
+			restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 			defer restored.Close()
-			_, entries, ok := restored.RestoredTranscript()
-			if !ok {
-				t.Fatal("restored session retained no transcript entries")
+			if !captured.opened {
+				t.Fatal("restore handed over no transcript entries")
 			}
+			entries := captured.entries
 			path := transcriptPath(restored.stateDir, restored.id)
 			onDisk, err := readTranscriptFull(path)
 			if err != nil {

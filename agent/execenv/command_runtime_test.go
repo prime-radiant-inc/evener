@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // TestCommandRuntimeFactoryDrivesExecArgvWithoutForking pins the narrow command
@@ -98,7 +100,7 @@ func TestSystemCommandRuntimeConfigurationDefaultsToManagedProcessGroup(t *testi
 	configured := systemCommandRuntimeFactory{}.Argv("/fixture/shell").(*systemCommandRuntime)
 	configured.Configure(commandRuntimeConfig{})
 
-	want := processGroupSysProcAttr()
+	want := procgroup.SysProcAttr()
 	if !reflect.DeepEqual(configured.cmd.SysProcAttr, want) {
 		t.Fatalf("runtime default SysProcAttr = %#v, want %#v", configured.cmd.SysProcAttr, want)
 	}

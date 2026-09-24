@@ -77,6 +77,18 @@ export interface ToolRendererDescriptor {
   //                     must see, so it breaks a run exactly like "never".
   fold?: "never" | "quiet" | "consequential";
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
+  // foldByDefault opts a body OUT of the verbosity level's expand-details
+  // default: it settles folded at EVERY level (activity and full force-expand
+  // every other body through the config default), so only the reader's own
+  // toggle opens it - and that toggle then persists like any other, through
+  // the shared disclosure store. It also outranks the descriptor's own
+  // autoExpand nudge: the posture claim wins, so the body settles folded
+  // even at the settle moment that would otherwise auto-open it. One
+  // carve-out: a failed call still force-opens, so its error never hides
+  // behind the fold. For a card whose collapsed summary line already
+  // carries the news (the task card's window: its folded line names
+  // the latest update), so a run of updates reads as quiet one-liners.
+  foldByDefault?: boolean;
   // statusLine renders the row's standalone status line, mounted in the slot
   // below the summary/intent on BOTH of the row's render paths. The
   // descriptor owns whether it renders at all: return null while the row's
@@ -168,15 +180,17 @@ export interface ToolRendererDescriptor {
   // identity.
   summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
   // summaryWhenExpanded replaces the row's summary TEXT while the row is
-  // open. The one case today is shell: its summary IS the raw one-line
-  // command, and the expanded body already renders that same command
-  // pretty-printed (ShellCommandBlock), so an open row showing the raw line
-  // would show the call twice. The summary line itself stays - hiding it
-  // (the old shape of this field) lifted the disclosure chevron off the line
-  // it rides, onto the intent line or adrift on an intent-less row - so only
-  // the text swaps. Undefined (every other tool) renders summary() in both
-  // states, as before.
-  summaryWhenExpanded?: string;
+  // open. A fixed string serves a descriptor whose placeholder never varies
+  // (shell: its summary IS the raw one-line command, and the expanded body
+  // already renders that same command pretty-printed, so an open row showing
+  // the raw line would show the call twice). A function derives the swap text
+  // per item, for a descriptor whose open line recaps THAT call (the task
+  // card's "Completed "X"; started "Y"" sentence). The summary line itself
+  // stays - hiding it (the old shape of this field) lifted the disclosure
+  // chevron off the line it rides, onto the intent line or adrift on an
+  // intent-less row - so only the text swaps. Undefined (every other tool)
+  // renders summary() in both states, as before.
+  summaryWhenExpanded?: string | ((item: ItemModel) => string);
   // summaryLink, if present, is a URL that appears verbatim inside this
   // row's own summary() text and should render as a real, clickable link
   // rather than plain text - kata xw3t, the collapsed-row counterpart to

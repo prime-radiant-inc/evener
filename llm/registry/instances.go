@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,6 +12,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 // instance is a usable named provider (spec §5.1).
@@ -115,7 +119,14 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	if rec.head.Implicit == nil || !*rec.head.Implicit {
 		return false
 	}
-	switch rec.head.Transport.Auth {
+	// The scheme the listing derives the instance with — the same
+	// listingTransport computeInstances reads — decides the verdict, so a
+	// default row or glob that overrides the head's auth scheme moves the
+	// rename verdict with the instance the listing shows. The header-key
+	// check below resolves it once here, with the switch, rather than
+	// re-deriving the default row and globs.
+	transport := r.listingTransport(rec)
+	switch transport.Auth {
 	case AuthNone, AuthOptionalBearer:
 		return true
 	case AuthOAuthOpenAICodex:
@@ -132,7 +143,7 @@ func (r *Registry) ProviderRenameLeavesInstance(id string) bool {
 	// not fall through to the api_key_env candidates below. A present
 	// expression whose variables are unset means the row resolves nothing at
 	// all, which is also false.
-	if rec.head.APIKey != "" || rec.head.CredentialHeaders["Authorization"] != "" {
+	if rec.head.APIKey != "" || authHeaderKey(rec.head.CredentialHeaders, authHeaderName(transport)) != "" {
 		return false
 	}
 	for _, name := range r.effectiveAPIKeyEnv(rec) {
@@ -423,13 +434,13 @@ func (r *Registry) envCandidates(rec *record) []string {
 // shadowedEnvVar can tell "this is what resolved the credential" apart from
 // "this lost." Empty for a literal value (no "$") and for every other
 // source, which consumes no expression.
-func consumedEnvVars(rec *record, source string) []string {
+func consumedEnvVars(rec *record, t Transport, source string) []string {
 	switch source {
 	case "api_key":
 		refs, _, _ := ScanConfigValue(rec.head.APIKey)
 		return refs
 	case "credential_headers":
-		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders["Authorization"])
+		refs, _, _ := ScanConfigValue(rec.head.CredentialHeaders[authHeaderKey(rec.head.CredentialHeaders, authHeaderName(t))])
 		return refs
 	default:
 		return nil
@@ -448,8 +459,8 @@ func consumedEnvVars(rec *record, source string) []string {
 // actually in contention.
 // Empty when nothing shadows it: no remaining candidate is set, or an env
 // source is itself what won.
-func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
-	if rec.head.Transport.Auth == AuthGCPADC {
+func (r *Registry) shadowedEnvVar(rec *record, t Transport, cred Credential) string {
+	if t.Auth == AuthGCPADC {
 		return ""
 	}
 	switch cred.Source {
@@ -457,7 +468,7 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 	default:
 		return ""
 	}
-	consumed := consumedEnvVars(rec, cred.Source)
+	consumed := consumedEnvVars(rec, t, cred.Source)
 	for _, name := range r.envCandidates(rec) {
 		if slices.Contains(consumed, name) {
 			continue
@@ -469,19 +480,471 @@ func (r *Registry) shadowedEnvVar(rec *record, cred Credential) string {
 	return ""
 }
 
-// credential resolves an instance's credential in spec §10's order and
-// returns the "no credential" warnings (none for the none/optional-bearer
-// schemes). It never performs I/O beyond a file-existence check.
-func (r *Registry) credential(rec *record) (Credential, []string) {
+// credential resolves an instance's credential in spec §10's order under
+// the transport a hub-side view reads — the listing passes the default
+// row's, the spawn gate the named model's — and returns the "no
+// credential" warnings (none for the none/optional-bearer schemes). It is
+// the hub's judgment, not the agent's: it performs no I/O beyond a
+// file-existence check and never executes a $(command) expression —
+// command-bearing material counts as present, and its outcome belongs to
+// the child's first request (spec §10.1: commands expand at resolve time,
+// per request, on the agent path). The listing runs this for every
+// instance on every pane refresh, and the hub fingerprints at load, before
+// any session exists; an executed command there would prompt the user's
+// password manager with no session launched and spend one-time mints the
+// spec says the hub must not spend. The auth mode is judged before any
+// value is touched, at presence depth: an authored header supplying the
+// transport's auth slot outranks a derived api_key (spec §10), so the
+// wrapper below passes the header's presence judgment even when the
+// record also authors an api_key — the winner is named before the loser
+// could expand. The oauth and adc schemes return before the header
+// branch; a header's command counts as present without running, and the
+// resolution path passes the one expansion it already made through
+// credentialWithAuth (resolveCredentials), so there the header runs once
+// per resolution.
+func (r *Registry) credential(rec *record, t Transport) (Credential, []string) {
+	if t.Auth == AuthOAuthOpenAICodex || t.Auth == AuthGCPADC {
+		return r.credentialWithAuth(rec, authExpansion{}, t, false, true)
+	}
+	return r.credentialWithAuth(rec, r.authorizationMode(rec, t, true), t, false, true)
+}
+
+// AuthFingerprint is the hub's mint-free digest of the credential
+// material its views of one instance carry: the same transport and slots
+// the listing and the spawn gate read, hashed so a rotation of stable
+// material (a literal, an environment value, a stored key) changes the
+// digest while command-bearing material contributes its authored text —
+// the minted value rotates with the cache TTL, and an identity that
+// followed it would prune the cached live rows on every rollover and
+// force a re-fetch. It expands environment references only and never
+// executes a command; only the hex digest leaves this method, never the
+// material. The digest reads the provider-level slots, plus the default
+// row's own headers — the listing fetch resolves through that row and
+// sends its headers with the request, so they shape what the cached
+// live rows came through. Other rows' headers stay display material:
+// they never build a request.
+func (r *Registry) AuthFingerprint(instance string) (string, bool) {
+	name := strings.ToLower(strings.TrimSpace(instance))
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return "", false
+	}
 	h := rec.head
-	optional := h.Transport.Auth == AuthNone || h.Transport.Auth == AuthOptionalBearer
+	t := r.listingTransport(rec)
+	sum := sha256.New()
+	_, _ = fmt.Fprintf(sum, "%s\x01%s\x01", t.Auth, t.AuthHeader)
+	hashSlot := func(raw string) {
+		pieces, err := valueexpr.Pieces(raw)
+		if err != nil {
+			// A malformed value owns no rotation signal the scanner can
+			// read; the expansion paths report it. The authored text
+			// still hashes, so edits stay visible.
+			_, _ = fmt.Fprintf(sum, "raw\x01%s\x01", raw)
+			return
+		}
+		var b strings.Builder
+		b.WriteString("cmd\x01")
+		for _, p := range pieces {
+			switch p.Kind {
+			case valueexpr.PieceLit:
+				b.WriteString(p.Lit)
+			case valueexpr.PieceRef:
+				// The expanded value hashes: literals and environment
+				// references are mint-free, and a rotation of this half
+				// changes the effective credential. A set-but-empty value
+				// is the `:-` case — the default is the effective
+				// credential, mirroring Expand, so hash that: the empty
+				// string never reaches the wire.
+				if v, ok := r.env(p.Ref.Name); ok && v != "" {
+					b.WriteString(v)
+					continue
+				}
+				if p.Ref.HasDefault {
+					b.WriteString(p.Ref.Default)
+				}
+			case valueexpr.PieceCommand:
+				// The mint rotates with the cache TTL and must not churn
+				// the identity; the authored text is the material's
+				// stable identity.
+				b.WriteString("\x02cmd\x02" + p.Command + "\x03")
+			}
+		}
+		_, _ = fmt.Fprintf(sum, "%s\x01", b.String())
+	}
+	switch t.Auth {
+	case AuthOAuthOpenAICodex:
+		// Terminal scheme with no inline material here: the record's
+		// account claims are the hub's separate fingerprint, and the
+		// source label already distinguishes "no record" from "record".
+	case AuthGCPADC:
+		// A stored credential JSON outranks the ADC file (spec §4.2) and
+		// is the material that can rotate; the ADC file itself is the
+		// hub's separate fingerprint.
+		if r.creds != nil {
+			if v, ok := r.creds.Lookup(rec.name); ok && v != "" && CheckCredentialJSON([]byte(v)) == nil {
+				_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
+			}
+		}
+	case AuthNone:
+		// The none scheme derives no credential from any slot, so no
+		// winner material exists. The credential-header loop below
+		// still covers the headers the launch transmits whatever the
+		// scheme.
+	default:
+		// The winner is judged with the same precedence
+		// credentialWithAuth applies (spec §10): an authored header
+		// supplying the transport's auth slot owns it — the api_key it
+		// overrides never reaches a request — and a slot that expands to
+		// nothing is terminal without a value. Only effective,
+		// transmitted material hashes; inert material must not rotate
+		// the identity and prune the cached live rows. An authored but
+		// inert slot still marks its presence: adding or removing it
+		// changes which layer is terminal, so it rotates the digest —
+		// its value edits do not.
+		auth := r.authorizationMode(rec, t, true)
+		switch {
+		case auth.present:
+			_, _ = fmt.Fprintf(sum, "%s\x01", auth.key)
+			raw := h.CredentialHeaders[auth.key]
+			if !auth.commandBorne {
+				if v, missing := expandEnv(raw, r.env); len(missing) == 0 && (v == "" || auth.noMaterial) {
+					_, _ = fmt.Fprintf(sum, "inert\x01")
+					break
+				}
+			}
+			hashSlot(raw)
+		case h.APIKey != "":
+			if !hasCommandMaterial(h.APIKey) {
+				if v, missing := expandEnv(h.APIKey, r.env); len(missing) == 0 && (v == "" || r.schemeWordDefault(h.APIKey)) {
+					_, _ = fmt.Fprintf(sum, "api-key-inert\x01")
+					break
+				}
+			}
+			hashSlot(h.APIKey)
+		default:
+			// The store is terminal only on a hit, mirroring the
+			// resolution order: the hub always wires one, so a miss that
+			// stayed terminal would hide every env-sourced credential
+			// from the fingerprint and let their rotations slide.
+			hashed := false
+			if r.creds != nil {
+				if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
+					_, _ = fmt.Fprintf(sum, "store\x01%s\x01", v)
+					hashed = true
+				}
+			}
+			if !hashed {
+				for _, envName := range r.envCandidates(rec) {
+					if v, ok := r.env(envName); ok && v != "" {
+						_, _ = fmt.Fprintf(sum, "env\x01%s\x01%s\x01", envName, v)
+						break
+					}
+				}
+			}
+		}
+	}
+	// The transmitted credential headers hash under the same drop rules
+	// expandCredentialHeaders applies (the credentialHeaderNames
+	// judgment): a raw-empty entry is the authored removal, and an entry
+	// whose expansion is empty, missing, or nothing but a scheme word
+	// never reaches the wire, so none of them rotate the identity.
+	for _, k := range slices.Sorted(maps.Keys(h.CredentialHeaders)) {
+		v := h.CredentialHeaders[k]
+		if v == "" {
+			continue
+		}
+		if !hasCommandMaterial(v) {
+			if e, missing := expandEnv(v, r.env); len(missing) != 0 || e == "" || r.schemeWordDefault(v) {
+				continue
+			}
+		}
+		_, _ = fmt.Fprintf(sum, "%s\x01", k)
+		hashSlot(v)
+	}
+	// The provider-level headers are the fallback's request shape: the
+	// fetch sends them when there is no default row to resolve through
+	// (or the row cannot resolve — ResolveInstanceListing falls back to
+	// the provider's own transport then), so both states hash the same
+	// bytes the request would carry.
+	hashProviderHeaders := func() {
+		for _, k := range slices.Sorted(maps.Keys(h.Headers)) {
+			_, _ = fmt.Fprintf(sum, "%s\x01", k)
+			hashSlot(h.Headers[k])
+		}
+	}
+	if res, ok := r.resolveDefaultRow(rec, resolveFacts); ok {
+		// The listing fetch resolves through the default row and sends
+		// the merged headers with the request — provider, exact row,
+		// and every matching glob row, which merge at resolve time and
+		// never appear on the folded head's own row. The fingerprint
+		// hashes what the request actually carries, resolved at facts
+		// depth so no credential stage ever runs.
+		for _, k := range slices.Sorted(maps.Keys(res.Headers)) {
+			// The resolved value hashes verbatim: it is wire
+			// material, not authored text, and re-parsing a value
+			// that itself contains '$' would shred it — an embedded
+			// unset ref contributes nothing, so two different wire
+			// values would hash alike and a header rotation would
+			// keep publishing stale rows under the old identity.
+			_, _ = fmt.Fprintf(sum, "row\x01%s\x01%s\x01", k, res.Headers[k])
+		}
+	} else {
+		// No default row names the launch — or it cannot resolve, or the
+		// config disabled it: the listing falls back to the provider's
+		// own transport, whose request carries the provider-level
+		// headers alone.
+		hashProviderHeaders()
+	}
+	return hex.EncodeToString(sum.Sum(nil)), true
+}
+
+// ResolveGateCredential is the spawn gate's judgment of one launch: the
+// transport the launch resolves — the named model's, the default model's
+// for a bare instance name — with the same structural credential
+// judgment the listing makes. Command expressions are presence, never
+// execution: the hub's preflight must not mint a token the child alone
+// uses (the evaluation contract: commands expand at resolve time, per
+// request, on the agent path), so a command-bearing credential slot
+// counts as present and its outcome belongs to the child's first request.
+// A provider-qualified model is accepted and stripped of this instance's
+// own prefix. A named model the child would refuse — one the config
+// disabled, or one that does not resolve — is the gate's own refusal,
+// before the spawn. The credential value is never materialized.
+func (r *Registry) ResolveGateCredential(instance, model string) (Resolved, error) {
+	name := strings.ToLower(strings.TrimSpace(instance))
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, fmt.Errorf("unknown instance %q", name)
+	}
+	if ref := ParseRef(strings.TrimSpace(model)); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	t := r.listingTransport(rec)
+	if model != "" {
+		// The named model's transport decides the judgment, and the
+		// launch it describes is the one the child makes: a model that
+		// does not resolve, or one the config disabled, is a launch the
+		// child refuses (resolveOn), so the gate refuses it here,
+		// before the spawn. Falling back to the listing transport
+		// would pass a launch that always fails after spawning — and,
+		// judged at this shallower depth, the disabled verdict is the
+		// gate's own to read off the resolved row.
+		res, err := r.resolveLayersMode(rec, Ref{Model: model}, nil, resolveTransport)
+		if err != nil {
+			return Resolved{}, err
+		}
+		if BoolValue(res.Model.Disabled) {
+			return Resolved{}, fmt.Errorf("%s/%s: %w", rec.name, model, ErrModelDisabled)
+		}
+		t = res.Transport
+	}
+	cred, warnings := r.credential(rec, t)
+	return Resolved{Instance: rec.name, Transport: t, Credential: cred, Warnings: warnings}, nil
+}
+
+// authHeaderName is the header the auth scheme of the transport a launch
+// resolves writes the credential to: the author's auth_header for header
+// auth, Authorization for every other scheme — the same choice the
+// transport layer makes for the wire, so the credential-carrying entry is
+// the entry the scheme sends.
+func authHeaderName(t Transport) string {
+	if t.Auth == AuthHeader && t.AuthHeader != "" {
+		return t.AuthHeader
+	}
+	return "Authorization"
+}
+
+// resolveDefaultRow resolves the default model's row at depth and
+// reports whether the launch can use it: the child's Resolve refuses a
+// row the config disabled (resolveOn, ErrModelDisabled), so a disabled
+// default is not the launch any hub view describes — the caller falls
+// back to the provider's own shape, exactly like a default that cannot
+// resolve.
+func (r *Registry) resolveDefaultRow(rec *record, depth resolveDepth) (Resolved, bool) {
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+		return Resolved{}, false
+	}
+	res, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, depth)
+	if err != nil || BoolValue(res.Model.Disabled) {
+		return Resolved{}, false
+	}
+	return res, true
+}
+
+// listingTransport is the transport a bare launch of the instance would
+// use: the default model resolved exactly as the child resolves it — every
+// layer's glob rows, the top-level model globs, and same-provider alias
+// targets applied in the replay's order — or the provider's own when there
+// is no default model, the default names a glob, or it does not resolve (a
+// default that will not resolve is the child's refusal to give, not the
+// listing's to describe). Rows are per model and the listing is per
+// instance, so this is the launch shape the spawn gate's refusal judges.
+func (r *Registry) listingTransport(rec *record) Transport {
+	if res, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
+		return res.Transport
+	}
+	return rec.head.Transport
+}
+
+// listingProtocol is the protocol a bare launch of the instance speaks:
+// the default row's when the row resolves, the provider's own otherwise
+// — the same stale-default judgment listingTransport makes for the
+// transport. The listing's Protocol must describe the same launch its
+// Auth and BaseURL already do: every resolve depth takes the row's
+// protocol, and the entry's endpoint fingerprint and revision are
+// computed over it.
+func (r *Registry) listingProtocol(rec *record) string {
+	if res, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
+		return res.Protocol
+	}
+	return rec.head.Protocol
+}
+
+// authHeaderKey resolves which credential-header key carries the named
+// auth header's value: header names are case-insensitive on the wire, so
+// an author may write any case. The exact-case key wins — a present-but-
+// empty one is spec §10's removal and resolves as absence — and among case
+// variants the lexicographically first, so the choice is deterministic and
+// authorization, expandCredentialHeaders, and consumedEnvVars all read the
+// same entry.
+func authHeaderKey(headers map[string]string, name string) string {
+	if v, ok := headers[name]; ok {
+		if v == "" {
+			return ""
+		}
+		return name
+	}
+	first := ""
+	for k, v := range headers {
+		if v == "" || !strings.EqualFold(k, name) {
+			continue
+		}
+		if first == "" || k < first {
+			first = k
+		}
+	}
+	return first
+}
+
+// authExpansion is the one expansion of the record's Authorization
+// credential header: the header key it read (authHeaderKey), the expanded
+// value, the pieces that never resolved, and whether the value's only
+// possible material is a bare auth scheme word.
+type authExpansion struct {
+	key        string
+	expanded   string
+	present    bool
+	unresolved []valueexpr.Unresolved
+	noMaterial bool
+	// commandBorne marks a presence judgment on command material: the raw
+	// value carries a command expression and was never expanded.
+	commandBorne bool
+}
+
+// authorizationMode expands the record's auth credential header once,
+// shared by the hub's credential() and the resolution path so its command
+// expressions run once per resolution, and reports which header key it
+// expanded so the header map and the credential always read the same
+// entry. The transport a launch resolves names the header: the resolve
+// paths pass their row-merged transport, the hub-side views the default
+// row's or the named model's. presence is the hub-side switch: it counts
+// a command-bearing credential header as present without expanding it —
+// the hub's views execute no command expression, so the value and its
+// failures belong to the launch the child makes.
+func (r *Registry) authorizationMode(rec *record, t Transport, presence bool) authExpansion {
+	key := authHeaderKey(rec.head.CredentialHeaders, authHeaderName(t))
+	if key == "" {
+		return authExpansion{}
+	}
+	raw := rec.head.CredentialHeaders[key]
+	if presence && hasCommandMaterial(raw) {
+		return authExpansion{key: key, present: true, commandBorne: true}
+	}
+	expanded, unresolved := expandEnv(raw, r.env)
+	return authExpansion{key: key, expanded: expanded, present: true, unresolved: unresolved, noMaterial: r.schemeWordDefault(raw)}
+}
+
+// hasCommandMaterial reports whether raw's expression pieces include a
+// command — presence without execution. A scan error is not command
+// material: the expansion paths own malformed values and their warnings.
+func hasCommandMaterial(raw string) bool {
+	pieces, err := valueexpr.Pieces(raw)
+	if err != nil {
+		return false
+	}
+	for _, p := range pieces {
+		if p.Kind == valueexpr.PieceCommand {
+			return true
+		}
+	}
+	return false
+}
+
+// schemeWordDefault reports whether a raw credential field's — the
+// Authorization credential header's, or api_key's — only possible material
+// is auth scheme words, and only when a reference's default supplied it.
+// Minted and environment-supplied bytes are data — a command's all-letters
+// output is a token, not a scheme word — and a pure literal is the author's
+// own key material, trusted exactly like any hand-typed secret; the judged
+// cases are authored defaults that assemble to nothing but scheme words —
+// "${KEY:-Bearer}", or "Bearer ${KEY:-Basic}" with KEY missing — where
+// authored default text stands in for a credential and carries none.
+func (r *Registry) schemeWordDefault(raw string) bool {
+	pieces, err := valueexpr.Pieces(raw)
+	if err != nil {
+		return false
+	}
+	var material strings.Builder
+	filledByDefault := false
+	for _, p := range pieces {
+		switch p.Kind {
+		case valueexpr.PieceLit:
+			material.WriteString(p.Lit)
+		case valueexpr.PieceRef:
+			if v, ok := r.env(p.Ref.Name); ok && v != "" {
+				return false
+			}
+			if p.Ref.HasDefault {
+				filledByDefault = true
+				material.WriteString(p.Ref.Default)
+			}
+		case valueexpr.PieceCommand:
+			return false
+		}
+	}
+	assembled := strings.TrimSpace(material.String())
+	if !filledByDefault || assembled == "" {
+		return false
+	}
+	for token := range strings.FieldsSeq(assembled) {
+		if !isAuthSchemeWord(token) {
+			return false
+		}
+	}
+	return true
+}
+
+// credentialWithAuth is credential with the auth header's expansion
+// supplied, so the resolution path that also builds the credential header
+// map never runs the header's command expressions twice. The transport a
+// launch resolves governs the scheme branches — oauth and adc are terminal,
+// none and optional-bearer need no auth-slot credential, though the none
+// branch still names effective credential headers — under the same
+// transport that names the header. suppressAuthReason drops the
+// no-credential reason from a failing auth header: the resolution path
+// passes it because its header loop reports the same failure naming the
+// header — one condition, one warning — while the listing path builds no
+// header map and passes false to keep the reason.
+func (r *Registry) credentialWithAuth(rec *record, auth authExpansion, t Transport, suppressAuthReason bool, presence bool) (Credential, []string) {
+	h := rec.head
+	optional := t.Auth == AuthNone || t.Auth == AuthOptionalBearer
 	none := func(reason string) (Credential, []string) {
 		if optional {
 			return Credential{Source: "none"}, nil
 		}
 		return Credential{Source: "none"}, []string{reason}
 	}
-	switch h.Transport.Auth {
+	switch t.Auth {
 	case AuthOAuthOpenAICodex:
 		if fileExists(oauthRecordPath(r.stateRoot, rec.name)) {
 			return Credential{Source: "oauth"}, nil
@@ -512,27 +975,89 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 		cred, reasons := none("no credential (no application-default credentials; run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)")
 		return cred, append(warn, reasons...)
 	}
+	if t.Auth == AuthNone {
+		// The none scheme never fills the auth slot, so no slot needs
+		// materializing: expanding api_key here would run a command the
+		// wire never carries. Credential headers still go out — the
+		// resolution path builds the header map under every scheme — so
+		// the source names the layer the request really sends, judged
+		// by the same presence rules the wire map applies, without
+		// running any command to say so.
+		if len(r.credentialHeaderNames(rec, t)) > 0 {
+			return Credential{Source: "credential_headers"}, nil
+		}
+		return Credential{Source: "none"}, nil
+	}
+	if auth.present {
+		// The header wins before anything below expands: an authored
+		// credential header supplying the transport's auth slot owns the
+		// wire slot a derived key would fill (spec §10), so an api_key
+		// the same record authors is never the credential and is never
+		// evaluated — expanding it would run a one-shot command whose
+		// result no request ever carries.
+		if auth.commandBorne {
+			return Credential{Source: "credential_headers"}, nil
+		}
+		noneAuth := none
+		if suppressAuthReason {
+			noneAuth = func(string) (Credential, []string) { return Credential{Source: "none"}, nil }
+		}
+		if len(auth.unresolved) > 0 {
+			cred, warns := noneAuth(fmt.Sprintf("no credential (%s)", missingReason(auth.unresolved)))
+			cred.AuthoredLayer = "credential_headers"
+			return cred, warns
+		}
+		if auth.expanded == "" {
+			cred, warns := noneAuth(fmt.Sprintf("no credential (the %s credential header expands to an empty value)", auth.key))
+			cred.AuthoredLayer = "credential_headers"
+			return cred, warns
+		}
+		if auth.noMaterial {
+			cred, warns := noneAuth(fmt.Sprintf("no credential (the %s credential header expands to nothing but an auth scheme word)", auth.key))
+			cred.AuthoredLayer = "credential_headers"
+			return cred, warns
+		}
+		return Credential{Value: auth.expanded, Source: "credential_headers"}, nil
+	}
 	if h.APIKey != "" {
+		if presence && hasCommandMaterial(h.APIKey) {
+			// The gate's judgment: a well-formed command is credential
+			// material. Whether it succeeds is the child's first request
+			// to answer, not the preflight's.
+			return Credential{Source: "api_key"}, nil
+		}
 		v, missing := expandEnv(h.APIKey, r.env)
 		if len(missing) > 0 {
 			// The authored layer is present and terminal, and its variable is
 			// unset: say so, because "none" alone reads as "nothing is
 			// configured here" to every caller that decides whether a stored key
 			// would ever be sent.
-			cred, warns := none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
+			cred, warns := none(fmt.Sprintf("no credential (%s)", missingReason(missing)))
+			cred.AuthoredLayer = "api_key"
+			return cred, warns
+		}
+		if v == "" {
+			// An empty ${VAR:-} default resolved to nothing: an empty
+			// credential never resolves as a present one. The layer is
+			// still authored and terminal — it returns here without
+			// consulting the store or the environment, so a stored key
+			// is one nothing sends, and the authored marker says so.
+			cred, warns := none("no credential (api_key expands to an empty value)")
+			cred.AuthoredLayer = "api_key"
+			return cred, warns
+		}
+		if r.schemeWordDefault(h.APIKey) {
+			// A default that fills in a bare scheme word is authored
+			// placeholder text, not key material — the same rule the
+			// Authorization header applies — so it resolves as no
+			// credential with a warning, never as a present one whose
+			// value would reach the wire as the word alone. Authored
+			// and terminal exactly like the empty expansion above.
+			cred, warns := none("no credential (api_key expands to nothing but an auth scheme word)")
 			cred.AuthoredLayer = "api_key"
 			return cred, warns
 		}
 		return Credential{Value: v, Source: "api_key"}, nil
-	}
-	if auth, ok := h.CredentialHeaders["Authorization"]; ok && auth != "" {
-		v, missing := expandEnv(auth, r.env)
-		if len(missing) > 0 {
-			cred, warns := none(fmt.Sprintf("no credential (%s unset)", strings.Join(missing, ", ")))
-			cred.AuthoredLayer = "credential_headers"
-			return cred, warns
-		}
-		return Credential{Value: v, Source: "credential_headers"}, nil
 	}
 	if r.creds != nil {
 		if v, ok := r.creds.Lookup(rec.name); ok && v != "" {
@@ -549,7 +1074,10 @@ func (r *Registry) credential(rec *record) (Credential, []string) {
 
 // computeInstances derives the instance set (spec §5.1): every explicit
 // entry, plus every curated implicit provider that is not shadowed, not
-// hidden, and whose credential resolves without the network.
+// hidden, and whose credential resolves without the network. The
+// credential judgment counts command expressions as present and never
+// executes one, so no row runs one here; explicit rows are listed
+// whatever their credential resolves to.
 func (r *Registry) computeInstances() {
 	rank := map[string]int{}
 	for i, id := range r.defaultOrder {
@@ -571,7 +1099,8 @@ func (r *Registry) computeInstances() {
 		if _, shadowed := r.explicit[id]; shadowed {
 			continue
 		}
-		if cred, _ := r.credential(rec); cred.Source == "none" && rec.head.Transport.Auth != AuthNone && rec.head.Transport.Auth != AuthOptionalBearer {
+		t := r.listingTransport(rec)
+		if cred, _ := r.credential(rec, t); cred.Source == "none" && t.Auth != AuthNone && t.Auth != AuthOptionalBearer {
 			continue
 		}
 		pos, ok := rank[id]
@@ -663,12 +1192,15 @@ func (r *Registry) DefaultInstance() (string, []string, error) {
 }
 
 // Instances lists every instance in default ranking with its credential
-// source and warnings (spec §11.2).
+// source and warnings (spec §11.2). The auth scheme is the one the same
+// row-merged transport picks — the launch a bare instance name makes — so
+// a default row overriding auth moves the listing's scheme with it.
 func (r *Registry) Instances() []Instance {
 	def, _, _ := r.DefaultInstance()
 	var out []Instance
 	for _, inst := range r.rankedInstances() {
-		cred, warns := r.credential(inst.rec)
+		t := r.listingTransport(inst.rec)
+		cred, warns := r.credential(inst.rec, t)
 		h := inst.rec.head
 		base := ""
 		if !inst.rec.curated && inst.rec.providerID != inst.name {
@@ -676,14 +1208,14 @@ func (r *Registry) Instances() []Instance {
 		}
 		baseURL := ""
 		if !h.Hidden {
-			baseURL, _, _ = r.resolveBaseURL(inst.rec, h.Transport)
+			baseURL, _, _ = r.resolveBaseURL(inst.rec, t)
 		}
 		out = append(out, Instance{
-			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: h.Protocol, Surface: h.Surface,
-			Auth: h.Transport.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
+			Name: inst.name, ProviderID: inst.rec.providerID, Base: base, Protocol: r.listingProtocol(inst.rec), Surface: h.Surface,
+			Auth: t.Auth, BaseURL: baseURL, Vars: maps.Clone(inst.rec.userVars), DefaultModel: h.DefaultModel,
 			Implicit: inst.implicit, Hidden: h.Hidden, Default: inst.name == def,
 			CredentialSource: cred.Source, Warnings: warns,
-			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, cred),
+			ShadowedEnvVar: r.shadowedEnvVar(inst.rec, t, cred),
 		})
 	}
 	return out
@@ -697,6 +1229,16 @@ func (r *Registry) Instance(name string) (Instance, bool) {
 		}
 	}
 	return Instance{}, false
+}
+
+// HasInstance reports whether the listing would carry the named instance,
+// without computing one: the spawn gate needs the set alone, and Instance
+// resolves every instance's credential on the way — work the gate must not
+// trigger, since the listing's judgment may expand command expressions the
+// gate counts as presence.
+func (r *Registry) HasInstance(name string) bool {
+	_, ok := r.instances[strings.ToLower(strings.TrimSpace(name))]
+	return ok
 }
 
 // StateRoot is the state root the registry was loaded with: OAuth records

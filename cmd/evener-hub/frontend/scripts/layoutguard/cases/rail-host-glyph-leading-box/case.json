@@ -1,0 +1,22 @@
+{
+  "name": "rail-host-glyph-leading-box",
+  "description": "rail: the host group row's drawn glyph (RailRow.module.css's .hostGlyph, RailRow.tsx's HostGlyph - two stacked units and their drive dots) occupies the SAME fixed-size leading box as the watch row's clock (.watchGlyph, WatchGlyph): a host is infrastructure drawn in the rail's one glyph grammar, so the two marks' boxes must measure equal width and height - a wider host glyph would read as a different visual language and shift its row's label off the x every other glyphed row holds",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/tree/tree.module.css",
+    "shell/rail/RailRow.module.css"
+  ],
+  "viewport": {
+    "width": 1000,
+    "height": 1200,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "mutation": {
+    "declaration": "RailRow.module.css: .hostGlyph's width reverted from 13px to 17px (the host mark outgrows the glyph grammar's leading box)",
+    "verified": "2026-09-24",
+    "expect": "fail",
+    "note": "The host glyph measures 17px against the watch glyph's 13px and fails on width; restoring width: 13px returns the case to PASS."
+  }
+}

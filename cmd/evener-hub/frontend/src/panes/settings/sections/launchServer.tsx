@@ -9,12 +9,13 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
-import { useConnectedEffect } from "./useConnectedEffect";
+import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
@@ -80,6 +81,10 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
     complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
   };
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
+  // A re-read of content this pane is ALREADY showing that failed. Kept apart
+  // from `load` because it is not a load failure: the form (and the draft in it)
+  // stays, and this is what says the values on screen may be out of date.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
   // The effective layer of the same resolve() that seeds the diagnostics
   // panel: unset fields whose empty marker is generic prepend their entry
@@ -87,20 +92,28 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // if it fails (the same non-fatal contract as the diagnostics).
   const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
-  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // useHostScopedLoad (not a bare useEffect): a direct deep link to
   // /settings/launch-evener can mount this section before AppShell's own
   // connect() handshake finishes, and schema()/getLayer() both require a
-  // connected client (throw otherwise) - see that hook's own doc comment.
-  // isCancelled guards the same "component unmounted mid-load" case the
+  // connected client (throw otherwise) - see that hook's own doc comment - and
+  // it re-runs this read when the selected host COMES BACK, not only when it
+  // changes. isCancelled guards the same "component unmounted mid-load" case the
   // legacy local `cancelled` flag did.
-  useConnectedEffect(
-    async (isCancelled) => {
-      // A host switch reloads: the previous host's form must not stand while the
-      // new host's schema/layer are in flight. Clearing first is a no-op on the
-      // local mount, whose initial state is already "loading".
-      setLoad({ phase: "loading" });
-      setDiagnostics([]);
-      setResolvedDefaults(undefined);
+  const { reload, retryLoad } = useHostScopedLoad(
+    host,
+    async (blank, isCancelled) => {
+      // Different content - a host switch, or a re-registration under the same
+      // name - reloads: the previous host's form must not stand while the new
+      // host's schema/layer are in flight. Clearing first is a no-op on the local
+      // mount, whose initial state is already "loading". A re-read of THIS host
+      // (a reconnect, blank === false) keeps the form on screen - and the draft
+      // the user has typed into it.
+      if (blank) {
+        setLoad({ phase: "loading" });
+        setDiagnostics([]);
+        setResolvedDefaults(undefined);
+        setRefreshError(null);
+      }
       try {
         const [schema, current, resolved] = await Promise.all([
           store.getState().schema(),
@@ -110,18 +123,42 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
             .resolve("/")
             .catch(() => null),
         ]);
-        if (isCancelled()) return;
+        if (isCancelled()) return false;
         setLoad({ phase: "ready", options: schema.options, current });
-        if (resolved && !isCancelled()) {
-          setDiagnostics(resolved.diagnostics ?? []);
-          setResolvedDefaults(resolved.effective);
-        }
+        setRefreshError(null);
+        // resolve() is best effort: a null answer means it failed, so the derived
+        // panel must not keep the previous run's warnings and inherited-value
+        // labels as though they described this read.
+        setDiagnostics(resolved?.diagnostics ?? []);
+        setResolvedDefaults(resolved?.effective);
+        return true;
       } catch (err) {
-        if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+        // `false` tells the hook this run did NOT put content on screen, so the
+        // next run of the same content is a first look rather than a re-read -
+        // which is what lets the load error's Retry below replace itself.
+        if (isCancelled()) return false;
+        // Content this pane is not already showing has nothing to keep: the
+        // failure is the load's own, and Retry below is what ends it.
+        if (blank) {
+          setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+          return false;
+        }
+        // A failed REFRESH keeps the form - and the draft in it - and reports
+        // itself beside it: this host is attached (that is why we re-read it) and
+        // may stay attached, so there is no next attach to wait for, and a pane
+        // sitting silently on values that may be out of date is a worse answer
+        // than saying so with a way to ask again.
+        setRefreshError(friendlyErrorMessage(err));
+        return false;
       }
     },
     [store],
   );
+
+  // The host's own launch config can change under this mounted pane (another
+  // window's Save, a change made on the host itself): re-read it through the
+  // refresh path so the form converges without taking away what is being typed.
+  useLaunchConfigRefresh(host, reload);
 
   return (
     <div className={CLASS.root}>
@@ -130,9 +167,24 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
         These values are applied to every evener spawn unless overridden by a project layer or per-launch.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading launch settings…</p>}
-      {load.phase === "error" && <p className={CLASS.error}>Failed to load launch settings. {load.message}</p>}
+      {load.phase === "error" && (
+        <p className={CLASS.error}>
+          Failed to load launch settings. {load.message}{" "}
+          <Button type="button" onClick={() => retryLoad()}>
+            Retry
+          </Button>
+        </p>
+      )}
       {load.phase === "ready" && (
         <>
+          {refreshError !== null && (
+            <p className={CLASS.error} role="status">
+              Could not re-read this host's launch settings. {refreshError}{" "}
+              <Button type="button" onClick={() => reload()}>
+                Retry
+              </Button>
+            </p>
+          )}
           <Diagnostics diagnostics={diagnostics} />
           <LaunchConfigForm
             options={load.options}

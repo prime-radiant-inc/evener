@@ -1,6 +1,6 @@
 import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
@@ -268,4 +268,90 @@ test("switching hosts keeps the route's ?cwd=, re-scoping the same project to th
   // And the same project's layer now comes from beta.
   await screen.findByText("default: beta-agent");
   expect(screen.getByText("/repo")).toBeTruthy();
+});
+
+// The project pane's half of the same contract: a refresh that fails keeps the
+// form (and the draft the user typed) and reports itself with a retry, because a
+// host that stays attached gives it no other way out.
+test("a failed refresh keeps the project form and the draft, and a retry clears the notice", async () => {
+  setQueryCwd("/repo");
+  const fake = connectFakeClient();
+  let attached = true;
+  let refuse = false;
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string; params: { layer?: string } };
+    if (refuse) throw new Error("the host refused the read");
+    if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
+    if (forwarded.method === "evener/launch/getLayer")
+      return (
+        forwarded.params.layer === "project" ? { systemPromptPath: "/beta/prompt.md" } : { agent: "beta" }
+      ) as never;
+    if (forwarded.method === "evener/launch/resolve") return { effective: {}, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<ProjectHostScope sectionId="project" />);
+  const user = userEvent.setup();
+  const agent = (await screen.findByLabelText("Agent")) as HTMLInputElement;
+  await user.clear(agent);
+  await user.type(agent, "typed-on-beta");
+  expect(screen.queryByText(/Could not re-read/)).toBeNull();
+
+  attached = false;
+  await act(() => hostsStore.getState().refresh());
+  refuse = true;
+  attached = true;
+  await act(() => hostsStore.getState().refresh());
+
+  expect(await screen.findByText(/Could not re-read this host's project settings/)).toBeTruthy();
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
+
+  refuse = false;
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  await waitFor(() => expect(screen.queryByText(/Could not re-read/)).toBeNull());
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
+});
+
+/** The project-layer reads the pane forwarded to `host` through the proxy. */
+function forwardedLayerCalls(fake: FakeClient, host: string): number {
+  return fake.calls.filter(
+    (call) =>
+      call.method === "evener/host/request" &&
+      (call.params as { host: string }).host === host &&
+      (call.params as { method: string }).method === "evener/launch/getLayer",
+  ).length;
+}
+
+// The project pane converges too: the SELECTED host's own evener/launch/updated
+// re-issues this project's read, and the form shows the host's new value.
+test("a launch-config change for the selected host re-reads the project layer and shows the new value", async () => {
+  setQueryCwd("/repo");
+  const fake = connectFakeClient();
+  let agent = "beta-agent";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string; params: { layer?: string } };
+    if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
+    if (forwarded.method === "evener/launch/getLayer")
+      return (forwarded.params.layer === "project" ? { agent } : {}) as never;
+    if (forwarded.method === "evener/launch/resolve") return { effective: {}, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<ProjectHostScope sectionId="project" />);
+  expect(((await screen.findByLabelText("Agent")) as HTMLInputElement).value).toBe("beta-agent");
+  const reads = forwardedLayerCalls(fake, "beta");
+
+  agent = "beta-agent-2";
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: { host: "beta", method: "evener/launch/updated", params: {} },
+  });
+
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-2"));
+  expect(forwardedLayerCalls(fake, "beta")).toBe(reads + 2);
 });

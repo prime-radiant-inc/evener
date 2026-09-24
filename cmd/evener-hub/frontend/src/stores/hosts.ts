@@ -45,6 +45,14 @@ interface HostsStoreState {
    * request is still out.
    */
   reading: number;
+  /**
+   * Per host, how many times the registry has reported it coming BACK - an
+   * `attached` answer that follows one saying the host was away (see the
+   * transition subscription below). A host-scoped pane depends on it so that a
+   * host which was away when the pane read re-reads when it returns: the same
+   * host under the same registration, so a re-read and never a remount.
+   */
+  attachEpochs: Record<string, number>;
   fetch: () => Promise<void>;
   /**
    * Quiet re-read for the section's background poll. Unlike fetch it never
@@ -70,7 +78,7 @@ const { requireClient } = connectedClientPort("hosts");
 // HOST_GATE_TIMEOUT_MS is the client-side bound for a host RPC whose server
 // side queues on or holds the per-host gate. A supervisor may hold that gate
 // for a whole reconnect/ensure cycle, beyond the client's ordinary deadline.
-export const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
+const HOST_GATE_TIMEOUT_MS = 35 * 60_000;
 
 // At most one background refresh runs at a time; concurrent callers join the
 // same promise (mirrors stores/daemonResidents.ts).
@@ -207,6 +215,23 @@ export function selectableHostRows(load: HostsLoadState): HostRow[] {
  * load phase. */
 export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
   return selectableHostRows(load).some((row) => row.name === host);
+}
+
+/** registrySaysHostGone answers whether the registry's own answer says `host` is
+ * not a configured host: not listed at all, or listed as removed. It is the ONE
+ * predicate the frame's refusal (hostScopedSurface.tsx) and the per-host
+ * registries' eviction (stores/launchConfig.ts, stores/extensions.ts,
+ * stores/agentsDoc.ts) share, so the two can never disagree about what "gone"
+ * means - a host refused by one and served by the other is exactly the leak this
+ * exists to close.
+ *
+ * It answers false while the registry has no answer - a read in flight, or one
+ * that failed - because an unanswered registry is no evidence: evicting on it
+ * would drop a host's caches for a host nobody has described yet. A host that is
+ * merely UNATTACHED is still a configured row (attachment is live session state,
+ * not the registration, see hostInstanceIdentity), so it is never gone either. */
+export function registrySaysHostGone(load: HostsLoadState, host: string): boolean {
+  return load.phase === "ready" && !isConfiguredHost(load, host);
 }
 
 // --- registration identity ---------------------------------------------------
@@ -378,6 +403,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   revision: 0,
   publishedRevision: null,
   reading: 0,
+  attachEpochs: {},
 
   fetch: async () => {
     const generation = ++latestGeneration;
@@ -465,12 +491,13 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   resetForTests: () => {
     hostInstanceIdentities.clear();
     nextHostInstanceToken = 1;
+    lastAttached.clear();
     refreshInflight = null;
     latestGeneration = 0;
     latestPublishedGeneration = 0;
     lastClient = connectionStore.getState().client;
     lastPublished = null;
-    set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0 });
+    set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0, attachEpochs: {} });
   },
 }));
 
@@ -501,6 +528,61 @@ hostsStore.subscribe((state) => {
     publishedRevision: previous.revision + 1,
   }));
 });
+
+// --- attachment transitions --------------------------------------------------
+//
+// A remote host that is merely AWAY refuses evener/host/request (the hub has no
+// channel to forward through), so a pane that loaded in that window sits on its
+// failure. Nothing else re-issues that read: a host's attachment is live session
+// state, deliberately not part of the registration identity
+// (hostInstanceIdentity above), so the per-host store instance is the same
+// across an attach cycle and every pane's [store]-keyed load effect stays put.
+//
+// So the registry's own answer drives the retry: when a host's `attached` flips
+// from false to true, its attach epoch advances and a host-scoped pane that
+// depends on the epoch re-issues its read. There is no host lifecycle
+// notification on the wire (see HostPicker), and the 2s poll is what reports the
+// transition, so this is the only signal available.
+//
+// It is emphatically NOT an identity. A re-registration is a change of the
+// registration FIELDS, which rebuilds the instance and remounts the body
+// (hostInstanceIdentity); this advances for a live session flag on the SAME
+// registration, so nothing is remounted and nothing reseeded - a reconnect
+// refreshes the data and leaves what the user typed alone. The two cannot be
+// confused: one is compared from the row's configuration fields, the other from
+// `attached` alone, and a host that re-registers does not advance this unless it
+// also reports the away -> back sequence.
+//
+// Only false -> true advances it, and only for a host the registry has already
+// described: a host first seen attached has not come back from anywhere, and a
+// host reported away has nothing to re-read. `lastAttached` is deliberately not
+// cleared by a re-read or a failed read - a section's foreground fetch passes
+// through "loading" with no rows at all, and the flip that follows it must still
+// be seen (a memory derived from the previous snapshot alone would lose it).
+const lastAttached = new Map<string, boolean>();
+hostsStore.subscribe((state) => {
+  if (state.load.phase !== "ready") return;
+  let next: Record<string, number> | null = null;
+  for (const row of state.load.hosts) {
+    const was = lastAttached.get(row.name);
+    if (was === row.attached) continue;
+    if (row.attached && was === false) {
+      next ??= { ...state.attachEpochs };
+      next[row.name] = (next[row.name] ?? 0) + 1;
+    }
+    lastAttached.set(row.name, row.attached);
+  }
+  if (next !== null) hostsStore.setState({ attachEpochs: next });
+});
+
+/** useHostAttachEpoch is `host`'s attach epoch: it advances each time the
+ * registry reports this host coming back from away, and never otherwise. A
+ * host-scoped pane that can be left on a failure state depends on it so a host
+ * that returns re-issues the read it refused while it was gone (see the
+ * transition block above). */
+export function useHostAttachEpoch(host: string): number {
+  return useHostsStore((state) => state.attachEpochs[host] ?? 0);
+}
 
 export function useHostsStore<T>(selector: (state: HostsStoreState) => T): T {
   return useStore(hostsStore, selector);

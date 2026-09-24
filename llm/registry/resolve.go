@@ -297,8 +297,29 @@ func resetLayerFields(caps *Caps, prov map[string]string) {
 // ResolveInstance resolves an instance without a model: what a model-less
 // call (ListModels, a credential probe) needs — protocol, transport,
 // headers, credential, and the provider-level caps — with no row
-// (spec §8.1: ListModels takes a Resolved). ModelID and WireID stay empty.
+// (spec §8.1: ListModels takes a Resolved). ModelID and WireID stay
+// empty. It materializes the credential: the agent path and the
+// user-initiated probe may (spec §10.1); the hub's automatic views use
+// ResolveInstancePresence instead.
 func (r *Registry) ResolveInstance(name string) (Resolved, error) {
+	return r.resolveInstanceMode(name, false)
+}
+
+// ResolveInstancePresence is ResolveInstance for the hub's automatic
+// views (spec §10.1): the same instance shape — protocol, transport,
+// headers, provider caps, warnings, the credential's source label, the
+// shadowed env var — judged the way the listing judges it: a
+// command-bearing slot counts as present and keeps its field's label,
+// and executing it never happens here, where no session was launched.
+// Environment and stored material may be read for the label the views
+// show — the same reading the listing's judgment does. CredentialHeaders
+// stays empty: those values exist to go on the wire, and a view that
+// never builds a request never needs them.
+func (r *Registry) ResolveInstancePresence(name string) (Resolved, error) {
+	return r.resolveInstanceMode(name, true)
+}
+
+func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, error) {
 	rec, ok := r.recordFor(name)
 	if !ok {
 		return Resolved{}, r.unknownInstance(name)
@@ -313,23 +334,47 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 	}
 	seedFields(&caps, rec.head.Protocol)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
-	// rowID/ref "" keep firstPartyEndpoint's canonical resolution row-less
-	// and glob-less, mirroring the row-less buildTransport call above -
-	// correctly so: ListModels and credential probes, this path's only
-	// callers, never build a body, so there is no WebSearch tool for a
-	// row-level override to redirect. The base_url and endpoint-path
-	// comparison still applies in full.
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rec.head.Protocol, "", "", ""); w != "" {
-		warnings = append(warnings, w)
-	}
-	cred, cw := r.credential(rec)
-	warnings = append(warnings, cw...)
-	credHeaders := map[string]string{}
-	for k, v := range rec.head.CredentialHeaders {
-		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
-			credHeaders[k] = e
+	proto := rec.head.Protocol
+	if presence {
+		// The launch a bare instance name makes signs through the
+		// default row's merged transport (ResolveInstanceListing,
+		// spec §8.1); the hub's automatic views must describe that
+		// destination, so presence resolves the row's transport and
+		// falls back to the provider's own shape when the row cannot
+		// resolve — or the config disabled it, which the child's
+		// Resolve refuses — the same stale-default judgment the listing
+		// seam makes. The row's protocol and the row transport's own
+		// diagnostics replace the provider's on success: the view
+		// describes the row's destination, so the row's warnings and
+		// host-rule flag are the ones that describe it. ResolveInstance,
+		// the model-less probe, keeps the provider shape: it signs its
+		// own request, not the launch's.
+		if row, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
+			transport, hostDerived, warnings = row.Transport, row.HostDerivedByRule, row.Warnings
+			proto = row.Protocol
 		}
 	}
+	// rowID/ref "" keep firstPartyEndpoint's canonical resolution row-less
+	// and glob-less - correctly so: neither a ListModels probe nor a
+	// hub view ever builds a body, so there is no WebSearch tool for a
+	// row-level override to redirect. The transport compared is the
+	// launch's where a default row resolved, so the gate still follows
+	// the endpoint the bare launch signs with. The base_url and
+	// endpoint-path comparison applies in full either way.
+	if w := r.gateWebSearch(&caps, prov, rec, transport, proto, "", "", ""); w != "" {
+		warnings = append(warnings, w)
+	}
+	var cred Credential
+	var credHeaders map[string]string
+	var cw []string
+	var credHeaderNames []string
+	if presence {
+		cred, cw = r.credential(rec, transport)
+		credHeaderNames = r.credentialHeaderNames(rec, transport)
+	} else {
+		cred, credHeaders, cw = r.resolveCredentials(rec, transport)
+	}
+	warnings = append(warnings, cw...)
 	if rec.head.Hidden {
 		warnings = append(warnings, "hidden: provider has no resolvable base URL or protocol")
 	}
@@ -339,12 +384,198 @@ func (r *Registry) ResolveInstance(name string) (Resolved, error) {
 		providerID = rec.name
 	}
 	return Resolved{
-		Instance: rec.name, ProviderID: providerID, Protocol: rec.head.Protocol, Surface: rec.head.Surface,
+		Instance: rec.name, ProviderID: providerID, Protocol: proto, Surface: rec.head.Surface,
 		Transport: transport, HostDerivedByRule: hostDerived, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
-		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
-		ShadowedEnvVar: r.shadowedEnvVar(rec, cred),
+		Credential: cred, CredentialHeaders: credHeaders, CredentialHeaderNames: credHeaderNames,
+		Provenance: prov, Warnings: warnings,
+		ShadowedEnvVar: r.shadowedEnvVar(rec, transport, cred),
 		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
 	}, nil
+}
+
+// recordMintsCommandCredential reports whether a full-depth resolve of
+// this record would execute a command expression: api_key under a scheme
+// that sends it, or any credential-header entry — each goes on the wire
+// map whatever the scheme, and the auth header's expansion runs before
+// the scheme branches (spec §10.1). An api_key an authored credential
+// header overrides never evaluates — that header owns the transport's
+// auth slot (spec §10, the credentialWithAuth precedence) — so it does
+// not count.
+func (r *Registry) recordMintsCommandCredential(rec *record) bool {
+	for _, v := range rec.head.CredentialHeaders {
+		if hasCommandMaterial(v) {
+			return true
+		}
+	}
+	if !hasCommandMaterial(rec.head.APIKey) {
+		return false
+	}
+	// apiKeyEvaluates reports whether a launch through transport t would
+	// evaluate the api_key's command. The scheme must send it, and the
+	// transport's auth slot must not be supplied by an authored
+	// credential header: every row is judged through the transport it
+	// would actually launch — the listing's own, each known id's merged
+	// row, and the provider head an unseen live id falls back to.
+	apiKeyEvaluates := func(t Transport) bool {
+		switch t.Auth {
+		case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+			return false
+		}
+		return !r.authorizationMode(rec, t, true).present
+	}
+	if apiKeyEvaluates(r.listingTransport(rec)) {
+		return true
+	}
+	for _, id := range modelIDs(rec, r.LiveModels(rec.name)) {
+		rowRes, err := r.resolveLayersMode(rec, Ref{Model: id}, nil, resolveTransport)
+		if err != nil {
+			continue
+		}
+		if apiKeyEvaluates(rowRes.Transport) {
+			return true
+		}
+	}
+	// The ids the scan can name are the ones the registry already
+	// holds. A live listing can also return an id no layer has ever
+	// seen, and with no row or glob naming it, that id resolves
+	// through the provider's own transport — the same fallback
+	// ResolveInstance falls back to (spec §8.1).
+	if apiKeyEvaluates(rec.head.Transport) {
+		return true
+	}
+	// A glob can pin that unseen row onto a scheme the api_key travels
+	// with; an auth-bearing glob means the predicate cannot vouch for
+	// the listing's rows, so the command key counts as mintable.
+	if r.recordGlobPinsAuth(rec) {
+		return true
+	}
+	return false
+}
+
+// recordGlobPinsAuth reports whether any glob this record can replay —
+// top-level or provider-scoped — pins a transport auth the api_key
+// travels with: the ids a scan can name are the ones the registry
+// already holds, but a live listing may return an id no layer has ever
+// seen, and that row resolves through the globs too. Globs pinning a
+// never-send scheme (none, and the codex and adc schemes that read no
+// api_key) shape rows that stay terminal, so they cannot make a row
+// consume the credential and do not count.
+func (r *Registry) recordGlobPinsAuth(rec *record) bool {
+	for _, rows := range r.topGlobs {
+		for pattern, m := range rows {
+			if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
+				switch m.Transport.Auth {
+				case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+				default:
+					return true
+				}
+			}
+		}
+	}
+	for pattern, m := range rec.head.Models {
+		if isGlob(pattern) && m.Transport != nil && m.Transport.Auth != "" {
+			switch m.Transport.Auth {
+			case AuthNone, AuthOAuthOpenAICodex, AuthGCPADC:
+			default:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// LaunchMintsCredentialCommand is the hub's judgment of whether resolving
+// this instance's credential would execute a command expression: the
+// agent path may (the child alone runs credential commands, spec §10.1),
+// but a hub-side fetch that materialized the credential would spend a
+// one-time mint and prompt the user's password manager with no session
+// launched — so the hub's live-model prefetch asks this first and skips
+// instances it refuses (the last-known rows stay).
+func (r *Registry) LaunchMintsCredentialCommand(instance string) bool {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return false
+	}
+	return r.recordMintsCommandCredential(rec)
+}
+
+// ResolveInstanceListing resolves the live listing's fetch the way the
+// hub describes the instance (spec §8.1): the launch a bare instance
+// name makes — the default model's row at full depth, exactly as the
+// child resolves it — so the fetch, the listing row, and the instance
+// identity all name one transport. A provider with no default model (or
+// a glob one) keeps ResolveInstance's model-less shape: no single row
+// names the launch, so the provider's own transport speaks for it. A
+// default row the transport cannot serve — or one the config disabled,
+// which the child's Resolve refuses — falls back to the same provider
+// shape, the judgment listingTransport already makes, so a stale or
+// disabled default does not break the listing. This is the caller's
+// resolve: the agent and CLI paths it serves may mint a command
+// credential (the child alone runs credential commands), so the hub's
+// own prefetch refuses elsewhere, through
+// LaunchMintsCredentialCommand (spec §10.1).
+func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, r.unknownInstance(name)
+	}
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+		return r.ResolveInstance(name)
+	}
+	if res, ok := r.resolveDefaultRow(rec, resolveFull); ok {
+		return res, nil
+	}
+	return r.ResolveInstance(name)
+}
+
+// ResolveInstanceTransport resolves an instance's bare-launch destination
+// without any credential work: the transport and protocol whose change
+// moves where a request goes (spec §8.1) — the same row-aware shape
+// ResolveInstanceListing fetches through, with no credential stage at
+// all, so a hub-side view that reads only the destination executes no
+// command expression (spec §10.1). A provider with no default model (or
+// a glob one) resolves the provider's own shape, like the listing seam;
+// so does one whose default row the transport cannot serve, so a stale
+// default does not break the endpoint fingerprint either.
+func (r *Registry) ResolveInstanceTransport(name string) (Resolved, error) {
+	rec, ok := r.recordFor(name)
+	if !ok {
+		return Resolved{}, r.unknownInstance(name)
+	}
+	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
+		// The model-less shape ResolveInstance builds, minus its
+		// credential stage: buildTransport merges the protocol's default
+		// endpoint paths, which the raw head transport does not carry.
+		transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
+		return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
+	}
+	if res, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
+		return res, nil
+	}
+	transport, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
+	return Resolved{Instance: rec.name, Protocol: rec.head.Protocol, Transport: transport}, nil
+}
+
+// ResolveInstanceModelFacts resolves one model row's advertised facts —
+// every fact, no credential materialized (spec §10.1) — the depth the
+// hub's read-only views use. An empty instance names the default
+// instance, the rule Resolve applies: a legacy session recorded without
+// a profile still prices and lists through the default.
+func (r *Registry) ResolveInstanceModelFacts(instance, model string) (Resolved, error) {
+	var warnings []string
+	if instance == "" {
+		name, w, err := r.DefaultInstance()
+		if err != nil {
+			return Resolved{}, err
+		}
+		instance = name
+		warnings = append(warnings, w...)
+	}
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return Resolved{}, r.unknownInstance(instance)
+	}
+	return r.resolveLayersMode(rec, Ref{Model: model}, warnings, resolveFacts)
 }
 
 // webSearchExplicit reports whether prov attributes Caps.WebSearch to a
@@ -431,6 +662,33 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 // (a cross-provider alias resolves from a target whose own connection
 // disabled it).
 func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resolved, error) {
+	return r.resolveLayersMode(rec, ref, warnings, resolveFull)
+}
+
+// resolveDepth names how far a replay goes. resolveFull materializes the
+// credential stage — the only depth that expands $(command) expressions, so
+// the launch path alone runs it. resolveFacts runs the whole replay except
+// that stage: the alias-target seam, where a row seeds from its target's
+// facts and transport and the target's own credential commands are not the
+// alias row's to run. resolveTransport stops right after the merged
+// transport — the listing's seam. A listing runs for every instance on
+// every pane refresh, and the hub fingerprints at load, before any session
+// exists; neither may mint (or stall on) a command expression the launch
+// alone reads.
+type resolveDepth int
+
+const (
+	resolveFull resolveDepth = iota
+	resolveFacts
+	resolveTransport
+)
+
+// resolveLayersMode is resolveLayers with one switch: how far the replay
+// goes, per resolveDepth. The credential stage is the only part of the
+// replay that expands command expressions, so the shallower depths keep
+// the hub-side views — listings, fingerprints, alias seeding — free of
+// the launches' mints.
+func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, depth resolveDepth) (Resolved, error) {
 	hit := r.lookupRow(rec, ref.Model)
 	if hit.synthesized && rec.head.Transport.Auth == AuthOAuthOpenAICodex {
 		return Resolved{}, fmt.Errorf("%s/%s: unknown model on the Codex transport (valid: %s)", rec.name, ref.Model, strings.Join(exactRowIDs(rec), ", "))
@@ -599,17 +857,28 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 	}
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
+	if depth == resolveTransport {
+		// The transport depth keeps the diagnostics and the host-rule
+		// flag the transport build produced: the hub's presence view
+		// reads a default row through this depth, and what the row's
+		// transport says — warnings included — must survive the early
+		// return the deeper depths fold into their own Resolved. The
+		// replayed row rides along for its Disabled verdict: the
+		// default-row views ask it to refuse a row the child's Resolve
+		// refuses, and reading the replay's own row (not a parallel
+		// judgment) is what keeps that answer from drifting.
+		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport, HostDerivedByRule: hostDerived, Model: row, Warnings: warnings}, nil
+	}
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)
-	cred, cw := r.credential(rec)
-	warnings = append(warnings, cw...)
-	credHeaders := map[string]string{}
-	for k, v := range rec.head.CredentialHeaders {
-		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" {
-			credHeaders[k] = e
-		}
+	var cred Credential
+	var credHeaders map[string]string
+	if depth == resolveFull {
+		var cw []string
+		cred, credHeaders, cw = r.resolveCredentials(rec, transport)
+		warnings = append(warnings, cw...)
 	}
 
 	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
@@ -645,13 +914,19 @@ func (r *Registry) resolveLayers(rec *record, ref Ref, warnings []string) (Resol
 	}, nil
 }
 
-// resolveAliasTarget resolves an alias target through the same machinery:
-// a same-provider row on rec, else "provider-id/id" on the target's
-// instance record when one exists (so user-layer flags like Disabled
-// apply), else the curated record. aliasTargetRow applies the
-// alias-target acceptance rules both resolve paths share: an exact
-// non-alias row on the record, else a provider-id/id reference. A glob
-// pattern never names a target, on either side of the slash.
+// resolveAliasTarget resolves an alias target through the same machinery
+// at facts depth: the replay hands back the target's caps, surface,
+// family, and transport — everything an alias row seeds from — without
+// materializing the target's credentials, whose command expressions are
+// not the alias row's to run: the launch sends the alias's own credential,
+// and the hub-side contract executes command expressions only on the
+// agent path (spec §10.1). A same-provider row on rec, else
+// "provider-id/id" on the target's instance record when one exists (so
+// user-layer flags like Disabled apply), else the curated record.
+// aliasTargetRow applies the alias-target acceptance rules both resolve
+// paths share: an exact non-alias row on the record, else a provider-id/id
+// reference. A glob pattern never names a target, on either side of the
+// slash.
 func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string, bool) {
 	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
 		return rec, aliasOf, true
@@ -687,7 +962,7 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bo
 	// The replay hands back the target's facts even when the target's own
 	// flag disables it: a cross-provider alias seeds from that target either
 	// way, and the caller refuses a same-provider one.
-	res, err := r.resolveLayers(target, Ref{Instance: target.name, Model: id}, nil)
+	res, err := r.resolveLayersMode(target, Ref{Instance: target.name, Model: id}, nil, resolveFacts)
 	return res, target == rec, err
 }
 
@@ -913,6 +1188,63 @@ func templatePlaceholders(tpl string) []string {
 	return out
 }
 
+// resolveCredentials expands a record's credential fields once per
+// resolution: the auth header's expansion feeds both the credential and
+// the header map, so a failing command runs once (a second run could
+// also race the first and split the outcome between credential and header).
+// A failing auth header is reported once, by the header loop that
+// names it; the credential path's parallel reason is suppressed here and
+// kept only on the listing path, which builds no header map.
+func (r *Registry) resolveCredentials(rec *record, transport Transport) (Credential, map[string]string, []string) {
+	auth := r.authorizationMode(rec, transport, false)
+	cred, cw := r.credentialWithAuth(rec, auth, transport, true, false)
+	credHeaders, hw := r.expandCredentialHeaders(rec.head.CredentialHeaders, auth)
+	return cred, credHeaders, append(cw, hw...)
+}
+
+// expandCredentialHeaders builds the resolved credential-header map. The
+// key authHeaderKey resolved — the Authorization header, whatever case its
+// author wrote — arrives pre-expanded from resolveCredentials, so its
+// command expressions run once per resolution; every other header expands
+// here. A header with no credential material — an empty expansion, or one
+// whose only authored material is a bare auth scheme word — is not
+// present: it drops with a warning naming it. A raw-empty value is spec
+// §10's removal of an inherited header and stays silent. The keys are
+// walked sorted, so the same config warns in the same order every time.
+func (r *Registry) expandCredentialHeaders(headers map[string]string, auth authExpansion) (map[string]string, []string) {
+	credHeaders := map[string]string{}
+	var warnings []string
+	for _, k := range slices.Sorted(maps.Keys(headers)) {
+		v := headers[k]
+		if v == "" {
+			continue
+		}
+		if auth.present && k == auth.key {
+			switch {
+			case len(auth.unresolved) > 0:
+				warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(auth.unresolved)))
+			case auth.expanded == "":
+				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
+			case auth.noMaterial:
+				warnings = append(warnings, fmt.Sprintf("credential header %q: expands to nothing but an auth scheme word", k))
+			default:
+				credHeaders[k] = auth.expanded
+			}
+			continue
+		}
+		if e, missing := expandEnv(v, r.env); len(missing) == 0 && e != "" && !r.schemeWordDefault(v) {
+			credHeaders[k] = e
+		} else if len(missing) > 0 {
+			warnings = append(warnings, fmt.Sprintf("credential header %q: %s", k, missingReason(missing)))
+		} else if e == "" {
+			warnings = append(warnings, fmt.Sprintf("credential header %q: expands to an empty value", k))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("credential header %q: expands to nothing but an auth scheme word", k))
+		}
+	}
+	return credHeaders, warnings
+}
+
 // buildHeaders merges header layers and applies spec §10: an unset $VAR
 // drops the header; an empty value removes an inherited header.
 func (r *Registry) buildHeaders(layers ...map[string]string) map[string]string {
@@ -925,6 +1257,10 @@ func (r *Registry) buildHeaders(layers ...map[string]string) map[string]string {
 		if v == "" {
 			continue
 		}
+		// A header whose reference or command resolves to nothing drops out
+		// silently by design: display headers carry no credential, so there is
+		// no auth failure to explain — unlike expandCredentialHeaders, which
+		// warns for exactly that reason.
 		expanded, missing := expandEnv(v, r.env)
 		if len(missing) > 0 || expanded == "" {
 			continue
