@@ -426,6 +426,96 @@ describe("ConversationService", () => {
       });
     });
 
+    it("paging waits for the host's read fence, not the raw RPC response", async () => {
+      // The native host fences the projected publish (onReadComplete) around
+      // the same raw read. Paging must wait for the whole publish: a page
+      // seated once the raw response landed but before the fence settled would
+      // be seated against a projection the publish had not installed.
+      const client = new FakeAppwireClient();
+      const thread = makeThread();
+      client.on("thread/read", () => makeReadResponse(thread, "fresh-cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      let releaseFence!: () => void;
+      const fence = new Promise<void>((resolve) => {
+        releaseFence = resolve;
+      });
+      let fences = 0;
+      const service = createConversationService(client, {
+        onReadComplete: () => {
+          fences += 1;
+          // open()'s read is unfenced; the refresh's read is held at the fence.
+          return fences === 1 ? undefined : fence;
+        },
+      });
+      await service.open("ref-1");
+
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-from-before-refresh");
+      // Let the raw read resolve; the fence is still held.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+
+      releaseFence();
+      await refresh;
+      await expect(page).resolves.toMatchObject({ turnsPage: { data: [] } });
+      expect(
+        client.calls.find((call) => call.method === "thread/turns/list")?.params,
+      ).toMatchObject({ ref: "ref-1", cursor: "cursor-from-before-refresh" });
+    });
+
+    it("a rejected host read fence does not fail the projected read", async () => {
+      const client = new FakeAppwireClient();
+      const thread = makeThread();
+      client.on("thread/read", () => makeReadResponse(thread, "cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      const service = createConversationService(client, {
+        onReadComplete: () => Promise.reject(new Error("mutation storage down")),
+      });
+      await service.open("ref-1");
+      // The authoritative read succeeded; the fence failure leaves the durable
+      // dispatch gate blocked but must not fail the projection.
+      await expect(service.readProjection("ref-1")).resolves.toMatchObject({
+        olderCursor: "cursor",
+      });
+    });
+
+    it("invokes the host read fence only after the projection commits", async () => {
+      const client = new FakeAppwireClient();
+      // A malformed capabilities payload makes projection validation throw
+      // after the raw response, so the fence must never run.
+      const broken = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: null,
+          queue: { revision: 0 },
+        } as unknown as Thread["evener"],
+      });
+      client.on("thread/read", () => makeReadResponse(makeThread(), "cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      let fences = 0;
+      const service = createConversationService(client, {
+        onReadComplete: () => {
+          fences += 1;
+        },
+      });
+      await service.open("ref-1");
+      fences = 0;
+      client.on("thread/read", () => makeReadResponse(broken, "cursor"));
+      await expect(service.readProjection("ref-1")).rejects.toThrow();
+      expect(fences).toBe(0);
+    });
+
     it("does not page after the pending read is closed", async () => {
       const { client, service, thread } = setup({ olderCursor: "cursor-a" });
       await service.open("ref-1");

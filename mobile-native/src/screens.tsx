@@ -41,6 +41,7 @@ import { createConversationService } from "../../mobile/src/services/conversatio
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -71,6 +72,12 @@ import {
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
+import {
+	createNativeMutationHost,
+	createDurableSubmitter,
+	type NativeMutationHost,
+} from "./nativeMutationHost";
+import { getNativeMutationRuntime } from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -814,17 +821,43 @@ export function ConversationScreen({
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	const headerHeight = useHeaderHeight();
+	// The durable-mutation wiring: the store admits every mutation through a
+	// lazily-acquired process runtime (a screen that never sends never opens the
+	// mutations database), and a connected host effect binds this screen's
+	// client and target to that same runtime. The host owns the registration and
+	// the read fence; the runtime owns dispatch and the recovery row a
+	// rejection produces.
+	const mutationHostRef = useRef<NativeMutationHost | null>(null);
+	// The submitter refuses while no host is live, so a mutation is never
+	// durably accepted (and its draft cleared) while this screen has no
+	// registered client to dispatch it.
+	const mutationSubmitter = useMemo<ConversationMutationSubmitter>(
+		() => createDurableSubmitter(() => mutationHostRef.current),
+		[],
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
-		() => createConversationStore(),
-		[route.params.hubId, route.params.ref],
+		() =>
+			createConversationStore({
+				mutationHubId: route.params.hubId,
+				mutationSubmitter,
+			}),
+		[mutationSubmitter, route.params.hubId, route.params.ref],
 	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
 	// The conversation store validates the exact bound sink object on refresh.
 	const activitySink = useMemo(() => activity.getState(), [activity]);
 	const service = useMemo(
-		() => (client ? createConversationService(client) : null),
+		() =>
+			client
+				? createConversationService(client, {
+						onReadStart: (ref, expectedThreadId) =>
+							mutationHostRef.current?.beginRead(ref, expectedThreadId),
+						onReadComplete: (lease, response) =>
+							mutationHostRef.current?.reconcileRead(lease, response),
+					})
+				: null,
 		[client],
 	);
 	const currentDestination = useRef({ store, client });
@@ -962,6 +995,37 @@ export function ConversationScreen({
 	const deliveryConcern = Boolean(
 		snapshot.error || actionError || unconfirmedSend !== null,
 	);
+	// Bind this screen's client and target to the runtime for the connected
+	// lifetime: the service's read fence calls through mutationHostRef, and the
+	// runtime's dispatch gate opens on this screen's own authoritative read and
+	// retires with the mount. A failed startup keeps the registration: the
+	// runtime retries its own start on the next submission, and a durable
+	// admission must always have this screen's client bound.
+	useEffect(() => {
+		if (!client || !connected) return;
+		let host: NativeMutationHost;
+		try {
+			host = createNativeMutationHost(
+				getNativeMutationRuntime(),
+				route.params.hubId,
+				route.params.ref,
+				client,
+			);
+		} catch {
+			// The mutations database or the client binding could not be created.
+			// Leave the screen mounted with no host rather than crashing the
+			// conversation; a later reconnect or remount retries, and a mutation
+			// submitted meanwhile surfaces its own failure through the store.
+			mutationHostRef.current = null;
+			return;
+		}
+		mutationHostRef.current = host;
+		void host.start().catch(() => undefined);
+		return () => {
+			if (mutationHostRef.current === host) mutationHostRef.current = null;
+			host.dispose();
+		};
+	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
