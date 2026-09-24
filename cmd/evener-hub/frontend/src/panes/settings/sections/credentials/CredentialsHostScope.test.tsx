@@ -1030,3 +1030,50 @@ test("a successful 'Start again' opens the new flow's dialog", async () => {
   expect(screen.queryByText("REMOTE-CODE")).toBeNull();
   expect(screen.getByRole("dialog")).toBeTruthy();
 });
+
+// L2 (roborev): the affordance follows the host's own gate, which is the resolved
+// transport auth scheme (cmd/evener-hub/app_auth.go's requiresCodex ->
+// instanceIsCodex: inst.Auth == registry.AuthOAuthOpenAICodex), not the provider
+// id. `auth` is authored independently of `base`, so gating on the provider id
+// offers the button to an openai-codex-based instance overridden to another
+// scheme - whose only outcome is the host's refusal - and withholds it from an
+// instance signed in through Codex OAuth on another base, which the host accepts.
+test("'Sign in on host' follows the instance's auth scheme, not its provider id", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => ({
+    instances: [
+      instance({
+        name: "oauth-on-openai",
+        base: "openai",
+        providerId: "openai",
+        auth: "oauth-openai-codex",
+        authModes: ["oauth"],
+      }),
+      instance({
+        name: "codex-overridden",
+        base: "openai-codex",
+        providerId: "openai-codex",
+        auth: "bearer",
+        authModes: ["apiKey"],
+      }),
+    ],
+    availableProviders: [],
+  }));
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
+  await within(remoteSection).findByText("oauth-on-openai");
+
+  // The instance the host's gate accepts is the one offered the action...
+  const acceptedRow = within(remoteSection).getByText("oauth-on-openai").closest("li");
+  expect(within(acceptedRow as HTMLElement).getByRole("button", { name: "Sign in on host" })).toBeTruthy();
+  // ...and the one it refuses is not offered it at all: the button could only
+  // produce the host's own "OAuth is not supported for instance" refusal.
+  const refusedRow = within(remoteSection).getByText("codex-overridden").closest("li");
+  expect(within(refusedRow as HTMLElement).queryByRole("button", { name: "Sign in on host" })).toBeNull();
+  expect(within(remoteSection).getAllByRole("button", { name: "Sign in on host" })).toHaveLength(1);
+});
