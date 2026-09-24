@@ -688,12 +688,13 @@ func readSelector(projectID, sessionID string) string {
 // word-break, including vertical tab and form feed — round 13 finding 1); shell metacharacters that alter command behavior
 // including glob expansion ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ",
 // ', {, }, =, *, ?, [, ]); and cmd.exe metacharacters: % (variable
-// expansion %VAR%) and ^ (escape character — round 10 finding 1).
+// expansion %VAR%) and ^ (escape character — round 10 finding 1);
+// the colon (the proj:<id>:<sid> grammar separator — round 14 finding 1).
 func safeTokenForRepro(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
 	}
-	return !strings.ContainsAny(name, "/\\\x00, \t\r\n\x0b\x0c$`;|&()<>=!#~\"'{}*?[]%^")
+	return !strings.ContainsAny(name, "/\\\x00, \t\r\n\x0b\x0c$`;|&()<>=!#~\"'{}*?[]%^:")
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
@@ -989,18 +990,19 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		}
 		reproRefs := doctorRefsBySig[sig]
 		nonRepro := nonReproBySig[sig]
-		// Description prose (round 10 findings 3+4, round 11 finding 1): one
-		// shared evidenceSessionRefCap budget covers all session references —
-		// reproducible refs first, then non-reproducible disclosures in the
-		// remaining slots. Each portion emits its own omission marker when it
-		// overflows its budget. The reproducible portion uses reproRefs
+		// Description prose (round 10 findings 3+4, round 11 finding 1, round 14
+		// finding 2): one shared evidenceSessionRefCap budget covers all session
+		// references — reproducible refs first, then non-reproducible disclosures
+		// in the remaining slots. Each portion emits its own omission marker when
+		// it overflows its budget. The reproducible portion uses reproRefs
 		// (doctorRefsBySig, the reproducible selectors only) — not SessionRefs,
 		// which also carries non-reproducible bare sids. Using SessionRefs for
 		// the reproducible portion would emit a spurious cap marker when all
 		// sessions are non-reproducible (reproBudget=0 but SessionRefs has
-		// entries). The command-side omission (DoctorCommand truncates reproRefs
-		// independently) is disclosed separately because the command stays a
-		// pure runnable line (round 9 finding 2: no # comments).
+		// entries). The reproducible-over-cap omission is disclosed once by
+		// the reproducible-portion cap marker ("…and N more") — DoctorCommand
+		// truncates reproRefs at the same cap with the same refs, so a separate
+		// command-side clause would double-report the same N (round 14 finding 2).
 		reproCount := len(reproRefs)
 		// Reproducible refs take the first portion of the budget.
 		reproBudget := min(evidenceSessionRefCap, reproCount)
@@ -1029,23 +1031,16 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			}
 			totalOmitted += nonReproOmitted
 		}
-		// Disclose command-side omissions: DoctorCommand truncates reproRefs
-		// at evidenceSessionRefCap independently (round 10 finding 4). When
-		// reproRefs exceeds the cap, the command silently drops selectors
-		// past 200. This can differ from the SessionRefs cap when dedup
-		// shrinks SessionRefs (round 7 finding 2), so the command-side
-		// omission is disclosed separately from the Description ref marker.
-		cmdOmitted := 0
-		if reproCount > evidenceSessionRefCap {
-			cmdOmitted = reproCount - evidenceSessionRefCap
-		}
-		if cmdOmitted > 0 {
-			if totalOmitted > 0 {
-				desc += fmt.Sprintf("; %d more sessions omitted from command (cap %d)", cmdOmitted, evidenceSessionRefCap)
-			} else {
-				desc += fmt.Sprintf("; %d sessions omitted from command (cap %d)", cmdOmitted, evidenceSessionRefCap)
-			}
-		}
+		// The reproducible-over-cap omission is disclosed once, by the
+		// reproducible-portion cap marker (joinSessionRefs' "…and N more",
+		// where N = reproCount - reproBudget = reproCount - cap when
+		// reproCount > cap). DoctorCommand truncates reproRefs at the same
+		// evidenceSessionRefCap with the same reproRefs, so the command-side
+		// truncation is the same N — a separate clause would double-report
+		// it (round 14 finding 2). Round 10 finding 4's contract (command-side
+		// omission honestly disclosed) is carried by this single marker: it
+		// names the exact count omitted from both the Description ref list and
+		// the DoctorCommand --sessions value.
 		if totalOmitted > 0 {
 			if nonReproListed {
 				desc += fmt.Sprintf("; %d more non-reproducible sessions omitted (cap %d)", totalOmitted, evidenceSessionRefCap)
