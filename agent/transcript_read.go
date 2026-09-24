@@ -15,25 +15,26 @@ import (
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
-var openTranscriptFile = func(path string) (io.ReadCloser, error) {
-	// OpenRegularNoFollow opens the leaf with O_NOFOLLOW (refusing a symlink
-	// at the final component) and fstats the descriptor to confirm a regular
-	// file — all in one fd, so nothing can be swapped between the check and
-	// the bytes. This closes the leaf-level TOCTOU window left by
-	// symlinkErrorDeep (which Lstats the path before the open): a symlink
-	// swapped in at the leaf between the symlinkErrorDeep check and this open
-	// is refused (ELOOP) rather than followed. Intermediate-dir TOCTOU
-	// (swapping sessions/ for a symlink) remains a narrow window, but
-	// symlinkErrorDeep pre-checks every component and the bucket dir is
-	// validated by validateLayoutPrefix (round 10).
+var openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
+	// When root is provided, OpenRegularBeneathRoot walks every intermediate
+	// component relative to root via openat(O_NOFOLLOW), refusing symlinks at
+	// any level — not just the leaf. This closes the intermediate-component
+	// TOCTOU window that OpenRegularNoFollow alone leaves open: symlinkErrorDeep
+	// pre-checks each component with Lstat, but a directory swapped for a
+	// symlink between the pre-walk and the open is refused (ELOOP from openat)
+	// rather than followed. When root is empty (test-only path), the open
+	// falls back to OpenRegularNoFollow, which protects only the leaf.
+	if root != "" {
+		return execenv.OpenRegularBeneathRoot(path, root)
+	}
 	return execenv.OpenRegularNoFollow(path)
 }
 
 // readTranscript reads a semantic transcript-v2 JSONL file. Only an incomplete
 // final line is skipped; corrupt complete lines and unsupported record kinds
 // reject the whole file.
-func readTranscript(path string) (transcript.Header, []transcript.Entry, int, error) {
-	data, err := readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, false, nil)
+func readTranscript(path, root string) (transcript.Header, []transcript.Entry, int, error) {
+	data, err := readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, false, nil)
 	return data.Header, data.Entries, data.Skipped, err
 }
 
@@ -51,25 +52,25 @@ var (
 )
 
 // readTranscriptFull reads the full semantic transcript-v2 file.
-func readTranscriptFull(path string) (transcriptData, error) {
-	return readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, false, nil)
+func readTranscriptFull(path, root string) (transcriptData, error) {
+	return readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, false, nil)
 }
 
-func readTranscriptFullWithEntryLines(path string) (transcriptData, error) {
-	return readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, true, nil)
+func readTranscriptFullWithEntryLines(path, root string) (transcriptData, error) {
+	return readSemanticTranscript(path, root, transcriptJSONLMaxLineBytes, true, true, nil)
 }
 
-func readStrictChildTranscript(path, expectedSessionID string, maxLineBytes int) (transcriptData, error) {
-	return readStrictChildTranscriptWithOptions(path, expectedSessionID, true, maxLineBytes)
+func readStrictChildTranscript(path, root, expectedSessionID string, maxLineBytes int) (transcriptData, error) {
+	return readStrictChildTranscriptWithOptions(path, root, expectedSessionID, true, maxLineBytes)
 }
 
-func validateStrictChildTranscript(path, expectedSessionID string, maxLineBytes int) (transcript.Header, error) {
-	data, err := readStrictChildTranscriptWithOptions(path, expectedSessionID, false, maxLineBytes)
+func validateStrictChildTranscript(path, root, expectedSessionID string, maxLineBytes int) (transcript.Header, error) {
+	data, err := readStrictChildTranscriptWithOptions(path, root, expectedSessionID, false, maxLineBytes)
 	return data.Header, err
 }
 
-func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
-	data, err := readSemanticTranscript(path, maxLineBytes, retainLines, false, errStrictChildTranscriptCorrupt)
+func readStrictChildTranscriptWithOptions(path, root, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
+	data, err := readSemanticTranscript(path, root, maxLineBytes, retainLines, false, errStrictChildTranscriptCorrupt)
 	if err != nil {
 		return transcriptData{}, err
 	}
@@ -79,8 +80,8 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	return data, nil
 }
 
-func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error) (transcriptData, error) {
-	f, err := openTranscriptFile(path)
+func readSemanticTranscript(path string, root string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error) (transcriptData, error) {
+	f, err := openTranscriptFile(path, root)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}

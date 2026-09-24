@@ -806,23 +806,24 @@ func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, a
 			return nil, fmt.Errorf("api-log sidecar: %w", err)
 		}
 		if parsed.AttemptID != "" {
-			return readAPILogAttempt(ctx, sidecar, ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+			return readAPILogAttempt(ctx, sidecar, bucketDir, ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
 		}
-		return readAPILogSummary(ctx, sidecar, ref, parsed.Range)
+		return readAPILogSummary(ctx, sidecar, bucketDir, ref, parsed.Range)
 	}
 
 	path, ref, err := resolveTranscript(parsed.TranscriptRef, deps.stateDir, deps.sessionID)
 	if err != nil {
 		return nil, err
 	}
+	bucketDir := filepath.Dir(filepath.Dir(path))
 	meta := resolvedSessionMeta(deps, path, ref)
 	switch parsed.Format {
 	case "markdown":
-		return readMarkdownPage(path, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
+		return readMarkdownPage(path, bucketDir, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
 	case "outline":
-		return readOutline(path, ref, parsed.Range)
+		return readOutline(path, bucketDir, ref, parsed.Range)
 	case "jsonl":
-		return readRaw(path, ref, parsed.Range)
+		return readRaw(path, bucketDir, ref, parsed.Range)
 	default:
 		panic("validated transcript format")
 	}
@@ -1158,13 +1159,13 @@ func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
 // When turns_rendered < turns_total, a self-announcing window line is spliced
 // after the document header so a default read never silently masquerades as the
 // whole session.
-func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
+func readMarkdownPage(path, root, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
 	var data transcriptData
 	var err error
 	if expandTurn == nil {
-		data, err = readTranscriptFull(path)
+		data, err = readTranscriptFull(path, root)
 	} else {
-		data, err = readTranscriptFullWithEntryLines(path)
+		data, err = readTranscriptFullWithEntryLines(path, root)
 	}
 	if err != nil {
 		return nil, err
@@ -1476,8 +1477,8 @@ const formatOutline = "outline"
 // rangeArg is non-empty and malformed, it falls back to the full session (no
 // range applied) so the model is never silently wrong. Valid ranges produce the
 // filtered outline with absolute turn numbers.
-func readOutline(path, ref, rangeArg string) (any, error) {
-	data, err := readTranscriptFull(path)
+func readOutline(path, root, ref, rangeArg string) (any, error) {
+	data, err := readTranscriptFull(path, root)
 	if err != nil {
 		return nil, err
 	}
@@ -1532,8 +1533,8 @@ type readRawMeta struct {
 // bounded by the 200k hard cap (head-only, valid NDJSON). A
 // malformed range falls back to the default and records range_warning; expand_turn
 // does not apply to raw output.
-func readRaw(path, ref, rangeArg string) (any, error) {
-	_, entries, _, err := readTranscript(path)
+func readRaw(path, root, ref, rangeArg string) (any, error) {
+	_, entries, _, err := readTranscript(path, root)
 	if err != nil {
 		return nil, err
 	}
@@ -1547,7 +1548,7 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 	}
 
 	start, end := parseRange(effectiveRange, len(entries))
-	content, lines, skipped, truncated, err := readRawLinesForRange(path, start, end)
+	content, lines, skipped, truncated, err := readRawLinesForRange(path, root, start, end)
 	if err != nil {
 		return nil, err
 	}

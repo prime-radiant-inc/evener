@@ -1183,7 +1183,7 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 				t.Fatal("restored session retained no transcript entries")
 			}
 			path := transcriptPath(restored.stateDir, restored.id)
-			onDisk, err := readTranscriptFull(path)
+			onDisk, err := readTranscriptFull(path, "")
 			if err != nil {
 				t.Fatalf("readTranscriptFull: %v", err)
 			}

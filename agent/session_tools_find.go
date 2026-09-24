@@ -542,7 +542,7 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 	if err := symlinkErrorDeep(path, bucketDir); err != nil {
 		return nil, false
 	}
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, bucketDir)
 	if err != nil {
 		return nil, false
 	}

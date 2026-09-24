@@ -1666,7 +1666,7 @@ func TestOpenTranscriptFile_RefusesSymlinkedLeaf(t *testing.T) {
 	}
 
 	// openTranscriptFile should refuse the symlink — O_NOFOLLOW at the leaf.
-	rc, err := openTranscriptFile(link)
+	rc, err := openTranscriptFile(link, "")
 	if err == nil {
 		_ = rc.Close()
 		t.Fatal("openTranscriptFile opened a symlinked leaf; should refuse with O_NOFOLLOW")
@@ -1690,7 +1690,7 @@ func TestOpenAPILogFile_RefusesSymlinkedLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rc, err := openAPILogFile(link)
+	rc, err := openAPILogFile(link, "")
 	if err == nil {
 		_ = rc.Close()
 		t.Fatal("openAPILogFile opened a symlinked leaf; should refuse with O_NOFOLLOW")

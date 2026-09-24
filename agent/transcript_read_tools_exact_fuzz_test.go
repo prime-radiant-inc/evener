@@ -43,7 +43,7 @@ func trteReadFailures(t *testing.T) {
 		{name: "strict-body", body: `{"kind":"header","format_version":2,"session_id":"child"}` + "\n", read: func(path string) error { _, err := readStrictChildTranscript(path, "child", 64); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			openTranscriptFile = func(string) (io.ReadCloser, error) {
+			openTranscriptFile = func(string, string) (io.ReadCloser, error) {
 				return io.NopCloser(&trteFailReader{prefix: []byte(tc.body), err: want}), nil
 			}
 			if err := tc.read("ignored"); !errors.Is(err, want) {
@@ -66,7 +66,7 @@ func trteReadFailures(t *testing.T) {
 	}
 
 	oldRawLines := readRawLinesForRange
-	readRawLinesForRange = func(string, int, int) (string, int, int, bool, error) {
+	readRawLinesForRange = func(string, string, int, int) (string, int, int, bool, error) {
 		return "", 0, 0, false, want
 	}
 	if _, err := readRaw(path, "local:child", ""); !errors.Is(err, want) {
