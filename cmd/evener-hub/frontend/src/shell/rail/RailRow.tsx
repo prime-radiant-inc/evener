@@ -817,12 +817,13 @@ function ProjectRow({
 }) {
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
-  // A host-first copy claims no aggregate rollup: rollup_state and
-  // rollup_attn are project-wide wire facts, and an honest per-host count
-  // would need wire support the manifest does not carry - the same line the
-  // host group row itself draws. The attention rows still surface in
-  // Needs-you.
-  const showsRollup = node.spawnHost === undefined;
+  // The project-wide rollup is an aggregate fact, so it reads ONCE: on the
+  // flat/project-first project row, or on the canonical host-first copy
+  // (the first in rail order, the same copy that renders the project's
+  // overflow). Every other copy claims nothing - an honest per-host count
+  // would need wire support the manifest does not carry, the same line the
+  // host group row itself draws.
+  const showsRollup = node.spawnHost === undefined || node.canonicalCopy === true;
   // The Spawn picker refuses an offline or unknown-to-the-manifest host; a
   // copy nested under one must not offer a launch that would silently fall
   // back to this hub (with the remote working_dir).

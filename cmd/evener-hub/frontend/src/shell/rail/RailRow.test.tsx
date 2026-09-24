@@ -2329,6 +2329,22 @@ describe("project row", () => {
     expect(screen.queryByText("3")).toBeNull();
   });
 
+  // The canonical copy - the first in rail order, the same copy that
+  // renders the project's overflow - is the one place the project-wide
+  // rollup reads, so a collapsed host-first project still shows its
+  // attention without claiming per-host counts under every host.
+  test("the canonical copy carries the project's rollup, the one place it reads once", () => {
+    const copy = {
+      ...projectRailNode(apiProject({ rollup_state: "warning", rollup_attn: 3 })),
+      id: "projectnode:p1@local",
+      spawnHost: "local",
+      canonicalCopy: true,
+    } as ProjectRailNode;
+    render(<RailRow node={copy} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
   test("menu offers 'Archive project' for an active project and calls onToggleArchiveProject", async () => {
     const acts = actions();
     const project = apiProject({ is_archived: false });

@@ -682,7 +682,7 @@ describe("host grouping (organize by)", () => {
     expect(liveNodesGroupedByHost([], sources, closed)).toEqual([]);
   });
 
-  test("host-first copies carry the host they nest under; flat project rows carry none", () => {
+  test("host-first copies carry the host they nest under; the first speaks for the project", () => {
     const evener = project({
       key: "evener",
       sources: ["local", "devbox"],
@@ -691,8 +691,12 @@ describe("host grouping (organize by)", () => {
     const hosts = hostProjectNodes([evener], sources, closed);
     const localCopy = hosts.find((node) => node.id === "host:local")?.children[0];
     const devboxCopy = hosts.find((node) => node.id === "host:devbox")?.children[0];
-    expect(localCopy).toMatchObject({ kind: "project", spawnHost: "local" });
+    // The first copy in rail order is the project's canonical copy: the
+    // one that renders the project's aggregate facts (overflow, rollup)
+    // instead of duplicating them under every host.
+    expect(localCopy).toMatchObject({ kind: "project", spawnHost: "local", canonicalCopy: true });
     expect(devboxCopy).toMatchObject({ kind: "project", spawnHost: "devbox" });
+    expect(devboxCopy).not.toHaveProperty("canonicalCopy");
     const [flat] = projectNodes([evener], closed);
     expect((flat as { spawnHost?: string } | undefined)?.spawnHost).toBeUndefined();
   });
@@ -826,5 +830,20 @@ describe("host grouping (organize by)", () => {
       "host:devbox",
       "projectnode:evener@devbox",
     ]);
+  });
+
+  test("a clustered live row groups under its members' host, like the project tiers", () => {
+    const clustered = session({
+      row_id: "navigation:cluster:ab",
+      ref: "cluster:ab",
+      session_id: "ab",
+      host_id: "cluster",
+      kind: "cluster",
+      state: "active",
+      children: [on("devbox", "m1")],
+    });
+    const rows = sessionNodes([clustered, on("local", "l1")], closed);
+    const grouped = liveNodesGroupedByHost(rows, sources, closed);
+    expect(grouped.map((node) => node.id)).toEqual(["livehost:local", "livehost:devbox"]);
   });
 });

@@ -130,6 +130,11 @@ export interface ProjectRailNode extends WidgetTreeNode {
   // affordances target that host, not this hub. Every other variant leaves
   // it absent - a flat or project-first row claims no host.
   spawnHost?: string;
+  // True on the ONE copy that renders the project's aggregate facts - the
+  // overflow row and the rollup signal/badge - so they read once (on the
+  // first copy in rail order) instead of claiming per-host counts the wire
+  // does not carry. Absent everywhere else.
+  canonicalCopy?: boolean;
 }
 
 export interface LoadingRailNode extends WidgetTreeNode {
@@ -251,6 +256,7 @@ type ProjectNodeCacheEntry = Readonly<{
   // Absent on every variant a host-grouped copy is not (see
   // ProjectRailNode.spawnHost); compared as undefined against those.
   spawnHost?: string;
+  canonicalCopy?: boolean;
   value: ProjectRailNode;
 }>;
 const sessionChildrenCache = new WeakMap<object, WeakMap<IsExpanded, SessionRailNode["children"]>>();
@@ -748,6 +754,7 @@ function cachedProjectNode(
     expanded: boolean;
     children: RailNode[];
     spawnHost?: string;
+    canonicalCopy?: boolean;
   },
 ): ProjectRailNode {
   const cached = projectNodeCache
@@ -759,7 +766,8 @@ function cachedProjectNode(
     cached.children === fields.children &&
     cached.displayName === fields.displayName &&
     cached.expanded === fields.expanded &&
-    cached.spawnHost === fields.spawnHost
+    cached.spawnHost === fields.spawnHost &&
+    cached.canonicalCopy === fields.canonicalCopy
   )
     return cached.value;
   const result: ProjectRailNode = {
@@ -771,6 +779,7 @@ function cachedProjectNode(
     expanded: fields.expanded,
     children: fields.children,
     ...(fields.spawnHost === undefined ? {} : { spawnHost: fields.spawnHost }),
+    ...(fields.canonicalCopy === true ? { canonicalCopy: true } : {}),
   };
   cacheProjectNode(p, isExpanded, variant, { ...fields, value: result });
   return result;
@@ -955,9 +964,12 @@ function cachedHostNode(id: string, host: HostRailNode["host"], expanded: boolea
 /** "Host, then project": one top-level host group per host in play (a host
  * owning nothing renders nothing), each holding a copy of every project
  * owned on that host. A copy is never dropped for having no loaded rows:
- * the project's hidden rows can still be that host's, so every copy keeps
- * the overflow that can reveal them. Copy ids suffix the host so two copies
- * of one project never share expand state or overflow row ids. */
+ * the project's hidden rows can still be that host's, and revealed rows
+ * land under the host they name. The project's overflow row renders once,
+ * on the first copy in rail order (the canonical copy below), so the
+ * project-wide count does not claim "+N" under every host. Copy ids suffix
+ * the host so two copies of one project never share expand state or
+ * overflow row ids. */
 export function hostProjectNodes(
   projects: readonly RailProject[],
   sources: readonly Source[],
@@ -1012,7 +1024,14 @@ function hostProjectCopyNode(
       ? activeChildren(p, id, isExpanded, hostId)
       : activeTierChildren(p, id, () => activeSessionNodes(p, isExpanded, hostId), []),
   );
-  return cachedProjectNode(p, isExpanded, variant, { id, displayName, expanded, children, spawnHost: hostId });
+  return cachedProjectNode(p, isExpanded, variant, {
+    id,
+    displayName,
+    expanded,
+    children,
+    spawnHost: hostId,
+    canonicalCopy: carryProjectOverflow,
+  });
 }
 
 /** "Project, then host": project rows stay as they are today, but a loaded
@@ -1077,7 +1096,7 @@ export function liveNodesGroupedByHost(
   sources: readonly Source[],
   isExpanded: IsExpanded,
 ): RailNode[] {
-  const hostIds = new Set(nodes.map((n) => n.session.host_id));
+  const hostIds = new Set(nodes.map((n) => sessionGroupHostId(n.session)));
   if (hostIds.size <= 1) return nodes;
   return orderedHosts(hostIds, sources).map(({ id: hostId, label, online }): HostRailNode => {
     const id = liveHostGroupId(hostId);
@@ -1085,7 +1104,7 @@ export function liveNodesGroupedByHost(
       id,
       { id: hostId, label, online },
       isExpanded(id, true),
-      nodes.filter((n) => n.session.host_id === hostId),
+      nodes.filter((n) => sessionGroupHostId(n.session) === hostId),
     );
   });
 }
@@ -1146,8 +1165,8 @@ export function revealExpansionIds(
   const carrier = topLevelCarrier(live, ref);
   // Flat mode renders Live ungrouped (Rail wraps it only while grouping),
   // so a subheader id would name a fold that does not exist.
-  if (carrier && mode !== "flat" && new Set(live.map((n) => n.host_id)).size > 1)
-    return [liveHostGroupId(carrier.host_id)];
+  if (carrier && mode !== "flat" && new Set(live.map(sessionGroupHostId)).size > 1)
+    return [liveHostGroupId(sessionGroupHostId(carrier))];
   return [];
 }
 
