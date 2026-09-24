@@ -686,6 +686,13 @@ type testConfig struct {
 	// Nil in production.
 	scratchAdoptionBeforeBorrow func()
 
+	// scratchBorrowAfterRetainedCheck runs inside
+	// borrowRetainedScratchIfLive after the disk revalidation reads the
+	// directory retained and before the install — the window where a
+	// durable reclamation actor (a terminal release, the manifest reset, or
+	// the sweeper) can invalidate what the check approved. Nil in production.
+	scratchBorrowAfterRetainedCheck func()
+
 	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
 	// before each UpdateScratchBindings attempt, so a test can make the first
 	// attempt stale and exercise the rebase-and-retry loop. Nil in production.

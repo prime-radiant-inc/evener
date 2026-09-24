@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
@@ -1059,6 +1060,124 @@ func TestScratchBorrowReportsDeclinedWhileThePoolIsSealedBeforeDetach(t *testing
 	}
 	if !pinned {
 		t.Fatalf("the fallback sandbox mint %q was left unpinned: a protected allocation must publish a reference", freshSandbox)
+	}
+}
+
+// TestScratchBorrowSerializesWithManifestReclamation pins round 69's Medium:
+// the wrapper borrow's disk revalidation was an unlocked durable read, and
+// the install that followed ran under the pool lock only — which serializes
+// same-session sealing but no durable reclamation. A terminal release
+// tombstoning the manifest between the two leaves the directory collectible
+// while the bare borrow stats it as present, so the environment installs on
+// the stale approval and the next sweep collects the directory from under
+// the live session. The borrow now holds the pin owner's manifest lock
+// across [check → install] — the same lock the release, the reset, and the
+// sweeper's removal already serialize on (rounds 31 and 67) — so a
+// reclamation that wins it first leaves the in-lock check reading
+// collectible (declined) and a borrow that wins first completes before any
+// invalidation can land.
+func TestScratchBorrowSerializesWithManifestReclamation(t *testing.T) {
+	confineSessionScratchSweep(t)
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01BORROWRECLAIM1"
+	const bindingID = "b-borrow-reclaim"
+	// Mint the retained directory under the confined temp base the sweep
+	// enumerates, so the reclamation leg drives the real collector rather
+	// than a hand-rolled removal. Age it past the sweep cutoff and free the
+	// lease so nothing holds the directory against collection.
+	handle, err := sandbox.NewSessionScratch(os.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("mint retained scratch: %v", err)
+	}
+	retainedDir := handle.Dir
+	t.Cleanup(func() { _ = handle.Retain() })
+	bindingRow := sandbox.ScratchBinding{BindingID: bindingID, OwnerSessionID: bindingOwnerForTest, Slots: map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: true},
+	}}
+	if err := sandbox.PinScratchBinding(owner, bindingRow, map[string]*sandbox.SessionScratch{sandbox.ScratchKindSandbox: handle}, nil); err != nil {
+		t.Fatalf("pin binding %q: %v", bindingID, err)
+	}
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	if err := handle.Retain(); err != nil {
+		t.Fatalf("free the retained lease for the collector: %v", err)
+	}
+	// A wrapper-only slot: the binding borrows a directory whose lease the
+	// pinned row owns, so the adoption runs the borrow branch rather than a
+	// claim.
+	wrapperRow := bindingRow
+	wrapperRow.Slots = map[string]sandbox.ScratchSlot{
+		sandbox.ScratchKindSandbox: {Dir: retainedDir, OwnsLease: false},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: wrapperRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: bindingID}},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+		handles:   map[string]*sandbox.SessionScratch{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// The durable reclamation lands inside the [check → install] window, the
+	// raw manifest-level release a terminal close in any process sharing the
+	// state directory commits — tombstone and pin removal, the directory
+	// itself left on disk so the bare borrow's existence stat still passes.
+	sweepRoot := t.TempDir()
+	var hookReleaseErr error
+	s.cfg.testOnly.scratchBorrowAfterRetainedCheck = func() {
+		hookReleaseErr = sandbox.ReleaseScratchRetention(owner)
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, bindingID, consumerID)
+	if err != nil {
+		t.Fatalf("adopt the wrapper binding across a concurrent reclamation: %v", err)
+	}
+	// The serialization itself: the release must refuse the manifest lock
+	// the borrow holds across the window, exactly as the sweep and the reset
+	// already do. Pre-fix it committed inside the window (err=nil) and the
+	// environment below installed over the tombstoned manifest.
+	if !errors.Is(hookReleaseErr, sandbox.ErrScratchRetentionLockHeld) {
+		t.Fatalf("the terminal release committed inside the borrow window (err=%v): the reclamation must serialize on the manifest lock the borrow holds", hookReleaseErr)
+	}
+	if !installed {
+		t.Fatal("the borrow declined although the reclamation never committed inside the serialized window")
+	}
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the retained directory did not survive the serialized borrow window: %v", err)
+	}
+	if manifest, err := sandbox.LoadScratchRetention(owner); err != nil {
+		t.Fatalf("load the manifest after the borrow: %v", err)
+	} else if manifest.Released {
+		t.Fatal("a reclamation committed over the manifest during the serialized borrow window")
+	}
+	if got := env.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(retainedDir) {
+		t.Fatalf("the environment did not borrow the retained directory: got %q, want %q", got, retainedDir)
+	}
+	// Convergence: the reclamation merely waited. Once the borrow returns
+	// and releases the lock, the same release commits and the real sweep —
+	// aged directory, freed lease, tombstoned manifest, enumerated base —
+	// collects it. The environment borrowed before the tombstone, the
+	// bounded release-after-install residual round 30 disclosed. Aging runs
+	// after the release because both the install above and the release's
+	// pin removal touch the directory, and the sweep's cutoff reads its
+	// mtime.
+	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("release after the borrow window: %v", err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(retainedDir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.SweepCrashedSessionScratch(sweepRoot); err != nil {
+		t.Fatalf("sweep after the borrow window: %v", err)
+	}
+	if _, err := os.Stat(retainedDir); !os.IsNotExist(err) {
+		t.Fatalf("the post-window reclamation did not collect the tombstoned directory: %v", err)
 	}
 }
 

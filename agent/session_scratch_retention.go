@@ -267,18 +267,15 @@ func findCarriedConsumerBinding(manifest sandbox.ScratchManifest, sessionID stri
 	return sandbox.ScratchBinding{}, false
 }
 
-// scratchConsumerPreservingRoles builds the consumer record for a transition
-// that changes only sessionID's current binding. The session's already-recorded
-// role fields (parent-shared, worktree-restore, abandoned) are carried forward
-// rather than wiped, so an interruption before the full role registration that
-// follows cannot lose them (plan 650).
 // scratchConsumerPreservingRoles builds the consumer row a reinstall or swap
 // publishes: the caller's binding becomes the current one, and every role the
-// existing row carried survives. The displaced current binding is preserved as
-// abandoned when its row still exists — a lease-owning slot no consumer role
-// names fails the graph reader closed and blocks every later restore, and the
-// abandoned role is the model's own home for a binding the consumer moved off
-// of (round 61).
+// existing row carried — parent-shared, worktree-restore, abandoned —
+// survives rather than being wiped, so an interruption before the full role
+// registration that follows cannot lose them (plan 650). The displaced
+// current binding is preserved as abandoned when its row still exists — a
+// lease-owning slot no consumer role names fails the graph reader closed and
+// blocks every later restore, and the abandoned role is the model's own home
+// for a binding the consumer moved off of (round 61).
 func scratchConsumerPreservingRoles(manifest sandbox.ScratchManifest, sessionID, currentBindingID string) sandbox.ScratchConsumerBinding {
 	consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: currentBindingID}
 	for _, existing := range manifest.Consumers {
@@ -1861,35 +1858,61 @@ func borrowRetainedScratch(env *execenv.LocalExecutionEnvironment, bindingID, ki
 // the bare borrow checks nothing but the directory's existence. The disk
 // revalidation asks what the collector would see: a Released tombstone or a
 // removed pin leaves the directory collectible, and a collectible directory
-// is not one a restored environment may run on. The install runs under the
-// pool lock, and the terminal release stores its seal under the same lock,
-// so the release either sealed first (declined) or starts after this install
-// completes (round 30).
+// is not one a restored environment may run on. The check and the install
+// run as one step under the pin owner's manifest lock — the same lock the
+// release, the reset, and the sweeper's removal already serialize on (rounds
+// 31 and 67) — because the pool lock serializes only same-session sealing:
+// a durable reclamation committing between an unlocked check and the install
+// left the environment named after a collectible directory the next sweep
+// would delete from under it (round 69). A reclamation that wins the lock
+// first leaves the in-lock check reading collectible (declined); a borrow
+// that wins first completes before any invalidation can land. The pool-lock
+// section nests inside the manifest lock exactly as the refresh fold's row
+// install does, and every acquisition on either side is fail-fast, so no
+// blocking cycle exists (round 37).
 func (s *Session) borrowRetainedScratchIfLive(pool *retainedScratchPool, env *execenv.LocalExecutionEnvironment, bindingID, kind string, slot sandbox.ScratchSlot) (bool, error) {
-	retained, retainedErr := sandbox.ScratchDirectoryRetained(slot.Dir)
-	if retainedErr != nil {
-		// Unreadable retention state is the r23 abort class, not a decline:
-		// fail the adoption loudly and retryably rather than silently
-		// skipping an allocation that may still be live.
-		return false, retainedErr
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		return false, errors.New("retained scratch: session has no scratch retention owner for the borrow")
 	}
-	if !retained {
-		return false, nil
-	}
-	pool.mu.Lock()
-	sealed := s.retainedScratchSealed.Load()
-	live := s.retainedScratch.Load() == pool
-	var borrowErr error
-	if !sealed && live {
-		borrowErr = borrowRetainedScratch(env, bindingID, kind, slot)
-	}
-	pool.mu.Unlock()
-	// The bool reports whether the borrow INSTALLED, not whether the disk
-	// reads retained: a sealed or detached pool declines with the install
-	// silently skipped, and reporting that as success left the adoption
-	// claiming a shared allocation the environment never received (round
-	// 32).
-	return !sealed && live, borrowErr
+	var installed bool
+	err := sandbox.RetryScratchLockContention(func() error {
+		return sandbox.WithScratchRetentionLock(owner, func() error {
+			retained, retainedErr := sandbox.ScratchDirectoryRetained(slot.Dir)
+			if retainedErr != nil {
+				// Unreadable retention state is the r23 abort class, not a
+				// decline: fail the adoption loudly and retryably rather
+				// than silently skipping an allocation that may still be
+				// live.
+				return retainedErr
+			}
+			if !retained {
+				return nil
+			}
+			if hook := s.cfg.testOnly.scratchBorrowAfterRetainedCheck; hook != nil {
+				hook()
+			}
+			pool.mu.Lock()
+			sealed := s.retainedScratchSealed.Load()
+			live := s.retainedScratch.Load() == pool
+			var borrowErr error
+			if !sealed && live {
+				borrowErr = borrowRetainedScratch(env, bindingID, kind, slot)
+			}
+			pool.mu.Unlock()
+			if borrowErr != nil {
+				return borrowErr
+			}
+			// The bool reports whether the borrow INSTALLED, not whether
+			// the disk reads retained: a sealed or detached pool declines
+			// with the install silently skipped, and reporting that as
+			// success left the adoption claiming a shared allocation the
+			// environment never received (round 32).
+			installed = !sealed && live
+			return nil
+		})
+	})
+	return installed, err
 }
 
 // scratchSlotContended reports whether slot key's lease was held elsewhere in

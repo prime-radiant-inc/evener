@@ -163,13 +163,14 @@ export function connectionDisplay(
  * history nor the fatal wall of the one before it. That first moved render
  * walls outright — the state it reports still belongs to the previous hub —
  * and the window does not close when the effects settle: a ready state only
- * earns its screen for the hub its readiness was earned under
- * (`trustedScope`, re-recorded only on a transition into ready), so every
+ * earns its screen for the hub its readiness was earned under (`trust`,
+ * whose `{trusted, scope}` shape re-records scope only on a transition into
+ * ready), so every
  * ready render under the new hub walls until the connection itself
  * transitions into ready for it. A return to a hub whose trust still stands
  * shows immediately.
  *
- * `trustedScope` is state, not a ref, because it gates what the ready
+ * `trust` is state, not a ref, because it gates what the ready
  * renders show: the transition into ready that re-records it is the same
  * commit the ready renders arrive in, so without its own re-render a screen
  * whose connection went ready under a new hub would read the stale trust
