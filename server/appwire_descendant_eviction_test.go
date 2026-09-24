@@ -600,6 +600,37 @@ func TestEvictedDescendantReadFailsWhenItsTranscriptIsGone(t *testing.T) {
 	f.requireResident("child", false)
 }
 
+// A read that holds the descendant when it settles keeps the settle from
+// evicting the snapshot a failed rebuild left empty, so a later read retires
+// that snapshot itself and rebuilds.
+func TestReadRebuildsASettledDescendantWhoseRebuildFailed(t *testing.T) {
+	f := newQuiescentDescendantFixture(t)
+	f.finishedDescendant("child")
+	evictQuiescentDescendantsForTest(f.srv, 0)
+	path := f.transcriptPath("child")
+	if err := os.Rename(path, path+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	f.startTurn("child", "resumed")
+	if err := os.Rename(path+".aside", path); err != nil {
+		t.Fatal(err)
+	}
+	release, err := f.srv.pinDescendantTurns(context.Background(), "child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.finish("child")
+	release()
+
+	read, err := readDescendantTurns(f.srv, "child", appwire.TranscriptItemPageLimit)
+	if err != nil {
+		t.Fatalf("read child: %v", err)
+	}
+	if !turnsContainText(read.Thread.Turns, "persisted child") {
+		t.Fatalf("child turns = %+v, want the history the failed rebuild left out", read.Thread.Turns)
+	}
+}
+
 // A read whose request is gone stops rebuilding rather than parse the whole
 // transcript for nobody, and leaves the descendant evicted.
 func TestEvictedDescendantRebuildStopsWithItsRead(t *testing.T) {

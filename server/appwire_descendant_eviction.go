@@ -76,7 +76,7 @@ func transcriptSize(path string) int64 {
 // settleDescendantLocked records that a descendant's own event left it
 // quiescent, with transcriptBytes its transcript's length sampled in that
 // event's commit, then runs an eviction pass. A snapshot whose rebuild failed
-// is evicted outright, so the next read rebuilds the history it lacks.
+// is retired outright, so the next read rebuilds the history it lacks.
 //
 // The length must come from the descendant's own commit. A session persists
 // before it emits, and it emits synchronously, so while its event is being
@@ -87,10 +87,19 @@ func transcriptSize(path string) int64 {
 func (s *Server) settleDescendantLocked(projection *appDescendantProjection, transcriptBytes int64) {
 	projection.eviction.transcriptBytes = transcriptBytes
 	s.touchDescendantLocked(projection)
-	if projection.rebuildFailed && projection.readers == 0 && transcriptBytes > 0 {
+	retireFailedDescendantTurnsLocked(projection, 0)
+	s.evictQuiescentDescendantsLocked(appResidentQuiescentDescendants)
+}
+
+// retireFailedDescendantTurnsLocked evicts the snapshot a failed rebuild left
+// empty once the descendant has settled with a transcript to rebuild from,
+// whatever the resident budget. ownPins is how many of its readers belong to
+// the caller; a read by anyone else keeps the snapshot resident.
+func retireFailedDescendantTurnsLocked(projection *appDescendantProjection, ownPins int) {
+	if projection.turns != nil && projection.rebuildFailed && projection.quiescent() &&
+		projection.readers <= ownPins && projection.eviction.transcriptBytes > 0 {
 		evictDescendantTurnsLocked(projection)
 	}
-	s.evictQuiescentDescendantsLocked(appResidentQuiescentDescendants)
 }
 
 // evictDescendantTurnsLocked drops a resident descendant's turn snapshot,
@@ -227,15 +236,27 @@ func (s *Server) pinDescendantTurns(ctx context.Context, threadID string) (relea
 	}
 	projection.readers++
 	s.touchDescendantLocked(projection)
-	evicted := projection.turns == nil
-	eviction := projection.eviction
-	path := s.descendantTranscriptPathLocked(threadID)
+	rebuildFailed := projection.turns != nil && projection.rebuildFailed
 	s.mu.Unlock()
 	release = func() {
 		s.mu.Lock()
 		projection.readers--
 		s.mu.Unlock()
 	}
+	if rebuildFailed {
+		// A read that held it as it settled kept the settle from retiring it.
+		s.appServer.CommitProjection(func() []appserver.SequencedNotification {
+			s.mu.Lock()
+			retireFailedDescendantTurnsLocked(projection, 1)
+			s.mu.Unlock()
+			return nil
+		})
+	}
+	s.mu.RLock()
+	evicted := projection.turns == nil
+	eviction := projection.eviction
+	path := s.descendantTranscriptPathLocked(threadID)
+	s.mu.RUnlock()
 	if !evicted {
 		return release, nil
 	}
