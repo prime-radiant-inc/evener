@@ -1968,3 +1968,41 @@ func TestFindBucketsWithEnumerate_CurrentProjectSymlinkedPrefixRefused(t *testin
 		t.Fatalf("expected error mentioning symlink, got: %v", err)
 	}
 }
+
+// TestFindBucketsWithEnumerate_FlatAllProjectsSymlinkedStateDirRefused (FU3
+// round 13, L3) asserts findBucketsWithEnumerate refuses a symlinked flat
+// state dir on the all_projects path. Pre-fix, the sh=="" (flat layout)
+// early return for all_projects returned the current bucket without calling
+// validateLayoutPrefix — unlike the non-all_projects branch (which validates)
+// and the in-layout all_projects branch (which validates via enumerateBuckets).
+// Against a symlinked flat --state-dir, find_session_transcripts(scope=
+// "all_projects") reported "No matching sessions" instead of surfacing the
+// symlink refusal. Post-fix, validateLayoutPrefix(currentStateDir) is called
+// before the flat all_projects return, so the Lstat of the bucket dir itself
+// catches the symlink.
+func TestFindBucketsWithEnumerate_FlatAllProjectsSymlinkedStateDirRefused(t *testing.T) {
+	t.Parallel()
+	// Create a real flat state dir with a sessions subdir.
+	realDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(realDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink to the real dir — the state dir itself is a symlink.
+	linkDir := filepath.Join(t.TempDir(), "linked-state-dir")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// findBucketsWithEnumerate with all_projects on a flat symlinked state dir
+	// must refuse — not silently return the bucket (which find would then
+	// report as "No matching sessions").
+	_, _, err := findBucketsWithEnumerate(linkDir, scopeAllProjects, enumerateBuckets)
+	if err == nil {
+		t.Fatal("findBucketsWithEnumerate returned no error for all_projects scope " +
+			"with a symlinked flat state dir; the security refusal must be surfaced")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}

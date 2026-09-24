@@ -396,6 +396,15 @@ func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(stri
 	}
 	sh := stateHomeFor(currentStateDir)
 	if sh == "" {
+		// Validate the layout prefix for the current bucket on the flat
+		// all_projects path too. validateLayoutPrefix Lstats the bucket
+		// dir itself (symlinkErrorDeep rooted at the bucket does not), so
+		// a symlinked flat --state-dir is refused here rather than
+		// silently returning the bucket — which find would then report as
+		// "No matching sessions" while read_transcript surfaces the refusal.
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return nil, "", err
+		}
 		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
 	all, enumerateErr := enumerate(sh)
