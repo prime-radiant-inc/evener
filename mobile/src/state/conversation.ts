@@ -2847,21 +2847,44 @@ export function createConversationStore() {
               // re-merge sees that match itself, and its group membership
               // is what supplies the re-merge's overlap evidence.
               if (turn.items.length === 0) return false;
+              let foldedThroughAliasOnly = false;
               for (const item of turn.items) {
                 if (coverageInjectedRefs.has(item)) continue;
                 const output = coverageRetainedItemOutput.get(item);
                 if (output === undefined || !coverageOutputCarriesFresh.has(output)) {
                   return false;
                 }
-                // A DIRECT identity match with a fresh source of the same
-                // output: the re-merge sees it too, so the turn keeps its
-                // re-merge membership — its matched items are what supply
-                // the re-merge's transcript-overlap evidence.
+                // The package's own keep-decisions for this item through
+                // the REAL merge's view (#2152 corner a): a retained field
+                // the fresh side did not supply — alias-bridged or direct,
+                // with fold survival and the rank rule for status — keeps
+                // its claim, and the turn stays for the re-merge verdict.
+                // The gate used to accept alias consumption on output
+                // membership alone, so a reread that re-served the
+                // identity but omitted the payload still read as consumed
+                // and discarded the retained cursor.
+                if (history.olderItemAddsCoverage(item)) return false;
+                // #2152 corner b: a DIRECT identity match no longer
+                // retires the whole per-turn check. The re-merge judges a
+                // direct-matched item exactly (it sees the same identity),
+                // so the items that must keep the turn out of the re-merge
+                // are the ones it CANNOT see: those the fresh side reached
+                // solely through remembered aliases.
                 const freshSources = coverageOutputFreshSources.get(output) ?? [];
                 if (freshSources.some((fresh) => itemIdentityMatches(item, fresh))) {
-                  return false;
+                  continue;
                 }
+                foldedThroughAliasOnly = true;
               }
+              // A turn every item of which the fresh read matches directly
+              // keeps its re-merge membership: the re-merge judges it
+              // exactly, and its matched items supply the overlap evidence
+              // the store's cursor gate reads. The bail this replaces kept
+              // mixed direct+alias turns in coverageOlderTurns, and the
+              // alias-only item then claimed against a re-merge that could
+              // not see its bridge, pinning a stale cursor through a
+              // COMPLETE reread.
+              if (!foldedThroughAliasOnly) return false;
               const outputId = coverageTurnOutputId.get(turn.id);
               if (outputId === undefined) return false;
               const freshMatches = history.newerTurnFolds.get(outputId) ?? [];

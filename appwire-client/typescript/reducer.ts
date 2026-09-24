@@ -1580,6 +1580,16 @@ export interface TurnHistoryFoldDetail extends TurnHistoryMergeResult {
   // rewrite's winners included. An item no edge folded vouches for
   // itself.
   itemSideContributes: (item: ItemModel, side: (input: ItemModel) => boolean) => boolean;
+  // The merge's own coverage verdict for one older-input item: whether its
+  // persisted content adds coverage the fresh side lacks, judged through
+  // this merge's live view — the same host, contributor-chain, rank, and
+  // fold-survival rules the merge's own coverage walk runs per turn, never
+  // a re-derivation after the fact. Warnings never claim (the walk's own
+  // rule); an item this merge never saw as an older input claims (true),
+  // the safe direction for a caller gating on the answer. Published for the
+  // mobile store's alias-consumption gate (#2152): the store consumes this
+  // answer instead of re-deriving the field rules store-side.
+  olderItemAddsCoverage: (item: ItemModel) => boolean;
 }
 
 const turnCoverageFields = ["startedAt", "completedAt", "durationMs", "usage", "cost", "error"] as const;
@@ -1979,6 +1989,24 @@ function mergeTurnHistoryWithContext(
   // below read the fold's own view of the turns they will return.
   const placed = placeCoalescedTurns(groups, older.length);
   const view = toolFoldView(placed, context);
+  // The per-item inputs of the coverage verdicts below, so the fold detail
+  // can answer the same question for one item on demand: the group turn and
+  // the group's fresh turns are the walk's own arguments, and the chain
+  // (host, fresh contributors) is exactly what the per-turn walk computes
+  // for each item it reaches. Item objects flow into the groups by
+  // reference, so a caller holding an older input item asks about the very
+  // object this index names.
+  const olderItemCoverageInputs = new WeakMap<ItemModel, { groupTurn: TurnModel; freshTurns: TurnModel[] }>();
+  for (const group of groups) {
+    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
+    for (const olderIndex of group.olderIndexes) {
+      const turn = older[olderIndex];
+      if (turn === undefined) continue;
+      for (const item of turn.items) {
+        olderItemCoverageInputs.set(item, { groupTurn: group.turn, freshTurns });
+      }
+    }
+  }
 
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
@@ -2016,6 +2044,23 @@ function mergeTurnHistoryWithContext(
     if (fresh === undefined || olderTurnContributes(group.turn, fresh)) olderContributed = true;
   }
 
+  // The store's alias-consumption gate (#2152) asks the package's own
+  // answer for one retained item: whether its persisted content adds
+  // coverage the fresh side lacks, judged through THIS merge's live view —
+  // the same host, contributor-chain, and fold-survival rules the walk
+  // above runs per turn, never a re-derivation after the fact. Warnings
+  // never claim (the walk's own rule), and an item this merge never saw as
+  // an older input claims — the safe direction for a caller gating on the
+  // answer.
+  const olderItemAddsCoverageOf = (item: ItemModel): boolean => {
+    const input = olderItemCoverageInputs.get(item);
+    if (input === undefined) return true;
+    if (item.type === "warning") return false;
+    const host = matchedItemHost(item, input.groupTurn, context);
+    const matchingItems = freshContributorItems(host, input.freshTurns, item, context);
+    return olderItemAddsCoverage(item, matchingItems, input.groupTurn, view, context);
+  };
+
   return {
     turns: olderContributed ? mergeToolCallsByCallId(placed, context, view) : newer,
     olderCoverage,
@@ -2025,6 +2070,7 @@ function mergeTurnHistoryWithContext(
     itemFoldSources: itemFoldSourcesOf(context),
     toolResultFoldSources: toolResultFoldSourcesOf(context),
     itemSideContributes: itemSideContributesOf(context),
+    olderItemAddsCoverage: olderItemAddsCoverageOf,
   };
 }
 
