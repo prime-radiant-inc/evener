@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -4069,6 +4070,58 @@ func TestScratchRoleRegistrationReportsACommittedWrite(t *testing.T) {
 	}
 	if !probeFired {
 		t.Fatal("fixture expected the probe to fire on the registration's write")
+	}
+}
+
+// TestScratchReinstallPreservesTheDisplacedCurrentBinding pins the round-61
+// reinstall gap: the existing-identity arm rewrites the consumer's current
+// binding to the environment's identity, and the row it displaced — the one
+// the reset carried, holding a lease-owning slot the graph reader requires a
+// consumer role to name — is dropped from every role. The write commits, and
+// every later restore's graph validation fails closed over the orphaned slot.
+func TestScratchReinstallPreservesTheDisplacedCurrentBinding(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const childID = "01DISPLACEDCHILD"
+	displacedSlots, displacedRow := mintRefreshScratchBinding(t, s, "b-displaced-current", sandbox.ScratchKindSandbox)
+	t.Cleanup(func() { _ = displacedSlots[sandbox.ScratchKindSandbox].Retain() })
+	installedSlots, installedRow := mintRefreshScratchBinding(t, s, "b-installed-identity", sandbox.ScratchKindSandbox)
+	t.Cleanup(func() { _ = installedSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The consumer's current binding names the displaced row — the exact
+	// shape a released manifest's reset carry leaves behind.
+	mapRefreshScratchConsumer(t, s, childID, displacedRow.BindingID)
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.SetScratchRetentionBinding(owner, installedRow); err != nil {
+		t.Fatalf("install the binding on the environment: %v", err)
+	}
+
+	if err := s.installChildScratchRetention(env, childID); err != nil {
+		t.Fatalf("the install failed over the displaced binding: %v", err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer, ok := findScratchConsumer(manifest, childID)
+	if !ok {
+		t.Fatal("the consumer row is missing")
+	}
+	if consumer.CurrentBindingID != installedRow.BindingID {
+		t.Fatalf("the consumer's current binding is %q, want the installed identity %q", consumer.CurrentBindingID, installedRow.BindingID)
+	}
+	if !slices.Contains(consumer.AbandonedBindingIDs, displacedRow.BindingID) {
+		t.Fatalf("consumer row %+v drops the displaced binding %q", consumer, displacedRow.BindingID)
+	}
+	// The displaced binding stays referenced, so the graph the next restore
+	// loads and validates holds — the restore is not blocked.
+	if err := validateRetainedScratchGraph(manifest); err != nil {
+		t.Fatalf("the reinstall orphaned the displaced binding: %v", err)
 	}
 }
 

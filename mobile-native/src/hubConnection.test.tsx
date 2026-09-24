@@ -248,3 +248,26 @@ it("records the hub a client was dialed for, at dial success", async () => {
 	expect(clientServesHub(fake, "hub-a")).toBe(true);
 	expect(clientServesHub(fake, "hub-b")).toBe(false);
 });
+
+// Round 61's Low: proving a hub identity is what readiness establishes. A
+// client whose dial is still connecting, or failed outright, has proved
+// nothing — recording it would let a gated consumer bind a client that never
+// reached its hub.
+it("does not record a client that never proved ready", async () => {
+	const fake = new FakeHubClient();
+	harness.client = fake;
+	const { hook } = mount();
+	await act(async () => {});
+	expect(hook.result.current.state).toBe("connecting");
+	// A still-connecting client has established nothing, so it must stay
+	// unknown to the record. The record only ever withholds a client it
+	// KNOWS proved ready under a different hub, so the discriminating probe
+	// is a second hub: recorded under hub-a it would be refused for hub-b;
+	// unknown, it is not (querying hub-a cannot tell the two apart — the
+	// record passes an unknown client exactly as it passes its own).
+	expect(clientServesHub(fake, "hub-b")).toBe(true);
+	act(() => fake.fail());
+	expect(hook.result.current.state).toBe("closed");
+	// A failed dial establishes nothing either — the client stays unknown.
+	expect(clientServesHub(fake, "hub-b")).toBe(true);
+});

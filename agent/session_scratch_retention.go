@@ -272,6 +272,13 @@ func findCarriedConsumerBinding(manifest sandbox.ScratchManifest, sessionID stri
 // role fields (parent-shared, worktree-restore, abandoned) are carried forward
 // rather than wiped, so an interruption before the full role registration that
 // follows cannot lose them (plan 650).
+// scratchConsumerPreservingRoles builds the consumer row a reinstall or swap
+// publishes: the caller's binding becomes the current one, and every role the
+// existing row carried survives. The displaced current binding is preserved as
+// abandoned when its row still exists — a lease-owning slot no consumer role
+// names fails the graph reader closed and blocks every later restore, and the
+// abandoned role is the model's own home for a binding the consumer moved off
+// of (round 61).
 func scratchConsumerPreservingRoles(manifest sandbox.ScratchManifest, sessionID, currentBindingID string) sandbox.ScratchConsumerBinding {
 	consumer := sandbox.ScratchConsumerBinding{SessionID: sessionID, CurrentBindingID: currentBindingID}
 	for _, existing := range manifest.Consumers {
@@ -281,6 +288,18 @@ func scratchConsumerPreservingRoles(manifest sandbox.ScratchManifest, sessionID,
 		consumer.ParentSharedBindingID = existing.ParentSharedBindingID
 		consumer.WorktreeRestoreBindingID = existing.WorktreeRestoreBindingID
 		consumer.AbandonedBindingIDs = existing.AbandonedBindingIDs
+		displaced := existing.CurrentBindingID
+		if displaced != "" && displaced != currentBindingID &&
+			consumer.ParentSharedBindingID != displaced &&
+			consumer.WorktreeRestoreBindingID != displaced &&
+			!slices.Contains(consumer.AbandonedBindingIDs, displaced) {
+			for _, binding := range manifest.Bindings {
+				if binding.BindingID == displaced {
+					consumer.AbandonedBindingIDs = append(consumer.AbandonedBindingIDs, displaced)
+					break
+				}
+			}
+		}
 		break
 	}
 	return consumer

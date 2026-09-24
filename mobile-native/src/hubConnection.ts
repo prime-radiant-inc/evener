@@ -91,14 +91,6 @@ export function useHubConnection(
 					return new NativeWebSocket(url, null, options);
 				});
 				connectedFor.current = { key: targetKey, client: connection };
-				// The hub this client was dialed for is the one fact the
-				// display hooks cannot see for themselves (a route's key can
-				// outrun the connection's re-point), so the connection layer
-				// records it here at establishment — the moment the pairing is
-				// real — and the hooks consult the record instead of writing
-				// it against whatever route they happen to render under
-				// (connectionIdentity, round 59).
-				recordClientReadyHub(connection, activeId);
 				// The core's swap path publishes `state: client.state`
 				// (state/connection/core.ts), which for a freshly built,
 				// not-yet-dialed client is "idle" - overwriting "connecting" until
@@ -110,6 +102,19 @@ export function useHubConnection(
 				unsubscribe = currentConnection.onStateChange((next) => {
 					if (cancelled) return;
 					if (next === "ready") {
+						// The hub this client was dialed for is the one fact
+						// the display hooks cannot see for themselves (a
+						// route's key can outrun the connection's
+						// re-point), so the connection layer records it —
+						// and readiness is what proves it: a client still
+						// connecting, or whose dial failed, has established
+						// nothing, so the record is written here, on the
+						// ready transition itself. The state-change dispatch
+						// is synchronous: every listener runs before React
+						// schedules the render that observes ready, so the
+						// record lands before any ready consumer reads it
+						// (connectionIdentity, round 61).
+						recordClientReadyHub(currentConnection, activeId);
 						setError(null);
 						setFatal(false);
 					}
