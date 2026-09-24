@@ -190,6 +190,21 @@ type daemonRetirementProcessEvents struct {
 	notify  chan struct{}
 	stopped chan struct{}
 	err     error
+
+	// slowestReaction is the slowest per-step reaction the fixture has observed
+	// on this stream. A loaded runner reacts slowly but correctly, so the family
+	// watchdog scales its hang tripwire to this observation rather than tripping
+	// on a fixed budget.
+	slowestReaction time.Duration
+
+	// testOnlyBaseBudget lowers the hang-tripwire floor so a test can prove the
+	// tripwire's response to an injected slow reaction without stalling for the
+	// production daemonRetirementWatchdog. Zero means the production floor.
+	testOnlyBaseBudget time.Duration
+	// testOnlyAppendDelay, when non-nil, reports an artificial reaction delay for
+	// an event before it becomes observable, standing in for a loaded runner
+	// whose daemon reacts slowly. Nil in every other test.
+	testOnlyAppendDelay func(daemonRetirementProcessEvent) time.Duration
 }
 
 func newDaemonRetirementProcessEvents() *daemonRetirementProcessEvents {
@@ -200,6 +215,11 @@ func newDaemonRetirementProcessEvents() *daemonRetirementProcessEvents {
 }
 
 func (e *daemonRetirementProcessEvents) add(ev daemonRetirementProcessEvent) {
+	if delay := e.testOnlyAppendDelay; delay != nil {
+		if d := delay(ev); d > 0 {
+			time.Sleep(d)
+		}
+	}
 	e.mu.Lock()
 	e.all = append(e.all, ev)
 	e.mu.Unlock()
@@ -220,6 +240,26 @@ func (e *daemonRetirementProcessEvents) close(err error) {
 
 func (e *daemonRetirementProcessEvents) closed() <-chan struct{} { return e.stopped }
 
+// noteReaction records one observed per-step reaction of the daemon this stream
+// belongs to. The family watchdog scales its tripwire to the slowest one.
+func (e *daemonRetirementProcessEvents) noteReaction(d time.Duration) {
+	e.mu.Lock()
+	if d > e.slowestReaction {
+		e.slowestReaction = d
+	}
+	e.mu.Unlock()
+}
+
+// watchdogBudget is the hang-tripwire budget for a wait on this stream.
+func (e *daemonRetirementProcessEvents) watchdogBudget() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.testOnlyBaseBudget > 0 {
+		return e.testOnlyBaseBudget
+	}
+	return daemonRetirementWatchdog
+}
+
 func (e *daemonRetirementProcessEvents) history() []daemonRetirementProcessEvent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -234,7 +274,7 @@ func (e *daemonRetirementProcessEvents) waitFor(what string, pred func(daemonRet
 // caller can wait for an event that follows a specific earlier one rather than
 // matching a repeated kind from an earlier phase.
 func (e *daemonRetirementProcessEvents) waitForIndexed(what string, pred func(int, daemonRetirementProcessEvent) bool) (daemonRetirementProcessEvent, error) {
-	deadline := time.Now().Add(daemonRetirementWatchdog)
+	deadline := time.Now().Add(e.watchdogBudget())
 	for {
 		e.mu.Lock()
 		for i, ev := range e.all {
@@ -294,6 +334,45 @@ func readDaemonRetirementProcessEvents(r *os.File) *daemonRetirementProcessEvent
 		events.close(scanner.Err())
 	}()
 	return events
+}
+
+// TestDaemonRetirementWatchdogScalesWithObservedReaction is the fault-injection
+// proof that the family's hang tripwire is load-aware. CI cannot summon a
+// loaded runner on demand, so the delay is injected into the fixture's own
+// event stream -- the exact join a slow-but-correct runner stalls on -- and the
+// production scaling constants are used unchanged.
+//
+// The fixture has observed a prior step react in slowestReaction. The next
+// reaction is then delayed past the fixed floor: a fixed budget (the
+// pre-scaling behavior) trips on it, while a budget scaled to the observed
+// per-step reaction absorbs it. The test-only base keeps the mechanical proof
+// fast; only the floor changes, never the scaling.
+func TestDaemonRetirementWatchdogScalesWithObservedReaction(t *testing.T) {
+	events := newDaemonRetirementProcessEvents()
+	const fixedFloor = 200 * time.Millisecond
+	const observedReaction = 100 * time.Millisecond
+	const injectedReaction = 500 * time.Millisecond
+	events.testOnlyBaseBudget = fixedFloor
+	// The fixture observed a prior step react in observedReaction. Under a fixed
+	// budget that evidence is inert; under the scaled budget it is the proof
+	// that this runner is slow, so the next wait may take a multiple of it
+	// before the tripwire fires.
+	events.noteReaction(observedReaction)
+	// The next reaction is delayed past the fixed floor.
+	events.testOnlyAppendDelay = func(ev daemonRetirementProcessEvent) time.Duration {
+		if ev.Kind == "beat" && ev.Name == "claim_consumed" {
+			return injectedReaction
+		}
+		return 0
+	}
+	go func() {
+		events.add(daemonRetirementProcessEvent{Kind: "beat", Name: "claim_consumed"})
+	}()
+	if _, err := events.waitFor("retirement beat claim_consumed", func(ev daemonRetirementProcessEvent) bool {
+		return ev.Kind == "beat" && ev.Name == "claim_consumed"
+	}); err != nil {
+		t.Fatalf("the scaled watchdog tripped on a slow-but-correct reaction: %v", err)
+	}
 }
 
 // daemonRetirementProcessFixture owns the private roots, the Hub spawner, the
