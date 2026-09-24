@@ -111,9 +111,20 @@ func TestUpgradeHonorsCancellationDuringInstall(t *testing.T) {
 // TestExtractRefusesDecompressionBomb proves extraction caps total
 // uncompressed output: a highly compressible entry fails instead of
 // filling the disk. Fails today: per-entry copies are unbounded.
+// lowerExtractionCap sets the extraction cap to 1MB for one test, so a bomb
+// test proves the refusal with a 2MB entry instead of compressing and
+// decompressing 600MB (about 50s apiece under -race).
+func lowerExtractionCap(t *testing.T) {
+	t.Helper()
+	previous := maxExtractedBytes
+	maxExtractedBytes = 1 << 20
+	t.Cleanup(func() { maxExtractedBytes = previous })
+}
+
 func TestExtractRefusesDecompressionBomb(t *testing.T) {
-	// 600MB of zeros compresses to ~600KB: realistic zip-bomb shape.
-	big := make([]byte, 600<<20)
+	lowerExtractionCap(t)
+	// Twice the cap of zeros compresses to a sliver: the zip-bomb shape.
+	big := make([]byte, 2*maxExtractedBytes)
 	archivePath := filepath.Join(t.TempDir(), "bomb.tar.gz")
 	if err := os.WriteFile(archivePath, tarGz(t, map[string][]byte{"evener_linux_amd64/evener": big}, nil), 0o600); err != nil {
 		t.Fatal(err)
@@ -125,11 +136,12 @@ func TestExtractRefusesDecompressionBomb(t *testing.T) {
 }
 
 // TestExtractCountsIgnoredEntries proves skipped (unwanted) tar entries
-// charge the extraction budget too: a 600MB-compressible ignored member
+// charge the extraction budget too: a highly compressible ignored member
 // fails instead of decompressing unbounded between ctx checks. Fails
 // today: `continue` lets Next() drain it outside the cap and ctxReader.
 func TestExtractCountsIgnoredEntries(t *testing.T) {
-	big := make([]byte, 600<<20)
+	lowerExtractionCap(t)
+	big := make([]byte, 2*maxExtractedBytes)
 	entries := map[string][]byte{
 		"evener_linux_amd64/evener":       []byte("tiny"),
 		"evener_linux_amd64/ignored-blob": big,
