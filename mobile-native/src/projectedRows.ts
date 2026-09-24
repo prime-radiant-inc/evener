@@ -64,7 +64,6 @@ export function projectedRow(
 ): MobileTimelineItem | null {
 	switch (entry.kind) {
 		case "item":
-			return rowForItem(entry.item, context);
 		case "intent":
 			// An intent is the same tool activity row; the projector's config
 			// decides intent-vs-full, and native's presentation layer (the
@@ -304,11 +303,12 @@ const LIFECYCLE_EVENT_KINDS = new Set([
 ]);
 
 function systemFamily(eventKind: string | undefined): NoticeFamily {
-	if (eventKind && WARNING_EVENT_KINDS.has(eventKind)) return "warning";
-	if (eventKind && HIDDEN_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
-	if (eventKind && PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
-	if (eventKind && DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
-	if (eventKind && LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
+	if (!eventKind) return "unknown-system";
+	if (WARNING_EVENT_KINDS.has(eventKind)) return "warning";
+	if (HIDDEN_EVENT_KINDS.has(eventKind)) return "hidden-instruction";
+	if (PRELUDE_EVENT_KINDS.has(eventKind)) return "system-prelude";
+	if (DIAGNOSTIC_EVENT_KINDS.has(eventKind)) return "diagnostic";
+	if (LIFECYCLE_EVENT_KINDS.has(eventKind)) return "lifecycle";
 	return "unknown-system";
 }
 
@@ -331,13 +331,15 @@ function steeringNotice(
 function systemNotice(
 	it: ItemModel,
 ): Extract<MobileTimelineItem, { kind: "notice" }> {
-	const tone: NoticeTone =
-		it.eventKind && WARNING_EVENT_KINDS.has(it.eventKind) ? "warning" : "system";
+	// A system family of "warning" IS the warning tone (systemFamily's own
+	// first branch), so the two are derived from one classification.
+	const family = systemFamily(it.eventKind);
+	const tone: NoticeTone = family === "warning" ? "warning" : "system";
 	return {
 		kind: "notice",
 		id: it.id,
 		origin: "system",
-		family: systemFamily(it.eventKind),
+		family,
 		tone,
 		text: it.text,
 		...(it.eventKind ? { eventKind: it.eventKind } : {}),
@@ -350,8 +352,16 @@ function systemNotice(
 function warningFailure(
 	it: ItemModel,
 ): Extract<MobileTimelineItem, { kind: "failure" }> | null {
-	if (joinWarningParts([it.warning?.title, it.text, it.warning?.hint]) === "") return null;
 	const rawTitle = it.warning?.title;
-	const title = hasWarningText(rawTitle) ? rawTitle : "Warning";
-	return { kind: "failure", id: it.id, title, detail: joinWarningParts([it.text, it.warning?.hint]) };
+	// The blank check is exactly "no titled part AND no body part": a warning
+	// with nothing to show produces no row (the web renders none either). The
+	// body join is computed once and reused.
+	const detail = joinWarningParts([it.text, it.warning?.hint]);
+	if (!hasWarningText(rawTitle) && detail === "") return null;
+	return {
+		kind: "failure",
+		id: it.id,
+		title: hasWarningText(rawTitle) ? rawTitle : "Warning",
+		detail,
+	};
 }
