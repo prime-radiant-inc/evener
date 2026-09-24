@@ -868,3 +868,89 @@ test("a remote answer's diagnostics are shown on the read-only remote view", asy
 
   expect(await screen.findByText('providers.toml: unexpected key "type"')).toBeTruthy();
 });
+
+// M (roborev): the sign-in editor's state belongs to the host it was started
+// for. RemoteHostInstances rendered with no host key, so a device/start answer
+// that landed after the picker moved was applied to the NEW host's render: the
+// dialog named the new host while the code and flowId belonged to the old one,
+// and the poll - and the "Signed in on <host>" toast - went to a host whose auth
+// store the sign-in never touched. The editor cannot outlive its host now: the
+// subtree is keyed on the host's registration identity, exactly as the push
+// action below it is, so the flow's state is cleared with the host it belonged
+// to and nothing of it is rendered, driven, or reported under another.
+test("a picker change while device/start is outstanding never renders or polls the host that took over", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({
+    hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
+  }));
+  // Both hosts answer with the same Codex listing, so a flow mounted under
+  // gamma would have a row to poll against and a host to report a sign-in on.
+  const start = deferred<unknown>();
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return start.promise as never;
+    if (params.method === "evener/auth/device/poll") return REMOTE_POLL_AUTHORIZED;
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "gamma" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  await vi.waitFor(() => {
+    expect(forwardedMethodCalls(fake, "evener/auth/device/start")).toEqual([
+      { host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } },
+    ]);
+  });
+
+  // The picker moves to gamma while beta's start is still on the wire.
+  await user.selectOptions(select, "gamma");
+  expect(await screen.findByRole("heading", { name: "Providers on gamma" })).toBeTruthy();
+
+  await act(async () => start.resolve(REMOTE_DEVICE_START));
+
+  // The answer to beta's start is beta's: not a dialog under gamma, and not
+  // even on screen as gamma's.
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByText("REMOTE-CODE")).toBeNull();
+
+  // Long enough for a dialog mounted under gamma to have ticked at the flow's own
+  // 1s interval, polled gamma, and reported the sign-in there.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  });
+  expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toEqual([]);
+  expect(getToasts().some((toast) => toast.text === "Signed in on gamma")).toBe(false);
+});
+
+// M (roborev), the same seam on the failure path: a start failure names the host
+// it happened on, so it cannot stay on screen under another host's selection.
+test("a sign-in failure naming the old host does not survive a host change", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({
+    hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
+  }));
+  fake.on("evener/host/request", (params) => {
+    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
+    if (params.method === "evener/auth/device/start") return REMOTE_DEVICE_FALLBACK;
+    throw new Error(`unexpected forwarded method ${params.method}`);
+  });
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "gamma" });
+  await user.selectOptions(select, "beta");
+  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
+
+  await user.selectOptions(select, "gamma");
+  expect(await screen.findByRole("heading", { name: "Providers on gamma" })).toBeTruthy();
+
+  // Gamma's own view never wears beta's failure.
+  expect(screen.queryByRole("alert")).toBeNull();
+});
