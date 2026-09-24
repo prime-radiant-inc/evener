@@ -118,3 +118,26 @@ describe("atomic recovery restore", () => {
 		expect(document.getSnapshot().error).not.toBeNull();
 	});
 });
+
+describe("recovered restore hint", () => {
+	it("distinguishes an occupied composer from a blocked draft", () => {
+		const { document, repository, destination } = setup();
+		expect(document.recoveredRestoreHint()).toBeNull();
+		document.edit("typed");
+		expect(document.recoveredRestoreHint()).toContain("current draft");
+
+		const failing = {
+			read: () => ({ draft: "", unconfirmed: null }),
+			write: () => {
+				throw new Error("save failed");
+			},
+			imageInputs: (to: typeof destination, images: DraftImage[]) =>
+				repository.imageInputs(to, images),
+		};
+		const blocked = new DraftDocument(() => failing, destination);
+		expect(blocked.restoreRecoveredDraft("recovered")).toBe(false);
+		const hint = blocked.recoveredRestoreHint();
+		expect(hint).toContain("Retry saving");
+		expect(hint).not.toContain("current draft");
+	});
+});

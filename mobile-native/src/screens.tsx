@@ -2602,6 +2602,7 @@ export function ConversationScreen({
 										loading={recovery.loading}
 										actions={{
 											canRestore: () => document.canRestoreRecoveredDraft(),
+											restoreHint: () => document.recoveredRestoreHint(),
 											onRestore: (row) => {
 												// Clear any prior action error first, like every other
 												// action handler here, so a successful restore never

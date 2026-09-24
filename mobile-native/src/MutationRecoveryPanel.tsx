@@ -20,7 +20,7 @@ import type {
 	MutationRecoveryKind,
 	MutationRecoveryRecord,
 } from "@evener/appwire-client/state/mutation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
@@ -159,6 +159,9 @@ export interface MutationRecoveryActions {
 	/** Whether the composer can accept a restore right now: recovery must not
 	 * silently do nothing when an existing draft or image would be clobbered. */
 	canRestore(row: NativeMutationRecoveryRow): boolean;
+	/** Why a restore is currently blocked, for an accurate disabled-restore
+	 * hint; falls back to a generic sentence when the caller supplies none. */
+	restoreHint?(row: NativeMutationRecoveryRow): string | null;
 	onRestore(row: NativeMutationRecoveryRow): void;
 	onDiscard(row: NativeMutationRecoveryRow): void;
 }
@@ -179,7 +182,9 @@ export function discardRecoveredMutation(
 }
 
 export function recoveryFailureMessage(error: unknown): string {
-	return error instanceof Error ? error.message : "Recovery is unavailable.";
+	if (error instanceof Error) return error.message;
+	if (typeof error === "string" && error.length > 0) return error;
+	return "Recovery is unavailable.";
 }
 
 // The recovery entry point. Normally it is strictly row-conditional: no rows
@@ -246,6 +251,8 @@ export function useRecoveryPanel({
 		error: unknown;
 	} | null>(null);
 	const [attempt, setAttempt] = useState(0);
+	// Serializes discards so only the newest completion publishes its outcome.
+	const discardGeneration = useRef(0);
 	const scope = `${targetKey}::${attempt}`;
 
 	useEffect(() => {
@@ -273,9 +280,21 @@ export function useRecoveryPanel({
 	}, []);
 	const discard = useCallback(
 		(row: NativeMutationRecoveryRow) => {
+			// Only the newest discard may publish its outcome: a stale rejection
+			// from an earlier discard (or an earlier target) must not overwrite a
+			// newer operation's state or resurrect an old error.
+			const generation = ++discardGeneration.current;
 			void discardRecoveredMutation(projection, row).then(
-				() => setFailure((current) => (current?.scope === scope ? null : current)),
-				(error) => setFailure({ scope, error }),
+				(discarded) => {
+					if (generation !== discardGeneration.current) return;
+					// A refused no-op (a foreign row) is not a success to act on.
+					if (discarded)
+						setFailure((current) => (current?.scope === scope ? null : current));
+				},
+				(error) => {
+					if (generation !== discardGeneration.current) return;
+					setFailure({ scope, error });
+				},
 			);
 		},
 		[projection, scope],
@@ -376,7 +395,8 @@ export function MutationRecoveryPanel({
 						</View>
 						{offersRestore && !restorable ? (
 							<Copy muted>
-								Clear or send your current draft to restore this message.
+								{actions.restoreHint?.(row) ??
+									"This message can't be restored to the draft right now."}
 							</Copy>
 						) : null}
 						{row.status === "rejected" &&

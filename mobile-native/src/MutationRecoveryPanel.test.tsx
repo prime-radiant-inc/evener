@@ -466,7 +466,12 @@ it("disables restore with an explanation when the composer cannot accept it", ()
 		targetKey: TARGET_A,
 		snapshot: snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
 		error: null as unknown,
-		actions: { canRestore: () => false, onRestore, onDiscard: () => {} },
+		actions: {
+			canRestore: () => false,
+			restoreHint: () => "Clear or send your current draft to restore this message.",
+			onRestore,
+			onDiscard: () => {},
+		},
 	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
 	const tree = render(<MutationRecoveryPanel {...props} />);
 	const restore = tree.root.findByProps({
@@ -794,4 +799,68 @@ it("does not resurface a stale acquisition failure after a target round-trip", a
 	await flush();
 	expect(result.current.error).toBeNull();
 	expect(result.current.failed).toBe(false);
+});
+
+it("ignores a stale discard rejection that lands after a newer discard", async () => {
+	let rejectFirst: (error: unknown) => void = () => {};
+	const first = new Promise<boolean>((_resolve, reject) => {
+		rejectFirst = reject;
+	});
+	let calls = 0;
+	const runtime = fakeRuntime({
+		discardRecovery: () => {
+			calls += 1;
+			return calls === 1 ? first : Promise.resolve(true);
+		},
+	});
+	const { result } = renderHook(() =>
+		useRecoveryPanel({
+			connected: true,
+			hubId: "hub-a",
+			targetRef: "ref-a",
+			acquire: () => runtime,
+		}),
+	);
+	await flush();
+	const row = projectNativeMutationRecovery(
+		result.current.targetKey,
+		result.current.snapshot,
+	)[0];
+	act(() => {
+		result.current.discard(row);
+	});
+	act(() => {
+		result.current.discard(row);
+	});
+	await flush();
+	expect(result.current.error).toBeNull();
+
+	await act(async () => {
+		rejectFirst(new Error("stale discard failed"));
+		await Promise.resolve();
+	});
+	await flush();
+	expect(result.current.error).toBeNull();
+});
+
+it("renders the caller's restore hint instead of assuming an occupied composer", () => {
+	const props = {
+		targetKey: TARGET_A,
+		snapshot: snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
+		error: null as unknown,
+		actions: {
+			canRestore: () => false,
+			restoreHint: () => "Wait for the draft to finish saving to restore this message.",
+			onRestore: () => {},
+			onDiscard: () => {},
+		},
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+	const text = renderedText(tree);
+	expect(text).toContain("Wait for the draft to finish saving");
+	expect(text).not.toContain("Clear or send your current draft");
+});
+
+it("returns a string error's own message", () => {
+	expect(recoveryFailureMessage("boom")).toBe("boom");
 });
