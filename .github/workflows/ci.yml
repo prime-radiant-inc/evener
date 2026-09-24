@@ -303,9 +303,11 @@ jobs:
       # A dedicated runner's cores are all this job's, but the gate's
       # load-aware budgets read the one-minute load average, which on a fresh
       # runner still carries checkout and cache restore; they would start a
-      # fraction of the shards at once. Size them to the runner instead.
+      # fraction of the shards (and too few root packages) at once. Size them
+      # to the runner instead.
       - name: Test (race detector — root module, ${{ matrix.part }})
         env:
+          ROOT_P: 4
           HUB_SHARD_CONCURRENCY: 4
           HUB_SHARD_PARALLEL: 2
           CLI_SHARD_CONCURRENCY: 4
