@@ -105,7 +105,10 @@ start_guard() {
 		# makes Go build a private module cache of hundreds of MB whose read-only
 		# files then defeat this gate's scratch cleanup. `exec` keeps the
 		# backgrounded pid on the real command so stop_guards can terminate it.
+		# The subshell inherits finish_browser as its EXIT trap; drop it, so a
+		# failure before exec reports only this guard's own status.
 		(
+			trap - 0
 			. "$script_dir/../lib/private-go-home.sh"
 			evener_prepare_private_go_home "$guard_dir" || exit 1
 			TMPDIR="$guard_dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 exec npm run retirementguard
@@ -115,7 +118,7 @@ start_guard() {
 		# The TestSkillGuard* unit tests ride along: they cover the failure
 		# reporting this guard leans on, they need no browser, and the
 		# browserguard tag is the only build that compiles them.
-		(cd "$repo_root" && exec go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuard' -count=1) >"$dir/$guard.log" 2>&1 &
+		(trap - 0; cd "$repo_root" && exec go test -tags browserguard ./cmd/evener-hub -run '^TestSkillComposerBrowser$|^TestSkillGuard' -count=1) >"$dir/$guard.log" 2>&1 &
 		;;
 	*)
 		HOME="$guard_dir/home" TMPDIR="$guard_dir/tmp" XDG_CONFIG_HOME="$guard_dir/xdg-config" XDG_CACHE_HOME="$guard_dir/xdg-cache" XDG_STATE_HOME="$guard_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 node "scripts/$guard/run.mjs" >"$dir/$guard.log" 2>&1 &
@@ -134,8 +137,11 @@ start_guard() {
 # another; verdicts print in the fixed order above once all have finished,
 # and the exit status is the first nonzero one in that order.
 slots=${BROWSER_GUARD_CONCURRENCY:-$(load_aware_workers 0)}
+# Digits only, read as decimal (08 is not octal, 00 is zero), at least one: a
+# value [ could not compare would never start a guard and hang the gate.
 case "$slots" in
-''|*[!0-9]*|0) slots=1 ;;
+''|*[!0-9]*) slots=1 ;;
+*) slots=$((10#$slots)); [ "$slots" -ge 1 ] || slots=1 ;;
 esac
 
 guard_status=()

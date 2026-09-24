@@ -819,6 +819,37 @@ func testBrowserGuardsRunAtOnce(t *testing.T, slots string) {
 	release()
 }
 
+// TestMakeTestWebBrowserZeroConcurrencyStillRunsEveryGuard pins that a slot
+// count of zero, however it is spelled, means one slot rather than none: "00"
+// once compared unequal to 0 as text yet never let a guard start, so the gate
+// slept forever.
+func TestMakeTestWebBrowserZeroConcurrencyStillRunsEveryGuard(t *testing.T) {
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // TRIPWIRE: the stubbed guards finish in well under a second; this only bounds a hang.
+	defer cancel()
+	command := exec.CommandContext(ctx, "make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""), "BROWSER_GUARD_CONCURRENCY=00")
+	// A hung gate is killed by the context, but the guards it started still
+	// hold the output pipe; WaitDelay bounds the read so the test reports the
+	// hang instead of joining it.
+	command.WaitDelay = 5 * time.Second
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("make test-web-browser with BROWSER_GUARD_CONCURRENCY=00 hung; output = %s", output)
+	}
+	if err != nil {
+		t.Fatalf("make test-web-browser with BROWSER_GUARD_CONCURRENCY=00: %v\n%s", err, output)
+	}
+	if got := strings.Count(string(output), "PASS  web-"); got != 7 {
+		t.Fatalf("PASS verdicts = %d, want 7; output = %s", got, output)
+	}
+}
+
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
