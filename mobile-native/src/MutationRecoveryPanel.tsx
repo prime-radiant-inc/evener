@@ -76,15 +76,20 @@ function isImageInputItem(
 	);
 }
 
-// Whether the rejected mutation carries image inputs. Native intents persist
-// the composer's `{type:"image", data}` items in the payload, so a restore that
-// writes text only would drop them; the surface withholds restore for these
-// rows instead.
+// Whether the rejected mutation carries attachments a text-only restore would
+// drop. Two spells of the same thing: native intents persist the composer's
+// `{type:"image", data}` items in the payload, and the shared record shape also
+// carries its attachment metadata on `record.attachments`. A row is
+// non-restorable if either is present, so a text-only restore never silently
+// loses an image.
 export function recordCarriesAttachments(
 	record: MutationRecoveryRecord<MutationAttachmentRef>,
 ): boolean {
 	const input = record.payload.input;
-	return Array.isArray(input) && input.some(isImageInputItem);
+	return (
+		(record.attachments?.length ?? 0) > 0 ||
+		(Array.isArray(input) && input.some(isImageInputItem))
+	);
 }
 
 // The text a rejected mutation restores to the composer. `composerText` is the
@@ -177,23 +182,25 @@ export function recoveryFailureMessage(error: unknown): string {
 	return error instanceof Error ? error.message : "Recovery is unavailable.";
 }
 
-// The recovery entry point: a healthy, connected conversation whose composer
-// has no error and no uncertain submission still needs a way into the recovery
-// modal when a target holds recoverable rows - a durable row outlives the
-// transient error that surfaced it. The affordance is strictly row-conditional:
-// zero rows means no entry, so no dead control ships that opens an empty
-// recovery surface (durable submission, which makes rows exist, is a later
-// slice; until then this stays hidden and activates with no further UI change).
+// The recovery entry point. Normally it is strictly row-conditional: no rows
+// means no entry, so no dead control ships that opens an empty recovery surface
+// (durable submission, which makes rows exist, is a later slice; until then the
+// entry stays hidden and activates with no further UI change). The one
+// exception is a failed recovery surface: with no rows there is no other way
+// into the modal, so a failure renders the entry and opening it exposes the
+// panel's error and Retry rather than hiding them behind an unopenable modal.
 export function shouldOfferRecoveryEntry({
 	connected,
 	deliveryConcern,
 	count,
+	failed,
 }: {
 	connected: boolean;
 	deliveryConcern: boolean;
 	count: number;
+	failed: boolean;
 }): boolean {
-	return connected && !deliveryConcern && count > 0;
+	return connected && !deliveryConcern && (count > 0 || failed);
 }
 
 export interface RecoveryPanelSurface {
@@ -276,10 +283,16 @@ export function useRecoveryPanel({
 	return {
 		targetKey,
 		snapshot: projection.snapshot,
-		loading: projection.loading,
+		// A connected surface with no runtime yet is still loading: its read is
+		// pending acquisition. Only a disconnected/never-acquired surface is
+		// genuinely unavailable, which is what lets the panel tell the two apart.
+		loading: projection.loading || (connected && runtime === null),
 		error,
 		failed: error !== null && error !== undefined,
-		count: projection.snapshot?.recovery.length ?? 0,
+		count: projectNativeMutationRecovery(
+			targetKey,
+			projection.snapshot,
+		).length,
 		retry,
 		discard,
 	};
@@ -290,12 +303,14 @@ export function MutationRecoveryPanel({
 	snapshot,
 	error,
 	onRetry,
+	loading = false,
 	actions,
 }: {
 	targetKey: string;
 	snapshot: MutationPersistenceSnapshot<MutationAttachmentRef> | null;
 	error: unknown;
 	onRetry?: () => void;
+	loading?: boolean;
 	actions: MutationRecoveryActions;
 }) {
 	const colors = useColors();
@@ -315,7 +330,8 @@ export function MutationRecoveryPanel({
 		) : null;
 	if (snapshot === null) {
 		if (failure) return failure;
-		return <Copy muted>Loading delivery status…</Copy>;
+		if (loading) return <Copy muted>Loading delivery status…</Copy>;
+		return <Copy muted>Recovery is unavailable.</Copy>;
 	}
 	const rows = projectNativeMutationRecovery(targetKey, snapshot);
 	return (
@@ -359,7 +375,9 @@ export function MutationRecoveryPanel({
 								Clear or send your current draft to restore this message.
 							</Copy>
 						) : null}
-						{!offersRestore && row.carriesAttachments ? (
+						{row.status === "rejected" &&
+						!offersRestore &&
+						row.carriesAttachments ? (
 							<Copy muted>
 								This message carried an image, so it can't be restored to the
 								draft here.

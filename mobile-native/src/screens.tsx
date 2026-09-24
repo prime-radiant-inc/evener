@@ -2518,7 +2518,7 @@ export function ConversationScreen({
 										{draft.loaded ? "Retry saving" : "Retry loading draft"}
 									</Action>
 								) : null}
-									{!connected || deliveryConcern ? (
+								{!connected || deliveryConcern ? (
 									<Action
 										tone="quiet"
 										onPress={() => {
@@ -2541,6 +2541,7 @@ export function ConversationScreen({
 									connected,
 									deliveryConcern,
 									count: recovery.count,
+									failed: recovery.failed,
 								}) ? (
 									<Action
 										tone="quiet"
@@ -2598,6 +2599,7 @@ export function ConversationScreen({
 										snapshot={recovery.snapshot}
 										error={recovery.error}
 										onRetry={recovery.retry}
+										loading={recovery.loading}
 										actions={{
 											canRestore: () => document.canRestoreRecoveredDraft(),
 											onRestore: (row) => {

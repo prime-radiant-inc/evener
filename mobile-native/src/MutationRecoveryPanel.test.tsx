@@ -210,10 +210,23 @@ it("renders a loading line until the snapshot arrives and an empty line when not
 			targetKey={TARGET_A}
 			snapshot={null}
 			error={null}
+			loading
 			actions={noActions}
 		/>,
 	);
 	expect(renderedText(loading)).toContain("Loading delivery status");
+
+	const unavailable = render(
+		<MutationRecoveryPanel
+			targetKey={TARGET_A}
+			snapshot={null}
+			error={null}
+			loading={false}
+			actions={noActions}
+		/>,
+	);
+	expect(renderedText(unavailable)).toContain("Recovery is unavailable");
+	expect(renderedText(unavailable)).not.toContain("Loading delivery status");
 
 	const empty = render(
 		<MutationRecoveryPanel
@@ -259,28 +272,40 @@ async function flush() {
 	});
 }
 
-it("offers the recovery entry only when the snapshot has rows, never as a dead affordance", () => {
+it("offers the recovery entry for rows, and for a failed surface so its error and retry stay reachable", () => {
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: false,
 			count: 1,
+			failed: false,
 		}),
 	).toBe(true);
-	// Zero rows = no entry, even after a failure: the affordance is
-	// row-conditional, so nothing ships that opens an empty recovery surface.
+	// Empty snapshot + no failure = no entry: no dead affordance ships.
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: false,
 			count: 0,
+			failed: false,
 		}),
 	).toBe(false);
+	// A failure renders the entry even with no rows, so the modal's error and
+	// Retry are reachable instead of hidden behind an entry that never appears.
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: 0,
+			failed: true,
+		}),
+	).toBe(true);
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: true,
 			count: 3,
+			failed: false,
 		}),
 	).toBe(false);
 	expect(
@@ -288,6 +313,7 @@ it("offers the recovery entry only when the snapshot has rows, never as a dead a
 			connected: false,
 			deliveryConcern: false,
 			count: 3,
+			failed: true,
 		}),
 	).toBe(false);
 });
@@ -313,6 +339,7 @@ it("hides the entry while the snapshot is empty and shows it when rows arrive", 
 			connected: true,
 			deliveryConcern: false,
 			count: result.current.count,
+			failed: result.current.failed,
 		}),
 	).toBe(false);
 
@@ -325,6 +352,7 @@ it("hides the entry while the snapshot is empty and shows it when rows arrive", 
 			connected: true,
 			deliveryConcern: false,
 			count: result.current.count,
+			failed: result.current.failed,
 		}),
 	).toBe(true);
 });
@@ -351,15 +379,16 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 		"mutations db unavailable",
 	);
 	expect(result.current.count).toBe(0);
-	// Zero rows = no entry, even after a failure: the affordance is
-	// row-conditional, so a failed surface opens no dead control.
+	// A failure with no rows still renders the entry, so the modal's error and
+	// Retry are reachable rather than hidden behind an entry that never appears.
 	expect(
 		shouldOfferRecoveryEntry({
 			connected: true,
 			deliveryConcern: false,
 			count: result.current.count,
+			failed: result.current.failed,
 		}),
-	).toBe(false);
+	).toBe(true);
 
 	mode = "ok";
 	act(() => result.current.retry());
@@ -373,6 +402,7 @@ it("surfaces a failed runtime acquisition and clears it on retry", async () => {
 			connected: true,
 			deliveryConcern: false,
 			count: result.current.count,
+			failed: result.current.failed,
 		}),
 	).toBe(true);
 });
@@ -498,6 +528,73 @@ it("refreshes a failed read on retry", async () => {
 
 	expect(result.current.error).toBeNull();
 	expect(result.current.count).toBe(1);
+});
+
+it("renders a reachable entry on a failure with no rows, and its Retry is reachable", () => {
+	expect(
+		shouldOfferRecoveryEntry({
+			connected: true,
+			deliveryConcern: false,
+			count: 0,
+			failed: true,
+		}),
+	).toBe(true);
+
+	const onRetry = vi.fn();
+	const tree = render(
+		<MutationRecoveryPanel
+			targetKey={TARGET_A}
+			snapshot={null}
+			error={new Error("mutations db unavailable")}
+			onRetry={onRetry}
+			actions={noActions}
+		/>,
+	);
+	expect(renderedText(tree)).toContain("mutations db unavailable");
+	const retry = tree.root.findByProps({ accessibilityLabel: "Retry" });
+	act(() => retry.props.onPress());
+	expect(onRetry).toHaveBeenCalledOnce();
+});
+
+it("does not put an image-specific explanation on an orphaned row", () => {
+	const record = recovery(TARGET_A, "orphan-img", 1, "orphaned", {
+		attachments: [
+			{
+				presentationId: "presentation-1",
+				marker: 1,
+				name: "proof.png",
+				mediaType: "image/png",
+			},
+		],
+		payload: { input: [{ type: "text", text: "hi" }] },
+	});
+	const props = {
+		targetKey: TARGET_A,
+		snapshot: snapshot([record]),
+		error: null as unknown,
+		actions: noActions,
+	} satisfies ComponentProps<typeof MutationRecoveryPanel>;
+	const tree = render(<MutationRecoveryPanel {...props} />);
+	expect(renderedText(tree)).not.toContain("carried an image");
+});
+
+it("treats a record with attachment metadata as carrying attachments even without a payload image item", () => {
+	const record = recovery(TARGET_A, "meta-attachment", 1, "rejected", {
+		composerText: "look [image 1]",
+		attachments: [
+			{
+				presentationId: "presentation-1",
+				marker: 1,
+				name: "proof.png",
+				mediaType: "image/png",
+			},
+		],
+		payload: { input: [{ type: "text", text: "look [image 1]" }] },
+	});
+	expect(recordCarriesAttachments(record)).toBe(true);
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
+	expect(rows[0].carriesAttachments).toBe(true);
+	expect(rows[0].actions).toEqual(["discard"]);
 });
 
 it("withholds restore for a rejected record that carries an image, and says why", () => {
