@@ -1360,6 +1360,7 @@ export function archivedSessionGroups(
     const id = archivedGroupId(p.key);
     const displayName = labels.get(p.key);
     const expanded = isExpanded(id, false);
+    const spawnHost = projectLaunchHost(p, sources);
     const children = projectChildren(p, isExpanded, "archived-group", () => [
       ...archived.map((n) => toSessionNode(n, isExpanded)),
       ...projectOverflowNode(id, p, ["archived"]),
@@ -1373,7 +1374,14 @@ export function archivedSessionGroups(
       .get(p as object)
       ?.get(isExpanded)
       ?.get(variant);
-    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded) {
+    if (
+      cached &&
+      cached.children === children &&
+      cached.displayName === displayName &&
+      cached.expanded === expanded &&
+      cached.spawnHost === spawnHost &&
+      cached.canonicalCopy === true
+    ) {
       groups.push(cached.value);
       continue;
     }
@@ -1385,10 +1393,17 @@ export function archivedSessionGroups(
       displayName,
       expanded,
       children,
-      spawnHost: projectLaunchHost(p, sources),
+      spawnHost,
       canonicalCopy: true,
     };
-    cacheProjectNode(p, isExpanded, variant, { children, displayName, expanded, value: result });
+    cacheProjectNode(p, isExpanded, variant, {
+      children,
+      displayName,
+      expanded,
+      spawnHost,
+      canonicalCopy: true,
+      value: result,
+    });
     groups.push(result);
   }
   return groups;
@@ -1449,12 +1464,20 @@ export function archivedProjectNodes(
     }
     const displayName = labels.get(p.key);
     const expanded = isExpanded(id, false);
+    const spawnHost = projectLaunchHost(p, sources);
     const variant = `archived-project:${sourcesSignature(sources)}`;
     const cached = projectNodeCache
       .get(p as object)
       ?.get(isExpanded)
       ?.get(variant);
-    if (cached && cached.children === children && cached.displayName === displayName && cached.expanded === expanded)
+    if (
+      cached &&
+      cached.children === children &&
+      cached.displayName === displayName &&
+      cached.expanded === expanded &&
+      cached.spawnHost === spawnHost &&
+      cached.canonicalCopy === true
+    )
       return cached.value;
     const result: ProjectRailNode = {
       id,
@@ -1463,10 +1486,17 @@ export function archivedProjectNodes(
       displayName,
       expanded,
       children,
-      spawnHost: projectLaunchHost(p, sources),
+      spawnHost,
       canonicalCopy: true,
     };
-    cacheProjectNode(p, isExpanded, variant, { children, displayName, expanded, value: result });
+    cacheProjectNode(p, isExpanded, variant, {
+      children,
+      displayName,
+      expanded,
+      spawnHost,
+      canonicalCopy: true,
+      value: result,
+    });
     return result;
   });
 }

@@ -928,6 +928,30 @@ describe("host grouping (organize by)", () => {
     expect(projectNodes([run], closed)[0]).not.toHaveProperty("spawnHost");
   });
 
+  test("an archived row re-renders its launch host when the project's ownership changes in place", () => {
+    const owned = project({
+      key: "remote",
+      sources: ["devbox"],
+      sessions: [on("devbox", "a1", { tier: "archived" })],
+    });
+    const before = archivedSessionGroups([owned], closed, sources)[0];
+    expect(before).toMatchObject({ spawnHost: "devbox" });
+    // Ownership flips while the global sources and the row's children stay
+    // identical: the cache must not serve the old node's host - the same
+    // compare cachedProjectNode does for the other tiers.
+    owned.sources = ["local", "devbox"];
+    const after = archivedSessionGroups([owned], closed, sources)[0];
+    expect(after).toMatchObject({ spawnHost: "local" });
+    expect(after).not.toBe(before);
+
+    const stub = project({ key: "old", sources: ["devbox"], session_count: 3 });
+    const stubBefore = archivedProjectNodes([stub], new Map(), closed, sources)[0];
+    stub.sources = ["local", "devbox"];
+    const stubAfter = archivedProjectNodes([stub], new Map(), closed, sources)[0];
+    expect(stubAfter).toMatchObject({ spawnHost: "local" });
+    expect(stubAfter).not.toBe(stubBefore);
+  });
+
   test("a reveal routes an archived-tier row to the archived group fold, whatever the grouping", () => {
     const evener = project({
       key: "evener",
