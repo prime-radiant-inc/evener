@@ -688,6 +688,10 @@ extends the same reasoning to the other gate runs sharing it, which a fixed
 count could not see. Both are start-time readings of a lagging metric, not
 admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
+`LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
+helper sizes. The CI `tests` job sets it to 0, because a fresh runner's own
+checkout and cache restore are still in the one-minute average when the gate
+starts: at a load of 1.85 every Go budget on the 4-core runner came out as 2.
 Vitest file isolation prevents worker-count or file assignment from sharing
 module stores, panes, or mocks; per-file teardown is still required for timers,
 clients, and listeners.

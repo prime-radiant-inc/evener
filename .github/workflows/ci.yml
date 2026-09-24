@@ -369,7 +369,12 @@ jobs:
         with:
           go-cache-kind: tests
 
+      # The runner is this job's alone, but its checkout and cache restore are
+      # still in the load average when the gate sizes its budgets; at 1.85
+      # every Go budget came out as 2 of the 4 cores. Size them to the runner.
       - name: Deterministic tests (full root suite; frontend covered by web job)
+        env:
+          LOAD_AWARE_LOAD1: "0"
         run: ROOT_FULL=1 WEB=0 make test
 
       - uses: ./.github/actions/go-cache-save
