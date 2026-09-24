@@ -94,9 +94,13 @@ export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
 // How the rail's session tree groups (the organize-by control in the rail
-// body): "host-project" puts hosts above projects, "project-host" is the
-// original shape. Default the original so nothing changes until the control
-// is used.
+// body): "host-project" puts hosts above projects, "project-host" nests
+// per-host branches inside each project whose loaded rows span hosts (a
+// single-host project stays flat, so single-host hubs keep today's rail).
+// Defaulting to "project-host" is deliberate: a multi-host project DOES
+// change shape out of the box - its rows sit behind collapsed per-host
+// branches - because the grouping is the feature, not something the
+// control must unlock first.
 export type SidebarGroupingPref = "host-project" | "project-host";
 
 export interface PrefsStoreState {
