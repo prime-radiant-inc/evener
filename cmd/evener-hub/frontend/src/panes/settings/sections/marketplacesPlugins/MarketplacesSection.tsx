@@ -9,9 +9,9 @@
 import type { MarketplaceSourceInput } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { type FormEvent, useId, useState } from "react";
-import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -34,7 +34,9 @@ export interface MarketplacesSectionProps {
 }
 
 export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces) ?? [];
+  const store = useExtensionsHostStore();
+  const directory = useHostDirectoryActions();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const toasts = useToasts();
 
   const [addOpen, setAddOpen] = useState(false);
@@ -70,7 +72,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
     setSubmitting(true);
     const trimmedName = nameValue.trim();
     try {
-      await extensionsStore.getState().addMarketplace({ name: trimmedName, source: buildSource() });
+      await store.getState().addMarketplace({ name: trimmedName, source: buildSource() });
       setAddOpen(false);
       resetAddForm();
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
@@ -141,12 +143,12 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
             <FormRow label="Local path" htmlFor={pathId}>
               <PathField
                 ariaLabel="Local path"
-                directory={directoryActions}
+                directory={directory}
                 id={pathId}
                 value={pathValue}
                 onChange={setPathValue}
                 kind="dir"
-                complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+                complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
                 placeholder="/absolute/path"
               />
             </FormRow>

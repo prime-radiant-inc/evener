@@ -23,6 +23,24 @@ export function settingsURL(section: string | undefined, host: string): string {
   return isLocalHost(host) ? path : `${path}?${HOST_QUERY_PARAM}=${encodeURIComponent(host)}`;
 }
 
+/** settingsURLWithQuery is settingsURL for a navigation WITHIN the route the
+ * user is already on: the route's own query parameters ride along, except the
+ * one the selection owns.
+ *
+ * The project pane is what this exists for: it is reached as
+ * /settings/project?cwd=<dir> (its own comment - the section IS the project),
+ * and its host picker rewrites only the host. Dropping the query leaves the
+ * pane reading no cwd at all, so it renders "No project selected" instead of
+ * re-scoping the same project to the host just picked - which is the one thing
+ * ProjectHostScope's own doc comment promises. */
+export function settingsURLWithQuery(section: string | undefined, host: string, search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete(HOST_QUERY_PARAM);
+  const carried = params.toString();
+  const base = settingsURL(section, host);
+  return carried === "" ? base : `${base}${base.includes("?") ? "&" : "?"}${carried}`;
+}
+
 // currentSettingsSection reads the section the address bar names, so the picker
 // rewrites the host on the route it is already on rather than guessing one.
 function currentSettingsSection(): string | undefined {
@@ -38,6 +56,11 @@ export interface SettingsHostSelection {
    * store immediately (every host-scoped pane re-reads at once) and rewrites
    * the URL, so the choice survives a section switch and a reload.
    *
+   * The target is built explicitly (settingsURLWithQuery), carrying the route's
+   * other query parameters - the project pane's ?cwd= above all, so a switch
+   * re-scopes the SAME project to the new host rather than dropping it - while
+   * the host parameter is the selection's own.
+   *
    * `carrySettingsHost: false` because this is the one navigation whose point is
    * to build the URL explicitly - including the removal of the parameter when
    * the user returns to the local hub (see routing.ts's withSettingsHost). */
@@ -48,7 +71,9 @@ export function useSettingsHost(): SettingsHostSelection {
   const host = useSettingsHostStore((state) => state.host);
   const selectHost = useCallback((next: string) => {
     setSettingsHost(next);
-    navigate(settingsURL(currentSettingsSection(), next), { carrySettingsHost: false });
+    navigate(settingsURLWithQuery(currentSettingsSection(), next, window.location.search), {
+      carrySettingsHost: false,
+    });
   }, []);
   return { host, selectHost };
 }

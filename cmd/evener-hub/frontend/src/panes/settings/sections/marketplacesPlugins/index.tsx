@@ -16,10 +16,13 @@ import type { AppwireClientLike } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
-import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
+import { LOCAL_HOST } from "../../../../stores/hostRouting";
 import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { HostScopedSurface } from "../hostScopedSurface";
+import { useHostScopedLoad } from "../useConnectedEffect";
 import { BrowseSection } from "./BrowseSection";
+import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
 import { MarketplacesSection } from "./MarketplacesSection";
@@ -33,6 +36,7 @@ const CLASS = {
 type SegmentId = "installed" | "browse" | "marketplaces";
 
 type AppliedRemovalGuard = {
+  host: string;
   client: AppwireClientLike | null;
   names: ReadonlyMap<string, number>;
 };
@@ -44,14 +48,18 @@ const EMPTY_APPLIED_REMOVALS: ReadonlySet<string> = new Set();
  * straight through stores/extensions.ts (each RPC response already carries
  * the updated list - see that store's own doc comment).
  */
-export function MarketplacesPluginsSection() {
-  const marketplaces = useExtensionsStore((s) => s.marketplaces);
-  const marketplacesLoading = useExtensionsStore((s) => s.marketplacesLoading);
-  const marketplacesError = useExtensionsStore((s) => s.marketplacesError);
-  const plugins = useExtensionsStore((s) => s.plugins);
-  const pluginsLoading = useExtensionsStore((s) => s.pluginsLoading);
-  const pluginsError = useExtensionsStore((s) => s.pluginsError);
-  const marketplacesPublicationVersion = useExtensionsStore((s) => s.marketplacesPublicationVersion);
+function MarketplacesPluginsBody({ host }: { host: string }) {
+  // The selected host's extensions store, supplied by MarketplacesPluginsSection
+  // below (component 07b): the controller's own for the local hub, a per-host
+  // instance over evener/host/request for a remote one.
+  const store = useExtensionsHostStore();
+  const marketplaces = useExtensionsHostState((s) => s.marketplaces);
+  const marketplacesLoading = useExtensionsHostState((s) => s.marketplacesLoading);
+  const marketplacesError = useExtensionsHostState((s) => s.marketplacesError);
+  const plugins = useExtensionsHostState((s) => s.plugins);
+  const pluginsLoading = useExtensionsHostState((s) => s.pluginsLoading);
+  const pluginsError = useExtensionsHostState((s) => s.pluginsError);
+  const marketplacesPublicationVersion = useExtensionsHostState((s) => s.marketplacesPublicationVersion);
   const connectionClient = useConnectionStore((s) => s.client);
   const [expandedMarketplaces, setExpandedMarketplaces] = useState<Set<string>>(new Set());
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
@@ -59,56 +67,56 @@ export function MarketplacesPluginsSection() {
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
   // The registry removal can finish while the sheet is unmounted by the page's
   // load-error gate. Keep its no-repeat marker at the page lifecycle, and tie
-  // it to the client that owns the catalog so a new hub starts unblocked.
+  // it to the host that owns the catalog AND the client that owns the
+  // connection: a new host or a new hub starts unblocked.
   const [appliedRemovalGuard, setAppliedRemovalGuard] = useState<AppliedRemovalGuard>(() => ({
+    host,
     client: connectionClient,
     names: new Map(),
   }));
   const appliedRemovalNames =
-    appliedRemovalGuard.client === connectionClient
+    appliedRemovalGuard.client === connectionClient && appliedRemovalGuard.host === host
       ? new Set(appliedRemovalGuard.names.keys())
       : EMPTY_APPLIED_REMOVALS;
 
+  // Keyed on BOTH the connection client and the selected host: a different
+  // host owns a different catalog, so its same-named marketplace must not
+  // inherit the marker a removal on the previous host left behind.
   useEffect(() => {
     setAppliedRemovalGuard((current) =>
-      current.client === connectionClient ? current : { client: connectionClient, names: new Map() },
+      current.client === connectionClient && current.host === host
+        ? current
+        : { host, client: connectionClient, names: new Map() },
     );
-  }, [connectionClient]);
+  }, [connectionClient, host]);
 
   useEffect(() => {
-    if (appliedRemovalGuard.client !== connectionClient) return;
+    if (appliedRemovalGuard.client !== connectionClient || appliedRemovalGuard.host !== host) return;
     setAppliedRemovalGuard((current) => {
-      if (current.client !== connectionClient) return current;
+      if (current.client !== connectionClient || current.host !== host) return current;
       const next = new Map([...current.names].filter(([, baseline]) => baseline >= marketplacesPublicationVersion));
-      return next.size === current.names.size ? current : { client: current.client, names: next };
+      return next.size === current.names.size ? current : { host: current.host, client: current.client, names: next };
     });
-  }, [appliedRemovalGuard.client, connectionClient, marketplacesPublicationVersion]);
+  }, [appliedRemovalGuard.client, appliedRemovalGuard.host, connectionClient, host, marketplacesPublicationVersion]);
 
   function markAppliedRemoval(name: string, owner: AppwireClientLike | null, publicationVersion: number): void {
     if (connectionStore.getState().client !== owner) return;
     setAppliedRemovalGuard((current) => {
-      if (current.client !== owner) return current;
+      if (current.client !== owner || current.host !== host) return current;
       const names = new Map(current.names);
       names.set(name, publicationVersion);
-      return { client: owner, names };
+      return { host: current.host, client: owner, names };
     });
   }
 
-  // Mirrors DirListSetting's own mount-effect shape (see that component's
-  // comment): waits for the shared client to actually be ready before
-  // firing the one initial fetch, since AppShell mounts the pane tree
-  // independently of the connect() handshake completing.
-  useEffect(() => {
-    let started = false;
-    function tryStart() {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      void extensionsStore.getState().fetchMarketplaces();
-      void extensionsStore.getState().fetchPlugins();
-    }
-    tryStart();
-    return connectionStore.subscribe(tryStart);
-  }, []);
+  // useHostScopedLoad, which is that mount shape (wait for the shared client to
+  // actually be ready, since AppShell mounts the pane tree independently of the
+  // connect() handshake completing) and re-issues this read when the selected
+  // host changes - or comes BACK after being away, which is what would otherwise
+  // leave this pane on the failure its away host answered with.
+  useHostScopedLoad(host, async () => {
+    await Promise.all([store.getState().fetchMarketplaces(), store.getState().fetchPlugins()]);
+  }, [store]);
 
   function handleSegmentChange(segment: SegmentId) {
     setActiveSegment(segment);
@@ -172,4 +180,28 @@ export function MarketplacesPluginsSection() {
       />
     </section>
   );
+}
+
+export interface MarketplacesPluginsSectionProps {
+  /** The host whose own marketplaces and plugins this section edits (component
+   * 07b). Defaults to the local hub, so a direct render is today's section. */
+  host?: string;
+}
+
+/** MarketplacesPluginsSection provides the selected host's extensions store to
+ * the whole subtree, so a remote host's marketplaces and plugins are both shown
+ * and changed from here - never this hub's. */
+export function MarketplacesPluginsSection({ host = LOCAL_HOST }: MarketplacesPluginsSectionProps) {
+  return (
+    <ExtensionsStoreProvider host={host}>
+      <MarketplacesPluginsBody host={host} />
+    </ExtensionsStoreProvider>
+  );
+}
+
+/** MarketplacesPluginsHostScope is the "Marketplaces & Plugins" settings section
+ * scoped to the settings route's selected host: the one shared HostPicker plus
+ * MarketplacesPluginsSection. */
+export function MarketplacesPluginsHostScope() {
+  return <HostScopedSurface>{(host) => <MarketplacesPluginsSection host={host} />}</HostScopedSurface>;
 }
