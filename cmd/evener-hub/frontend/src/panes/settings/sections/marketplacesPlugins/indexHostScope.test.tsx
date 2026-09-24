@@ -1,6 +1,6 @@
 import type { HostRow, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -42,6 +42,14 @@ function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+/** The marketplace edits the pane sent to ANY host through the proxy. */
+function proxyEdits(fake: FakeClient) {
+  return fake.calls.filter(
+    (call) =>
+      call.method === "evener/host/request" && (call.params as { method: string }).method === "evener/marketplace/edit",
+  );
 }
 
 function controllerScopedCalls(fake: FakeClient): string[] {
@@ -146,4 +154,64 @@ test("a remote plugin mutation goes through the proxy, never this hub's plugin m
     ).toBe(true),
   );
   expect(fake.calls.some((call) => call.method === "evener/plugin/disable")).toBe(false);
+});
+
+// The same marketplace NAME can exist on two hosts, and the store swap alone
+// does not move the page's own state: with a marketplace selected, the sheet
+// stays open, `entry?.name` does not even change, and the draft seeded from the
+// host the user left is armed to be written to the host just switched to.
+test("a marketplace draft does not carry across a host switch", async () => {
+  const BETA_MARKETPLACE: MarketplaceEntry = {
+    name: "acme-plugins",
+    source: { kind: "github", repo: "beta/plugins" },
+    lastUpdated: 1,
+  };
+  const GAMMA_MARKETPLACE: MarketplaceEntry = {
+    name: "acme-plugins",
+    source: { kind: "github", repo: "gamma/plugins" },
+    lastUpdated: 2,
+  };
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({
+    hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
+  }));
+  for (const method of ["evener/marketplace/list", "evener/plugin/list", "evener/marketplace/edit"] as const) {
+    fake.on(method, () => {
+      throw new Error(`a remote selection must not call this hub's ${method}`);
+    });
+  }
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/marketplace/list") {
+      return { marketplaces: [forwarded.host === "beta" ? BETA_MARKETPLACE : GAMMA_MARKETPLACE] } as never;
+    }
+    if (forwarded.method === "evener/plugin/list") return { plugins: [] } as never;
+    if (forwarded.method === "evener/marketplace/edit") return { marketplaces: [] } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<MarketplacesPluginsHostScope />);
+  const user = userEvent.setup();
+
+  await user.click(await screen.findByRole("radio", { name: /Marketplaces \(1\)/ }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  const betaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
+  const betaName = within(betaDialog).getByLabelText("Name") as HTMLInputElement;
+  await user.type(betaName, "-draft");
+  expect(betaName.value).toBe("acme-plugins-draft");
+
+  // Gamma's catalog has a marketplace with the SAME name.
+  await user.selectOptions(screen.getByLabelText("Host"), "gamma");
+
+  // Nothing of beta's editor survives the switch...
+  expect(screen.queryByRole("dialog")).toBeNull();
+  // ...and gamma's own editor seeds from GAMMA's entry, not from that draft.
+  await user.click(await screen.findByRole("radio", { name: /Marketplaces \(1\)/ }));
+  await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
+  const gammaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
+  expect((within(gammaDialog).getByLabelText("Name") as HTMLInputElement).value).toBe("acme-plugins");
+  expect((within(gammaDialog).getByPlaceholderText("owner/repo") as HTMLInputElement).value).toBe("gamma/plugins");
+  expect(screen.queryByText(/Saving re-fetches/)).toBeNull();
+  expect(proxyEdits(fake)).toEqual([]);
 });

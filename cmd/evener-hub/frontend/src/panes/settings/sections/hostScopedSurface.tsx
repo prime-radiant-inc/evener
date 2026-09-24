@@ -8,7 +8,20 @@
 // the registry's own answer is the only thing that may call a host gone, and
 // until it says so the body renders and shows that host's own state or error -
 // the selected host's own refusal, never this hub's.
-import type { ReactNode } from "react";
+//
+// The BODY is keyed on the host, so a switch REMOUNTS it. Every pane body here
+// holds state that belongs to the host it was loaded from - a launch form's
+// draft, an AGENTS.md draft and its baseline, a marketplace selection and its
+// editor draft, an MCP add-form's draft, a pending Remove confirmation - and
+// none of that is the next host's: left in place it is shown against the new
+// host's data, and Save submits it to the NEW host. Re-rendering the body (a
+// plain prop change) cannot promise otherwise, and a reset effect cannot either
+// - it lands a commit late, with the old host's values already standing under
+// the new host. A key is the one mechanism that leaves no such commit, and it
+// covers every pane that renders through this frame rather than trusting each
+// one to remember. The picker above stays outside the key, so the selection is
+// not remounted by its own change.
+import { Fragment, type ReactNode } from "react";
 import { isLocalHost } from "../../../stores/hostRouting";
 import { isConfiguredHost, useHostsStore } from "../../../stores/hosts";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -42,7 +55,7 @@ export function HostScopedSurface({ children }: HostScopedSurfaceProps) {
           Host {host} is no longer configured, so it has no settings to show here.
         </p>
       ) : (
-        children(host)
+        <Fragment key={host}>{children(host)}</Fragment>
       )}
     </div>
   );

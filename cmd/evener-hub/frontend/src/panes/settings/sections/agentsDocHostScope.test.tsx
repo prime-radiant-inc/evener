@@ -1,9 +1,13 @@
 import type { AgentsDocResponse, HostRow } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { resetAgentsDocHostInstancesForTests, resetAgentsDocStoreForTests } from "../../../stores/agentsDoc";
+import {
+  agentsDocStoreForHost,
+  resetAgentsDocHostInstancesForTests,
+  resetAgentsDocStoreForTests,
+} from "../../../stores/agentsDoc";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
@@ -118,4 +122,73 @@ test("a remote selection shows AND changes that host's own file, never this hub'
   // Every call reached the proxy; none named the controller's own methods.
   const methods = fake.calls.map((call) => call.method);
   expect(methods.filter((method) => method.startsWith("evener/settings/agentsDoc/"))).toEqual([]);
+});
+
+// Switching hosts hands the section the new host's store, whose document may
+// ALREADY be cached (this host was visited earlier in the session). The
+// editor's own reset and its document sync then land in the same commit, and a
+// sync that reads the draft and baseline still belonging to the host the user
+// left reads the new document as "changed on disk" and blanks the editor.
+test("switching to a host whose document is already cached shows that host's document", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/settings/agentsDoc/get", () => CONTROLLER_DOC);
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    expect(forwarded.host).toBe("beta");
+    if (forwarded.method === "evener/settings/agentsDoc/get") return BETA_DOC as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  // Beta's file is already cached: an earlier visit to that host read it.
+  await agentsDocStoreForHost("beta").getState().fetch();
+
+  render(
+    <>
+      <Toast />
+      <AgentsDocHostScope sectionId="agents-md" />
+    </>,
+  );
+  await waitFor(() => expect(editor().value).toBe("# controller\n"));
+  fireEvent.change(editor(), { target: { value: "# draft for this hub\n" } });
+  expect(editor().value).toBe("# draft for this hub\n");
+
+  setSettingsHost("beta");
+
+  await waitFor(() => expect(editor().value).toBe("# beta\n"));
+  expect(screen.queryByText(/changed on disk/)).toBeNull();
+});
+
+// The sharper half of the same race: the new host's cached document happens to
+// equal what this hub's draft holds. The stale sync then adopts THAT as the new
+// baseline while the draft reset empties the draft - leaving Save armed over an
+// empty body, to write it to the host just switched to.
+test("switching hosts never arms Save over an empty body", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/settings/agentsDoc/get", () => CONTROLLER_DOC);
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    expect(forwarded.host).toBe("beta");
+    if (forwarded.method === "evener/settings/agentsDoc/get") return BETA_DOC as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  await agentsDocStoreForHost("beta").getState().fetch();
+
+  render(
+    <>
+      <Toast />
+      <AgentsDocHostScope sectionId="agents-md" />
+    </>,
+  );
+  await waitFor(() => expect(editor().value).toBe("# controller\n"));
+  // The draft equals the document beta's store already holds.
+  fireEvent.change(editor(), { target: { value: "# beta\n" } });
+
+  setSettingsHost("beta");
+
+  await waitFor(() => expect(editor().value).toBe("# beta\n"));
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByText(/changed on disk/)).toBeNull();
 });
