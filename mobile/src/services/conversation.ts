@@ -691,8 +691,7 @@ export function createConversationService<ReadLease = unknown>(
         subscribe: true,
         replaceSubscription: true,
       });
-      if (options.onReadComplete !== undefined)
-        await options.onReadComplete(readLease, response);
+      await options.onReadComplete?.(readLease, response);
       // Compute ALL response-derived projection work BEFORE committing the
       // pair — a throw here leaves ref+capabilities null/fail-closed. Only
       // commit the pair after projection succeeds and the epoch is still
@@ -743,8 +742,7 @@ export function createConversationService<ReadLease = unknown>(
       // projection the publish has not installed.
       const publish = (async (): Promise<ConversationReadProjection> => {
         const response: ThreadReadResponse = await read;
-        if (options.onReadComplete !== undefined)
-          await options.onReadComplete(readLease, response);
+        await options.onReadComplete?.(readLease, response);
         // Compute ALL response-derived projection work BEFORE committing the
         // pair — a throw in hydration, projectConversation or activity
         // projection (or a malformed response) leaves ref+capabilities

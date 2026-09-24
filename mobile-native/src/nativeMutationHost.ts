@@ -1,12 +1,5 @@
-import type {
-	AppwireClientLike,
-	MutationReceipt,
-	ThreadReadResponse,
-} from "@evener/appwire-client";
-import type {
-	ConversationMutationRequest,
-	ConversationMutationSubmitter,
-} from "../../mobile/src/state/conversationMutation";
+import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
+import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
 import {
 	NativeMutationRuntime,
 	type NativeMutationReadLease,
@@ -24,11 +17,8 @@ import {
 // registration, so a lease from a disposed screen can never reconcile a
 // replacement client's target (#1955's ownership recheck, applied to the
 // durable dispatch gate).
-export interface NativeMutationHost {
+export interface NativeMutationHost extends ConversationMutationSubmitter {
 	start(): Promise<void>;
-	submit(
-		request: ConversationMutationRequest,
-	): Promise<MutationReceipt | undefined>;
 	beginRead(
 		targetRef: string,
 		expectedThreadId?: string,
@@ -76,20 +66,17 @@ export function createNativeMutationHost(
 	return {
 		start: () => {
 			if (startPromise !== undefined) return startPromise;
-			try {
+			startPromise = (async () => {
 				unregister = runtime.registerTarget(hubId, targetRef, client);
-			} catch (error) {
-				// A client the runtime cannot bind is a startup failure like any
-				// other: report it as a rejected promise so a caller's catch owns
-				// it, rather than throwing out of the caller's synchronous flow.
-				return Promise.reject(error);
-			}
-			startPromise = runtime.start().catch((error) => {
-				// Keep the registration: the runtime retries its own start on
-				// the next submission, and a mutation admitted after that
-				// retry succeeds must still have this screen's client bound or
-				// it would be durably enqueued and never dispatched. The
-				// registration is retired by dispose() with the mount, so a
+				await runtime.start();
+			})().catch((error) => {
+				// Every startup failure - a client the runtime cannot bind, or
+				// a runtime start that rejects - reaches the caller as one
+				// rejected promise. The registration is kept: the runtime
+				// retries its own start on the next submission, and a mutation
+				// admitted after that retry succeeds must still have this
+				// screen's client bound or it would be durably enqueued and
+				// never dispatched. dispose() retires it with the mount, so a
 				// replaced client never inherits it.
 				startPromise = undefined;
 				throw error;

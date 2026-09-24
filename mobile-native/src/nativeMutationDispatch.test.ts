@@ -35,6 +35,7 @@ import {
 import {
 	NativeMutationRuntime,
 	nativeMutationTargetKey,
+	type NativeMutationRuntimeOptions,
 } from "./nativeMutationRuntime";
 import type { SqliteSync } from "./sqliteSync";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
@@ -85,6 +86,20 @@ function makeThread(over: Partial<Thread> = {}): Thread {
 	};
 }
 
+function appliedReceipt(params: unknown): never {
+	const { clientMutationId } = params as { clientMutationId: string };
+	return {
+		receipt: {
+			clientMutationId,
+			disposition: "applied",
+			threadId: "thread-1",
+			turnId: "turn-1",
+			projectionState: "pending",
+		},
+		turn: { id: "turn-1" },
+	} as never;
+}
+
 let openDatabases: SqliteDoubleDatabase[] = [];
 
 afterEach(() => {
@@ -101,7 +116,7 @@ function openDatabase(): SqliteSync {
 // The production composition the screen mounts: one runtime, one host binding
 // the screen's client and target, a service fenced through the host's read
 // hooks, and a store whose mutations are admitted through the runtime.
-function compose() {
+function compose(runtimeOptions: NativeMutationRuntimeOptions = {}) {
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: (() => {
 			let next = 0;
@@ -109,6 +124,7 @@ function compose() {
 		})(),
 		now: () => 1,
 		getOwnClientId: () => "origin-a",
+		...runtimeOptions,
 	});
 	const client = new FakeClient("ready");
 	const host = createNativeMutationHost(runtime, "hub-1", "ref-1", client);
@@ -243,46 +259,16 @@ test("a failed host startup keeps the registration so a later admission still di
 	// host registration must survive it, or the next admission would be
 	// durably enqueued with no client bound and never dispatched.
 	let attempts = 0;
-	const runtime = new NativeMutationRuntime(openDatabase(), {
-		createMutationId: (() => {
-			let next = 0;
-			return () => `mutation-${++next}`;
-		})(),
-		now: () => 1,
-		getOwnClientId: () => "origin-a",
+	const { client, host, service, store } = compose({
 		setInterval: (callback) => {
 			attempts += 1;
 			if (attempts === 1) throw new Error("timer setup unavailable");
-			return globalThis.setInterval(callback, 2000) as unknown as number;
+			return 1;
 		},
-		clearInterval: (intervalId) => globalThis.clearInterval(intervalId),
+		clearInterval: () => undefined,
 	});
-	const client = new FakeClient("ready");
 	client.on("thread/read", () => ({ thread: makeThread() }) as ThreadReadResponse);
-	client.on("turn/start", (params) => {
-		const { clientMutationId } = params as { clientMutationId: string };
-		return {
-			receipt: {
-				clientMutationId,
-				disposition: "applied",
-				threadId: "thread-1",
-				turnId: "turn-1",
-				projectionState: "pending",
-			},
-			turn: { id: "turn-1" },
-		} as never;
-	});
-	const host = createNativeMutationHost(runtime, "hub-1", "ref-1", client);
-	const service = createConversationService(client, {
-		onReadStart: (ref, expectedThreadId) =>
-			host.beginRead(ref, expectedThreadId),
-		onReadComplete: (lease, response) =>
-			host.reconcileRead(lease, response),
-	});
-	const store = createConversationStore({
-		mutationHubId: "hub-1",
-		mutationSubmitter: runtime,
-	});
+	client.on("turn/start", appliedReceipt);
 
 	await expect(host.start()).rejects.toThrow("timer setup unavailable");
 	// The registration survived: the read fence still hands out a lease, so the

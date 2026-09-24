@@ -461,6 +461,37 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       expectedQueueRevision,
     });
   }
+
+  // One mutation's transport: admitted durably through the submitter when the
+  // host wired one, otherwise the service's own method. Keeping the choice here
+  // means each action declares only its kind, binding and input.
+  function dispatchMutation(
+    service: ConversationService,
+    kind: "send" | "steer" | "queue" | "interrupt",
+    opBinding: RequestBinding,
+    conversation: MobileConversation,
+    input: InputItem[],
+    expectedQueueRevision?: number,
+  ): Promise<MutationReceipt | undefined> {
+    if (mutationSubmitter !== undefined)
+      return submitMutation(
+        kind,
+        opBinding,
+        conversation,
+        input,
+        expectedQueueRevision,
+      );
+    switch (kind) {
+      case "send":
+        return service.send(input);
+      case "steer":
+        return service.steer(input, expectedQueueRevision);
+      case "queue":
+        return service.queue(input);
+      case "interrupt":
+        return service.interrupt();
+    }
+  }
   let conversationGen = 0;
   let mutationIdCounter = 0;
   // Draft revision: a monotonically increasing counter incremented on every
@@ -3650,9 +3681,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // it.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = mutationSubmitter
-            ? await submitMutation("send", opBinding, state.conversation, input)
-            : await service.send(input);
+          const receipt = await dispatchMutation(
+            service,
+            "send",
+            opBinding,
+            state.conversation,
+            input,
+          );
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           // F4: Check mutationId — out-of-order completion cannot clear a
@@ -3734,15 +3769,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = mutationSubmitter
-            ? await submitMutation(
-                "steer",
-                opBinding,
-                state.conversation,
-                input,
-                expectedQueueRevision,
-              )
-            : await service.steer(input, expectedQueueRevision);
+          const receipt = await dispatchMutation(
+            service,
+            "steer",
+            opBinding,
+            state.conversation,
+            input,
+            expectedQueueRevision,
+          );
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -3817,9 +3851,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = mutationSubmitter
-            ? await submitMutation("queue", opBinding, state.conversation, input)
-            : await service.queue(input);
+          const receipt = await dispatchMutation(
+            service,
+            "queue",
+            opBinding,
+            state.conversation,
+            input,
+          );
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -3894,9 +3932,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          const receipt = mutationSubmitter
-            ? await submitMutation("interrupt", opBinding, state.conversation, [])
-            : await service.interrupt();
+          const receipt = await dispatchMutation(
+            service,
+            "interrupt",
+            opBinding,
+            state.conversation,
+            [],
+          );
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
