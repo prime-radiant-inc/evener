@@ -575,7 +575,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			if !prepared && item.snapshot != nil {
-				item.snapshot.Apply([]appserver.SequencedNotification{record})
+				item.snapshot.ApplyCommitted(record, params)
 			}
 			committed = append(committed, record)
 		}
@@ -646,7 +646,7 @@ func (s *Server) finishProcessing() {
 			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			if !prepared && item.snapshot != nil {
-				item.snapshot.Apply([]appserver.SequencedNotification{record})
+				item.snapshot.ApplyCommitted(record, params)
 			}
 			committed = append(committed, record)
 		}
@@ -819,7 +819,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			}
 			record := s.appNotifier.Record(notificationTarget, item.method, params)
 			if !prepared && item.snapshot != nil {
-				item.snapshot.Apply([]appserver.SequencedNotification{record})
+				item.snapshot.ApplyCommitted(record, params)
 			}
 			committed = append(committed, record)
 		}
