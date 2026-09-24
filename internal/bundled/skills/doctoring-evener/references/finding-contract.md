@@ -21,7 +21,7 @@ missed note costs nothing; a spurious finding makes a human triage noise.
 | `category` | enum | yes | classification (below) — consumers key on this, never on parsing `description`. |
 | `title` | string | yes | one-line label. |
 | `description` | string | yes | what was observed + why it is a problem. |
-| `evidence` | object | yes | ≥1 sub-field populated. `doctorCommand` is always present (empty when all sessions are non-reproducible — see below). |
+| `evidence` | object | yes | carries the always-present `doctorCommand` (empty when every affected session is non-reproducible — see below) plus the other sub-fields when they apply. An all-non-reproducible finding therefore has NO populated sub-field, and that is not malformation — `description` is the disclosure channel, and a machine consumer must treat the empty-evidence finding as valid, keying on `category`/`signature` per this contract (never on evidence shape). |
 | `suggestedFix` | object | yes | the **routing** directive (below). |
 
 `evidence` sub-fields: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`,
