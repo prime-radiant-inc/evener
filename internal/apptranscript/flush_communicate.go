@@ -41,6 +41,7 @@ func flushUnpairedCommunicateItems(reg *ToolCallRegistry, turnID string) []appwi
 			Type:   "agentMessage",
 			ID:     "item_assistant_flushed_" + callID,
 			TurnID: turnID,
+			CallID: callID,
 			Text:   msg,
 			Status: appwire.TurnStatusCompleted,
 		})
@@ -60,7 +61,16 @@ func flushUnpairedCommunicateItems(reg *ToolCallRegistry, turnID string) []appwi
 // Safety: at end-of-transcript, any CommRawArgs remaining in reg were seeded by
 // an assistant turn whose result never arrived. A paired result would have
 // deleted its entry (ProjectTurn's result path calls delete). Remaining entries
-// are genuinely unpaired, so flushing them cannot double-render.
+// are genuinely unpaired, so flushing them cannot double-render within a single
+// reload.
+//
+// Resume: PrepareAppIdentity seeds the snapshot from this projection, so the
+// flushed item enters the live snapshot. If the communicate's result later
+// arrives live (the session resumes mid-call), the live projector emits
+// EventCommunicate with the same CallID. The flushed item carries CallID so
+// appThreadItemIdentityMatches deduplicates the live re-emission against the
+// seeded flushed item by CallID — without it, the mismatched IDs
+// (item_assistant_flushed_<callID> vs item_assistant_<N>) would double-render.
 func FlushUnpairedCommunicates(turns *[]appwire.Turn, reg *ToolCallRegistry) bool {
 	if len(*turns) == 0 || len(reg.CommRawArgs) == 0 {
 		return false

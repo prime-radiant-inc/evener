@@ -618,7 +618,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		p.provisionalCommunicateItems[data.CallID] = itemID
 		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Status: appwire.TurnStatusInProgress},
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, CallID: data.CallID, Status: appwire.TurnStatusInProgress},
 		}))
 	case events.EventCommunicatePreviewDelta:
 		data := eventData[events.CommunicatePreviewDeltaData](event.Data)
@@ -662,7 +662,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			p.recordAssistantMessage(p.activeTurnID, text)
 			return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, CallID: data.CallID, Text: text, Status: appwire.TurnStatusCompleted},
 			}))
 		}
 		if p.matchesLastAssistantMessage(p.activeTurnID, text) {

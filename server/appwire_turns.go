@@ -823,6 +823,15 @@ func appThreadItemIdentityMatches(existing, incoming appwire.ThreadItem) bool {
 	if existing.TranscriptKey != "" && incoming.TranscriptKey != "" {
 		return existing.TranscriptKey == incoming.TranscriptKey
 	}
+	// agentMessage items from a flushed (reload) seed and a live re-emission
+	// share the same CallID but have different IDs (flushed:
+	// item_assistant_flushed_<callID>, live: item_assistant_<N>). Match by
+	// CallID so the live re-emission merges into the seeded flushed item
+	// rather than double-rendering on resume.
+	if existing.Type == "agentMessage" && incoming.Type == "agentMessage" &&
+		existing.CallID != "" && existing.CallID == incoming.CallID {
+		return true
+	}
 	return existing.ID == incoming.ID
 }
 

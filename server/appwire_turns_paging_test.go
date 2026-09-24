@@ -196,6 +196,90 @@ func TestPrepareAppIdentityHydratesPersistedCommunicate(t *testing.T) {
 	}
 }
 
+// TestResumeFlushedCommunicateMergesLiveReemission proves that a flushed
+// communicate item seeded into the snapshot at resume does NOT double-render
+// when the communicate's result arrives live. The flushed item (from
+// PrepareAppIdentity's seed) has ID item_assistant_flushed_<callID> and a
+// TranscriptKey; the live EventCommunicate item has a different ID
+// (item_assistant_<N>) and no TranscriptKey. Without CallID-based dedup in
+// appThreadItemIdentityMatches, the live item would be appended as a second
+// agentMessage — a double render. With CallID on both items, the live
+// re-emission merges into the flushed item.
+func TestResumeFlushedCommunicateMergesLiveReemission(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resume-communicate.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_resume", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ToolCallData{ID: "resume-call", Name: "communicate", Arguments: json.RawMessage(`{"message":"resumed"}`)}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := PrepareAppIdentity("local", "th_resume", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The seed must contain exactly one flushed agentMessage for the call.
+	var seedFlushed int
+	for _, turn := range prepared.turns.turns {
+		for _, item := range turn.Items {
+			if item.Type == "agentMessage" && item.CallID == "resume-call" {
+				seedFlushed++
+			}
+		}
+	}
+	if seedFlushed != 1 {
+		t.Fatalf("seed produced %d flushed agentMessages for resume-call, want 1", seedFlushed)
+	}
+
+	// Simulate the live re-emission: the communicate's result arrives after
+	// resume. The live projector emits NotifyItemCompleted with the same
+	// CallID but a different (counter-based) item ID and no TranscriptKey.
+	turnID := prepared.turns.turns[0].ID
+	liveParams, err := json.Marshal(appwire.ItemLifecycleParams{
+		TurnID: turnID,
+		Item: appwire.ThreadItem{
+			Type:   "agentMessage",
+			ID:     "item_assistant_99",
+			TurnID: turnID,
+			CallID: "resume-call",
+			Text:   "resumed",
+			Status: appwire.TurnStatusCompleted,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.turns.Apply([]appserver.SequencedNotification{{
+		Seq:          1,
+		Notification: appwire.Notification{Method: appwire.NotifyItemCompleted, Params: liveParams},
+	}})
+
+	// After applying the live notification, the snapshot must have exactly
+	// one agentMessage for resume-call — the live item merged into the
+	// flushed item, not appended alongside it.
+	turns := prepared.turns.Snapshot()
+	var agentMessages int
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type == "agentMessage" && item.CallID == "resume-call" {
+				agentMessages++
+			}
+		}
+	}
+	if agentMessages != 1 {
+		t.Fatalf("after live re-emission: %d agentMessages for resume-call, want 1 (double-rendered); turns: %+v", agentMessages, turns)
+	}
+}
+
 // installTranscriptIdentity seeds srv from a real transcript the way production
 // serve does: project once, then publish.
 func installTranscriptIdentity(t testing.TB, srv *Server, threadID, path string) {
