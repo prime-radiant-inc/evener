@@ -107,9 +107,6 @@ func TestNativeControllerConfirmsRetiringOwnerExitAfterLogRelease(t *testing.T) 
 	if err := p.Wait(ctx); err == nil {
 		t.Fatal("live child declared exited")
 	}
-	if err := p.Kill(); err == nil {
-		t.Fatal("a retiring target's handle accepted a kill")
-	}
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}

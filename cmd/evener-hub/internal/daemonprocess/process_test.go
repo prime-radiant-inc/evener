@@ -3,6 +3,7 @@ package daemonprocess
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -70,26 +71,38 @@ func TestOpenRefusesUnsafeTargets(t *testing.T) {
 		})
 	}
 }
+
+// Every identity fact binds a target; a Retiring target is exempt only from
+// log ownership, which its release has already given up.
 func TestOpenRefusesUnverifiedIdentity(t *testing.T) {
 	tests := []struct {
-		name   string
-		change func(*identity)
+		name    string
+		change  func(*identity)
+		logOnly bool
 	}{
-		{"wrong owner", func(v *identity) { v.uid++ }}, {"wrong command", func(v *identity) { v.argv = []string{"evener", "hub", "serve"} }}, {"missing argv", func(v *identity) { v.argv = nil }}, {"missing log ownership", func(v *identity) { v.ownsLog = false }}, {"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }}, {"missing generation", func(v *identity) { v.generation = "" }}, {"missing start", func(v *identity) { v.startedAt = time.Time{} }},
+		{"wrong owner", func(v *identity) { v.uid++ }, false}, {"wrong command", func(v *identity) { v.argv = []string{"evener", "hub", "serve"} }, false}, {"missing argv", func(v *identity) { v.argv = nil }, false}, {"missing log ownership", func(v *identity) { v.ownsLog = false }, true}, {"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }, false}, {"missing generation", func(v *identity) { v.generation = "" }, false}, {"missing start", func(v *identity) { v.startedAt = time.Time{} }, false},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			k := &kernelProcess{facts: validIdentity()}
-			tt.change(&k.facts)
-			p, err := testController(k).Open(validTarget())
-			if err == nil {
-				_ = p.Close()
-				t.Fatal("unverified identity accepted")
+	for _, retiring := range []bool{false, true} {
+		for _, tt := range tests {
+			if retiring && tt.logOnly {
+				continue
 			}
-			if !k.closed || k.signals != 0 {
-				t.Fatal("refused process leaked or signaled")
-			}
-		})
+			t.Run(fmt.Sprintf("%s/retiring=%v", tt.name, retiring), func(t *testing.T) {
+				target := validTarget()
+				target.Retiring = retiring
+				k := &kernelProcess{facts: validIdentity()}
+				k.facts.ownsLog = !retiring
+				tt.change(&k.facts)
+				p, err := testController(k).Open(target)
+				if err == nil {
+					_ = p.Close()
+					t.Fatal("unverified identity accepted")
+				}
+				if !k.closed || k.signals != 0 {
+					t.Fatal("refused process leaked or signaled")
+				}
+			})
+		}
 	}
 }
 func TestOpenRefusesGenerationChange(t *testing.T) {
@@ -301,32 +314,5 @@ func TestRetiringTargetConfirmsExitWithoutLogOwnership(t *testing.T) {
 	k.gone = true
 	if err := p.Wait(context.Background()); err != nil {
 		t.Fatalf("retiring daemon's exit not confirmed: %v", err)
-	}
-}
-
-// Every identity fact other than log ownership still binds a Retiring target.
-func TestRetiringTargetStillRefusesUnverifiedIdentity(t *testing.T) {
-	tests := []struct {
-		name   string
-		change func(*identity)
-	}{
-		{"wrong owner", func(v *identity) { v.uid++ }}, {"wrong command", func(v *identity) { v.argv = []string{"evener", "hub", "serve"} }}, {"missing argv", func(v *identity) { v.argv = nil }}, {"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }}, {"missing generation", func(v *identity) { v.generation = "" }}, {"missing start", func(v *identity) { v.startedAt = time.Time{} }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			target := validTarget()
-			target.Retiring = true
-			k := &kernelProcess{facts: validIdentity()}
-			k.facts.ownsLog = false
-			tt.change(&k.facts)
-			p, err := testController(k).Open(target)
-			if err == nil {
-				_ = p.Close()
-				t.Fatal("unverified identity accepted")
-			}
-			if !k.closed || k.signals != 0 {
-				t.Fatal("refused process leaked or signaled")
-			}
-		})
 	}
 }
