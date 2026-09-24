@@ -3,6 +3,8 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"testing"
 )
 
@@ -96,5 +98,38 @@ func TestRejectsJSONRPCField(t *testing.T) {
 	var msg Message
 	if err := json.Unmarshal(raw, &msg); err == nil {
 		t.Fatal("expected jsonrpc field to be rejected")
+	}
+}
+
+// TestResponseFrameEncodesItsResultOnce guards the daemon's reply path: a
+// hub liveness probe's thread snapshot is large, and every JSON-RPC wrapper
+// that marshals its result separately makes the encoder copy and re-validate
+// the whole snapshot again. Framing a result must allocate about what encoding
+// the result alone allocates, not a multiple of it.
+func TestResponseFrameEncodesItsResultOnce(t *testing.T) {
+	var result ThreadListResponse
+	for i := range 50 {
+		result.Data = append(result.Data, Thread{ID: fmt.Sprintf("thread-%d", i), Preview: "a preview line long enough to grow the encoder's buffer"})
+	}
+	bytesPerEncode := func(v any) uint64 {
+		const runs = 20
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for range runs {
+			if _, err := json.Marshal(v); err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / runs
+	}
+	bare := bytesPerEncode(result)
+	for name, frame := range map[string]Message{
+		"with id":    ResponseMessage(NewIntID(7), result),
+		"without id": {Response: &Response{Result: result}},
+	} {
+		if framed := bytesPerEncode(frame); framed > bare*3/2 {
+			t.Errorf("%s: framing the result allocated %d bytes against %d for the result alone; the result is being re-encoded", name, framed, bare)
+		}
 	}
 }
