@@ -307,6 +307,19 @@ export function nativeTranscriptDrafts(
 	if (!hubId.trim())
 		throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.transcript-draft.${hubId}`;
+	/** The bytes a legacy checkpoint's migration could NOT rewrite, keyed by the
+	 * migrated checkpoint the read returned. The shared repository classifies a
+	 * read's value as the identity its later compare-and-swap names, so without
+	 * this the migrated-in-memory checkpoint would be compared against bytes
+	 * that still carry the legacy shape and every discard/save would refuse -
+	 * stranding the draft the best-effort migration kept readable. */
+	const legacyBytes = new WeakMap<object, unknown>();
+	const storedIdentity = (identity: unknown): unknown =>
+		typeof identity === "object" &&
+		identity !== null &&
+		legacyBytes.has(identity)
+			? legacyBytes.get(identity)
+			: identity;
 	return {
 		createId: () => backend.createId(),
 		// The shared store classifies whatever these bytes decode to: a valid
@@ -333,12 +346,14 @@ export function nativeTranscriptDrafts(
 					? migrated
 					: (backend.get(key) ?? null);
 			} catch {
+				legacyBytes.set(migrated, value);
 				return migrated;
 			}
 		},
 		save: (checkpoint) => backend.set(key, checkpoint),
 		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
-		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
-		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
+		removeIf: (checkpoint) => backend.deleteIf(key, storedIdentity(checkpoint)),
+		replaceIf: (expected, next) =>
+			backend.replaceIf(key, storedIdentity(expected), next),
 	};
 }

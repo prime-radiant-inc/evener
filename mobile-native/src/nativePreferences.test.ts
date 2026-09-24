@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
 	AnyNotification,
+	KeybindingDraftCheckpoint,
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
@@ -810,6 +811,73 @@ describe("transcriptMobile projection (A10)", () => {
 			storageUnavailable: false,
 			draft: { revision: 4, config },
 		});
+	});
+
+	it("can discard a legacy checkpoint whose migration write failed", async () => {
+		// The migrated checkpoint must still name the bytes on disk, or the
+		// shared repository's compare-and-swap refuses and discard silently
+		// does nothing.
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", {
+				...backend,
+				replaceIf: () => {
+					throw new Error("quota exceeded");
+				},
+			}),
+		);
+		await model.refresh();
+		await model.discardTranscriptDraft();
+		expect(backend.store.has("evener.native.transcript-draft.hub")).toBe(false);
+		expect(model.getSnapshot().transcriptMobile.draft).toBeNull();
+	});
+
+	it("can save a legacy draft after one migration-write failure", async () => {
+		const backend = fakeDraftBackend();
+		backend.store.set("evener.native.transcript-draft.hub", {
+			id: "old",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+		});
+		let writes = 0;
+		const client = fakeClient();
+		client.handlers.set("evener/settings/transcriptDisplay/get", () => transcript);
+		client.handlers.set(transcriptPatch, () => ({
+			layout: "mobile",
+			revision: 5,
+			config: toWireConfig(proposedConfig),
+		}));
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: false, transcriptDisplaySettings: true },
+			nativeTranscriptDrafts("hub", {
+				...backend,
+				replaceIf: (key, expected, next) => {
+					writes += 1;
+					if (writes === 1) throw new Error("quota exceeded");
+					return backend.replaceIf(
+						key,
+						expected,
+						next as KeybindingDraftCheckpoint,
+					);
+				},
+			}),
+		);
+		await model.refresh();
+		await model.saveTranscript(proposedConfig);
+		expect(model.getSnapshot().transcriptMobile.confirmed?.revision).toBe(5);
+		expect(backend.store.has("evener.native.transcript-draft.hub")).toBe(false);
 	});
 
 	it("generation-aware staleness: a draft composed under generation N does not read current when a replacement hub reuses revision N", async () => {
