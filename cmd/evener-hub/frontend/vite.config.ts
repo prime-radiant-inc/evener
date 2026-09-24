@@ -49,9 +49,9 @@ export default defineConfig({
   // install (docs/developing-evener/conventions/agent-fleets.md), so that
   // default's dep-cache temp dir is shared by every lane and every concurrent
   // Vite process - which races (issue #1586). path.join(__dirname, ...) is
-  // lexical and never follows the symlink, and the gate flows run one Vite
-  // process at a time (guards sequentially; make test-web starts only
-  // vitest's).
+  // lexical and never follows the symlink. make test-web starts only vitest's
+  // Vite, and make test-web-browser, which runs guards side by side, gives
+  // each guard its own cache (browserguard.vite.config.mjs).
   cacheDir: path.join(__dirname, ".vite-cache"),
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,

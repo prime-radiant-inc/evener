@@ -131,8 +131,9 @@ AGENT_SHARDS=${AGENT_SHARDS:-1}
 # them, and <PREFIX>_SHARD_* configure them. The prefix is spelled out rather
 # than derived with ${label^^}, which macOS's stock bash 3.2 cannot parse.
 # <PREFIX>_SHARDS=0 (HUB_SHARDS, CLI_SHARDS) tests that package inside the
-# root module's single go test instead; the -race gate sets both for the same
-# oversubscription reason as AGENT_SHARDS=0.
+# root module's single go test instead. The -race gate keeps both sharded:
+# their tests are mostly serial, so one process uses about one core, and on a
+# 4-core runner sharding took the race root wave from ~690-790s to ~430s.
 ROOT_SHARDED=("hub HUB cmd/evener-hub" "cli CLI cmd/evener")
 HUB_SHARDS=${HUB_SHARDS:-1}
 CLI_SHARDS=${CLI_SHARDS:-1}
