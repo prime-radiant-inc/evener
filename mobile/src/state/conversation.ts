@@ -2342,6 +2342,14 @@ export function createConversationStore() {
           // this from its own fold inputs when it runs.
           let mergedTurns = merged.turns;
           let wireOlderCursor = conversation.olderCursor;
+          // RoboRev local round 1 (Medium): when the retained-turn bound
+          // below runs, the publish commits the same seated, capped rows it
+          // trimmed against (see the bound's comment) instead of
+          // re-projecting from the trimmed turns — a notice whose anchor
+          // row the bound shed must still seat where the window that kept
+          // it places it, exactly as loadOlder commits its own seated
+          // pre-bound window.
+          let seatedRehydrateItems: MobileTimelineItem[] | null = null;
           // RoboRev review round 2: whether the retained history is
           // CONTINUOUS with the refreshed window — the coverage merge's own
           // transcript-overlap signal. The store's own paging cursor below
@@ -2963,16 +2971,20 @@ export function createConversationStore() {
             // the transient warnings before the cap, and a seated notice
             // consumes a cap slot, so an unseated bound would retain page
             // payloads for rows the seated cap just evicted.
+            // RoboRev local round 1 (Medium): the publish shows exactly
+            // this seated window, so hoist it — a notice the window kept
+            // survives the commit even when the bound sheds the turn its
+            // anchor row came from.
+            const rehydrateSeated = seatTransientWarnings(
+              projectTimeline({ ...merged, turns: mergedTurns }),
+            );
             mergedTurns = boundRetainedTurns(
               mergedTurns,
-              capItems(
-                seatTransientWarnings(
-                  projectTimeline({ ...merged, turns: mergedTurns }),
-                ),
-              ),
+              capItems(rehydrateSeated),
               mergedItemFoldIdentities,
               conversation.activeTurnId,
             );
+            seatedRehydrateItems = rehydrateSeated;
           }
           if (replacesInstance) {
             pageItemIds.clear();
@@ -2986,12 +2998,27 @@ export function createConversationStore() {
           // projection of the merged model — the snapshot's own turns plus
           // the page history the model still carries, one projector for a
           // frame and for a snapshot.
+          // RoboRev local round 1 (Medium): on the history-preserving path
+          // the committed rows are the SAME seated projection the
+          // retained-turn bound trimmed against — the projector's input is
+          // the pre-trim merged model, exactly the rows loadOlder commits —
+          // so a notice the window kept stays seated even when the bound
+          // sheds its anchor row. Re-projecting here instead would drop the
+          // shed rows, leave the notice no anchor to seat at, and the
+          // carried-filter prune would retire a warning the cap kept.
           const committedConversation = capAndTruncate(
-            projectConversation({
-              ...merged,
-              turns: mergedTurns,
-              olderCursor: wireOlderCursor,
-            }),
+            seatedRehydrateItems === null
+              ? projectConversation({
+                  ...merged,
+                  turns: mergedTurns,
+                  olderCursor: wireOlderCursor,
+                })
+              : {
+                  ...merged,
+                  turns: mergedTurns,
+                  olderCursor: wireOlderCursor,
+                  items: seatedRehydrateItems,
+                },
           );
           // RoboRev review round 2: page turn ownership alone must not pin
           // the store's own paging cursor across a DISJOINT refresh —
