@@ -9,8 +9,9 @@ import (
 	"testing"
 )
 
-// fakeAgentGateGo stands in for go under run-module-tests.sh with MODULES=agent.
-// The agent-shards run and the subpackage go test each drop a marker, and each
+// fakeAgentGateGo stands in for go under run-module-tests.sh. Every module but
+// agent lists one package named after its directory and passes. For agent, the
+// agent-shards run and the subpackage go test each drop a marker, and each
 // checks the other's to prove the order the gate ran them in:
 //
 //   - FAKE_EXPECT=alongside: the shards wait (up to a 30s tripwire) for the
@@ -22,8 +23,12 @@ import (
 const fakeAgentGateGo = `#!/bin/sh
 case "$1" in
 list)
-	echo primeradiant.com/evener/agent
-	echo primeradiant.com/evener/agent/sub
+	if [ "${PWD##*/}" = agent ]; then
+		echo primeradiant.com/evener/agent
+		echo primeradiant.com/evener/agent/sub
+	else
+		echo "primeradiant.com/evener/${PWD##*/}"
+	fi
 	;;
 run)
 	case "$*" in
@@ -47,6 +52,13 @@ run)
 	esac
 	;;
 test)
+	case "$*" in
+	*agent/sub*) ;;
+	*)
+		printf 'ok  \tprimeradiant.com/evener/%s\t0.01s\n' "${PWD##*/}"
+		exit 0
+		;;
+	esac
 	: > "$FAKE_DIR/subs.started"
 	if [ "$FAKE_EXPECT" = after ] && [ ! -f "$FAKE_DIR/shards.done" ]; then
 		echo "the subpackages started before the shards finished"
@@ -66,6 +78,18 @@ exit 0
 // fakeAgentGateGo, returning its combined output and exit error.
 func runAgentGate(t *testing.T, env ...string) (string, error) {
 	t.Helper()
+	return runFakeGoGate(t, []string{"scripts/gate/run-module-tests.sh", "-short", "-count=1"}, append([]string{
+		"MODULES=agent",
+		"WEB=0",
+		"AGENT_SHARDS=1",
+	}, env...))
+}
+
+// runFakeGoGate runs argv from the repository root with fakeAgentGateGo first
+// on PATH and AGENT_SUBPACKAGES_ALONGSIDE cleared, so the script's own default
+// applies unless env sets it.
+func runFakeGoGate(t *testing.T, argv, env []string) (string, error) {
+	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.Mkdir(bin, 0o755); err != nil {
@@ -74,14 +98,11 @@ func runAgentGate(t *testing.T, env ...string) (string, error) {
 	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(fakeAgentGateGo), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("scripts/gate/run-module-tests.sh", "-short", "-count=1")
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = envOverride(os.Environ(), append([]string{
 		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"FAKE_DIR=" + dir,
-		"MODULES=agent",
-		"WEB=0",
-		"AGENT_SHARDS=1",
-		"AGENT_SUBPACKAGES_ALONGSIDE=0",
+		"AGENT_SUBPACKAGES_ALONGSIDE=",
 		"GOFLAGS=",
 		"GOTMPDIR=",
 	}, env...)...)
@@ -118,5 +139,22 @@ func TestGateRefusesAnUnknownAgentSubpackagesAlongsideValue(t *testing.T) {
 	}
 	if !strings.Contains(out, "AGENT_SUBPACKAGES_ALONGSIDE") {
 		t.Fatalf("refusal does not name the toggle\n%s", out)
+	}
+}
+
+// The race gate overlaps the agent subpackages with its shards only in the
+// agent lane, where the agent module has a runner to itself. A scope that
+// shares its wave with other modules keeps them sequential.
+func TestRaceGateRunsAgentSubpackagesAlongsideOnlyInTheAgentLane(t *testing.T) {
+	for _, tc := range []struct{ scope, expect string }{
+		{"agent", "alongside"},
+		{"nonroot", "after"},
+	} {
+		t.Run(tc.scope, func(t *testing.T) {
+			out, err := runFakeGoGate(t, []string{"make", "--no-print-directory", "test-race", "RACE_SCOPE=" + tc.scope}, []string{"FAKE_EXPECT=" + tc.expect})
+			if err != nil {
+				t.Fatalf("make test-race RACE_SCOPE=%s, expecting the subpackages %s the shards: %v\n%s", tc.scope, tc.expect, err, out)
+			}
+		})
 	}
 }

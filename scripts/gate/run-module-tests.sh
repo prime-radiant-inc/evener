@@ -129,8 +129,8 @@ done
 # over 456s wall), because most of its tests are serial.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
 # AGENT_SUBPACKAGES_ALONGSIDE=1 runs the agent module's subpackages while its
-# shards run instead of after them. The -race gate uses it: there the agent
-# module has a runner to itself, and its shards leave about a third of that
+# shards run instead of after them. The -race gate's agent lane (RACE_SCOPE=agent)
+# uses it: there the agent module has a runner to itself, and its shards leave about a third of that
 # runner's CPU idle, so the subpackages' ~100s fit inside the shard phase. The
 # default stays sequential for the reason given at the shard run below.
 AGENT_SUBPACKAGES_ALONGSIDE=${AGENT_SUBPACKAGES_ALONGSIDE:-0}

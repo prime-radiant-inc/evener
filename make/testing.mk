@@ -180,9 +180,10 @@ RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0 and
 ##   AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown. The
-##   agent package, cmd/evener-hub and cmd/evener run sharded (8 agent shards
-##   with the agent subpackages alongside them, 12 hub shards, no cost survey:
-##   under -race the survey costs as much as the run).
+##   agent package, cmd/evener-hub and cmd/evener run sharded (8 agent shards,
+##   12 hub shards, no cost survey: under -race the survey costs as much as the
+##   run). RACE_SCOPE=agent also runs the agent subpackages alongside the
+##   shards, since that lane has a runner to itself.
 ##   RACE_SCOPE defaults to all; CI uses the
 ##   explicit root scope plus agent and nonagent on separate runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
@@ -192,11 +193,12 @@ RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
+		case "$(RACE_SCOPE)" in agent) alongside=1;; *) alongside=0;; esac; \
 		case "$(RACE_ROOT_PART)" in all) hub=1; cli=1; rest=1;; hub) hub=1; cli=elsewhere; rest=0;; rest) hub=elsewhere; cli=1; rest=1;; *) echo "make test-race: RACE_ROOT_PART must be all, hub, or rest (got $(RACE_ROOT_PART))" >&2; exit 2;; esac; \
 		test "$(RACE_ROOT_PART)" = all || test "$(RACE_SCOPE)" = root || { echo "make test-race: RACE_ROOT_PART=$(RACE_ROOT_PART) needs RACE_SCOPE=root" >&2; exit 2; }; \
 		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
-		MODULES="$$modules" WEB=0 AGENT_PARALLEL=6 AGENT_SHARDS=1 AGENT_SHARD_COUNT=8 AGENT_SHARD_NO_SURVEY=1 AGENT_SUBPACKAGES_ALONGSIDE=1 \
+		MODULES="$$modules" WEB=0 AGENT_PARALLEL=6 AGENT_SHARDS=1 AGENT_SHARD_COUNT=8 AGENT_SHARD_NO_SURVEY=1 AGENT_SUBPACKAGES_ALONGSIDE=$$alongside \
 		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
 		scripts/gate/run-module-tests.sh -race -short -count=1
 
