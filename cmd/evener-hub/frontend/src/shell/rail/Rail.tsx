@@ -1755,7 +1755,13 @@ function NavigationRail({
   useLayoutEffect(() => {
     const handled = seenHostFolds.current;
     if (handled === null) {
-      // First render: the at-rest shape stands - nothing auto-opens.
+      // The first DATA-BEARING render is the at-rest shape: nothing
+      // auto-opens. The rail mounts before navigation data arrives (the
+      // store starts with no manifest and no resources), so seeding on
+      // the empty first commit would mark every fold that lands with
+      // the data as a birth and auto-open the whole section on every
+      // fresh load.
+      if (projectsSectionNodes.length === 0) return;
       seenHostFolds.current = new Set(hostFoldIds);
       return;
     }
@@ -1773,7 +1779,7 @@ function NavigationRail({
     // the tree drop out so a fold that returns re-opens (its rows came
     // back).
     seenHostFolds.current = new Set(hostFoldIds);
-  }, [hostFoldIds, expandedOverrides, setExpanded]);
+  }, [projectsSectionNodes, hostFoldIds, expandedOverrides, setExpanded]);
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host

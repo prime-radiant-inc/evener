@@ -2698,6 +2698,68 @@ describe("host grouping (organize by)", () => {
     }
   });
 
+  test("a fresh load's data is the at-rest shape: project-first branches stay collapsed", async () => {
+    prefsStore.setState({ sidebarGrouping: "project-host" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    installState([], emptyManifest());
+    render(<Rail />);
+    await act(async () => undefined);
+    // The rail mounts before navigation data lands - the store starts with
+    // no manifest and no resources. The branches that arrive WITH the
+    // catalog and rows are the at-rest shape, not mid-session births.
+    act(() => {
+      installState(
+        [
+          catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+          projectResource("p", [
+            summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" }),
+            summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+          ]),
+        ],
+        remoteManifest(),
+      );
+    });
+    await act(async () => undefined);
+    try {
+      // Open the project: whatever the birth effect wrote now shows. At
+      // rest, both branches stay collapsed and their rows stay hidden.
+      fireEvent.click(screen.getByText("Project"));
+      await act(async () => undefined);
+      expect(screen.queryByText("Local row")).toBeNull();
+      expect(screen.queryByText("Devbox row")).toBeNull();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("a fresh load's data is the at-rest shape: host-first copies stay collapsed", async () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    installState([], emptyManifest());
+    render(<Rail />);
+    await act(async () => undefined);
+    act(() => {
+      installState(
+        [
+          catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+          projectResource("p", [
+            summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" }),
+            summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+          ]),
+        ],
+        remoteManifest(),
+      );
+    });
+    await act(async () => undefined);
+    try {
+      const hosts = sectionRoot("Hosts");
+      expect(within(hosts).queryByText("Local row")).toBeNull();
+      expect(within(hosts).queryByText("Devbox row")).toBeNull();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
   test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
     const restoreScroll = stubScrollIntoView();
     prefsStore.setState({ sidebarGrouping: "host-project" });

@@ -455,7 +455,13 @@ interface SessionSpec {
 
 const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
 
-function sessionNode(scope: string, host: string, projectName: string, spec: SessionSpec): SessionRailNode {
+function sessionNode(
+  scope: string,
+  host: string,
+  projectName: string,
+  spec: SessionSpec,
+  crossProjectTier = false,
+): SessionRailNode {
   const sessionID = `${projectName}:${spec.key}`;
   const ref = host === "local" ? `local:${sessionID}` : `${host}:${sessionID}`;
   const session: RailSession = {
@@ -473,7 +479,16 @@ function sessionNode(scope: string, host: string, projectName: string, spec: Ses
     updated_at: minutesAgo(spec.ageMinutes),
     ask_pending: spec.askPending,
   };
-  return { id: `${scope}:s:${ref}`, kind: "session", session, children: [] };
+  // Live rows are cross-project tier roots: the mark is how RailRow
+  // knows to render the project line, exactly as the real sessionNodes
+  // builder marks every Needs-you, Live, and Pinned root.
+  return {
+    id: `${scope}:s:${ref}`,
+    kind: "session",
+    session,
+    children: [],
+    ...(crossProjectTier ? { crossProjectTier: true } : {}),
+  };
 }
 
 // The Live section stays flat and cross-project, exactly as today: one
@@ -525,7 +540,7 @@ const LIVE_SESSIONS: ReadonlyArray<{ host: string; project: string; spec: Sessio
 function liveNodes(scope: string): MockRailNode[] {
   const hostsInPlay = HOSTS.filter((host) => LIVE_SESSIONS.some((entry) => entry.host === host.id));
   if (hostsInPlay.length <= 1) {
-    return LIVE_SESSIONS.map(({ host, project, spec }) => sessionNode(scope, host, project, spec));
+    return LIVE_SESSIONS.map(({ host, project, spec }) => sessionNode(scope, host, project, spec, true));
   }
   return HOSTS.flatMap((host) => {
     const rows = LIVE_SESSIONS.filter((entry) => entry.host === host.id);
@@ -536,7 +551,7 @@ function liveNodes(scope: string): MockRailNode[] {
         host.id,
         host.online,
         0,
-        rows.map(({ host: rowHost, project, spec }) => sessionNode(scope, rowHost, project, spec)),
+        rows.map(({ host: rowHost, project, spec }) => sessionNode(scope, rowHost, project, spec, true)),
         `live:${host.id}`,
       ),
     ];
