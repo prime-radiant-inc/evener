@@ -472,8 +472,10 @@ function TaskCardBody({ item, sessionRef }: ToolRenderProps) {
   });
   const state = parseTaskState(item.raw);
   // The terminal task this call settled wins the window's stampless tie -
-  // the body must name the same task the folded line does.
-  const settledTouch = touched.find((row) => row.touch === "done" || row.touch === "cancelled");
+  // the body must name the same task the folded line does, and the line
+  // names the LAST row (taskMutationSummary's .at(-1)), so the LAST
+  // terminal row is the preference, not the first.
+  const settledTouch = touched.filter((row) => row.touch === "done" || row.touch === "cancelled").at(-1);
   const win = stateWindow(state, settledTouch?.id);
   const fresh = freshNotes(item);
   return (

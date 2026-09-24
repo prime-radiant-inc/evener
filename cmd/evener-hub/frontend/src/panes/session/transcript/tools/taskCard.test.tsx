@@ -452,6 +452,12 @@ test("distinct final occurrences retain their own order when an earlier duplicat
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ first");
   openRow();
   expect(screen.getByTestId("tool-row-summary").textContent).toBe('Completed "second", "first"');
+  // The window's settled slot must agree with the line: #1's done is the
+  // batch's most recent settle, so the stampless tie names it, not #2.
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.textContent).toContain("first");
+  expect(rows[0]!.textContent).not.toContain("second");
 });
 
 // ---- the open body: the three-slot window -----------------------------
