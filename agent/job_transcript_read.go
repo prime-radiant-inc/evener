@@ -166,7 +166,15 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 	// entry swapped in between this check and ReadEvents is caught here.
 	journalInfo, journalErr := os.Lstat(path)
 	if journalErr != nil {
-		return localJobLocation{}, false, nil //nolint:nilerr // journal gone → not found (skip-worthy, not an error)
+		// Not-found ONLY on ErrNotExist: a permission or I/O error means the
+		// journal may exist but is unreadable, which must propagate rather
+		// than be masked as "not found" — matching the retained-error
+		// discipline this PR established for sibling corruption. Other
+		// ErrNotExist-class misses (e.g. a removed journal) stay skip-worthy.
+		if errors.Is(journalErr, os.ErrNotExist) {
+			return localJobLocation{}, false, nil //nolint:nilerr // journal gone → not found (skip-worthy, not an error)
+		}
+		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: stat journal: %w", jobID, filepath.Base(stateDir), journalErr)
 	}
 	if !journalInfo.Mode().IsRegular() {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: journal is not a regular file", jobID, filepath.Base(stateDir))
@@ -246,6 +254,17 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	if !outInfo.Mode().IsRegular() {
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output is not a regular file", jobID)
 	}
+	// jobstore.ReadOutputSnapshot / ReadOutputWindowSnapshot open the output
+	// file by path internally (afero.NewOsFs), so there is a residual TOCTOU
+	// window between the Lstat above and the internal open: a symlink or
+	// non-regular entry swapped in between would be followed. Changing
+	// jobstore's API to accept an fd is disproportionate — it touches the
+	// internal package and every caller, the same reasoning the round-10
+	// journal hybrid declined (lines 174-183 above). The window is narrow:
+	// symlinkErrorDeep pre-checks every component, the Lstat rejects
+	// non-regular entries, and the output path is a per-job file under
+	// sessions/<id>/jobs/, not a shared directory. The residual risk is an
+	// in-window swap from regular to non-regular, not a missing check.
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
