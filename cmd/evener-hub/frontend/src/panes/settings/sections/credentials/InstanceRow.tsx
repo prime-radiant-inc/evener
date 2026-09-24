@@ -19,7 +19,7 @@ import {
   styleInfoText,
   unconfiguredLabel,
 } from "@evener/appwire-client";
-import { Chevron, Chip, StatusDot } from "../../../../widgets";
+import { Button, Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceRow.module.css";
 
@@ -31,6 +31,7 @@ const CLASS = {
   name: requireClass(styles.name, "InstanceRow.module.css", "name"),
   meta: requireClass(styles.meta, "InstanceRow.module.css", "meta"),
   chevron: requireClass(styles.chevron, "InstanceRow.module.css", "chevron"),
+  action: requireClass(styles.action, "InstanceRow.module.css", "action"),
 };
 
 // The one meta line: the unconfigured label is the more important signal and
@@ -46,7 +47,13 @@ function metaText(instance: InstanceEntry): string {
  * carry onSelect (or its button renders with no handler), and a read-only row
  * has nothing to select. */
 export type InstanceRowProps = { instance: InstanceEntry } & (
-  | { readOnly: true }
+  | {
+      readOnly: true;
+      /** Remote scope only: begins a device-code sign-in ON the host that owns
+       * this instance (component 07d's "Sign in on host"). Absent leaves the row
+       * exactly the read-only row it was. */
+      onHostSignIn?: (name: string) => void;
+    }
   | { readOnly?: false; onSelect: () => void }
 );
 
@@ -67,7 +74,22 @@ export function InstanceRow(props: InstanceRowProps) {
     </div>
   );
   if (props.readOnly) {
-    return <li className={CLASS.row}>{body}</li>;
+    return (
+      <li className={CLASS.row}>
+        {body}
+        {/* "Sign in on host" is offered only where the caller supplies the
+            action: the remote scope's Codex rows (ProviderInstanceGroups gates
+            on supportsHostDeviceSignIn), never a local row and never a
+            provider whose sign-in needs a browser the host does not have. */}
+        {props.onHostSignIn !== undefined && (
+          <div className={CLASS.action}>
+            <Button variant="quiet" onClick={() => props.onHostSignIn?.(instance.name)}>
+              Sign in on host
+            </Button>
+          </div>
+        )}
+      </li>
+    );
   }
   return (
     <li>

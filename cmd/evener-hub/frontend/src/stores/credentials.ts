@@ -6,7 +6,13 @@
 // core which client the rows belong to, and the core listens for
 // evener/auth/updated on that client itself.
 
-import type { HostPushCredentialsResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type {
+  AuthDevicePollResponse,
+  AuthDeviceStartResponse,
+  HostPushCredentialsResponse,
+  InstanceEntry,
+  ProviderDescriptor,
+} from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
@@ -412,6 +418,38 @@ function startHostRead(
  * mutations take (HOST_GATE_TIMEOUT_MS, stores/hosts.ts) for the same reason. */
 export async function pushHostCredentials(host: string): Promise<HostPushCredentialsResponse> {
   return requireClient().request("evener/host/pushCredentials", { host }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
+}
+
+// --- Host-scoped device sign-in (component 07d) -----------------------------
+//
+// The device-code flow's two RPCs, scoped to the selected remote host. They are
+// the exact counterparts of the credential store's own deviceStart/devicePoll
+// above (appwire-client's state/credentials/instances.ts), which stay the plain,
+// controller-scoped calls: a Codex instance on a remote host is signed in by the
+// HOST's OpenAI device flow, because the credential being obtained is written to
+// that host's own auth store, not this hub's. Routing them through
+// evener/host/request is what makes the host run the login; the hub's allow-list
+// forwards exactly these two names (app_host_admin.go).
+
+/** deviceStartOnHost begins the device-code sign-in flow ON `host`. The returned
+ * VerificationURL/UserCode are shown to the user, who completes the sign-in on
+ * another device; `fallback: true` means the host's client offers no device flow
+ * and the caller must refuse rather than attempt a browser redirect (there is no
+ * browser on the host). */
+export async function deviceStartOnHost(host: string, provider: string): Promise<AuthDeviceStartResponse> {
+  return hostRequest(requireClient(), host, "evener/auth/device/start", { provider });
+}
+
+/** devicePollOnHost makes ONE device-code poll attempt ON `host`. The polling
+ * cadence and the stop conditions live in the dialog that drives it
+ * (oauthDialogs.tsx's DeviceCodeDialog), which is also what keeps a host-scoped
+ * flow's interval and cancellation separate from this hub's. */
+export async function devicePollOnHost(
+  host: string,
+  provider: string,
+  flowId: string,
+): Promise<AuthDevicePollResponse> {
+  return hostRequest(requireClient(), host, "evener/auth/device/poll", { provider, flowId });
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in

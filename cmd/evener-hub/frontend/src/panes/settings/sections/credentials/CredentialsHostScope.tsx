@@ -1,8 +1,10 @@
 // CredentialsHostScope is the credentials settings section, scoped to the host
 // the SETTINGS ROUTE selects (component 07b's host-context): a shared HostPicker
-// plus, when a remote host is selected, a READ-ONLY view of THAT host's own
-// provider listing, read through evener/host/request, and the credential-PUSH
-// action (component 07c) that copies this hub's local keys to that host.
+// plus, when a remote host is selected, a view of THAT host's own provider
+// listing, read through evener/host/request, and the credential-PUSH action
+// (component 07c) that copies this hub's local keys to that host. The listing
+// stays read-only, with one deliberate exception: component 07d's "Sign in on
+// host" for a Codex instance, which runs the device-code flow on that host.
 //
 // Two stores, deliberately: the controller's rows are the package credential
 // store's (stores/credentials.ts), and a remote host's own rows live in
@@ -16,9 +18,10 @@
 // controller's listing.
 import type { HostPushCredentialsResponse } from "@evener/appwire-client";
 import { errorText, RequestTimeoutError } from "@evener/appwire-client";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import {
   connectionGeneration,
+  deviceStartOnHost,
   pushHostCredentials,
   retryHostRead,
   useConnectionGeneration,
@@ -32,7 +35,9 @@ import { HostPicker } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
 import styles from "./CredentialsHostScope.module.css";
 import { CredentialsSection, Diagnostics } from "./CredentialsSection";
+import { DeviceCodeDialog } from "./oauthDialogs";
 import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
+import { useEditorLifetime } from "./useEditorLifetime";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsHostScope.module.css", "root"),
@@ -75,7 +80,19 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
     );
   } else {
     body = (
+      // Keyed on the host's REGISTRATION identity, like the push action inside
+      // it: everything this subtree holds is that host's, and the sign-in
+      // editor's state is no exception. Left mounted across a host change, a
+      // device/start answer that belonged to the host the user left would be
+      // applied to the host that took over - the flow started on beta rendered,
+      // polled, and reported as gamma's - and a failure naming the old host
+      // would stay under the new selection. The identity rather than the NAME,
+      // for the same reason the push action's key uses it (see below): a host
+      // re-registered under the same name is a DIFFERENT registration, and an
+      // editor started under the previous one is not the new one's. A registry
+      // read that leaves the registration where it was does not remount this.
       <RemoteHostInstances
+        key={`host:${hostInstanceIdentity(host)}`}
         host={host}
         registryFailed={load.phase === "error"}
         // Whether the registry's CURRENT answer names the host - the same
@@ -97,12 +114,26 @@ export function CredentialsHostScope({ sectionId }: CredentialsHostScopeProps) {
   );
 }
 
+/** HostSignInEditor is one in-progress "Sign in on host" device flow for a Codex
+ * instance of the selected remote host. */
+interface HostSignInEditor {
+  name: string;
+  flowId: string;
+  userCode: string;
+  verificationUrl: string;
+  intervalSeconds: number;
+}
+
 /** RemoteHostInstances is the read-only view of one remote host's own provider
  * listing, plus that host's push action. useHostInstances hands it the listing
  * for the CURRENT registry snapshot and issues the read when there is none (see
- * that hook), so nothing here knows about registry revisions. Nothing in the
- * listing writes: the shared listing renders its read-only rows, and the push
- * action below it is the one write the surface offers. */
+ * that hook), so nothing here knows about registry revisions. Everything it
+ * holds is the selected host's - the sign-in editor's state included - and the
+ * call site keys the whole subtree on that host's registration identity for
+ * exactly that reason. Its rows stay read-only, with one deliberate exception:
+ * component 07d's "Sign in on host" for a Codex instance, which drives the
+ * device-code flow on that host (see beginHostSignIn) - and the push action
+ * below the listing is the surface's other write. */
 function RemoteHostInstances({
   host,
   registryFailed,
@@ -117,6 +148,84 @@ function RemoteHostInstances({
   registryNamesHost: boolean;
 }) {
   const state = useHostInstances(host);
+  const [signIn, setSignIn] = useState<HostSignInEditor | null>(null);
+  const [signInError, setSignInError] = useState<string | null>(null);
+  // Async start work may finish after the pane unmounts; a mounted editor owns
+  // its feedback. This tracks the MOUNT alone, never which host the editor was
+  // started for: that tie is the SUBTREE's key at this component's call site,
+  // which is what unmounts it - and clears this state - when the host it was
+  // started for is no longer the one the settings route selects.
+  const active = useEditorLifetime();
+  // The start whose answer this pane is still waiting for. Every start claims a
+  // new generation and carries it into the async call, so a start the user has
+  // already superseded - the same row clicked twice, or a second Codex row
+  // picked while the first start is still out - resolves to nothing: it cannot
+  // replace the newer editor, open a dialog whose poll would run against a flow
+  // nobody asked for, or put its failure under the newer attempt. The mount
+  // check (active) cannot do this: both starts belong to the same mounted pane.
+  const startGeneration = useRef(0);
+  // Stable identities, as CredentialsSection's own closeEditor is: the
+  // DeviceCodeDialog's poll effect depends on the onSuccess/onCancel it is
+  // given, and an unstable reference would restart that dialog's timer on every
+  // RemoteHostInstances re-render - and, once an authorized poll's refetch
+  // re-renders the pane, would cancel that poll's own continuation before it
+  // could report the sign-in.
+  const closeSignIn = useCallback(() => setSignIn(null), []);
+
+  // beginHostSignIn starts the device-code flow ON `host`, through
+  // evener/host/request (stores/credentials.ts's deviceStartOnHost). The code
+  // and verification URL it returns are shown in the shared DeviceCodeDialog,
+  // which is pointed at the same host for polling. Its failures are named, never
+  // a silent dead end: an unattached host, a refused call, or a host whose
+  // client offers no device flow each become a real message on screen.
+  //
+  // The editor on screen is the START's to replace, so this clears it before the
+  // call goes out and sets the new one only from a response that came back: a
+  // restart that fails - or falls back - leaves the failure and no editor, never
+  // the expired code and flow it was replacing, standing under the message about
+  // the attempt that replaced it. Which start an answer belongs to is decided by
+  // the generation it claimed, not by the order the answers come back in.
+  const beginHostSignIn = useCallback(
+    async (name: string): Promise<void> => {
+      // Claimed before the call goes out: an answer to a start that is no longer
+      // the newest one is stale by construction (see startGeneration above).
+      const generation = startGeneration.current + 1;
+      startGeneration.current = generation;
+      setSignInError(null);
+      setSignIn(null);
+      try {
+        const resp = await deviceStartOnHost(host, name);
+        if (!active.current || startGeneration.current !== generation) return;
+        if (resp.fallback) {
+          // The host's client offered no device flow, and the only alternative -
+          // a browser redirect - cannot be completed on a host with no browser.
+          // EVENER_LOGIN_HEADLESS is NOT a remedy here: the hub's DeviceStart
+          // always calls requestDeviceCode, and this refusal IS its answer
+          // (cmd/evener-hub/app_auth.go; auth/openai/device.go's issuer-404).
+          // The variable is the CLI's own override of its flow detection
+          // (cmd/evener/openai_login.go), so the sign-in has to be completed on
+          // the host itself, through that CLI, against this instance - whose
+          // paste-back browser flow (--no-device) needs no browser there.
+          setSignInError(
+            `Device-code sign-in is not enabled on ${host}: this host's OpenAI client offers no device-code flow, and no browser on ${host} can complete the redirect one. Complete the sign-in on ${host} itself: \`evener openai login --instance ${name} --no-device\` pastes the redirect URL back without a browser.`,
+          );
+          return;
+        }
+        setSignIn({
+          name,
+          flowId: resp.flowId,
+          userCode: resp.userCode,
+          verificationUrl: resp.verificationUrl,
+          intervalSeconds: resp.intervalSeconds,
+        });
+      } catch (err) {
+        if (!active.current || startGeneration.current !== generation) return;
+        setSignInError(`Couldn't start sign-in on ${host}: ${errorText(err)}`);
+      }
+    },
+    [host, active],
+  );
+
   const title = `Providers on ${host}`;
   // Rows are shown only once a read for the current registry snapshot has
   // succeeded, so an unanswered (or superseded) read can never pass for an empty
@@ -134,7 +243,10 @@ function RemoteHostInstances({
     <>
       <section className={CLASS.remote} aria-label={title}>
         <h3 className={CLASS.heading}>{title}</h3>
-        <p className={CLASS.note}>Read-only. These are {host}'s own provider instances, not this hub's.</p>
+        <p className={CLASS.note}>
+          Read-only, except that a Codex instance can sign in on {host} itself. These are {host}'s own provider
+          instances, not this hub's.
+        </p>
         {/* The host's own load warnings: a partial listing must say so rather than
             read as a complete one. */}
         {!unverifiable && verified && <Diagnostics diagnostics={state.diagnostics} />}
@@ -169,7 +281,31 @@ function RemoteHostInstances({
           <EmptyState title={`No provider instances on ${host}.`} />
         )}
         {!unverifiable && verified && !empty && (
-          <ProviderInstanceGroups instances={state.instances} availableProviders={state.availableProviders} readOnly />
+          <ProviderInstanceGroups
+            instances={state.instances}
+            availableProviders={state.availableProviders}
+            readOnly
+            onHostSignIn={(name) => void beginHostSignIn(name)}
+          />
+        )}
+        {signInError !== null && (
+          <p className={CLASS.error} role="alert">
+            {signInError}
+          </p>
+        )}
+        {signIn !== null && (
+          <DeviceCodeDialog
+            key={signIn.flowId}
+            name={signIn.name}
+            flowId={signIn.flowId}
+            userCode={signIn.userCode}
+            verificationUrl={signIn.verificationUrl}
+            intervalSeconds={signIn.intervalSeconds}
+            host={host}
+            onCancel={closeSignIn}
+            onSuccess={closeSignIn}
+            onRestart={() => void beginHostSignIn(signIn.name)}
+          />
         )}
       </section>
       {/* Keyed on the host's REGISTRATION identity, and never withheld for a
