@@ -74,6 +74,7 @@ import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
 import {
 	createNativeMutationHost,
+	createDurableSubmitter,
 	type NativeMutationHost,
 } from "./nativeMutationHost";
 import { getNativeMutationRuntime } from "./nativeMutationRuntime";
@@ -826,13 +827,14 @@ export function ConversationScreen({
 	// client and target to that same runtime. The host owns the registration and
 	// the read fence; the runtime owns dispatch and the recovery row a
 	// rejection produces.
+	const mutationHostRef = useRef<NativeMutationHost | null>(null);
+	// The submitter refuses while no host is live, so a mutation is never
+	// durably accepted (and its draft cleared) while this screen has no
+	// registered client to dispatch it.
 	const mutationSubmitter = useMemo<ConversationMutationSubmitter>(
-		() => ({
-			submit: (request) => getNativeMutationRuntime().submit(request),
-		}),
+		() => createDurableSubmitter(() => mutationHostRef.current),
 		[],
 	);
-	const mutationHostRef = useRef<NativeMutationHost | null>(null);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
 		() =>

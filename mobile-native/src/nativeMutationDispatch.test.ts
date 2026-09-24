@@ -28,7 +28,10 @@ import { createConversationStore } from "../../mobile/src/state/conversation";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
-import { createNativeMutationHost } from "./nativeMutationHost";
+import {
+	createDurableSubmitter,
+	createNativeMutationHost,
+} from "./nativeMutationHost";
 import {
 	NativeMutationRuntime,
 	nativeMutationTargetKey,
@@ -320,4 +323,29 @@ test("a synchronous registration failure rejects the start promise instead of th
 		started = host.start();
 	}).not.toThrow();
 	await expect(started).rejects.toThrow();
+});
+
+test("the durable submitter refuses while no host is live and delegates once one is", async () => {
+	const request = {
+		kind: "send" as const,
+		hubId: "hub-1",
+		targetRef: "ref-1",
+		threadId: "thread-1",
+		instanceId: "thread-1",
+		input: [{ type: "text" as const, text: "x" }],
+	};
+	// No host: a submission must be refused, not durably accepted, because
+	// nothing would dispatch it.
+	const refused = createDurableSubmitter(() => null);
+	await expect(refused.submit(request)).rejects.toThrow(
+		"Durable sending is unavailable",
+	);
+
+	// A live host delegates to the runtime and enqueues durably.
+	const { runtime, host, targetKey } = compose();
+	await host.start();
+	const live = createDurableSubmitter(() => host);
+	await live.submit(request);
+	expect((await runtime.read(targetKey)).outbox).toHaveLength(1);
+	await host.stop();
 });

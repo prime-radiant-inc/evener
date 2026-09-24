@@ -1,5 +1,12 @@
-import type { AppwireClientLike, ThreadReadResponse } from "@evener/appwire-client";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import type {
+	AppwireClientLike,
+	MutationReceipt,
+	ThreadReadResponse,
+} from "@evener/appwire-client";
+import type {
+	ConversationMutationRequest,
+	ConversationMutationSubmitter,
+} from "../../mobile/src/state/conversationMutation";
 import {
 	NativeMutationRuntime,
 	type NativeMutationReadLease,
@@ -18,8 +25,10 @@ import {
 // replacement client's target (#1955's ownership recheck, applied to the
 // durable dispatch gate).
 export interface NativeMutationHost {
-	readonly submitter: ConversationMutationSubmitter;
 	start(): Promise<void>;
+	submit(
+		request: ConversationMutationRequest,
+	): Promise<MutationReceipt | undefined>;
 	beginRead(
 		targetRef: string,
 		expectedThreadId?: string,
@@ -32,6 +41,30 @@ export interface NativeMutationHost {
 	stop(): Promise<void>;
 }
 
+/** The refusal a mutation gets while no host is live: durable submission is
+ * unavailable, so the store must surface a failure rather than durably accept
+ * a message that no registered client can dispatch. */
+export const NATIVE_MUTATION_HOST_UNAVAILABLE =
+	"Durable sending is unavailable right now. Reconnect and try again.";
+
+/** A submitter bound to a host that may not be live yet (or any more): while
+ * the host lookup is null it refuses, so a submission is never admitted
+ * without a registered client, and once a host exists it delegates to the
+ * runtime. A screen keeps one stable submitter and hands the store this
+ * ref-backed lookup. */
+export function createDurableSubmitter(
+	host: () => NativeMutationHost | null,
+): ConversationMutationSubmitter {
+	return {
+		submit: (request) => {
+			const live = host();
+			return live === null
+				? Promise.reject(new Error(NATIVE_MUTATION_HOST_UNAVAILABLE))
+				: live.submit(request);
+		},
+	};
+}
+
 export function createNativeMutationHost(
 	runtime: NativeMutationRuntime,
 	hubId: string,
@@ -41,7 +74,6 @@ export function createNativeMutationHost(
 	let unregister: (() => void) | undefined;
 	let startPromise: Promise<void> | undefined;
 	return {
-		submitter: runtime,
 		start: () => {
 			if (startPromise !== undefined) return startPromise;
 			try {
@@ -64,6 +96,10 @@ export function createNativeMutationHost(
 			});
 			return startPromise;
 		},
+		submit: (request) =>
+			unregister === undefined
+				? Promise.reject(new Error(NATIVE_MUTATION_HOST_UNAVAILABLE))
+				: runtime.submit(request),
 		beginRead: (readTargetRef, expectedThreadId) =>
 			unregister === undefined
 				? undefined
