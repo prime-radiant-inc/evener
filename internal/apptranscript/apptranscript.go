@@ -626,31 +626,21 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				}
 				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
 				if part.ToolCall.Name == "communicate" {
-					text := CommunicateMessageFromArguments(part.ToolCall.Arguments)
-					// A communicate with Arguments={} and RawArguments set is
-					// ambiguous on the assistant turn alone: it is both the
-					// durable shape of a rejected communicate (the model sent
-					// malformed JSON the tool never ran) AND a repaired-malformed
-					// communicate that was healed and executed successfully
-					// (assistantHistoryMessage sets RawArguments for any
-					// invalid-JSON original). Defer the raw bytes to the paired
-					// tool result, which carries the error/PrevalOnly status that
-					// disambiguates. Store them in CommRawArgs (separate from
-					// Names) so a communicate result with Name="" still resolves
-					// to "communicate", not to raw bytes.
-					if text == "" && part.ToolCall.RawArguments != "" {
-						reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.RawArguments
-					}
-					if text != "" && !EchoesAssistantText(lastAssistantText, text) {
-						items = append(items, appwire.ThreadItem{
-							Type:   "agentMessage",
-							ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-							TurnID: turnID,
-							Text:   text,
-							Status: appwire.TurnStatusCompleted,
-						})
-						lastAssistantText = strings.TrimSpace(text)
-					}
+					// Defer ALL communicate messages to the paired tool result.
+					// The assistant turn alone cannot disambiguate: a valid-JSON
+					// communicate rejected at prevalidation (PrevalOnly) has the
+					// same Arguments shape as one that will execute and succeed;
+					// a malformed communicate (Arguments={}, RawArguments set)
+					// may be rejected OR healed-and-executed. The result turn
+					// carries the IsError/PrevalOnly status that disambiguates,
+					// so seed CommRawArgs with the faithful sent bytes (raw for
+					// malformed, parsed for valid-JSON) and render nothing here.
+					// The result turn renders successful calls as agentMessages
+					// (recovered from CommRawArgs) and rejected calls
+					// (IsError&&PrevalOnly) as failed commandExecution items.
+					// This makes live and reload agree: both defer, both render
+					// the same item at the result turn.
+					reg.CommRawArgs[part.ToolCall.ID] = part.ToolCall.SentArguments()
 					continue
 				}
 				// Rejected call: show raw bytes, skip intent (mirrors #2162).

@@ -1110,7 +1110,7 @@ func TestItemTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 // transcript reload doesn't show a duplicate. A communicate with DIFFERENT text
 // is still rendered. (Surfaced by FuzzHubReplayLiveVsReload.)
 func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
-	mkTurn := func(text, communicate string) schema.Turn {
+	mkAssistantTurn := func(text, communicate string) schema.Turn {
 		return schema.Turn{
 			Kind: schema.TurnAssistant,
 			Message: llm.Message{
@@ -1126,7 +1126,19 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 			},
 		}
 	}
-
+	mkResultTurn := func(callID string) schema.Turn {
+		return schema.Turn{
+			Kind: schema.TurnToolResults,
+			Message: llm.Message{Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: callID,
+					Name:       "communicate",
+					IsError:    false,
+				},
+			}}},
+		}
+	}
 	agentMsgs := func(items []appwire.ThreadItem) []string {
 		var out []string
 		for _, it := range items {
@@ -1137,12 +1149,29 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 		return out
 	}
 
-	echo := agentMsgs(ProjectTurn("t1", 0, mkTurn("Done.", "Done."), NewToolCallRegistry(), nil, nil))
+	// Echo: the communicate message repeats the assistant text. The assistant
+	// turn renders the text agentMessage; the result turn's communicate message
+	// is suppressed by EchoesAssistantText. Both turns share one registry so
+	// LastAssistantText carries across.
+	echoReg := NewToolCallRegistry()
+	echoItems := append(
+		ProjectTurn("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil),
+		ProjectTurn("t2", 1, mkResultTurn("c1"), echoReg, nil, nil)...,
+	)
+	echo := agentMsgs(echoItems)
 	if len(echo) != 1 || echo[0] != "Done." {
 		t.Fatalf("echoed communicate: got agentMessages %q, want exactly [\"Done.\"]", echo)
 	}
 
-	distinct := agentMsgs(ProjectTurn("t2", 0, mkTurn("Working...", "All set."), NewToolCallRegistry(), nil, nil))
+	// Distinct: the communicate message differs from the assistant text, so
+	// both render: the assistant text agentMessage on the assistant turn, the
+	// communicate message agentMessage on the result turn.
+	distinctReg := NewToolCallRegistry()
+	distinctItems := append(
+		ProjectTurn("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil),
+		ProjectTurn("t4", 1, mkResultTurn("c1"), distinctReg, nil, nil)...,
+	)
+	distinct := agentMsgs(distinctItems)
 	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
 		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
 	}
