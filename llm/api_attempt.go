@@ -107,14 +107,22 @@ func WithAPIAttemptSink(ctx context.Context, sink APIAttemptSink) context.Contex
 // canonical attempt coordination and a sink that persists records. Transports
 // use it to leave ordinary calls entirely on their existing client path; a
 // call bound only to the ownership logger, which discards every record, is
-// ordinary too, and reports its protocol through NoteAPIAttemptProtocol.
+// ordinary too, and reports its protocol through NoteAPIAttemptProtocol. The
+// sink judged is the one BeginAPIAttempt will append to: the group's bound
+// sink once it has one, and the context's sink before that.
 func APIAttemptContextActive(ctx context.Context) bool {
 	if ctx == nil {
 		return false
 	}
 	group, _ := ctx.Value(apiAttemptGroupContextKey{}).(*APIAttemptGroup)
+	if group == nil {
+		return false
+	}
 	state, _ := ctx.Value(apiAttemptSinkContextKey{}).(apiAttemptSinkContext)
-	return group != nil && sinkPersistsRecords(state.sink)
+	group.mu.Lock()
+	sink := group.sinkForLocked(state)
+	group.mu.Unlock()
+	return sinkPersistsRecords(sink)
 }
 
 // sinkPersistsRecords reports whether records appended to sink are kept. The
@@ -513,12 +521,18 @@ func (g *APIAttemptGroup) settle(ctx context.Context, outcome apilog.AttemptOutc
 	}
 }
 
-func (g *APIAttemptGroup) bindSinkLocked(state apiAttemptSinkContext) {
+// sinkForLocked is the sink the group appends to under state: the first sink
+// bound wins, and state's sink is the one binding would take.
+func (g *APIAttemptGroup) sinkForLocked(state apiAttemptSinkContext) APIAttemptSink {
 	if g.sinkBound {
-		return
+		return g.sink
 	}
+	return state.sink
+}
+
+func (g *APIAttemptGroup) bindSinkLocked(state apiAttemptSinkContext) {
+	g.sink = g.sinkForLocked(state)
 	g.sinkBound = true
-	g.sink = state.sink
 }
 
 func (g *APIAttemptGroup) recordFailure(failure APILogFailure) {

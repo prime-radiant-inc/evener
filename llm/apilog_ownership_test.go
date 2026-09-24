@@ -188,3 +188,32 @@ func TestSessionOwnershipLoggerMiddlewareStampsProtocolWithoutEvidence(t *testin
 		t.Fatalf("discarded append reached storage: %v", err)
 	}
 }
+
+// TestAPIAttemptContextActiveFollowsGroupBoundSink pins that transports decide
+// whether to retain evidence from the sink BeginAPIAttempt will append to: the
+// one the group bound first, not whichever sink the context carries now. A
+// group bound to a persisting sink must keep recording when a later context
+// carries the discarding ownership logger, and a group bound to that logger
+// must not retain evidence a later persisting sink in the context can't get.
+func TestAPIAttemptContextActiveFollowsGroupBoundSink(t *testing.T) {
+	ownership, err := NewSessionOwnershipAPILogger(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionOwnershipAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = ownership.Close() })
+	persisting := &recordingAPIAttemptSink{}
+
+	persistingGroup := NewAPIAttemptGroup("ag_persisting")
+	BeginAPIAttempt(WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), persistingGroup), persisting), APIAttemptMeta{}).Complete(APIAttemptResult{})
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), persistingGroup), ownership)
+	if !APIAttemptContextActive(ctx) {
+		t.Fatal("group bound to a persisting sink reported inactive under a discarding context sink -- its attempts would go unrecorded")
+	}
+
+	discardingGroup := NewAPIAttemptGroup("ag_discarding")
+	BeginAPIAttempt(WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), discardingGroup), ownership), APIAttemptMeta{})
+	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), discardingGroup), persisting)
+	if APIAttemptContextActive(ctx) {
+		t.Fatal("group bound to the discarding logger reported active under a persisting context sink")
+	}
+}
