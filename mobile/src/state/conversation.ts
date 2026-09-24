@@ -731,20 +731,26 @@ export function createConversationStore() {
     bucketsByIdentity: ReadonlyMap<string, MobileTimelineItem[]>,
   ): MobileTimelineItem[] | null {
     const members = item.members;
-    if (members === undefined || members.length < 2) return null;
-    const firing = members.map(
-      (member) => bucketsByIdentity.get(activityIdentity(member)) ?? null,
-    );
-    const splitsBeforeLastMember = firing
-      .slice(0, -1)
-      .some((bucket) => bucket !== null);
+    if (members === undefined) return null;
+    // Only a member with members AFTER it splits the cluster: an anchor on
+    // the last member seats after the whole row as before. The common
+    // anchored publish answers that without allocating the walk.
+    let splitsBeforeLastMember = false;
+    for (let index = 0; index < members.length - 1; index += 1) {
+      const member = members[index];
+      if (member === undefined) continue;
+      if (bucketsByIdentity.get(activityIdentity(member)) !== undefined) {
+        splitsBeforeLastMember = true;
+        break;
+      }
+    }
     if (!splitsBeforeLastMember) return null;
     const out: MobileTimelineItem[] = [];
     let run: ActivityMember[] = [];
-    for (const [index, member] of members.entries()) {
+    for (const member of members) {
       run.push(member);
-      const bucket = firing[index] ?? null;
-      if (bucket === null) continue;
+      const bucket = bucketsByIdentity.get(activityIdentity(member));
+      if (bucket === undefined) continue;
       const row = activityRunRow(run);
       if (row !== null) out.push(row);
       out.push(...bucket);

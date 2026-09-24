@@ -1930,11 +1930,26 @@ function olderTurnAddsCoverage(
     );
   }
   return older.items.some((olderItem) => {
-    if (olderItem.type === "warning") return false;
-    const host = matchedItemHost(olderItem, groupTurn, context);
-    const matchingItems = freshContributorItems(host, matches, olderItem, context);
-    return olderItemAddsCoverage(olderItem, matchingItems, groupTurn, view, context);
+    return olderItemCoverageClaim(olderItem, groupTurn, matches, view, context);
   });
+}
+
+// The per-item claim both the per-turn walk above and the merge-bound
+// reader (mergeTurnHistoryWithContext's olderItemAddsCoverageOf) run: the
+// item's merged host and its fresh contributor chain, judged through the
+// merge's own live view. Warnings never claim — the walk's own rule,
+// owned here so every caller inherits it.
+function olderItemCoverageClaim(
+  item: ItemModel,
+  groupTurn: TurnModel,
+  freshTurns: TurnModel[],
+  view: ToolFoldView,
+  context?: ToolItemMergeContext,
+): boolean {
+  if (item.type === "warning") return false;
+  const host = matchedItemHost(item, groupTurn, context);
+  const matchingItems = freshContributorItems(host, freshTurns, item, context);
+  return olderItemAddsCoverage(item, matchingItems, groupTurn, view, context);
 }
 
 function foldTurnFragments(turns: TurnModel[], context?: ToolItemMergeContext): TurnModel | undefined {
@@ -1999,20 +2014,12 @@ function mergeTurnHistoryWithContext(
   const olderItemCoverageInputs = new WeakMap<ItemModel, { groupTurn: TurnModel; freshTurns: TurnModel[] }>();
   for (const group of groups) {
     const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
-    for (const olderIndex of group.olderIndexes) {
+    for (const [position, olderIndex] of group.olderIndexes.entries()) {
       const turn = older[olderIndex];
       if (turn === undefined) continue;
       for (const item of turn.items) {
         olderItemCoverageInputs.set(item, { groupTurn: group.turn, freshTurns });
       }
-    }
-  }
-
-  for (const group of groups) {
-    const freshTurns = group.freshIndexes.flatMap((index) => (newer[index] === undefined ? [] : [newer[index]]));
-    for (const [position, olderIndex] of group.olderIndexes.entries()) {
-      const turn = older[olderIndex];
-      if (turn === undefined) continue;
       if (
         turn.items.some(
           (item) =>
@@ -2048,17 +2055,14 @@ function mergeTurnHistoryWithContext(
   // answer for one retained item: whether its persisted content adds
   // coverage the fresh side lacks, judged through THIS merge's live view —
   // the same host, contributor-chain, and fold-survival rules the walk
-  // above runs per turn, never a re-derivation after the fact. Warnings
-  // never claim (the walk's own rule), and an item this merge never saw as
-  // an older input claims — the safe direction for a caller gating on the
-  // answer.
+  // above runs per turn, through the very function it calls — never a
+  // re-derivation after the fact. Warnings never claim (the claim's own
+  // rule), and an item this merge never saw as an older input claims —
+  // the safe direction for a caller gating on the answer.
   const olderItemAddsCoverageOf = (item: ItemModel): boolean => {
     const input = olderItemCoverageInputs.get(item);
     if (input === undefined) return true;
-    if (item.type === "warning") return false;
-    const host = matchedItemHost(item, input.groupTurn, context);
-    const matchingItems = freshContributorItems(host, input.freshTurns, item, context);
-    return olderItemAddsCoverage(item, matchingItems, input.groupTurn, view, context);
+    return olderItemCoverageClaim(item, input.groupTurn, input.freshTurns, view, context);
   };
 
   return {
