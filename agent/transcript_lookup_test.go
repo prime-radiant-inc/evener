@@ -1326,3 +1326,154 @@ func TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession(t *testing.T) {
 		}
 	}
 }
+
+// --- roborev fix round 8: RED tests ---
+
+// TestResolveTranscript_CurrentSessionSymlinkedEvenerAncestorNotRejected
+// asserts that the current-session fast-path ("") rejects a transcript reached
+// through a symlinked stateHome/evener ancestor. enumerateBuckets Lstats
+// stateHome/evener and stateHome/evener/projects and refuses to enumerate when
+// either is a symlink (round 7). But the current-session path uses
+// symlinkErrorDeep(p, currentStateDir) — rooted at the bucket, not the state
+// home — so the layout ancestors (evener/, evener/projects/) are above the
+// root and not checked. A symlinked evener/ (a plausible state-dir relocation
+// where ~/.local/state/evener itself is a symlink) lets the current bucket
+// resolve through it while sibling reads and explicit proj: refs are
+// rejected — an inconsistency. The current-bucket path must validate the same
+// layout prefix as enumerateBuckets.
+func TestResolveTranscript_CurrentSessionSymlinkedEvenerAncestorNotRejected(t *testing.T) {
+	t.Parallel()
+	// Real state home with a bucket and transcript.
+	realHome := t.TempDir()
+	bucket := filepath.Join(realHome, "evener", "projects", "test-0123456789")
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+	writeTranscript(t, bucket, sid)
+
+	// Symlink evener/ in a separate home — evener/ itself is a symlink within
+	// the state root, not an ancestor above it (the round-6 regression test
+	// covers ancestors above the state root).
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	linkedBucket := filepath.Join(linkHome, "evener", "projects", "test-0123456789")
+
+	// The current-session fast-path should reject because evener/ is a symlink
+	// within the state root. Today it succeeds because symlinkErrorDeep is
+	// rooted at the bucket dir, not the state home.
+	_, _, err := resolveTranscript("", linkedBucket, sid)
+	if err == nil {
+		t.Fatal("current-session fast-path resolved through symlinked evener/ ancestor; " +
+			"evener/ is a symlink within the state root and must be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+
+	// The local: ref path has the same root (bucketDir = currentStateDir) and
+	// the same gap — verify it too.
+	_, _, err = resolveTranscript("local:"+sid, linkedBucket, "02wMz5Txv9yYdSRJat13MZ")
+	if err == nil {
+		t.Fatal("local: ref resolved through symlinked evener/ ancestor; " +
+			"evener/ is a symlink within the state root and must be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink for local: ref, got: %v", err)
+	}
+}
+
+// TestTranscriptExists_SymlinkedSessionsDirReturnsTrue asserts that
+// transcriptExists returns false when the sessions/ directory is a symlink
+// pointing outside the state root. Today transcriptExists uses os.Lstat on the
+// final file only — os.Lstat follows every path element except the last, so a
+// symlinked sessions/ is followed and the file appears as a regular file.
+// collectCandidates guards sessions/ with symlinkErrorDeep before calling
+// ListSessionMetas, but transcriptExists is called independently in
+// recordsUpTo and the content-match loop; a future caller could bypass the
+// collectCandidates guard. transcriptExists must independently validate the
+// path with symlinkErrorDeep.
+func TestTranscriptExists_SymlinkedSessionsDirReturnsTrue(t *testing.T) {
+	t.Parallel()
+	bucket := newBucket(t)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+
+	// Write a real transcript in an outside sessions dir.
+	outside := t.TempDir()
+	outsideSessions := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(outsideSessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outsideSessions, sid+".transcript.jsonl"),
+		[]byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the bucket's sessions/ with a symlink to the outside dir.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSessions, filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// transcriptExists should return false — sessions/ is a symlink pointing
+	// outside the state root. Today it returns true because os.Lstat follows
+	// the sessions/ symlink and sees a regular file.
+	if transcriptExists(bucket, sid) {
+		t.Fatal("transcriptExists returned true for a file through a symlinked sessions/; " +
+			"should return false because sessions/ is a symlink")
+	}
+}
+
+// TestSymlinkErrorDeep_SidecarGuardDirRootMissesSymlinkedSessionsDir
+// demonstrates that the sidecar guard's current root (filepath.Dir(sidecar))
+// does not independently catch a symlinked sessions/ directory. The walk is
+// empty (root == start of walk), so sessions/ itself is not Lstat'd — only
+// the sidecar file is. resolveTranscript validates sessions/ before the
+// sidecar guard runs, so the end-to-end behavior is correct, but the sidecar
+// guard should be rooted at the bucket dir to independently validate
+// sessions/ as defense-in-depth.
+func TestSymlinkErrorDeep_SidecarGuardDirRootMissesSymlinkedSessionsDir(t *testing.T) {
+	t.Parallel()
+	bucket := newBucket(t)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+
+	// Write a real sidecar in an outside sessions dir.
+	outside := t.TempDir()
+	outsideSessions := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(outsideSessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sidecarName := sid + ".api.jsonl"
+	if err := os.WriteFile(filepath.Join(outsideSessions, sidecarName),
+		[]byte(`{"n":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the bucket's sessions/ with a symlink to the outside dir.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSessions, filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	sidecar := filepath.Join(bucket, "sessions", sidecarName)
+
+	// The sidecar guard must be rooted at the bucket dir (parent of sessions/),
+	// not filepath.Dir(sidecar) (which IS sessions/). With the bucket dir as
+	// root, symlinkErrorDeep walks sessions/ and catches the symlink. With
+	// filepath.Dir(sidecar) as root, the walk is empty (root == start) and the
+	// symlinked sessions/ is not caught.
+	if err := symlinkErrorDeep(sidecar, bucket); err == nil {
+		t.Fatal("sidecar guard rooted at bucket dir did not catch symlinked " +
+			"sessions/ dir; symlinkErrorDeep must walk sessions/ and detect the symlink")
+	}
+	if err := symlinkErrorDeep(sidecar, filepath.Dir(sidecar)); err != nil {
+		t.Fatalf("symlinkErrorDeep with filepath.Dir(sidecar) root should NOT catch "+
+			"the symlink (walk is empty); got unexpected error: %v", err)
+	}
+}
