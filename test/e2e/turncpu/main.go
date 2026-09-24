@@ -28,7 +28,7 @@
 // Usage:
 //
 //	go build -o /tmp/evener ./cmd/evener
-//	go run ./test/e2e/turncpu --evener /tmp/evener [--serve] [--turns 1] [--rounds 200] [--delegates 0] [--payload-kb 20] [--context-window N] [--cpu-profile] [--out dir]
+//	go run ./test/e2e/turncpu --evener /tmp/evener [--serve] [--turns 1] [--rounds 200] [--delegates 0] [--probes 0] [--payload-kb 20] [--context-window N] [--cpu-profile] [--out dir]
 //
 // Then, with --cpu-profile: go tool pprof -top -cum /tmp/evener <out>/cpu.pprof
 package main
@@ -73,6 +73,7 @@ type options struct {
 	delegates   int
 	childRounds int
 	extraArgs   string
+	probes      int
 }
 
 func main() {
@@ -88,6 +89,7 @@ func main() {
 	flag.IntVar(&o.delegates, "delegates", 0, "background delegates the root session spawns in its first rounds; each runs --child-rounds tool rounds of its own")
 	flag.IntVar(&o.childRounds, "child-rounds", 40, "tool rounds each delegate runs before reporting back")
 	flag.StringVar(&o.extraArgs, "evener-args", "", "extra space-separated flags passed to evener, e.g. --verbose")
+	flag.IntVar(&o.probes, "probes", 0, "with --serve, after the turns finish probe the idle daemon this many times the way the hub does (fresh connection, initialize, thread/list with subagents, thread/read) and report CPU and bytes per probe")
 	flag.BoolVar(&o.serve, "serve", false, "run evener serve and drive it over AppWire with a subscribed client")
 	flag.Parse()
 	if o.evener == "" || o.turns < 1 || o.rounds < 1 || (o.turns > 1 && !o.serve) {
@@ -394,6 +396,11 @@ func run(o options) error {
 			return fmt.Errorf("%w (see %s)", err, logPath)
 		}
 		notifications = n
+		if o.probes > 0 {
+			if err := probeIdle(ctx, addr, o.probes, cmd.Process.Pid); err != nil {
+				return fmt.Errorf("%w (see %s)", err, logPath)
+			}
+		}
 		// SIGINT lets serve stop its profile and exit cleanly.
 		_ = cmd.Process.Signal(syscall.SIGINT)
 	}
@@ -489,6 +496,40 @@ func driveServe(ctx context.Context, addr string, turns int, exited <-chan error
 		}
 	}
 	return count, nil
+}
+
+// probeIdle repeats the hub's status probe against the idle daemon and
+// reports the daemon CPU and response bytes each probe costs.
+func probeIdle(ctx context.Context, addr string, probes, pid int) error {
+	var bytes int
+	start := cpuTime(pid)
+	for range probes {
+		transport, err := appwire.DialWebSocket(ctx, "ws://"+addr+"/rpc", http.DefaultClient)
+		if err != nil {
+			return fmt.Errorf("probe dial: %w", err)
+		}
+		client := appwire.NewClient(transport)
+		client.Start(ctx)
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion, ClientInfo: appwire.ClientInfo{Name: "turncpu-probe"}}); err != nil {
+			return fmt.Errorf("probe initialize: %w", err)
+		}
+		list, err := client.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+		if err != nil {
+			return fmt.Errorf("probe thread/list: %w", err)
+		}
+		read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{})
+		if err != nil {
+			return fmt.Errorf("probe thread/read: %w", err)
+		}
+		for _, v := range []any{list, read} {
+			encoded, _ := json.Marshal(v)
+			bytes += len(encoded)
+		}
+		_ = transport.Close()
+	}
+	spent := cpuTime(pid) - start
+	fmt.Printf("probes: %d  daemon cpu/probe %.1fms  response bytes/probe %d\n", probes, float64(spent.Microseconds())/1000/float64(probes), bytes/probes)
+	return nil
 }
 
 // report prints mean per-round CPU. A single turn is split into buckets of
