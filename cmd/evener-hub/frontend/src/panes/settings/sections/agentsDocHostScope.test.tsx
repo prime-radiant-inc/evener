@@ -1,6 +1,6 @@
 import type { AgentsDocResponse, HostRow } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import {
@@ -153,7 +153,9 @@ test("switching to a host whose document is already cached shows that host's doc
   fireEvent.change(editor(), { target: { value: "# draft for this hub\n" } });
   expect(editor().value).toBe("# draft for this hub\n");
 
-  setSettingsHost("beta");
+  // The switch happens with the pane mounted, so it is a React state update
+  // and belongs inside act, as this file's other store-write test already does.
+  act(() => setSettingsHost("beta"));
 
   await waitFor(() => expect(editor().value).toBe("# beta\n"));
   expect(screen.queryByText(/changed on disk/)).toBeNull();
@@ -186,7 +188,9 @@ test("switching hosts never arms Save over an empty body", async () => {
   // The draft equals the document beta's store already holds.
   fireEvent.change(editor(), { target: { value: "# beta\n" } });
 
-  setSettingsHost("beta");
+  // The switch happens with the pane mounted, so it is a React state update
+  // and belongs inside act, as this file's other store-write test already does.
+  act(() => setSettingsHost("beta"));
 
   await waitFor(() => expect(editor().value).toBe("# beta\n"));
   expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
