@@ -1497,7 +1497,12 @@ func cloneInt64Pointer(value *int64) *int64 {
 
 func useSkillNameFromArgs(raw string) string {
 	var args map[string]any
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+	// Repair malformed bytes before parsing (F5 round 6): the live path
+	// emits byte-faithful ArgumentsJSON, so a repairable-malformed use_skill
+	// call carries invalid JSON. The live path already repaired the same
+	// bytes to dispatch the call; repair here too so the skill announcement
+	// recovers the name instead of degrading to a plain systemAnnouncement.
+	if err := json.Unmarshal(argrepair.RepairJSON([]byte(raw)), &args); err != nil {
 		return ""
 	}
 	for _, key := range []string{"skill_name", "name"} {
