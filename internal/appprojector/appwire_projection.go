@@ -758,10 +758,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventToolCallEnd:
 		data := eventData[events.ToolCallEndData](event.Data)
 		var out []AppNotification
-		hadProvisionalItem := false
 		if data.Error != "" {
 			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
-				hadProvisionalItem = true
 				delete(p.provisionalCommunicateItems, data.CallID)
 				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
 					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
@@ -774,19 +772,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
 			p.communicatePhases[data.CallID] = communicatePhaseClosed
-			// A rejected communicate with no prior preview item (PrevalOnly
-			// rejection — the Exec fn never ran) emits a settled failed
-			// commandExecution so the user sees what was rejected, matching
-			// what reload renders from the deferred CommRawArgs. A preview-
-			// path communicate that failed already retracted its provisional
-			// agent message (above); do not double-render a tool error.
-			if data.Error != "" && data.ToolName == "communicate" && !hadProvisionalItem {
+			// A communicate's settled failure surfaces as a commandExecution
+			// error item on BOTH live and reload IFF it was a pre-dispatch
+			// rejection (PrevalOnly=true — the call's Exec fn never ran),
+			// matching reload's IsError&&PrevalOnly predicate. A runtime
+			// execution failure (PrevalOnly=false — the call ran and
+			// failed/was canceled) surfaces NOTHING on either side (reload
+			// pin: TestProjectTurn_RuntimeFailedCommunicateDoesNotShowRawArgs).
+			// A PrevalOnly rejection whose preview started retracts the
+			// provisional agentMessage (the reset above) AND surfaces the
+			// error item: reload has no preview and always renders the
+			// commandExecution error for IsError&&PrevalOnly, so live matches
+			// by retracting then surfacing the same error.
+			if data.Error != "" && data.ToolName == "communicate" && data.PrevalOnly {
 				out = append(out, p.settledCommunicateFailure(data, event))
 			}
 			return out
 		}
 		if data.ToolName == "communicate" && p.toolItemsByKey[data.CallID] == "" {
-			if data.Error != "" && !hadProvisionalItem {
+			if data.Error != "" && data.PrevalOnly {
 				out = append(out, p.settledCommunicateFailure(data, event))
 			}
 			return out

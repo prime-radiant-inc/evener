@@ -716,3 +716,131 @@ func canonicalCommunicateArguments(t *testing.T, turn schema.Turn) json.RawMessa
 	t.Fatalf("no communicate tool call in turn")
 	return nil
 }
+
+// TestHubReplay_RuntimeFailedCommunicateLiveVsReload verifies that a
+// communicate which executed and failed at runtime (IsError=true,
+// PrevalOnly=false — the call ran and returned an error) surfaces NOTHING on
+// both live and reload. Reload already pins this (renders nothing for
+// PrevalOnly=false); before the fix, live emitted a settledCommunicateFailure
+// because it gated on !hadProvisionalItem rather than data.PrevalOnly,
+// diverging from reload. The fix aligns live to reload's IsError&&PrevalOnly
+// predicate: a runtime failure surfaces nothing on either side.
+func TestHubReplay_RuntimeFailedCommunicateLiveVsReload(t *testing.T) {
+	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
+	escaped := strings.ReplaceAll(rawArgs, `"`, `\"`)
+	assistantJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c_rt","name":"communicate","arguments":{},"raw_arguments":"` + escaped + `"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
+	resultJSON := []byte(`{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c_rt","name":"communicate","content":"runtime error","is_error":true,"preval_only":false}}]},"timestamp":"2026-06-01T10:00:01Z"}}`)
+	checkLiveVsReloadMultiEntry(t, assistantJSON, resultJSON, rawArgs)
+}
+
+// TestHubReplay_PreviewedPrevalOnlyCommunicateLiveVsReload verifies that a
+// PrevalOnly communicate rejection whose preview started (the live projector
+// emitted a provisional agentMessage via EventCommunicatePreviewStart, then
+// the call was rejected at prevalidation) retracts the provisional message AND
+// surfaces the commandExecution error item — matching what reload renders
+// from the deferred CommRawArgs. Before the fix, live gated the
+// settledCommunicateFailure on !hadProvisionalItem; with a preview started,
+// hadProvisionalItem was true, so live emitted only the reset and NOT the
+// error item — diverging from reload, which always renders the
+// commandExecution error for IsError&&PrevalOnly regardless of preview state.
+func TestHubReplay_PreviewedPrevalOnlyCommunicateLiveVsReload(t *testing.T) {
+	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
+	escaped := strings.ReplaceAll(rawArgs, `"`, `\"`)
+	assistantJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c_prev","name":"communicate","arguments":{},"raw_arguments":"` + escaped + `"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
+	resultJSON := []byte(`{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c_prev","name":"communicate","content":"arguments rejected","is_error":true,"preval_only":true}}]},"timestamp":"2026-06-01T10:00:01Z"}}`)
+
+	var ae, re transcript.Entry
+	if err := json.Unmarshal(assistantJSON, &ae); err != nil {
+		t.Fatalf("decode assistant entry: %s", assistantJSON)
+	}
+	if err := json.Unmarshal(resultJSON, &re); err != nil {
+		t.Fatalf("decode result entry: %s", resultJSON)
+	}
+	acanon, acanonBytes := canonicalEntry(t, ae)
+	rcanon, rcanonBytes := canonicalEntry(t, re)
+
+	// Live side: synthesize the assistant turn's events, then model the
+	// preview-start (the live projector created a provisional agentMessage),
+	// the tool-call start (which transitions preview→executing under
+	// suppression), and the tool-call end (PrevalOnly=true, Error set).
+	var liveEvents []events.SessionEvent
+	liveEvents = append(liveEvents, mustSynthesize(t, acanon.Turn)...)
+	liveEvents = append(liveEvents,
+		events.New(events.CommunicatePreviewStartData{CallID: "c_prev"}),
+		events.New(events.ToolCallStartData{ToolName: "communicate", CallID: "c_prev"}),
+		events.New(events.ToolCallEndData{
+			ToolName:      "communicate",
+			CallID:        "c_prev",
+			ArgumentsJSON: rawArgs,
+			Error:         apptranscript.StringifyToolContent(rcanon.Turn.Message.Content[0].ToolResult.Content),
+			PrevalOnly:    true,
+		}),
+	)
+	proj := appprojector.NewAppEventProjector("thread", "local:thread")
+	var notes []appprojector.AppNotification
+	for _, ev := range liveEvents {
+		notes = append(notes, proj.Project(ev)...)
+	}
+
+	// The live stream must contain BOTH a NotifyAgentMessageReset (the
+	// provisional agentMessage retracted) AND a NotifyItemCompleted whose
+	// Item is a commandExecution communicate error (the settled failure).
+	var hasReset bool
+	var liveItem appwire.ThreadItem
+	for _, n := range notes {
+		if n.Method == appwire.NotifyAgentMessageReset {
+			hasReset = true
+		}
+		if n.Method == appwire.NotifyItemCompleted {
+			if p, ok := n.Params.(appwire.ItemLifecycleParams); ok {
+				if p.Item.Type == "commandExecution" && p.Item.ToolName == "communicate" {
+					liveItem = p.Item
+				}
+			}
+		}
+	}
+	if !hasReset {
+		t.Fatalf("live must retract the provisional agentMessage (NotifyAgentMessageReset); notes: %+v", notes)
+	}
+	if liveItem.Type == "" {
+		t.Fatalf("live must surface the PrevalOnly communicate rejection as a commandExecution error item (NotifyItemCompleted); notes: %+v", notes)
+	}
+
+	// Reload side: project both turns with a shared registry, the way the
+	// hub's full-transcript read does.
+	reg := apptranscript.NewToolCallRegistry()
+	aReconstructed, ok := decodeTranscriptTurn(acanonBytes)
+	if !ok {
+		t.Fatalf("hub decode rejected assistant entry: %s", acanonBytes)
+	}
+	rReconstructed, ok := decodeTranscriptTurn(rcanonBytes)
+	if !ok {
+		t.Fatalf("hub decode rejected result entry: %s", rcanonBytes)
+	}
+	reloadItems := append(
+		apptranscript.ProjectTurn("turn_1", 1, aReconstructed, reg, nil, apptranscript.ToolResultOutputImages),
+		apptranscript.ProjectTurn("turn_2", 2, rReconstructed, reg, nil, apptranscript.ToolResultOutputImages)...,
+	)
+	var reloadItem appwire.ThreadItem
+	for _, item := range reloadItems {
+		if item.Type == "commandExecution" && item.ToolName == "communicate" {
+			reloadItem = item
+			break
+		}
+	}
+	if reloadItem.Type == "" {
+		t.Fatalf("reload must render the PrevalOnly communicate rejection as a commandExecution error item; items: %+v", reloadItems)
+	}
+
+	// Compare live and reload via normalizeMetamorphic (strips identity/
+	// status/timing but preserves Type, ToolName, ArgumentsJSON, Error,
+	// PrevalOnly — the content that must match).
+	liveNorm := normalizeMetamorphic([]appwire.ThreadItem{liveItem})
+	reloadNorm := normalizeMetamorphic([]appwire.ThreadItem{reloadItem})
+	if len(liveNorm) != 1 {
+		t.Fatalf("live normalized = %d items, want 1 (the commandExecution error)", len(liveNorm))
+	}
+	if eq, a, b := jsonEqItems(t, liveNorm, reloadNorm); !eq {
+		t.Fatalf("live-vs-reload previewed-PrevalOnly communicate diverged:\n live  =%s\n reload=%s", a, b)
+	}
+}
