@@ -36,11 +36,16 @@ owned_guard_running() {
 # stop_guards TERMs every guard still running and waits for each, so an
 # interruption waits for the cleanup each guard owns. A recorded pid whose job
 # has already exited is not signalled: the OS may have given that number to an
-# unrelated process since.
+# unrelated process since. The skill guard is waited for but never signalled:
+# it is a go test whose driver, Chrome and helper daemons are cleaned up by
+# the test binary's own t.Cleanup, which a TERM to go test would skip, leaving
+# them running.
 stop_guards() {
-	local pid
-	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do
+	local i pid
+	for i in "${!guards[@]}"; do
+		pid=${guard_pids[$i]-}
 		[ -n "$pid" ] && owned_guard_running "$pid" || continue
+		[ "${guards[$i]}" != skillguard ] || continue
 		kill -TERM "$pid" 2>/dev/null || :
 	done
 	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do

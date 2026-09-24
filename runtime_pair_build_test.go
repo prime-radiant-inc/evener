@@ -850,6 +850,90 @@ func TestMakeTestWebBrowserZeroConcurrencyStillRunsEveryGuard(t *testing.T) {
 	}
 }
 
+// TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard pins that an
+// interrupted gate waits for the skill guard instead of signalling it: the
+// guard is a go test whose driver, Chrome and helper daemons are cleaned up by
+// the test binary's own t.Cleanup, which a TERM to go test would skip. A held
+// node guard shows when the gate's kill pass has run; the go test stub
+// records any TERM it gets.
+func TestMakeTestWebBrowserInterruptWaitsForTheSkillGuard(t *testing.T) {
+	const tripwire = 30 * time.Second
+	fixture := newBuildWebFixture(t)
+	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+	writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+	writeTestFile(t, filepath.Join(frontendDir, "dist", "index.html"), []byte("<html></html>\n"), 0o644)
+	nodeTerm := filepath.Join(fixture.root, "held-node.term")
+	nodeRelease := filepath.Join(fixture.root, "held-node.release")
+	goTerm := filepath.Join(fixture.root, "held-go.term")
+	goRelease := filepath.Join(fixture.root, "held-go.release")
+
+	command := exec.Command("make", "test-web-browser")
+	command.Dir = fixture.root
+	command.Env = append(fixture.environment(""),
+		"BROWSER_GUARD_CONCURRENCY=7",
+		"EVENER_TEST_NODE_HOLD_COMMAND=scripts/layoutguard/run.mjs",
+		"EVENER_TEST_NODE_READY="+filepath.Join(fixture.root, "held-node.ready"),
+		"EVENER_TEST_NODE_PID="+filepath.Join(fixture.root, "held-node.pid"),
+		"EVENER_TEST_NODE_TERM="+nodeTerm,
+		"EVENER_TEST_NODE_RELEASE="+nodeRelease,
+		"EVENER_TEST_GO_TEST_READY="+filepath.Join(fixture.root, "held-go.ready"),
+		"EVENER_TEST_GO_TEST_TERM="+goTerm,
+		"EVENER_TEST_GO_TEST_RELEASE="+goRelease,
+	)
+	var output syncBuffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatalf("start make test-web-browser: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	release := func() {
+		_ = os.WriteFile(nodeRelease, nil, 0o644)
+		_ = os.WriteFile(goRelease, nil, 0o644)
+	}
+	finished := false
+	t.Cleanup(func() {
+		release()
+		if finished {
+			return
+		}
+		select {
+		case <-waitDone:
+		case <-time.After(tripwire): // TRIPWIRE: released stubs exit at once; this only bounds a hang.
+			_ = command.Process.Kill()
+		}
+	})
+
+	// TRIPWIRE: the stubs start in milliseconds; the poll only bounds a gate
+	// that never reaches its held guards.
+	for _, ready := range []string{"held-node.ready", "held-go.ready"} {
+		if !waitForPath(filepath.Join(fixture.root, ready), tripwire) {
+			t.Fatalf("a held guard never became ready (%s); output = %s", ready, output.String())
+		}
+	}
+	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal make test-web-browser: %v", err)
+	}
+	if !waitForPath(nodeTerm, tripwire) {
+		t.Fatalf("the interrupted gate never signalled the held node guard; output = %s", output.String())
+	}
+	release()
+	select {
+	case err := <-waitDone:
+		finished = true
+		if err == nil {
+			t.Fatalf("interrupted make test-web-browser exited zero; output = %s", output.String())
+		}
+	case <-time.After(tripwire): // TRIPWIRE: see above.
+		t.Fatalf("make test-web-browser did not finish after its guards were released; output = %s", output.String())
+	}
+	if _, err := os.Stat(goTerm); !os.IsNotExist(err) {
+		t.Fatalf("the interrupted gate signalled the skill guard's go test (stat %s: %v); its cleanup would be skipped", goTerm, err)
+	}
+}
+
 func TestMakeTestWebBrowserFailureReplaysLogAndRetainsEvidence(t *testing.T) {
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
@@ -1105,6 +1189,13 @@ if [ "$1" = "test" ]; then
 	# build: record the command the same way the build arm records its argv,
 	# then report success so the script's verdict logic is exercised.
 	printf 'go-test\t%s\n' "$*" >> "$EVENER_TEST_GO_LOG"
+	if [ -n "${EVENER_TEST_GO_TEST_RELEASE:-}" ]; then
+		# Held like the node stub: record a TERM if one arrives, and finish
+		# only once the test releases it.
+		trap ': > "$EVENER_TEST_GO_TEST_TERM"' TERM
+		: > "$EVENER_TEST_GO_TEST_READY"
+		while [ ! -f "$EVENER_TEST_GO_TEST_RELEASE" ]; do :; done
+	fi
 	exit 0
 fi
 
