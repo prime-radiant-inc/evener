@@ -2655,6 +2655,49 @@ describe("host grouping (organize by)", () => {
     }
   });
 
+  test("a host-first copy that gains rows mid-session opens itself instead of hiding them", async () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    const local = summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" });
+    installState(
+      [
+        catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+        projectResource("p", [local], 1),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    const hosts = sectionRoot("Hosts");
+    // Both hosts claim the project, but only this hub's rows are loaded:
+    // its copy holds them while the devbox copy sits empty. Open the
+    // loaded one, the same view the user would have on screen. Rail order
+    // puts this hub's copy first, the same host order the section's group
+    // rows pin.
+    const localCopy = within(hosts).getAllByText("Project").at(0);
+    if (!localCopy) throw new Error("no project copy rendered");
+    fireEvent.click(localCopy);
+    await act(async () => undefined);
+    expect(within(hosts).getByText("Local row")).toBeTruthy();
+    // The reveal brings the second host's rows: the copy that gains them
+    // must open itself - the new rows must not hide behind a closed copy.
+    const loaded = projectResource("p", [
+      local,
+      summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+    ]);
+    act(() => {
+      navigationStore.setState((state) => ({
+        resources: new Map([...state.resources, [keyID(loaded.key), loaded]]),
+      }));
+    });
+    await act(async () => undefined);
+    try {
+      expect(within(hosts).getByText("Local row")).toBeTruthy();
+      expect(within(hosts).getByText("Devbox row")).toBeTruthy();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
   test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
     const restoreScroll = stubScrollIntoView();
     prefsStore.setState({ sidebarGrouping: "host-project" });

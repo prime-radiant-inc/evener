@@ -1718,46 +1718,62 @@ function NavigationRail({
     "catalog:projects",
     "projects",
   );
-  // A host branch born mid-session opens itself. The rows it carries were
-  // visible a render ago - the project's flat children - so letting it
-  // appear collapsed would hide what was on screen behind a new fold,
-  // reading as data loss after a "+N older" reveal or a rehydration. Only
-  // branches born after the first render: the first render keeps the
-  // collapsed per-host shape the grouping ships with, and a branch that
-  // leaves and returns still respects an explicit collapse from its earlier
-  // life. A layout effect so the rows never paint a frame behind a closed
-  // branch.
-  const seenHostBranches = useRef<ReadonlySet<string> | null>(null);
-  const hostBranchIds = useMemo(() => {
+  // A host-grouping fold born mid-session opens itself: a project-first
+  // host branch, or a host-first copy that just gained rows. Left closed,
+  // the branch hides rows that were visible a render ago (the project's
+  // flat children) and the copy hides rows the reveal just brought -
+  // either reads as data loss. Only folds born after the first render:
+  // the first render keeps the collapsed per-host shape the grouping
+  // ships with, and a fold that leaves and returns still respects an
+  // explicit collapse from its earlier life. A layout effect so the rows
+  // never paint a frame behind a closed fold.
+  const seenHostFolds = useRef<ReadonlySet<string> | null>(null);
+  const hostFoldIds = useMemo(() => {
     const ids = new Set<string>();
     for (const node of projectsSectionNodes) {
-      if (node.kind !== "project") continue;
-      for (const child of node.children) if (child.kind === "host") ids.add(child.id);
+      // Project-first: the host branches inside a project row. A branch
+      // renders only once it holds loaded rows, so its id arrives together
+      // with the rows it must not hide.
+      if (node.kind === "project") {
+        for (const child of node.children) if (child.kind === "host") ids.add(child.id);
+        continue;
+      }
+      // Host-first: the project copies inside a host group. A copy renders
+      // as soon as the project claims the host, empty or not, so gate on
+      // the rows: a copy with no session rows folds nothing away, while
+      // one that just gained them must not stay closed.
+      if (node.kind === "host") {
+        for (const copy of node.children) {
+          if (copy.kind === "project" && copy.children.some((row) => row.kind === "session")) {
+            ids.add(copy.id);
+          }
+        }
+      }
     }
     return ids;
   }, [projectsSectionNodes]);
   useLayoutEffect(() => {
-    const handled = seenHostBranches.current;
+    const handled = seenHostFolds.current;
     if (handled === null) {
       // First render: the at-rest shape stands - nothing auto-opens.
-      seenHostBranches.current = new Set(hostBranchIds);
+      seenHostFolds.current = new Set(hostFoldIds);
       return;
     }
-    // One branch per pass, the reveal idiom: setExpanded closes over this
+    // One fold per pass, the reveal idiom: setExpanded closes over this
     // render's override map, so a second call in one pass would clobber the
     // first. The override change re-runs this effect and opens the rest,
     // all before paint.
-    const next = [...hostBranchIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
+    const next = [...hostFoldIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
     if (next) {
-      seenHostBranches.current = new Set([...handled, next]);
+      seenHostFolds.current = new Set([...handled, next]);
       setExpanded(next, true);
       return;
     }
-    // Nothing pending: every current branch is handled, and ids that left
-    // the tree drop out so a branch that returns re-opens (its rows came
+    // Nothing pending: every current fold is handled, and ids that left
+    // the tree drop out so a fold that returns re-opens (its rows came
     // back).
-    seenHostBranches.current = new Set(hostBranchIds);
-  }, [hostBranchIds, expandedOverrides, setExpanded]);
+    seenHostFolds.current = new Set(hostFoldIds);
+  }, [hostFoldIds, expandedOverrides, setExpanded]);
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host

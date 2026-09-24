@@ -631,7 +631,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // group the row sits under. Dormant keeps its own "never run" meaning -
   // see useHostOnline.
   const hostId = sessionGroupHostId(session);
-  const showsHost = hostId !== "" && hostId !== "local";
+  const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);
   // The state this row PRESENTS (railNodes' displayState): a turn-ended

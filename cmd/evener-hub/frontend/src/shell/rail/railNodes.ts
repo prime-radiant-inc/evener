@@ -136,18 +136,17 @@ export interface ProjectRailNode extends WidgetTreeNode {
   // The host a row's launch affordances target, not this hub: the host a
   // "Host, then project" copy nests under, or the first owning host in
   // rail order on every row that renders a project's own shape
-  // (project-first, test-runs, and the archived tiers). The flat
-  // Projects tier leaves it absent - no remote source exists in flat
-  // mode, so every project is this hub's own.
+  // (project-first, flat, test-runs, and the archived tiers). The
+  // builder's no-sources call leaves it absent: that call is for
+  // callers with no manifest to read.
   spawnHost?: string;
   // True on the ONE row that renders the project's aggregate facts - the
   // overflow row and the rollup signal/badge - so they read once instead of
   // claiming per-host counts the wire does not carry: every row that
-  // renders a project's own shape (project-first, test-runs, the
-  // archived tiers), or the first rows-bearing copy in rail order in
-  // host-first. The flat Projects tier carries no mark - its rows claim
-  // no launch host, and RailRow reads their aggregate role from that
-  // absence.
+  // renders a project's own shape (flat, project-first, test-runs,
+  // the archived tiers), or the first rows-bearing copy in rail order in
+  // host-first. A hostless row (the builder's no-sources call) still reads
+  // its aggregate role from that absence.
   canonicalCopy?: boolean;
 }
 
@@ -1117,8 +1116,9 @@ export function projectNodesWithHostBranches(
  * Naming it keeps a remote-owned working_dir from silently launching on this
  * hub through the draft's remembered source, and lets useHostLaunchable hide
  * the affordance while that host is offline - the same contract the
- * host-first copies already follow. Flat mode claims no host on purpose: no
- * remote source exists there, so every project is this hub's own. */
+ * host-first copies already follow. Flat mode resolves it too: the
+ * call passes the display sources, so a local project names this hub
+ * and a remote-owned one names its host. */
 function projectLaunchHost(p: RailProject, sources: readonly Source[]): string | undefined {
   return orderedHosts(projectHostIds(p), sources)[0]?.id;
 }
