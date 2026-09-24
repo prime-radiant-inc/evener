@@ -27,6 +27,15 @@ export interface DisclosureBaseline {
   readonly startedRevision: number;
 }
 
+export interface DisclosureReadOptions {
+  /** Skip the scope's baseline when resolving: an explicit choice still
+   * wins, then the fallback answers. For a disclosure whose owner opts out
+   * of every open-everything default - a verbosity level's expand-details
+   * posture and the Full preset's open baseline - so its own posture holds
+   * at every level while the reader's explicit toggle keeps beating it. */
+  readonly ignoreBaseline?: boolean;
+}
+
 export interface DisclosureStore extends FrameworkFreeStore<DisclosureState> {
   /** Whether this id is open: an explicit choice first, then its scope's
    * baseline, then the fallback. The reactive form is isDisclosureOpenIn
@@ -59,9 +68,15 @@ export function scopedDisclosureId(scope: string, id: string): string {
 
 /** The open/closed answer for one id read off a state snapshot: the selector
  * each app's hook passes to its store binding. */
-export function isDisclosureOpenIn(state: DisclosureState, id: string, fallback: boolean): boolean {
+export function isDisclosureOpenIn(
+  state: DisclosureState,
+  id: string,
+  fallback: boolean,
+  options?: DisclosureReadOptions,
+): boolean {
   const explicit = state.open.get(id);
   if (explicit !== undefined) return explicit.open;
+  if (options?.ignoreBaseline) return fallback;
   return baselineAnswer(baselineForId(state.baselines, id), id, fallback);
 }
 

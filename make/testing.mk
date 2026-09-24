@@ -168,6 +168,7 @@ merge-approval-gate:
 # and the frontend suite is unaffected by it, so `make test` owns the web stream
 # instead of paying it twice.
 RACE_SCOPE ?= all
+RACE_ROOT_PART ?= all
 RACE_MODULES_all := $(GO_MODULES)
 RACE_MODULES_root := .
 RACE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
@@ -184,13 +185,18 @@ RACE_MODULES_nonagent := $(filter-out . agent,$(GO_MODULES))
 ##   RACE_SCOPE defaults to all; CI uses the
 ##   explicit root scope plus agent and nonagent on separate runners. The two
 ##   new scopes derive from GO_MODULES; nonroot remains the local aggregate.
+##   RACE_ROOT_PART (root scope only) splits the root module across runners:
+##   all (default), hub (only cmd/evener-hub's shards), or rest (everything
+##   else in the root module).
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
 	@case "$(RACE_SCOPE)" in all|root|nonroot|agent|nonagent) ;; *) echo "make test-race: RACE_SCOPE must be all, root, nonroot, agent, or nonagent (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
+		case "$(RACE_ROOT_PART)" in all) hub=1; cli=1; rest=1;; hub) hub=1; cli=elsewhere; rest=0;; rest) hub=elsewhere; cli=1; rest=1;; *) echo "make test-race: RACE_ROOT_PART must be all, hub, or rest (got $(RACE_ROOT_PART))" >&2; exit 2;; esac; \
+		test "$(RACE_ROOT_PART)" = all || test "$(RACE_SCOPE)" = root || { echo "make test-race: RACE_ROOT_PART=$(RACE_ROOT_PART) needs RACE_SCOPE=root" >&2; exit 2; }; \
 		modules="$(strip $(RACE_MODULES_$(RACE_SCOPE)))"; \
 		test -n "$$modules" || { echo "make test-race: RACE_SCOPE=$(RACE_SCOPE) selects no modules from GO_MODULES" >&2; exit 2; }; \
 		MODULES="$$modules" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL=6 \
-		HUB_SHARDS=1 CLI_SHARDS=1 HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
+		HUB_SHARDS=$$hub CLI_SHARDS=$$cli ROOT_REST=$$rest HUB_SHARD_COUNT=12 HUB_SHARD_NO_SURVEY=1 CLI_SHARD_NO_SURVEY=1 \
 		scripts/gate/run-module-tests.sh -race -short -count=1
 
 ## go vet across every non-fuzz workspace module.

@@ -24,8 +24,8 @@ var messageDecodeSeeds = []string{
 	`{"id":9999999999999999999999,"method":"x"}`,
 	`{"id":{"nested":"object"},"method":"x"}`,
 	// Id-less error/result frames: the decoder accepts them (it only probes
-	// for the error/result field), and Response/ErrorResponse.MarshalJSON
-	// omit the empty id so they re-encode to an id-less frame and round-trip
+	// for the error/result field), and Response/ErrorResponse's omitzero id
+	// leaves the empty id out so they re-encode to an id-less frame and round-trip
 	// cleanly. Kept as seeds so that fixed point stays pinned.
 	`{"error":{}}`,
 	`{"result":{}}`,
@@ -77,8 +77,8 @@ func checkMessageDecode(t *testing.T, raw []byte) {
 
 	// Fixed point: decoding the normalized bytes and re-marshaling must
 	// reproduce the same bytes. This holds for every frame the codec decodes
-	// cleanly, including id-less response/error frames now that their
-	// MarshalJSON omits the empty id instead of emitting an unreadable null.
+	// cleanly, including id-less response/error frames, whose omitzero id is
+	// left out instead of emitted as an unreadable null.
 	var m2 Message
 	if err := json.Unmarshal(encoded, &m2); err != nil {
 		t.Fatalf("re-marshaled frame failed to re-decode: %v\n input=%q\n encoded=%q", err, raw, encoded)

@@ -9,6 +9,7 @@ set -u
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$script_dir/../lib/scratch-lib.sh"
 . "$script_dir/../lib/load-aware-workers.sh"
+. "$script_dir/../lib/owned-jobs.sh"
 
 cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
 
@@ -22,17 +23,6 @@ status=0; complete=0
 # recorded (see start_guard), so stop_guards can never miss a live guard.
 defer_signals=0; pending_signal=0
 
-# owned_guard_running PID — whether PID is still one of this shell's running
-# jobs. Bash 3.2 (macOS) has no `wait -n`, so completion is found by asking
-# the job table, the same ownership test test-web.sh uses.
-owned_guard_running() {
-	local candidate
-	for candidate in $(jobs -pr); do
-		[ "$candidate" = "$1" ] && return 0
-	done
-	return 1
-}
-
 # stop_guards TERMs every guard still running and waits for each, so an
 # interruption waits for the cleanup each guard owns. A recorded pid whose job
 # has already exited is not signalled: the OS may have given that number to an
@@ -44,12 +34,12 @@ stop_guards() {
 	local i pid
 	for i in "${!guards[@]}"; do
 		pid=${guard_pids[$i]-}
-		[ -n "$pid" ] && owned_guard_running "$pid" || continue
-		[ "${guards[$i]}" != skillguard ] || continue
-		kill -TERM "$pid" 2>/dev/null || :
+		if [ -n "$pid" ] && [ "${guards[$i]}" != skillguard ] && owned_job_is_running "$pid"; then
+			kill -TERM "$pid" 2>/dev/null || :
+		fi
 	done
 	for pid in ${guard_pids[@]+"${guard_pids[@]}"}; do
-		[ -z "$pid" ] || wait "$pid" 2>/dev/null || :
+		[ -z "$pid" ] || wait_for_owned_job "$pid"
 	done
 	guard_pids=()
 }
@@ -85,8 +75,11 @@ interrupted_browser() {
 # would leak the directory (the trap-before-mkdir ordering the audit enforces).
 trap finish_browser EXIT
 trap 'interrupted_browser 129' 1; trap 'interrupted_browser 130' 2; trap 'interrupted_browser 143' 15
+# No loop in this script uses break or continue: bash runs a trap that fires
+# while either is pending as a no-op, so the interrupt would be silently lost.
 
 scratch_dir dir evener-test-web-browser
+owned_jobs_list="$dir/running-jobs"
 
 # web-skillguard is the full-stack browser guard: cmd/evener-hub's
 # TestSkillComposerBrowser (browserguard build tag) drives the PRODUCTION web
@@ -127,10 +120,19 @@ start_guard() {
 		# backgrounded pid on the real command so stop_guards can terminate it.
 		# The subshell inherits finish_browser as its EXIT trap; drop it, so a
 		# failure before exec reports only this guard's own status.
+		#
+		# A TERM from stop_guards can land while the private home is still being
+		# prepared. Left at its default it would kill this shell mid-step and
+		# orphan the mkdir or cp it was running, which would keep writing into
+		# the scratch after the gate stopped waiting. So the TERM is only noted
+		# until the setup is done, and the guard then never starts.
 		(
 			trap - 0
+			setup_interrupted=0; trap 'setup_interrupted=1' TERM
 			. "$script_dir/../lib/private-go-home.sh"
 			evener_prepare_private_go_home "$guard_dir" || exit 1
+			trap - TERM
+			[ "$setup_interrupted" -eq 0 ] || exit 143
 			TMPDIR="$guard_dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 exec npm run retirementguard
 		) >"$dir/$guard.log" 2>&1 &
 		;;
@@ -172,20 +174,21 @@ while [ "$done_count" -lt "${#guards[@]}" ]; do
 	while [ "$running" -lt "$slots" ] && [ "$next" -lt "${#guards[@]}" ]; do
 		if [ "${guards[$next]}" = skillguard ] && [ "$build_status" -ne 0 ]; then
 			guard_status[$next]=$build_status
-			next=$((next + 1)); done_count=$((done_count + 1))
-			continue
+			done_count=$((done_count + 1))
+		else
+			start_guard "$next"
+			running=$((running + 1))
 		fi
-		start_guard "$next"
-		next=$((next + 1)); running=$((running + 1))
+		next=$((next + 1))
 	done
 	reaped=0
 	for i in "${!guards[@]}"; do
 		pid=${guard_pids[$i]-}
-		[ -n "$pid" ] || continue
-		owned_guard_running "$pid" && continue
-		if wait "$pid"; then guard_status[$i]=0; else guard_status[$i]=$?; fi
-		guard_pids[$i]=""
-		running=$((running - 1)); done_count=$((done_count + 1)); reaped=1
+		if [ -n "$pid" ] && ! owned_job_is_running "$pid"; then
+			if wait "$pid"; then guard_status[$i]=0; else guard_status[$i]=$?; fi
+			guard_pids[$i]=""
+			running=$((running - 1)); done_count=$((done_count + 1)); reaped=1
+		fi
 	done
 	# Nothing finished: look again shortly. The poll only paces the scheduler;
 	# every guard's own result still comes from wait.

@@ -93,12 +93,22 @@ export type TranscriptMeasurePref = "reading" | "wide";
 export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
+// How the rail's session tree groups (the organize-by control in the rail
+// body): "host-project" puts hosts above projects, "project-host" nests
+// per-host branches inside each project whose loaded rows span hosts (a
+// single-host project stays flat, so single-host hubs keep today's rail).
+// Defaulting to "project-host" is deliberate: a multi-host project DOES
+// change shape out of the box - its rows sit behind collapsed per-host
+// branches - because the grouping is the feature, not something the
+// control must unlock first.
+export type SidebarGroupingPref = "host-project" | "project-host";
 
 export interface PrefsStoreState {
   theme: ThemePref;
   phoneDensity: PhoneDensityPref;
   sidebarHidden: boolean;
   sidebarWidth: number;
+  sidebarGrouping: SidebarGroupingPref;
   fontSize: FontSizePref;
   transcriptMeasure: TranscriptMeasurePref;
   transcript: Record<TranscriptStatusKey, boolean>;
@@ -127,6 +137,7 @@ export interface PrefsStoreState {
   setPhoneDensity(value: PhoneDensityPref): void;
   setSidebarHidden(value: boolean): void;
   setSidebarWidth(value: number): void;
+  setSidebarGrouping(value: SidebarGroupingPref): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptMeasure(value: TranscriptMeasurePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
@@ -322,6 +333,7 @@ const PHONE_DENSITY_VALUES: readonly PhoneDensityPref[] = ["compact", "comfortab
 const FONT_SIZE_VALUES: readonly FontSizePref[] = ["s", "m", "l", "xl"];
 const TRANSCRIPT_MEASURE_VALUES: readonly TranscriptMeasurePref[] = ["reading", "wide"];
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
+const SIDEBAR_GROUPING_VALUES: readonly SidebarGroupingPref[] = ["host-project", "project-host"];
 
 // Per-field localStorage key names for the two grouped record fields -
 // transcript/notifications are exposed as small in-memory records for a
@@ -476,6 +488,7 @@ function loadInitialState(): Omit<
   | "setPhoneDensity"
   | "setSidebarHidden"
   | "setSidebarWidth"
+  | "setSidebarGrouping"
   | "setFontSize"
   | "setTranscriptMeasure"
   | "setTranscriptStatus"
@@ -499,6 +512,7 @@ function loadInitialState(): Omit<
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
     sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
+    sidebarGrouping: readEnum("sidebarGrouping", SIDEBAR_GROUPING_VALUES, "project-host"),
     fontSize,
     transcriptMeasure,
     transcript: loadTranscript(),
@@ -543,6 +557,11 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     const width = clampSidebarWidth(value);
     writeNumber("sidebarWidth", width);
     set({ sidebarWidth: width });
+  },
+
+  setSidebarGrouping(value) {
+    writeRaw("sidebarGrouping", value);
+    set({ sidebarGrouping: value });
   },
 
   setFontSize(value) {

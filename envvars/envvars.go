@@ -70,6 +70,7 @@ var (
 	EVENERModel                       = Var{Name: "EVENER_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
 	EVENEROffline                     = Var{Name: "EVENER_OFFLINE", Summary: "Set to 1 to keep the provider registry offline: no models.dev refresh, embedded snapshot only.", Visibility: Public}
 	EVENEROpenAIResponsesContinuation = Var{Name: "EVENER_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
+	EVENERPprofAddr                   = Var{Name: "EVENER_PPROF_ADDR", Summary: "Serves live net/http/pprof profiles from evener serve and evener hub on this loopback host:port (port 0 picks a free one, logged at startup); unset disables it. Hub-spawned daemons inherit it.", Visibility: Tooling}
 	EVENERProvider                    = Var{Name: "EVENER_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
 	EVENERProvidersConfig             = Var{Name: "EVENER_PROVIDERS_CONFIG", Summary: "Path to providers.toml.", Visibility: Public}
 	EVENERCredentialsConfig           = Var{Name: "EVENER_CREDENTIALS_CONFIG", Summary: "Path to credentials.toml; unset means the sibling of providers.toml.", Visibility: Public}
@@ -211,6 +212,7 @@ var allVars = []Var{
 	EVENERModel,
 	EVENEROffline,
 	EVENEROpenAIResponsesContinuation,
+	EVENERPprofAddr,
 	EVENERProvider,
 	EVENERProvidersConfig,
 	EVENERCredentialsConfig,

@@ -3,6 +3,8 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
+	"reflect"
 	"testing"
 )
 
@@ -96,5 +98,71 @@ func TestRejectsJSONRPCField(t *testing.T) {
 	var msg Message
 	if err := json.Unmarshal(raw, &msg); err == nil {
 		t.Fatal("expected jsonrpc field to be rejected")
+	}
+}
+
+// TestWireFramesEncodeInOnePass guards the daemon's reply path: a hub
+// liveness probe's thread snapshot and root diagnostics are large, and a
+// MarshalJSON on any wrapper around them hands encoding/json separately
+// encoded bytes that it then copies and re-validates, a second pass over the
+// whole payload per wrapper. The frame types write into the enclosing encoder
+// (MarshalJSONTo) or are plain structs, so none of them may implement
+// json.Marshaler.
+func TestWireFramesEncodeInOnePass(t *testing.T) {
+	for _, typ := range []reflect.Type{
+		reflect.TypeFor[Message](),
+		reflect.TypeFor[Response](),
+		reflect.TypeFor[ErrorResponse](),
+		reflect.TypeFor[EvenerDiagnostics](),
+	} {
+		if typ.Implements(jsonMarshalerType) || reflect.PointerTo(typ).Implements(jsonMarshalerType) {
+			t.Errorf("%s implements json.Marshaler, so every frame carrying it is encoded twice", typ.Name())
+		}
+	}
+	if _, ok := any(Message{}).(jsonv2.MarshalerTo); !ok {
+		t.Error("Message must implement MarshalerTo to write its frame into the enclosing encoder")
+	}
+}
+
+// TestFramesKeepEncodingJSONSemantics pins that a frame written through
+// MarshalJSONTo encodes its payload exactly as encoding/json would on its own:
+// nil slices as null, HTML-escaped strings, sorted map keys, and error data
+// that embeds ErrorData kept flat, so evenerErrorInfo stays a top-level field
+// of data where clients read it.
+func TestFramesKeepEncodingJSONSemantics(t *testing.T) {
+	type result struct {
+		Nil  []string       `json:"nil"`
+		HTML string         `json:"html"`
+		Map  map[string]int `json:"map"`
+	}
+	in := result{HTML: "<a&b>", Map: map[string]int{"z": 1, "a": 2}}
+	hostField := InvalidHostField("name", "bad name")
+	lifecycle := LifecycleUnavailable("retiring")
+	type errorFrame struct {
+		ID    int       `json:"id"`
+		Error WireError `json:"error"`
+	}
+	for name, tc := range map[string]struct {
+		frame Message
+		want  any
+	}{
+		"result": {ResponseMessage(NewIntID(3), in), struct {
+			ID     int    `json:"id"`
+			Result result `json:"result"`
+		}{3, in}},
+		"host field error": {Message{Error: &ErrorResponse{ID: NewIntID(4), Error: hostField}}, errorFrame{4, hostField}},
+		"lifecycle error":  {Message{Error: &ErrorResponse{ID: NewIntID(4), Error: lifecycle}}, errorFrame{4, lifecycle}},
+	} {
+		framed, err := json.Marshal(tc.frame)
+		if err != nil {
+			t.Fatalf("%s: marshal frame: %v", name, err)
+		}
+		want, err := json.Marshal(tc.want)
+		if err != nil {
+			t.Fatalf("%s: marshal want: %v", name, err)
+		}
+		if !bytes.Equal(framed, want) {
+			t.Errorf("%s: frame = %s, want %s", name, framed, want)
+		}
 	}
 }

@@ -24,7 +24,7 @@ import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
-import { toolCallFailed, toolRendererFor } from "./toolRenderers";
+import { type ToolRendererDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
@@ -66,6 +66,13 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
+}
+
+// summaryWhenExpanded resolves through one seam: a fixed string passes
+// through, a per-item function (the task card's recap of THIS call) is
+// applied to the item - so the render body below stays flat.
+function callWhen(when: ToolRendererDescriptor["summaryWhenExpanded"], item: ItemModel): string | undefined {
+  return typeof when === "function" ? when(item) : when;
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -251,9 +258,28 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const superseded = supersededBySuccess(item, thread);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
-  const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const disclosureFallback = configDefault || (autoDefault && !superseded);
-  const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
+  // foldByDefault opts the body out of every open-by-default posture: the
+  // level's expand-details default (activity/full force-expand every body
+  // otherwise), the full preset's open baseline - the strongest form of
+  // that default, which an ordinary fallback can never beat, so the read
+  // below skips it for these rows - and the descriptor's own autoExpand
+  // nudge, which is just another fallback. The one carve-out is failure:
+  // a failed call's force-open is attribution, not posture ("only failure
+  // earns the eye"), so an error never hides behind the fold - hence the
+  // `failed` term in the fallback below, read reactively like superseded so
+  // a row that settled before its failure was corroborated still opens the
+  // moment it is. Otherwise the fallback stays closed at every level, so
+  // only the reader's own toggle opens it - and that explicit store entry
+  // still wins over everything afterward.
+  const configDefault = descriptor.foldByDefault
+    ? false
+    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const disclosureFallback = configDefault || ((failed || (!descriptor.foldByDefault && autoDefault)) && !superseded);
+  const expanded = isDisclosureOpen(
+    disclosureKey,
+    disclosureFallback,
+    descriptor.foldByDefault ? { ignoreBaseline: true } : undefined,
+  );
 
   // The descriptor's statusLine hook renders the row's standalone status
   // line in the slot below the summary; the delegate descriptor is the one
@@ -266,14 +292,16 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
 
   // A descriptor whose summary duplicates what its expanded body shows
   // (shell: the raw one-line command vs the body's pretty-printed block)
-  // swaps its summary text for a placeholder while the row is open. The
-  // summary line itself stays - hiding it lifted the disclosure chevron off
-  // the line it rides (onto the intent line, or adrift on an intent-less
-  // row) - and the swap keeps the call from appearing twice. The placeholder
-  // outranks the projected fallback the same way the descriptor's own summary
-  // does: a real line about the call beats a neutral "unavailable" one
-  // while the open body below shows the command whole.
-  const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
+  // swaps its summary text for a placeholder while the row is open - a
+  // fixed string, or a per-item function when the open line recaps THIS call
+  // (the task card's change sentence). The summary line itself stays -
+  // hiding it lifted the disclosure chevron off the line it rides (onto the
+  // intent line, or adrift on an intent-less row) - and the swap keeps the
+  // call from appearing twice. The placeholder outranks the projected
+  // fallback the same way the descriptor's own summary does: a real line
+  // about the call beats a neutral "unavailable" one while the open body
+  // below shows the command whole.
+  const expandedSummary = expanded ? callWhen(descriptor.summaryWhenExpanded, item) : undefined;
   const summary =
     expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
   // The summary text the row would actually SHOW once its summary line is
