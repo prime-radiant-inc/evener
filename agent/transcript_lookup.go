@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,12 @@ import (
 )
 
 var transcriptBucketGlob = filepath.Glob
+
+// errSymlinkedLayoutPrefix is returned by enumerateBuckets when the evener/ or
+// evener/projects/ layout prefix is a symlink. Callers distinguish this from a
+// simply-absent prefix (which returns nil, nil) so find can surface the
+// security refusal instead of silently degrading to an empty result.
+var errSymlinkedLayoutPrefix = errors.New("symlinked layout prefix")
 
 // resolveTranscript turns a model-supplied selector into a concrete file path
 // and its opaque ref.
@@ -251,7 +258,7 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 			return nil, nil // prefix does not exist → no buckets
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, nil // symlinked prefix → refuse to enumerate
+			return nil, errSymlinkedLayoutPrefix // symlinked prefix → refuse to enumerate
 		}
 	}
 	matches, err := transcriptBucketGlob(pattern)
@@ -334,7 +341,7 @@ func existsNonSymlink(path, bucketDir string) bool {
 	if err != nil {
 		return false
 	}
-	return info.Mode()&os.ModeSymlink == 0
+	return info.Mode()&os.ModeSymlink == 0 && info.Mode().IsRegular()
 }
 
 // ambiguityCandidates builds the context list for a bare-ID ambiguity error.

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -219,14 +218,17 @@ func clampFindLimit(p *int) int {
 
 // buildSessionRecord assembles the wire record for a candidate. ParentRef is
 // encoded relative to the current bucket (the ref the model can pass back).
-// currentID is the live session's ID; a match sets IsCurrent. currentMeta (when
-// non-nil) supplies the live session's in-memory meta: the current session's
-// on-disk meta is stale mid-run (its turn count and updated-at are only flushed
-// at turn boundaries), so those freshness fields are overlaid from memory.
+// currentID is the live session's ID; a match sets IsCurrent. The match
+// requires BOTH the current bucket (c.projectID == "", i.e. the candidate is
+// in the current state dir) AND the ID — a duplicate ID in a sibling bucket must
+// not get IsCurrent or the live overlay. currentMeta (when non-nil) supplies the
+// live session's in-memory meta: the current session's on-disk meta is stale
+// mid-run (its turn count and updated-at are only flushed at turn boundaries),
+// so those freshness fields are overlaid from memory.
 func buildSessionRecord(c findCandidate, snips []snippet, currentID string, currentMeta func() schema.SessionMeta) sessionRecord {
 	turnCount := c.meta.TurnCount
 	updatedAt := c.meta.UpdatedAt
-	if currentMeta != nil && c.meta.ID == currentID {
+	if currentMeta != nil && c.projectID == "" && c.meta.ID == currentID {
 		live := currentMeta()
 		turnCount = live.TurnCount
 		updatedAt = live.UpdatedAt
@@ -243,18 +245,20 @@ func buildSessionRecord(c findCandidate, snips []snippet, currentID string, curr
 		ApproxTurns:   turnCount,
 		ParentRef:     parentRef,
 		Project:       projectName(c.meta),
-		IsCurrent:     c.meta.ID == currentID,
+		IsCurrent:     c.projectID == "" && c.meta.ID == currentID,
 		Snippets:      snips,
 		SessionID:     c.meta.ID,
 	}
 }
 
 // sortCandidatesNewestFirst sorts candidates by UpdatedAt descending, ID ascending as
-// a stable tie-break, with the current session always last.
+// a stable tie-break, with the current session always last. The current session
+// is identified by BOTH the current bucket (projectID == "") AND the ID — a
+// duplicate ID in a sibling bucket is not the current session.
 func sortCandidatesNewestFirst(candidates []findCandidate, currentID string) {
 	sort.Slice(candidates, func(i, j int) bool {
-		isCurI := candidates[i].meta.ID == currentID
-		isCurJ := candidates[j].meta.ID == currentID
+		isCurI := candidates[i].projectID == "" && candidates[i].meta.ID == currentID
+		isCurJ := candidates[j].projectID == "" && candidates[j].meta.ID == currentID
 		if isCurI != isCurJ {
 			return isCurJ // current session sorts after non-current
 		}
@@ -287,7 +291,10 @@ func recordsUpTo(candidates []findCandidate, snipsFor func(c findCandidate) []sn
 // current last, no scan metrics. With a query: metadata match first (cheap, no
 // file open); on miss, bounded raw content scan tracking scanned/scanTruncated.
 func execFindAcrossSessions(deps *toolDeps, query, scope string, limit int) (any, error) {
-	buckets, scopeApplied := findBuckets(deps.stateDir, scope)
+	buckets, scopeApplied, err := findBuckets(deps.stateDir, scope)
+	if err != nil {
+		return nil, err
+	}
 	currentID := deps.sessionID
 
 	candidates := collectCandidates(buckets, deps.stateDir)
@@ -368,23 +375,30 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 // all_projects enumerates sibling buckets via stateHomeFor → enumerateBuckets;
 // under a flat state dir (stateHomeFor == "") it degrades to the current bucket
 // and reports current_project (spec §"Discovery Cost").
-func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied string) {
+func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied string, err error) {
 	return findBucketsWithEnumerate(currentStateDir, scope, enumerateBuckets)
 }
 
-func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string) {
+func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string, err error) {
 	if scope != scopeAllProjects {
-		return []string{currentStateDir}, scopeCurrentProject
+		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
 	sh := stateHomeFor(currentStateDir)
 	if sh == "" {
-		return []string{currentStateDir}, scopeCurrentProject
+		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
-	all, err := enumerate(sh)
-	if err != nil || len(all) == 0 {
-		return []string{currentStateDir}, scopeCurrentProject
+	all, enumerateErr := enumerate(sh)
+	if enumerateErr != nil {
+		if enumerateErr == errSymlinkedLayoutPrefix {
+			return nil, "", enumerateErr
+		}
+		// Other errors (e.g. bad glob pattern): fall back to current project.
+		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
-	return all, scopeAllProjects
+	if len(all) == 0 {
+		return []string{currentStateDir}, scopeCurrentProject, nil
+	}
+	return all, scopeAllProjects, nil
 }
 
 // findCandidate pairs a session meta with the bucket it lives in, so its ref can
@@ -535,26 +549,11 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 }
 
 // transcriptExists is a cheap stat of the transcript JSONL file (no parse).
-// Uses symlinkErrorDeep + os.Lstat so symlinked transcript files AND symlinked
-// sessions/ dirs are rejected: a symlinked file or a symlinked sessions/ parent
-// would count as existing and surface in find results, but read_transcript
-// rejects both — find must not return refs read rejects.
+// Delegates to existsNonSymlink so symlinked files, symlinked sessions/ dirs,
+// symlinked bucket dirs, and non-regular entries (directories, FIFOs) are all
+// rejected — find must not return refs read_transcript rejects.
 func transcriptExists(bucketDir, sessionID string) bool {
-	// Reject if the bucket dir itself is a symlink — symlinkErrorDeep
-	// rooted at bucketDir does not Lstat it (it is the root). A symlinked
-	// bucket dir could point outside the state root.
-	if info, _ := os.Lstat(bucketDir); info != nil && info.Mode()&os.ModeSymlink != 0 {
-		return false
-	}
-	path := transcriptPath(bucketDir, sessionID)
-	if err := symlinkErrorDeep(path, bucketDir); err != nil {
-		return false
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeSymlink == 0
+	return existsNonSymlink(transcriptPath(bucketDir, sessionID), bucketDir)
 }
 
 // sessionKind derives the session classification (not a stored field):
