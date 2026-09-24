@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -1259,18 +1261,14 @@ func TestEnumerateBuckets_SymlinkedEvenerAncestorRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// enumerateBuckets through the symlinked evener/ ancestor currently
-	// returns the bucket — but resolveTranscript's symlinkErrorDeep (rooted
-	// at the state home) rejects it. Find must not return refs read rejects.
+	// enumerateBuckets through the symlinked evener/ ancestor must return
+	// errSymlinkedLayoutPrefix, not nil — so find can surface the refusal.
 	buckets, err := enumerateBuckets(linkHome)
-	if err != nil {
-		t.Fatalf("enumerateBuckets error: %v", err)
+	if err != errSymlinkedLayoutPrefix {
+		t.Fatalf("enumerateBuckets through symlinked evener/ ancestor: error = %v, want %v", err, errSymlinkedLayoutPrefix)
 	}
-	for _, b := range buckets {
-		if filepath.Base(b) == "test-0123456789" {
-			t.Fatalf("enumerateBuckets returned bucket %q through symlinked evener/ ancestor; "+
-				"find would return refs read_transcript rejects", b)
-		}
+	if len(buckets) != 0 {
+		t.Fatalf("enumerateBuckets returned %d buckets through symlinked evener/ ancestor", len(buckets))
 	}
 }
 
@@ -1309,23 +1307,12 @@ func TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession(t *testing.T) {
 	linkedCurrent := filepath.Join(linkHome, "evener", "projects", "current-0123456789")
 
 	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
-	env := decodeEnvelope(t, marshalFind(t, deps,
-		map[string]any{"scope": scopeAllProjects}))
-	// When matches is nil/empty (the correct behavior — the session is
-	// omitted), the test passes trivially. When non-empty, check that
-	// the symlinked-ancestor session is not among the results.
-	if raw, ok := env["matches"]; ok {
-		if items, ok := raw.([]any); ok {
-			for _, v := range items {
-				if m, ok := v.(map[string]any); ok {
-					title, _ := m["title"].(string)
-					if title == "symlinked ancestor session" {
-						t.Fatal("find returned a session from a bucket reached through a symlinked " +
-							"evener/ ancestor; read_transcript would reject its ref")
-					}
-				}
-			}
-		}
+	// find with scope=all_projects must surface the symlinked prefix refusal
+	// as an error, not silently return an empty result.
+	_, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	if err == nil {
+		t.Fatal("find with scope=all_projects returned no error when the evener/ " +
+			"ancestor is a symlink; the security refusal must be surfaced")
 	}
 }
 
@@ -1613,6 +1600,12 @@ func TestTranscriptExists_SymlinkedCurrentBucketDirReturnsTrue(t *testing.T) {
 // was os.Open (which follows symlinks at the final component).
 func TestOpenTranscriptFile_RefusesSymlinkedLeaf(t *testing.T) {
 	t.Parallel()
+	// OpenRegularNoFollow uses O_NOFOLLOW on unix; the !unix fallback
+	// (open_regular_other.go) follows leaf symlinks, so this refusal
+	// test is unix-only.
+	if runtime.GOOS == "windows" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" || runtime.GOOS == "plan9" {
+		t.Skip("O_NOFOLLOW is unix-only; the portable fallback follows leaf symlinks")
+	}
 	// Create a real file and a symlink to it.
 	realFile := filepath.Join(t.TempDir(), "real.transcript.jsonl")
 	if err := os.WriteFile(realFile, []byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
@@ -1635,6 +1628,10 @@ func TestOpenTranscriptFile_RefusesSymlinkedLeaf(t *testing.T) {
 // guarantee for the API-log sidecar open.
 func TestOpenAPILogFile_RefusesSymlinkedLeaf(t *testing.T) {
 	t.Parallel()
+	// Same unix-only constraint as TestOpenTranscriptFile_RefusesSymlinkedLeaf.
+	if runtime.GOOS == "windows" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" || runtime.GOOS == "plan9" {
+		t.Skip("O_NOFOLLOW is unix-only; the portable fallback follows leaf symlinks")
+	}
 	realFile := filepath.Join(t.TempDir(), "real.api.jsonl")
 	if err := os.WriteFile(realFile, []byte(`{"n":1}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1648,5 +1645,188 @@ func TestOpenAPILogFile_RefusesSymlinkedLeaf(t *testing.T) {
 	if err == nil {
 		_ = rc.Close()
 		t.Fatal("openAPILogFile opened a symlinked leaf; should refuse with O_NOFOLLOW")
+	}
+}
+
+// TestListSessionMetas_SymlinkedMetaJSONRejected asserts that a symlinked
+// .meta.json file pointing outside the state root does not surface in
+// ListSessionMetas or find results. listSessionMetasFS uses afero.ReadDir
+// which returns Lstat-based info on OsFs, so a symlinked .meta.json entry has
+// ModeSymlink set and must be skipped by the IsRegular guard. Pre-fix: the
+// entry passed the IsDir check and was loaded via afero.ReadFile which follows
+// the symlink, surfacing metadata from outside the state root.
+func TestListSessionMetas_SymlinkedMetaJSONRejected(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	bucket := newBucketUnder(t, sh)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+
+	// Write a real .meta.json outside the state root.
+	outside := t.TempDir()
+	realMeta := filepath.Join(outside, sid+".meta.json")
+	if err := os.MkdirAll(filepath.Dir(realMeta), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metaData := []byte(`{"id":"` + sid + `","name":"outside session","updated_at":"2026-01-01T00:00:00Z"}`)
+	if err := os.WriteFile(realMeta, metaData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink the .meta.json into the bucket's sessions/ dir.
+	sessDir := filepath.Join(bucket, "sessions")
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkPath := filepath.Join(sessDir, sid+".meta.json")
+	if err := os.Symlink(realMeta, linkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// ListSessionMetas must not return the symlinked meta.
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range metas {
+		if m.ID == sid {
+			t.Fatalf("symlinked .meta.json for %q surfaced in ListSessionMetas; " +
+				"symlinked metadata from outside the state root must be rejected", sid)
+		}
+	}
+
+	// find must not return a record for the symlinked meta either.
+	writeTranscript(t, bucket, sid) // transcript must exist for find to consider it
+	deps := &toolDeps{stateDir: bucket, sessionID: "02wMz5TxvAAAAAAAAAAAAAA"}
+	env := decodeEnvelope(t, marshalFind(t, deps, map[string]any{}))
+	// matches may be nil if the symlinked metadata was the only candidate
+	// and was rejected — that is the expected outcome.
+	if raw, ok := env["matches"]; ok && raw != nil {
+		for _, m := range matchesFromEnvelope(t, env) {
+			title, _ := m["title"].(string)
+			if title == "outside session" {
+				t.Fatalf("symlinked .meta.json surfaced in find results as " +
+					"\"outside session\"; symlinked metadata must be rejected")
+			}
+		}
+	}
+}
+
+// TestFind_SymlinkedEvenerPrefixSurfacesRefusal asserts that find with
+// scope=all_projects surfaces a refusal when the evener/ layout prefix is a
+// symlink — instead of silently returning an empty result. Pre-fix:
+// enumerateBuckets returns (nil, nil) for both prefix-absent and
+// prefix-is-symlink, so findBucketsWithEnumerate silently degrades to
+// current_project and find returns an empty result, hiding the security
+// refusal from the model.
+func TestFind_SymlinkedEvenerPrefixSurfacesRefusal(t *testing.T) {
+	t.Parallel()
+	// Real state home with a sibling bucket containing a real session.
+	realHome := t.TempDir()
+	siblingID := "test-0123456789"
+	siblingBucket := filepath.Join(realHome, "evener", "projects", siblingID)
+	if err := os.MkdirAll(filepath.Join(siblingBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentBucket := filepath.Join(realHome, "evener", "projects", "current-0123456789")
+	if err := os.MkdirAll(filepath.Join(currentBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a session in the sibling bucket so there are real sessions to find.
+	now := time.Now().UTC().Truncate(time.Second)
+	writeFindSession(t, siblingBucket, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "sibling session",
+		updated: now,
+	}, "content")
+
+	// Symlink evener/ to the real evener/ dir.
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	linkedCurrent := filepath.Join(linkHome, "evener", "projects", "current-0123456789")
+
+	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	// find with scope=all_projects must surface the refusal as an error,
+	// not silently return an empty result.
+	_, err := execFindSessionTranscripts(deps, map[string]any{"scope": scopeAllProjects})
+	if err == nil {
+		t.Fatal("find with scope=all_projects returned no error when the evener/ " +
+			"prefix is a symlink; the security refusal must be surfaced, not hidden " +
+			"behind an empty result")
+	}
+}
+
+// TestFind_SiblingBucketDuplicateNotIsCurrent asserts the F1 invariant: when a
+// sibling bucket contains a session with the same ID as the current session,
+// the sibling record must NOT get IsCurrent=true, and must NOT receive the
+// live TurnCount/UpdatedAt overlay from currentMeta. Only the current-bucket
+// record (projectID == "") with the matching ID gets both.
+func TestFind_SiblingBucketDuplicateNotIsCurrent(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	currentBucket := newBucketUnder(t, sh)
+	siblingBucket := newBucketUnder(t, sh)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Write the same session ID in both buckets. The current bucket has
+	// stale on-disk meta (turnCount 0); currentMeta supplies the live count
+	// (turnCount 5). The sibling bucket has its own meta (turnCount 99).
+	writeFindSession(t, currentBucket, findMetaSpec{
+		id:        sid,
+		name:      "current session",
+		updated:   now,
+		turnCount: 0,
+	}, "current content")
+	writeFindSession(t, siblingBucket, findMetaSpec{
+		id:        sid,
+		name:      "sibling duplicate",
+		updated:   now.Add(-time.Minute), // older so it sorts before current
+		turnCount: 99,
+	}, "sibling content")
+
+	deps := &toolDeps{
+		stateDir:  currentBucket,
+		sessionID: sid,
+		currentMeta: func() schema.SessionMeta {
+			return schema.SessionMeta{ID: sid, Name: "current session", TurnCount: 5, UpdatedAt: now}
+		},
+	}
+
+	matches := matchesFromEnvelope(t, decodeEnvelope(t, marshalFind(t, deps,
+		map[string]any{"scope": scopeAllProjects})))
+
+	var current, sibling map[string]any
+	for _, m := range matches {
+		title, _ := m["title"].(string)
+		if title == "current session" {
+			current = m
+		} else if title == "sibling duplicate" {
+			sibling = m
+		}
+	}
+	if current == nil {
+		t.Fatalf("current-bucket record not found in matches: %v", matches)
+	}
+	if sibling == nil {
+		t.Fatalf("sibling-bucket duplicate not found in matches: %v", matches)
+	}
+
+	// Current-bucket record: IsCurrent=true, live TurnCount overlay (5, not 0).
+	if current["is_current"] != true {
+		t.Errorf("current-bucket record is_current = %v, want true", current["is_current"])
+	}
+	if got := current["approx_turns"]; got != float64(5) {
+		t.Errorf("current-bucket record approx_turns = %v, want 5 (live overlay, not stale disk 0)", got)
+	}
+
+	// Sibling-bucket duplicate: IsCurrent=false, NO live overlay (99, not 5).
+	if sibling["is_current"] == true {
+		t.Error("sibling-bucket duplicate got is_current=true; only the current bucket + matching ID should be current")
+	}
+	if got := sibling["approx_turns"]; got != float64(99) {
+		t.Errorf("sibling-bucket duplicate approx_turns = %v, want 99 (its own meta, not the live overlay 5)", got)
 	}
 }

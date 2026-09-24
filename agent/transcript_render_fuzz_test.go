@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/fuzz/oracle"
-	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -36,12 +35,12 @@ const (
 
 // trenderLegacySession lives only in the legacy-named bucket; a bare-id
 // lookup for it resolves to the legacy bucket with an empty ref. It is a
-// package var (not const) because MustNewSessionID panics at init if the
-// identifier domain is misconfigured — the const literal it replaced was
-// 21 chars, one short of the 22-char base62 width ValidateSessionID
-// requires, so the seed was rejected before bucket resolution and the
-// empty-ref/legacy-bucket oracle branch was dead.
-var trenderLegacySession = identifier.MustNewSessionID()
+// fixed 22-char base62 literal (a valid UUIDv7 payload that passes
+// ValidateSessionID) so the fuzz seed corpus is deterministic. The prior
+// const literal was 21 chars — one short of the 22-char base62 width
+// ValidateSessionID requires — so the seed was rejected before bucket
+// resolution and the empty-ref/legacy-bucket oracle branch was dead.
+const trenderLegacySession = "034UFS34rc5EKcH0qp1gaT"
 
 // This file fuzzes four transcript-rendering/lookup seams that unit tests
 // exercise but no fuzz target reaches:

@@ -82,6 +82,8 @@ canonical project ID. The main checkout and linked worktrees share a bucket; a d
 clone gets a distinct bucket. Discovery scope is `current_project` (this bucket; the default) or `all_projects`
 (sibling buckets). Under a flat state dir with no project root, `all_projects` degrades to
 `current_project` and says so via `scope_applied`.
+A symlinked `evener/` or `evener/projects/` layout prefix causes `all_projects` to
+return an error rather than silently degrading to `current_project`.
 
 **Result tool.** The `communicate`-style tool whose call carries a session's final answer.
 Its name comes from session metadata (default `communicate`); the renderer shows that
@@ -162,8 +164,9 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 
 Registered `strict:false`, so every parameter is optional. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
-and each session read returns the same envelope skeleton (`transcript_ref`, `format`,
-`content`, format-specific `meta`). A shell-job ref defaults to bounded markdown;
+and each session read returns the same envelope skeleton (`transcript_ref`?, `format`,
+`content`, format-specific `meta`); `transcript_ref` is omitted when the session lives in a
+legacy-named bucket whose name is not a valid project ID. A shell-job ref defaults to bounded markdown;
 an explicit `offset_bytes` returns a fixed 16 KiB raw page, and `output_match`
 returns bounded exact line matches. An `artifact:<id>` ref reads the same paged or
 searched evidence shape without job status. API-log selectors are not part of
@@ -186,7 +189,7 @@ One line per turn: far more scannable than the body, and the right first look at
 *shape* of a session.
 
 ```
-{ "transcript_ref", "format":"outline", "turns_total",
+{ "transcript_ref"?, "format":"outline", "turns_total",
   "content": "<one line per turn>", "truncated", "elided_turns", "hint" }
 ```
 
@@ -215,7 +218,7 @@ conversation budget it keeps a head and tail of lines and drops the middle under
 Condensed conversation: assistant text and thinking in full, tool results truncated.
 
 ```
-{ "transcript_ref", "format":"markdown", "content_type":"text/markdown",
+{ "transcript_ref"?, "format":"markdown", "content_type":"text/markdown",
   "content": "<markdown>",
   "meta": { "turns_total", "range", "turns_rendered", "truncated", "elided_turns",
             "skipped_corrupt_lines"?, "range_warning"? } }
@@ -250,7 +253,7 @@ This is rarely what you want: reserve it for debugging transcript structure. For
 comprehension, use markdown; for provider forensics, use `evener doctor apilog <selector>`.
 
 ```
-{ "transcript_ref", "format":"jsonl", "content_type":"application/x-ndjson",
+{ "transcript_ref"?, "format":"jsonl", "content_type":"application/x-ndjson",
   "content": "<raw lines>",
   "meta": { "lines_returned", "truncated", "skipped_corrupt_lines",
             "hint":"semantic transcript JSONL; for comprehension, re-read with format=markdown.",
