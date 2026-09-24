@@ -384,7 +384,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 	// The driver + the live Go choreography run together: the driver owns the
 	// browser, Go owns the fixture event only it can produce (deleting and
 	// restoring the skill source for the failed-activation scenario).
-	choreo := newSkillGuardChoreography(t, fixture)
+	choreo := newSkillGuardChoreography(fixture)
 	driverDone := make(chan error, 1)
 	driverFinished := make(chan struct{})
 	fixture.driverFinished = driverFinished
@@ -415,7 +415,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 		skillGuardStopHelper(t, i)
 	}
 
-	skillGuardAssert(t, fixture, milestones, entries)
+	skillGuardAssert(t, fixture, milestones)
 }
 
 // ---- fixture ----
@@ -822,20 +822,16 @@ func runSkillGuardDriver(t *testing.T, fixture *skillGuardFixture, authURL, mile
 // real-world event only the Go owner can produce: a skill source disappearing
 // before a queued input's claim (the failed-activation scenario).
 type skillGuardChoreography struct {
-	t        *testing.T
 	fixture  *skillGuardFixture
 	stopOnce sync.Once
 	stopCh   chan struct{}
 	doneCh   chan struct{}
 	err      error
 	failSeen bool
-	// The driver's milestone file, which this side appends its own records to.
-	milestonePath string
 }
 
-func newSkillGuardChoreography(t *testing.T, fixture *skillGuardFixture) *skillGuardChoreography {
+func newSkillGuardChoreography(fixture *skillGuardFixture) *skillGuardChoreography {
 	return &skillGuardChoreography{
-		t:       t,
 		fixture: fixture,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
@@ -850,30 +846,10 @@ func (c *skillGuardChoreography) stop() error {
 
 func (c *skillGuardChoreography) run(milestones string) error {
 	defer close(c.doneCh)
-	c.milestonePath = milestones
 	if err := c.tailMilestones(milestones); err != nil {
 		c.err = err
 	}
 	return c.err
-}
-
-func sinceMs(start time.Time) int64 { return time.Since(start).Milliseconds() }
-
-// milestone appends a Go-owned record to the same file the driver writes, in
-// the same shape, so one ordered timeline carries both sides of the handoff.
-// The tailer reads these back and ignores them: handleMilestone answers only
-// the names the driver emits. A write failure is reported rather than
-// swallowed -- a diagnostic that quietly stops being written is worse than
-// none, since the next reader trusts the gap.
-func (c *skillGuardChoreography) milestone(name string, detail any) {
-	record := map[string]any{
-		"milestone": name,
-		"at":        time.Now().UTC().Format(time.RFC3339Nano),
-		"detail":    detail,
-	}
-	if err := appendFileLine(c.milestonePath, record); err != nil && c.err == nil {
-		c.err = fmt.Errorf("write %s milestone: %w", name, err)
-	}
 }
 
 // handleMilestone reacts to one driver milestone with the real-world fixture
@@ -1112,7 +1088,7 @@ func skillGuardMilestoneDetail(t *testing.T, milestones []skillGuardMilestone, n
 	return false
 }
 
-func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath string, entries [2]rendezvous.Entry) {
+func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath string) {
 	t.Helper()
 	turnsA := skillGuardTurnRequests(t, fixture.requestLog[0])
 	milestones := skillGuardReadMilestones(t, milestonesPath)
@@ -1399,6 +1375,14 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if attachSnapshot.Tiles != 1 {
 		t.Errorf("attachment tiles across chip edits = %d, want 1", attachSnapshot.Tiles)
 	}
+
+	// No capability-loss scenario: since #2107 a session whose daemon exited
+	// still advertises skillInput (its resume consumes selections), so no local
+	// session can reach the composer's skillInput refusal. That refusal's
+	// contract - draft kept, toast, no turn/start, no durable row - is pinned in
+	// Composer.test.tsx ("a staged skill on Send to a target without skillInput
+	// keeps the draft and writes nothing durable", and the Queue/Steer/Drain
+	// cases beside it).
 
 	// Scenario: failed activation + explicit retry. The failed input is durably
 	// recorded with its names, and the ONLY provider request carrying its

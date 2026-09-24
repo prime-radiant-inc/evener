@@ -1020,8 +1020,8 @@ export class Driver {
   }
 
   // A composer action click is lost when a re-render lands between the mouse
-  // press and release (no click event fires) — the roster refresh after a
-  // daemon death re-renders the shell exactly then. So each attempt is
+  // press and release (no click event fires) — any store update that
+  // re-renders the shell at that moment is enough. So each attempt is
   // verified by an OBSERVABLE effect (composer state changed, the button went
   // disabled, or a toast answered) and re-clicked when nothing happened. A
   // re-click while the first landed is harmless: actionPending disables the
@@ -2041,6 +2041,10 @@ async function runScenariosPart2(driver) {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
   await driver.waitForReply(driver.sessionA, PROSE.attachment);
+
+  // No capability-loss scenario: see skillGuardAssert in
+  // skill_composer_browser_test.go for why, and for where the composer's
+  // skillInput refusal is covered instead.
 
   // ---- scenario: failed activation + explicit retry ----
   await driver.openSession(driver.sessionA);
