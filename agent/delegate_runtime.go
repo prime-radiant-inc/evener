@@ -2130,14 +2130,10 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		// no unpin API, and the root's retirement preparation would then refuse
 		// forever. Such an allocation is retained — its lease released, its
 		// directory kept — exactly as the restore-path teardowns do; only a
-		// fresh mint the manifest does not reference is disposed.
-		if s.ownsReferencedRetainedScratch(isolation.env) {
-			if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-				local.RetainSessionScratch()
-			}
-		} else {
-			disposeUnadoptedScratch(isolation.env)
-		}
+		// fresh mint the manifest does not reference is disposed. The verdict
+		// is per kind, so an adopted allocation never holds its sibling fresh
+		// mint open with it (round 83).
+		s.settleOwnedScratchByManifest(isolation.env)
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.laneBranch, isolation.worktreePath, isolation.worktreeProject)

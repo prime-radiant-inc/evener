@@ -1798,6 +1798,64 @@ func TestScratchDyingClaimKeepsTheBindingRowAcrossMint(t *testing.T) {
 	}
 }
 
+// TestDisposeResumeScratchSettlesEachKindAgainstTheManifest pins round 83's
+// first Medium: DisposeResumeScratchAfterFailure decided retain-vs-dispose
+// for the whole environment on whether any allocation the manifest
+// references, so a failed resume whose environment held an adopted,
+// manifest-referenced allocation of one kind beside its own fresh mint of
+// the other retained BOTH — and the unreferenced fresh directory outlived
+// every owner as a leak. The settle must classify each kind the environment
+// owns against the manifest: the referenced allocation is kept for a later
+// resume to reacquire, and only the failure's own fresh mint is disposed.
+func TestDisposeResumeScratchSettlesEachKindAgainstTheManifest(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01MIXEDSETTLE1"
+	const bindingID = "b-mixed-settle"
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, consumerID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+
+	// The restore's own fresh sandbox mint: enabled, never published, and so
+	// referenced by nothing — the allocation the whole-env verdict leaked.
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision the fresh sandbox scratch: %v", err)
+	}
+	freshSandbox := env.SessionScratchDir()
+	if freshSandbox == "" || filepath.Clean(freshSandbox) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", freshSandbox, retainedDir)
+	}
+
+	// The adopted allocation installs onto the environment: the binding
+	// identity first, then the handle (the session-init shape).
+	if err := env.SetScratchRetentionBinding(owner, bindingRow); err != nil {
+		t.Fatalf("install the binding identity: %v", err)
+	}
+	if err := env.RestoreSessionScratch(bindingID, sandbox.ScratchReference{Kind: sandbox.ScratchKindUnsandboxed, Dir: retainedDir}, slots[sandbox.ScratchKindUnsandboxed]); err != nil {
+		t.Fatalf("install the adopted allocation: %v", err)
+	}
+
+	DisposeResumeScratchAfterFailure(owner.StateDir, owner.RootSessionID, env)
+
+	if _, err := os.Stat(freshSandbox); !os.IsNotExist(err) {
+		t.Fatalf("the failed resume retained its own fresh sandbox mint %q beside the manifest-referenced allocation: the unreferenced kind leaked past the whole-env verdict", freshSandbox)
+	}
+	if _, err := os.Stat(retainedDir); err != nil {
+		t.Fatalf("the manifest-referenced allocation %q did not survive the failure teardown: %v", retainedDir, err)
+	}
+	if slots[sandbox.ScratchKindUnsandboxed].HasLease() {
+		t.Fatalf("the kept allocation's lease is still held: a later resume cannot reacquire %q", retainedDir)
+	}
+}
+
 // TestScratchRestoreAdoptionRefusesAReleasedManifestsStaleRows pins round 24's
 // first Medium: the refresh declined on a released manifest without clearing
 // the pool, so the adoption seam reading the pool right below it served the

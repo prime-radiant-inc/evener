@@ -273,6 +273,121 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 	}
 }
 
+// TestSweepRenameBackRefusesAnOrphanedPin pins round 83's second Medium: the
+// removal of the dead tombstone runs outside every lock (round 71), so a
+// manifest reset can carry — and drop — the tombstoned directory's reference
+// inside that window. The rename-back after a failed removal resurrected the
+// pin unconditionally, leaving it beside an unreleased manifest that names
+// nothing: the orphan the collector must retain forever with a diagnostic.
+// The rename-back must revalidate: it restores the directory only while the
+// pin's manifest still names it, and leaves the tombstone for the tombstone
+// sweep to reclaim in every case of doubt.
+func TestSweepRenameBackRefusesAnOrphanedPin(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory write permissions, so the removal cannot be made to fail")
+	}
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	artifact := filepath.Join(scratch.Dir, "retained.bin")
+	if err := os.WriteFile(artifact, []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tombstone := crashedSessionScratchTombstone(scratch.Dir)
+	t.Cleanup(func() {
+		// The removal is made to fail by a mode, not by a missing directory:
+		// restore it so the temp-dir cleanup can always remove what is left.
+		_ = os.Chmod(scratch.Dir, 0o700)
+		_ = os.Chmod(tombstone, 0o700)
+	})
+	// The carry needs the full graph: the lease-owning binding plus a
+	// consumer naming it (round 16).
+	consumer := ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	// Tombstone while the lease is still held, so the pin survives the
+	// release (round 25): Released:true is exactly what makes the sweep read
+	// the aged directory collectible.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(scratch.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+
+	atWindow := make(chan struct{})
+	proceed := make(chan struct{})
+	sweepDone := make(chan error, 1)
+	scratchSweepAfterRename = func() {
+		atWindow <- struct{}{}
+		<-proceed
+	}
+	t.Cleanup(func() { scratchSweepAfterRename = nil })
+
+	go func() { sweepDone <- SweepCrashedSessionScratch(workspace) }()
+	<-atWindow
+
+	// The removal window is lock-free by design, and the live path died with
+	// the rename, so the reset reads the pin's path as absent and the
+	// reference dies with the carry (rounds 13 and 16): the manifest commits
+	// unreleased naming nothing — the state a rename-back must not resurrect
+	// a pin over.
+	if _, _, err := ResetScratchRetentionIfReleased(owner); err != nil {
+		t.Fatalf("reset inside the removal window: %v", err)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Released {
+		t.Fatal("fixture: the reset did not commit an unreleased manifest")
+	}
+	for _, ref := range manifest.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			t.Fatalf("fixture: the committed manifest still names %q", scratch.Dir)
+		}
+	}
+	// Fail the removal: with the tombstone itself read-only no child can be
+	// unlinked, so the failure touches nothing and the pin survives it.
+	if err := os.Chmod(tombstone, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	close(proceed)
+
+	select {
+	case err := <-sweepDone:
+		if err == nil {
+			t.Fatal("fixture: the sweep reported no failure over the unremovable tombstone")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("sweep did not finish")
+	}
+
+	// The harm: an unconditional rename-back resurrects the pin beside the
+	// unreleased manifest that names nothing, and the collector must retain
+	// the orphan forever.
+	retained, _ := ScratchDirectoryRetained(scratch.Dir)
+	if retained {
+		t.Fatalf("the rename-back resurrected an orphaned pin: the collector must retain %q forever because its reference died in the removal window", scratch.Dir)
+	}
+
+	// The settled state: the directory stays dead at its live path and the
+	// tombstone waits for the tombstone sweep, never resurrecting the orphan.
+	if _, err := os.Stat(scratch.Dir); !os.IsNotExist(err) {
+		t.Fatalf("the failed removal restored %q to its live path", scratch.Dir)
+	}
+	if _, err := os.Stat(tombstone); err != nil {
+		t.Fatalf("the tombstone %q did not survive the refused rename-back: %v", tombstone, err)
+	}
+}
+
 // TestSweepRemovalDoesNotHoldTheManifestLockThroughTheRemoval pins the cost of
 // holding the pin owner's manifest lock across the sweep's removal: the
 // removal's duration scales with the removed directory's contents, while

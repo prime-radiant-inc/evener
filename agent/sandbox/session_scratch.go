@@ -286,12 +286,62 @@ func isCrashedSessionScratchTombstone(name string) bool {
 	return strings.HasPrefix(name, "."+sessionScratchPrefix) && strings.HasSuffix(name, crashedSessionScratchTombstoneSuffix)
 }
 
+// sweepTombstoneReferenceSurvived reports whether the rename-back after a
+// failed tombstone removal is safe: the pin inside the tombstone must still be
+// named by its owner's live manifest. The removal ran outside every lock
+// (round 71), so a manifest reset may have carried — and dropped — the
+// directory's reference in the window; renaming back over that state
+// resurrects the orphan pin round 18 documented, a pin beside an unreleased
+// manifest that names nothing, which the collector must retain forever. A
+// pin absent from the tombstone means the failed removal already took it, so
+// restoring the directory resurrects nothing collectible. Every unreadable
+// answer leaves the tombstone in place — the tombstone sweep reclaims it
+// under the same gates — because the alternative is gambling an orphan on a
+// doubt (round 83).
+func sweepTombstoneReferenceSurvived(dir, tombstone string) bool {
+	pin, err := readScratchDirectoryPin(tombstone)
+	if err != nil {
+		return os.IsNotExist(err)
+	}
+	lock, lockErr := acquireScratchRetentionLock(pin.Owner)
+	if lockErr != nil {
+		// A writer holds the manifest: the answer is in motion, so doubt
+		// keeps the tombstone.
+		return false
+	}
+	defer func() { _ = lock.Release() }()
+	manifest, err := loadScratchRetention(pin.Owner)
+	if err != nil || manifest.Released {
+		return false
+	}
+	canonical, err := canonicalScratchPath(dir)
+	if err != nil {
+		return false
+	}
+	for _, ref := range manifest.References {
+		refDir, refErr := canonicalScratchPath(ref.Dir)
+		if refErr == nil && refDir == canonical && ref.Kind == pin.Kind {
+			return true
+		}
+	}
+	return false
+}
+
 // scratchSweepBeforeRemove is a nil-in-production test seam fired while the
 // sweep holds the candidate's lease, the reclamation mutex, and — when the
 // candidate carries a pin — the pin owner's manifest lock, after the retention
 // check read the directory collectible and just before the invalidating rename.
 // Tests use it to run a concurrent manifest reset inside that window.
 var scratchSweepBeforeRemove func()
+
+// scratchSweepAfterRename is a nil-in-production test seam fired once the
+// invalidating rename succeeded and every lock is down — the reclamation
+// mutex and the pin owner's manifest lock — with the tombstone in place, the
+// directory lease still held, and the removal of the dead tombstone next.
+// The removal window is the one place a concurrent manifest reset can act on
+// the tombstoned directory (round 71 moved the removal outside every lock);
+// tests use the seam to run that reset and then fail the removal.
+var scratchSweepAfterRename func()
 
 // scratchResetBeforeReclaimLock fires just before the manifest reset attempts
 // the reclamation lock, inside the retry closure and ahead of the lock's
@@ -484,6 +534,9 @@ func sweepCrashedSessionScratch(base string) error {
 			}
 			continue
 		}
+		if scratchSweepAfterRename != nil {
+			scratchSweepAfterRename()
+		}
 		if err := os.RemoveAll(tombstone); err != nil {
 			// A failed removal must not leave the candidate renamed: the
 			// sweep's contract with an unremovable directory is to leave it
@@ -493,9 +546,19 @@ func sweepCrashedSessionScratch(base string) error {
 			// base's own cleanup. Rename it back; only a rename-back that
 			// itself fails leaves a tombstone behind, and that residual is
 			// reported alongside.
+			//
+			// Round 83 qualifies the rename-back: the removal ran outside
+			// every lock, so a manifest reset may have carried — and dropped
+			// — this directory's reference in the window, and restoring the
+			// pin over that state orphans it forever. Rename back only while
+			// the pin's manifest still names the directory; every other
+			// verdict keeps the tombstone dead, reported here and reclaimed
+			// by the tombstone sweep.
 			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
-			if backErr := os.Rename(tombstone, dir); backErr != nil {
-				failures = append(failures, fmt.Errorf("sandbox: restore unremoved crashed session scratch %q from %q: %w", dir, tombstone, backErr))
+			if sweepTombstoneReferenceSurvived(dir, tombstone) {
+				if backErr := os.Rename(tombstone, dir); backErr != nil {
+					failures = append(failures, fmt.Errorf("sandbox: restore unremoved crashed session scratch %q from %q: %w", dir, tombstone, backErr))
+				}
 			}
 		}
 		_ = lease.Release()
