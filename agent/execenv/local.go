@@ -25,6 +25,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/orphanpipe"
+	"primeradiant.com/evener/internal/procgroup"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -1307,7 +1308,7 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 		if process.runtime != nil {
 			process.runtime.Terminate()
 		} else {
-			terminateProcessGroup(process.pid)
+			procgroup.Terminate(process.pid)
 		}
 	}
 	// Wait for graceful shutdown, then SIGKILL survivors.
@@ -1316,7 +1317,7 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 		if process.runtime != nil {
 			process.runtime.Kill()
 		} else {
-			killProcessGroup(process.pid)
+			procgroup.Kill(process.pid)
 		}
 	}
 }

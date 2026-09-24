@@ -206,7 +206,9 @@ describe("AddInstanceDialog", () => {
     await user.type(screen.getByLabelText("Name"), "work");
     await user.type(screen.getByLabelText(/credential header/i), "Authorization=Bearer secret");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    expect(screen.getByText("Credential header must reference a $VARIABLE, never a literal secret.")).toBeTruthy();
+    expect(
+      screen.getByText("Credential header must reference a $VARIABLE or run a $(command), never a literal secret."),
+    ).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
   });
 

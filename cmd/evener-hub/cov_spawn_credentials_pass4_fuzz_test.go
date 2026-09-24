@@ -52,10 +52,10 @@ func FuzzSpawnCredentialOrchestrationPass4(f *testing.F) {
 			map[string]string{"OPENROUTER_API_KEY": "router-key"},
 			instanceSets[int(mode)%len(instanceSets)])
 		for _, provider := range []string{"", "inline", "local", "work", "router", "absent", "openrouter", "ollama"} {
-			_ = validateProviderCredentials(provider, gate)
+			_ = validateProviderCredentials(provider, "", gate)
 		}
-		_ = validateProviderCredentials("openrouter", nil)
-		_ = validateProviderCredentials("openrouter", hubcore.NewProviderRegistry(nil))
+		_ = validateProviderCredentials("openrouter", "", nil)
+		_ = validateProviderCredentials("openrouter", "", hubcore.NewProviderRegistry(nil))
 
 		// The executable makes the launch contract either succeed or fail. On
 		// success it also publishes rendezvous for Spawn/Resume.

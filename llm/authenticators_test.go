@@ -102,3 +102,52 @@ func TestCredentialHeaderWinsOverDerivedAuth(t *testing.T) {
 		t.Fatalf("header scheme with only a credential header: %v %q", err, req.Header.Get("X-Api-Key"))
 	}
 }
+
+// The resolve path reports a failed auth-header expression as the header's
+// own warning and suppresses the duplicate "no credential" wording, because
+// the header form carries the diagnosis — the command's timeout, its stderr,
+// the missing variable. The request-time error must repeat that warning: a
+// generic no-credential message would name exactly nothing the user can act
+// on. The header name may also be authored in a different case than the
+// transport's, so the recognition folds case like every other header match.
+func TestMissingCredentialCarriesTheAuthHeaderFailure(t *testing.T) {
+	cases := []struct {
+		name  string
+		res   registry.Resolved
+		apply func(*http.Request, registry.Resolved) error
+	}{
+		{
+			name: "bearer",
+			res: registry.Resolved{
+				Instance:  "gw",
+				Transport: registry.Transport{Auth: registry.AuthBearer},
+				Warnings:  []string{`credential header "Authorization": command expression failed: command timed out`},
+			},
+			apply: func(req *http.Request, res registry.Resolved) error {
+				return bearerAuth{}.Apply(context.Background(), req, res)
+			},
+		},
+		{
+			name: "header with a case-variant key",
+			res: registry.Resolved{
+				Instance:  "gw",
+				Transport: registry.Transport{Auth: registry.AuthHeader, AuthHeader: "X-K"},
+				Warnings:  []string{`credential header "x-k": command expression failed: command timed out`},
+			},
+			apply: func(req *http.Request, res registry.Resolved) error {
+				return headerAuth{}.Apply(context.Background(), req, res)
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.apply(&http.Request{Header: http.Header{}}, tt.res)
+			if err == nil {
+				t.Fatal("an instance whose credential slot resolved to nothing must fail the request")
+			}
+			if !strings.Contains(err.Error(), tt.res.Warnings[0]) {
+				t.Fatalf("err = %q; want the auth header's own failure wording carried into the error", err)
+			}
+		})
+	}
+}
