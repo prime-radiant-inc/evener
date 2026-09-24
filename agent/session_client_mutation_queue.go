@@ -184,13 +184,13 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 }
 
 // hasPendingUserInputToRun reports whether ProcessPendingUserInput could find
-// anything to run, without claiming it or taking a retirement lease. It may
-// over-report (the claim under the lease re-decides) but never under-reports: a
+// anything to run, without claiming it or taking a retirement lease. It asks
+// the claim path's own questions -- a claimable queue head, or user steering
+// that is neither parked nor held and has a carrier to claim -- on the
+// committed store generation. It may over-report (the claims under the lease
+// re-decide on the generation they commit against) but never under-reports: a
 // store not yet opened may hold a durable queue, so it counts as work.
 func (s *Session) hasPendingUserInputToRun() bool {
-	if s.hasPendingUserSteering() {
-		return true
-	}
 	s.clientMutationsInitMu.Lock()
 	store := s.clientMutations
 	s.clientMutationsInitMu.Unlock()
@@ -198,7 +198,14 @@ func (s *Session) hasPendingUserInputToRun() bool {
 		return true
 	}
 	snapshot := store.snapshot()
-	return queueHeadClaimable(&snapshot)
+	if queueHeadClaimable(&snapshot) {
+		return true
+	}
+	if !s.hasPendingUserSteering() || s.steeringParkedNow() || !steeringCarrierRailOpen(&snapshot) {
+		return false
+	}
+	_, turnID := claimableSteeringCarrier(&snapshot, s.steeringInFlightSample())
+	return turnID != ""
 }
 
 // ProcessPendingUserInput runs input the user has already given but the session

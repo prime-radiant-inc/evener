@@ -666,6 +666,40 @@ func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
 	}
 }
 
+// User steering that a wake cannot carry -- parked by a failed attempt, or held
+// by a Stop -- makes the wake a no-op just as an empty queue does, so it must
+// not restart the idle interval either.
+func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block func(t *testing.T, root *Session)
+	}{
+		{"parked", func(_ *testing.T, root *Session) { root.parkSteering() }},
+		{"held", func(t *testing.T, root *Session) {
+			if err := root.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+				snapshot.SteeringHeld = true
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, c, settled := newSettledRetirementRoot(t)
+			root.mu.Lock()
+			root.steeringQueue = append(root.steeringQueue, steeringMessage{Text: "opaque-steer", Source: events.SteeringSourceUser})
+			root.mu.Unlock()
+			tc.block(t, root)
+			if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
+				t.Fatalf("wake = processed %v, err %v; want the steer left for the user", processed, err)
+			}
+			if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+				t.Fatalf("wake moved the settled instant from %v to %v; it ran nothing", settled, got)
+			}
+		})
+	}
+}
+
 // newSettledRetirementRoot returns an idle root with its client mutation store
 // open, attached to a controller whose settled instant is already recorded, so
 // the call under test is the only thing that can move it.
