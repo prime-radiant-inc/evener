@@ -269,6 +269,37 @@ func TestDaemonRetirementProcessHelperReleaseSurvivesAnEarlyLookup(t *testing.T)
 	}
 }
 
+// The controller computes a remaining interval from its clock read and then
+// arms the timer with it, so an advance can land between the two. The fake
+// timer must measure that interval from the read, as the controller meant it:
+// measured from the moment of arming instead, the fixture's advance moved the
+// deadline later by the whole advance, and the deadline the fixture then
+// advanced to never fired.
+func TestDaemonRetirementProcessClockArmsFromTheEvaluatedInstant(t *testing.T) {
+	evtR, evtW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer evtR.Close() //nolint:errcheck // test pipe teardown
+	defer evtW.Close() //nolint:errcheck // test pipe teardown
+	go func() { _, _ = io.Copy(io.Discard, evtR) }()
+	clk := newDaemonRetirementProcessHelper(nil, evtW).clock
+
+	evaluated := clk.Now()
+	clk.advance(30*time.Minute, 1)
+	timer := clk.NewTimer(time.Hour)
+	clk.advance(30*time.Minute, 2)
+
+	select {
+	case fired := <-timer.C():
+		if want := evaluated.Add(time.Hour); !fired.Equal(want) {
+			t.Fatalf("timer fired at %v, want %v", fired, want)
+		}
+	default:
+		t.Fatalf("timer armed for 1h at %v did not fire at %v", evaluated, evaluated.Add(time.Hour))
+	}
+}
+
 // daemonRetirementProcessClock is the helper-side retirement clock. Every
 // assertion the fixture makes about evaluation, arming and resetting is an
 // event this clock emits; every advance is a command it acknowledges. It never
@@ -280,11 +311,18 @@ type daemonRetirementProcessClock struct {
 	mu    sync.Mutex
 	now   time.Time
 	timer *daemonRetirementProcessTimer
+	// evaluated is the instant the controller last read. Its Run loop is the
+	// only caller of this clock, and it arms the timer with a remaining
+	// interval it computed from that read, so the interval is measured from
+	// here rather than from whatever virtual time an advance has since moved
+	// to.
+	evaluated time.Time
 }
 
 func (c *daemonRetirementProcessClock) Now() time.Time {
 	c.mu.Lock()
 	now := c.now
+	c.evaluated = now
 	armed := c.timer != nil
 	var remaining int64
 	if armed {
@@ -321,10 +359,21 @@ func (c *daemonRetirementProcessClock) arm(t *daemonRetirementProcessTimer, d ti
 	}
 	c.mu.Lock()
 	c.timer = t
-	t.deadline = c.now.Add(d)
-	now := c.now
+	from := c.evaluated
+	if from.IsZero() {
+		from = c.now
+	}
+	t.deadline = from.Add(d)
+	// An advance that landed after the read may already have passed the
+	// deadline; deliver now, as a real timer armed with a spent interval would.
+	if !c.now.Before(t.deadline) {
+		select {
+		case t.ch <- c.now:
+		default:
+		}
+	}
 	c.mu.Unlock()
-	c.h.emit(daemonRetirementProcessEvent{Kind: "armed", Now: now.UTC().Format(time.RFC3339Nano), Remaining: int64(d)})
+	c.h.emit(daemonRetirementProcessEvent{Kind: "armed", Now: from.UTC().Format(time.RFC3339Nano), Remaining: int64(d)})
 }
 
 // stop is the timer's Stop. It reports the disarm so the fixture can see the
