@@ -15,14 +15,14 @@ runs:
     # own 5-day trim does, keeps a saved entry the size of one job's build
     # instead of every main commit's leftovers.
     - name: Drop build cache entries this job did not use
-      if: (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && env.GO_CACHE_EXACT_HIT != 'true'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true'
       shell: bash
       run: |
         find "$GO_BUILD_CACHE_DIR" -type f -name '*-[ad]' ! -newermt "@$((GO_CACHE_RESTORED_AT - 3600))" -delete
         du -sh "$GO_BUILD_CACHE_DIR" "$GO_MOD_CACHE_DIR"
 
     - name: Save Go build and module caches
-      if: (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && env.GO_CACHE_EXACT_HIT != 'true'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true'
       uses: actions/cache/save@v6
       with:
         path: |
