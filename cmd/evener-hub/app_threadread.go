@@ -38,7 +38,9 @@ func costFor(reg *hubcore.ProviderRegistry, instance, model string) *registry.Co
 	if r == nil {
 		return nil
 	}
-	res, err := r.Resolve(instance + "/" + model)
+	// The cost is a fact of the row, not a credential: resolving at facts
+	// depth prices the session without ever materializing one (spec §10.1).
+	res, err := r.ResolveInstanceModelFacts(instance, model)
 	if err != nil {
 		return nil
 	}

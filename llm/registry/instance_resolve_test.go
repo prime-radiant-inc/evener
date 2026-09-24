@@ -1,10 +1,14 @@
 package registry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 func cutoverRegistry(t *testing.T, env map[string]string, instances map[string]Provider) *Registry {
@@ -253,5 +257,389 @@ func TestResolveInstanceCarriesWebSearchDisabledWarning(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(modelOK.Warnings, "\n"), "web_search disabled") {
 		t.Fatalf("resolveOn: an explicit web_search = true must suppress the warning too: %v", modelOK.Warnings)
+	}
+}
+
+// ResolveInstancePresence is the depth the hub's automatic views resolve
+// at (spec §10.1): every field those views read must match a full
+// resolve, with no wire map built and no command executed, so the depth
+// can never silently lose a field.
+func TestResolveInstancePresenceMatchesFullDepth(t *testing.T) {
+	// An explicit instance with an environment credential: presence keeps
+	// the source label the full resolve would report, without the value.
+	const cfgEnv = "[providers.work]\nbase = \"anthropic\"\napi_key_env = [\"WORK_KEY\"]\n"
+	full, err := fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, cfgEnv).ResolveInstance("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	presence, err := fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, cfgEnv).ResolveInstancePresence("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presence.Credential.Source != full.Credential.Source {
+		t.Fatalf("presence source = %q, want the full resolve's %q", presence.Credential.Source, full.Credential.Source)
+	}
+	if presence.Credential.Value != full.Credential.Value {
+		t.Fatalf("presence credential material = %q, want the full resolve's (label parity, same reading as the listing judgment)", full.Credential.Value)
+	}
+	if presence.Protocol != full.Protocol || presence.Surface != full.Surface {
+		t.Fatalf("presence protocol/surface drifted: %q/%q want %q/%q", presence.Protocol, presence.Surface, full.Protocol, full.Surface)
+	}
+	if presence.Transport.Auth != full.Transport.Auth || presence.Transport.BaseURL != full.Transport.BaseURL {
+		t.Fatal("presence transport drifted from the full resolve")
+	}
+	if presence.ShadowedEnvVar != full.ShadowedEnvVar {
+		t.Fatalf("presence shadowed env var = %q, want %q", presence.ShadowedEnvVar, full.ShadowedEnvVar)
+	}
+	if len(presence.CredentialHeaders) != 0 {
+		t.Fatal("presence resolve built a credential-headers wire map; no hub view builds a request")
+	}
+}
+
+// The hub's automatic views describe the launch the bare instance name
+// makes: with a concrete default row, that launch signs through the
+// row's own merged transport (ResolveInstanceListing), top-level globs
+// included. A presence that builds the provider's model-less transport
+// instead shows setup and status a scheme the launch never uses.
+func TestPresenceTransportMatchesLaunchForDefaultRow(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"api_key = \"sk-lit\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"[models.\"*house*\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres.Transport.Auth != launch.Transport.Auth {
+		t.Fatalf("presence auth = %q, want the launch's %q: the hub's views must show the scheme the bare launch signs with", pres.Transport.Auth, launch.Transport.Auth)
+	}
+	if pres.Credential.Source != launch.Credential.Source {
+		t.Fatalf("presence source = %q, want the launch's %q: the credential judgment follows the launch's scheme", pres.Credential.Source, launch.Credential.Source)
+	}
+}
+
+// A default row can pin its own protocol, and the launch the bare name
+// makes speaks that protocol (ResolveInstanceListing). Presence must
+// report and gate under the same one, or the hub's views describe a
+// launch that is never made.
+func TestPresenceMatchesLaunchRowProtocol(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"protocol = \"openai-responses\"\n"
+	r := fixtureLoad(t, nil, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Protocol != "openai-responses" {
+		t.Fatalf("fixture: the default row's launch protocol = %q; want the row's openai-responses", launch.Protocol)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres.Protocol != launch.Protocol {
+		t.Fatalf("presence protocol = %q, want the launch's %q", pres.Protocol, launch.Protocol)
+	}
+}
+
+// The transport the presence view shows carries its own diagnostics —
+// what the launch's transport says, warnings included.
+func TestPresenceKeepsTransportWarningsForDefaultRow(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"models_endpoint = \"/models/{NEVER_SET}\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(launch.Warnings, "\n"), "unresolved variable NEVER_SET") {
+		t.Fatalf("fixture: the launch's warnings = %v; want the unresolved-variable diagnostic", launch.Warnings)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(pres.Warnings, "\n"), "unresolved variable NEVER_SET") {
+		t.Fatalf("presence warnings = %v; want the row transport's unresolved-variable diagnostic", pres.Warnings)
+	}
+	if !slices.Equal(pres.Warnings, launch.Warnings) {
+		t.Fatalf("presence warnings = %v; want exactly the launch's %v: the view describes the row's destination, warnings included", pres.Warnings, launch.Warnings)
+	}
+}
+
+// The default row's transport carries the vertex host-rule provenance,
+// and presence must keep the flag the row's resolution computed rather
+// than the provider shape's default.
+func TestPresenceKeepsHostDerivedFlagForDefaultRow(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"google-vertex-anthropic\"\n" +
+		"base_url = \"{GOOGLE_VERTEX_HOST}/v1/custom\"\n" +
+		"default_model = \"claude-opus-5\"\n"
+	r := fixtureLoad(t, map[string]string{"GOOGLE_VERTEX_PROJECT": "p", "GOOGLE_VERTEX_LOCATION": "europe-west1"}, config)
+	launch, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !launch.HostDerivedByRule {
+		t.Fatalf("fixture: the default row's launch transport = %+v; want a rule-derived host", launch.Transport)
+	}
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pres.HostDerivedByRule {
+		t.Fatal("presence dropped the row's host-rule provenance at the transport depth")
+	}
+}
+
+// A command-bearing api_key counts as present at presence depth and keeps
+// its field's label, without ever running the command: that judgment is
+// the launch gate's (spec §10.1), and this is the depth the gate's
+// judgment feeds.
+func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const cfgCmd = "[providers.gw]\nbase = \"anthropic\"\napi_key = '''$(gw-mint)'''\n"
+	presence, err := fixtureLoad(t, nil, cfgCmd).ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presence.Credential.Source != "api_key" {
+		t.Fatalf("presence source = %q, want api_key: a command-bearing slot counts as present", presence.Credential.Source)
+	}
+	if presence.Credential.Value != "" {
+		t.Fatal("presence resolve materialized the command's mint")
+	}
+	if runs != 0 {
+		t.Fatalf("presence resolve executed the credential command %d time(s)", runs)
+	}
+}
+
+// An authored credential header that supplies the auth slot wins over the
+// derived key on the wire (spec §10), so the api_key it overrides is never
+// the credential and must never be evaluated: only the credential the
+// launch actually sends is expanded. The registry's source names the
+// winner too — a status pane reading "api_key" while the wire carries the
+// header would misdescribe the launch.
+func TestHeaderOverriddenAPIKeyIsNeverEvaluated(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	var ran []string
+	valueexpr.RunCommand = func(cmd string) (string, error) {
+		ran = append(ran, cmd)
+		if cmd == "gw-hdr" {
+			return "header-minted", nil
+		}
+		return "api-key-minted", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.credential_headers]\n" +
+		"Authorization = \"Bearer $(gw-hdr)\"\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.ResolveInstance("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstance(gw): %v", err)
+	}
+	if res.Credential.Source != "credential_headers" {
+		t.Fatalf("source = %q, want credential_headers: the authored header owns the wire slot a derived key would fill", res.Credential.Source)
+	}
+	if res.Credential.Value != "Bearer header-minted" {
+		t.Fatalf("credential value = %q, want the header's expansion", res.Credential.Value)
+	}
+	if res.CredentialHeaders["Authorization"] != "Bearer header-minted" {
+		t.Fatalf("credential header = %q, want the header's expansion", res.CredentialHeaders["Authorization"])
+	}
+	if slices.Equal(ran, []string{"gw-hdr"}) {
+		// only the wire credential's command ran
+	} else {
+		t.Fatalf("commands ran = %v; want only the header's gw-hdr: the overridden api_key expression must not execute", ran)
+	}
+	presence, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence(gw): %v", err)
+	}
+	if presence.Credential.Source != "credential_headers" {
+		t.Fatalf("presence source = %q, want credential_headers: the header is the credential at every depth", presence.Credential.Source)
+	}
+	if len(ran) != 1 {
+		t.Fatalf("commands ran = %v; the presence resolve must not add any", ran)
+	}
+}
+
+// A stale default row must not break the listing and the endpoint view:
+// the same fallback listingTransport already makes — the provider's own
+// transport — carries them, instead of an error. A Codex-based instance
+// whose default names a model the transport does not serve is the shape
+// that errors today.
+func TestResolveInstanceListingFallsBackWhenDefaultUnresolvable(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-codex\"\n" +
+		"default_model = \"gpt-not-a-real-codex-model\"\n"
+	r := fixtureLoad(t, nil, config)
+	listing, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatalf("the listing broke on a stale default row: %v", err)
+	}
+	if listing.Protocol == "" || listing.Transport.BaseURL == "" {
+		t.Fatalf("listing = %q/%q; want the provider transport's fallback shape", listing.Protocol, listing.Transport.BaseURL)
+	}
+	transport, err := r.ResolveInstanceTransport("gw")
+	if err != nil {
+		t.Fatalf("the endpoint view broke on a stale default row: %v", err)
+	}
+	if transport.Transport.BaseURL != listing.Transport.BaseURL || transport.Protocol != listing.Protocol {
+		t.Fatal("the endpoint view's fallback drifted from the listing's")
+	}
+}
+
+// A default row the config disabled is not the launch the hub's views
+// describe: the child's Resolve refuses it (resolveOn, ErrModelDisabled),
+// so every row-aware view must fall back to the provider's own shape —
+// the same fallback a default that cannot resolve gets — instead of
+// describing a launch that cannot happen. The fingerprint must not carry
+// the disabled row's own headers either: the fetch that produced the
+// cached live rows never sent them.
+func TestDisabledDefaultRowFallsBackToTheProviderShape(t *testing.T) {
+	mk := func(t *testing.T, rowHeaders string) *Registry {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"none\"\n" +
+			"default_model = \"house-model\"\n" +
+			"[providers.gw.models.\"house-model\"]\n" +
+			"auth = \"header\"\n" +
+			"disabled = true\n" +
+			"[providers.gw.models.\"house-model\".headers]\n" +
+			rowHeaders
+		return fixtureLoad(t, nil, config)
+	}
+	r := mk(t, "\"X-Row\" = \"a\"\n")
+	// The premise: the child refuses the disabled row outright.
+	if _, err := r.Resolve("gw/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(gw/house-model) = %v; want ErrModelDisabled: the child refuses the disabled row", err)
+	}
+	presence, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence(gw): %v", err)
+	}
+	if presence.Transport.Auth != "none" || presence.Protocol != "openai-chat" {
+		t.Fatalf("presence = %q/%q; want the provider's none/openai-chat shape, not the disabled row's", presence.Transport.Auth, presence.Protocol)
+	}
+	instances := r.Instances()
+	var row *Instance
+	for i := range instances {
+		if instances[i].Name == "gw" {
+			row = &instances[i]
+		}
+	}
+	if row == nil {
+		t.Fatal("no gw row in the listing")
+	}
+	if row.Auth != "none" || row.Protocol != "openai-chat" {
+		t.Fatalf("listing row = %q/%q; want the provider's none/openai-chat shape", row.Auth, row.Protocol)
+	}
+	listing, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstanceListing(gw): %v", err)
+	}
+	if listing.Transport.Auth != "none" {
+		t.Fatalf("listing fetch = %q; want the provider shape the fallback sends", listing.Transport.Auth)
+	}
+	endpoint, err := r.ResolveInstanceTransport("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstanceTransport(gw): %v", err)
+	}
+	if endpoint.Transport.Auth != "none" || endpoint.Protocol != "openai-chat" {
+		t.Fatalf("endpoint view = %q/%q; want the provider's none/openai-chat shape: the identity this view feeds must not name a disabled row's endpoint", endpoint.Transport.Auth, endpoint.Protocol)
+	}
+	plain, ok := r.AuthFingerprint("gw")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "\"X-Row\" = \"b\"\n").AuthFingerprint("gw")
+	if plain != rotated {
+		t.Fatal("fingerprint moved with a disabled row's headers; the request shape the fetch sends never included them")
+	}
+}
+
+// The spawn gate judges the very launch the child makes: a named model the
+// child refuses — one the config disabled, or an alias following its
+// disabled target — is a launch that always fails after spawning, so the
+// gate refuses it before the spawn instead of silently judging the
+// listing transport.
+func TestResolveGateCredentialRefusesAModelTheLaunchRefuses(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"disabled = true\n" +
+		"[providers.gw.models.\"alias-model\"]\n" +
+		"alias_of = \"house-model\"\n"
+	r := fixtureLoad(t, nil, config)
+
+	if _, err := r.ResolveGateCredential("gw", "house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("gate(gw/house-model) = %v; want ErrModelDisabled: the child refuses this launch", err)
+	}
+	if _, err := r.ResolveGateCredential("gw", "alias-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("gate(gw/alias-model) = %v; want ErrModelDisabled: the alias follows its target's verdict", err)
+	}
+}
+
+// An empty instance names the default instance, the rule Resolve applies:
+// a legacy session recorded without a profile still resolves through the
+// default at facts depth, or it loses every hub-side read.
+func TestResolveInstanceModelFactsDefaultsEmptyInstance(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"anthropic\"\n" +
+		"api_key_env = [\"WORK_KEY\"]\n" +
+		"[providers.gw.models.\"claude-opus-4-5\"]\n"
+	r := fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config)
+	res, err := r.ResolveInstanceModelFacts("", "claude-opus-4-5")
+	if err != nil {
+		t.Fatalf("facts resolve with an empty instance: %v", err)
+	}
+	direct, err := r.ResolveInstanceModelFacts("gw", "claude-opus-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Instance != direct.Instance || res.Model.ID != direct.Model.ID {
+		t.Fatalf("defaulted resolve = %s/%s, want %s/%s", res.Instance, res.Model.ID, direct.Instance, direct.Model.ID)
 	}
 }

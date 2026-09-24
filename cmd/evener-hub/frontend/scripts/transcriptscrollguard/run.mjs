@@ -6,7 +6,9 @@
 // turns appended while away leave the virtualizer holding only estimates for
 // them; clicking the pill scrolls to the TRUE bottom and the landing's own
 // native scroll event clears the pill - held through the virtualizer's
-// post-jump measurement corrections.
+// post-jump measurement corrections. Settled at the bottom, the transcript
+// must then re-anchor to the true bottom when its content grows (#917) and
+// when its scroll port shrinks under it (the pane header growing).
 //
 // This is the browser guard for the jump-to-bottom fix (PR #851): the jsdom
 // suite covers the hook with stubbed geometry and manually dispatched scroll
@@ -204,6 +206,32 @@ async function main() {
             }
           }
         }
+
+        // The scroll port shrinks under a reader at the bottom (the pane
+        // header's cadence trace appearing grows the header 4px), with no
+        // scroll event and no content resize. The transcript must re-anchor
+        // to the TRUE bottom: 4px short is inside isAtBottom's rounding
+        // tolerance, so nothing else - not the pill, not the end-anchor -
+        // would ever recover it.
+        if (failures.length === 0) {
+          const shrank = JSON.parse(
+            await evaluate(send, "(async () => JSON.stringify(await window.shrinkPortAndSettle()))()"),
+          );
+          if (shrank.errors.length > 0)
+            failures.push(`page errors after the scroll port shrank: ${shrank.errors.join("; ")}`);
+          if (shrank.clientHeight >= shrank.beforeClientHeight) {
+            failures.push(
+              `the header growth never shrank the scroll port (clientHeight ${shrank.clientHeight} vs ` +
+                `${shrank.beforeClientHeight}) - the fixture did not reproduce a port shrink`,
+            );
+          } else if (!shrank.settled) {
+            failures.push(
+              `transcript never re-anchored to the true bottom after its scroll port shrank: ` +
+                `pill=${shrank.pill} bottomGap=${shrank.bottomGap} scrollTop=${shrank.scrollTop} ` +
+                `scrollHeight=${shrank.scrollHeight} clientHeight=${shrank.clientHeight} (8s deadline)`,
+            );
+          }
+        }
       }
     } finally {
       await clearViewportOverride(send);
@@ -215,7 +243,7 @@ async function main() {
         `transcriptscrollguard ok: transcript ${initial.scrollHeight}px in a ${initial.clientHeight}px scroll port ` +
           `(${initial.turns} turns); pill appeared on a native scroll away; jump settled at the true bottom ` +
           `(bottomGap ${landed.bottomGap}px, pill gone, held ${landed.tail.length} frames); ` +
-          `post-mount content growth re-anchored to the true bottom`,
+          `post-mount content growth and a scroll-port shrink both re-anchored to the true bottom`,
       );
     } else {
       for (const failure of failures) console.error(`transcriptscrollguard FAIL: ${failure}`);

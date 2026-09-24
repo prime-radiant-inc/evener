@@ -408,9 +408,11 @@ also ran ordinary tests in cmd/evener-fuzzcov and cmd/evener-fuzz-harvest; all f
 coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
-explicitly set. The CI web job runs make test-web, make build-web, and
-make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
-test so frontend tests are not duplicated.
+explicitly set. The CI web check runs as two lanes on separate runners,
+web-unit (make test-web) and web-browser (make build-web and make
+test-web-browser), and the required `web` job passes only when both do; the
+deterministic Go job runs ROOT_FULL=1 WEB=0 make test so frontend tests are
+not duplicated.
 
 Three packages run as cost-balanced shards: the agent module through
 `evener dev agent-shards`, and cmd/evener-hub and cmd/evener, beside the rest
@@ -703,7 +705,8 @@ of frontend defect is structurally invisible to `vitest`. Five checks in
   real virtualization stack and drives NATIVE scroll events: the
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
-  there.
+  there, including after content grows below the reader and after the
+  scroll port itself shrinks (the pane header growing).
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
