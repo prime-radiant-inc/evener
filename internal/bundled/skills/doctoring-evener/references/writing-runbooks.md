@@ -136,8 +136,12 @@ or string metric).
 
 A session "trips" a check when every one of its conditions holds. Every
 session that trips the same check in one run collapses into **one** Finding
-— that check's `title`/`category`/`signature` — with every tripped session
-listed in `evidence.sessionRefs`. `evidence.doctorCommand` is the
+— that check's `title`/`category`/`signature` — with the reproducible and
+unique-session handles listed in `evidence.sessionRefs`. Non-reproducible
+sessions (bare id ambiguous across buckets) and colliding bare sids (a
+bare id that silently resolves to the wrong session on the agent side) are
+omitted from `sessionRefs` and disclosed via `totalSessionRefs` and the
+Description prose instead. `evidence.doctorCommand` is the
 audit invocation (runbook + session refs) that
 reproduces it, scoped to the affected sessions — empty when every affected session is non-reproducible (bare id ambiguous across buckets), and capped at `evidenceSessionRefCap` (200) entries when there are more reproducible selectors than the command can carry; the Description prose discloses any omission or non-reproducibility.
 

@@ -685,7 +685,7 @@ func readSelector(projectID, sessionID string) string {
 // ValidateProjectID. The predicate rejects: empty, the dot components,
 // path separators, NUL (path-escape defense, same as projectTokenOK);
 // commas (the CLI splits --sessions on ','); whitespace (shell
-// word-break); shell metacharacters that alter command behavior
+// word-break, including vertical tab and form feed — round 13 finding 1); shell metacharacters that alter command behavior
 // including glob expansion ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ",
 // ', {, }, =, *, ?, [, ]); and cmd.exe metacharacters: % (variable
 // expansion %VAR%) and ^ (escape character — round 10 finding 1).
@@ -693,7 +693,7 @@ func safeTokenForRepro(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
 	}
-	return !strings.ContainsAny(name, "/\\\x00, \t\r\n$`;|&()<>=!#~\"'{}*?[]%^")
+	return !strings.ContainsAny(name, "/\\\x00, \t\r\n\x0b\x0c$`;|&()<>=!#~\"'{}*?[]%^")
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
@@ -838,14 +838,23 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 				// Bare sid is ambiguous or not found. Check whether any other
 				// bucket containing the sid has a canonical name (refFor
 				// returns non-empty) — if so, the agent resolves to it silently.
-				buckets, _, _ := resolveBuckets(stateBase)
-				for _, b := range buckets {
-					if b.projectID == paths.ProjectID {
-						continue // same bucket
-					}
-					if sessionInBucket(b, paths.SessionID) && refFor(b.projectID, paths.SessionID) != "" {
-						collidingBareSid = true
-						break
+				buckets, _, err := resolveBuckets(stateBase)
+				if err != nil {
+					// Bucket enumeration failed — we cannot verify whether the
+					// bare sid collides with a canonical bucket. Fail closed:
+					// treat the sid as colliding and omit it from SessionRefs
+					// (round 13 finding 2). An honest refusal beats a possibly
+					// wrong handle.
+					collidingBareSid = true
+				} else {
+					for _, b := range buckets {
+						if b.projectID == paths.ProjectID {
+							continue // same bucket
+						}
+						if sessionInBucket(b, paths.SessionID) && refFor(b.projectID, paths.SessionID) != "" {
+							collidingBareSid = true
+							break
+						}
 					}
 				}
 			}
@@ -1005,9 +1014,13 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		}
 		// Build the non-reproducible disclosure in the remaining budget.
 		totalOmitted := 0
+		nonReproListed := false // whether any non-reproducible sessions were
+		// actually named in the Description (round 13 finding 4: the omission
+		// wording says "more" only when a preceding list exists).
 		if len(nonRepro) > 0 {
 			nonReproDesc, nonReproOmitted := formatNonReproSessions(nonRepro, nonReproBudget)
 			if nonReproDesc != "" {
+				nonReproListed = true
 				if reproDesc != "" {
 					desc += "; not reproducible: " + nonReproDesc
 				} else {
@@ -1034,7 +1047,11 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			}
 		}
 		if totalOmitted > 0 {
-			desc += fmt.Sprintf("; %d more non-reproducible sessions omitted (cap %d)", totalOmitted, evidenceSessionRefCap)
+			if nonReproListed {
+				desc += fmt.Sprintf("; %d more non-reproducible sessions omitted (cap %d)", totalOmitted, evidenceSessionRefCap)
+			} else {
+				desc += fmt.Sprintf("; %d non-reproducible sessions omitted (cap %d)", totalOmitted, evidenceSessionRefCap)
+			}
 		}
 		f.Description = desc
 		// DoctorCommand is a pure runnable command or empty (round 9 finding 2):
