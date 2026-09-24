@@ -9,6 +9,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import styles from "./launchServer.module.css";
@@ -80,6 +81,10 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
     complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
   };
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
+  // A re-read of content this pane is ALREADY showing that failed. Kept apart
+  // from `load` because it is not a load failure: the form (and the draft in it)
+  // stays, and this is what says the values on screen may be out of date.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
   // The effective layer of the same resolve() that seeds the diagnostics
   // panel: unset fields whose empty marker is generic prepend their entry
@@ -94,7 +99,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
   // it re-runs this read when the selected host COMES BACK, not only when it
   // changes. isCancelled guards the same "component unmounted mid-load" case the
   // legacy local `cancelled` flag did.
-  useHostScopedLoad(
+  const { reload } = useHostScopedLoad(
     host,
     async (blank, isCancelled) => {
       // Different content - a host switch, or a re-registration under the same
@@ -107,6 +112,7 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
         setLoad({ phase: "loading" });
         setDiagnostics([]);
         setResolvedDefaults(undefined);
+        setRefreshError(null);
       }
       try {
         const [schema, current, resolved] = await Promise.all([
@@ -119,18 +125,25 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
         ]);
         if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current });
+        setRefreshError(null);
         if (resolved && !isCancelled()) {
           setDiagnostics(resolved.diagnostics ?? []);
           setResolvedDefaults(resolved.effective);
         }
       } catch (err) {
         if (isCancelled()) return;
-        // A failed read of content this pane is NOT already showing is the
-        // failure to report. A failed refresh keeps the load it has: that data is
-        // still this host's own, and the next attach (or a switch) retries it.
-        setLoad((current) =>
-          current.phase === "ready" ? current : { phase: "error", message: friendlyErrorMessage(err) },
-        );
+        // Content this pane is not already showing has nothing to keep: the
+        // failure is the load's own, and Retry below is what ends it.
+        if (blank) {
+          setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+          return;
+        }
+        // A failed REFRESH keeps the form - and the draft in it - and reports
+        // itself beside it: this host is attached (that is why we re-read it) and
+        // may stay attached, so there is no next attach to wait for, and a pane
+        // sitting silently on values that may be out of date is a worse answer
+        // than saying so with a way to ask again.
+        setRefreshError(friendlyErrorMessage(err));
       }
     },
     [store],
@@ -143,9 +156,24 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
         These values are applied to every evener spawn unless overridden by a project layer or per-launch.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading launch settings…</p>}
-      {load.phase === "error" && <p className={CLASS.error}>Failed to load launch settings. {load.message}</p>}
+      {load.phase === "error" && (
+        <p className={CLASS.error}>
+          Failed to load launch settings. {load.message}{" "}
+          <Button type="button" onClick={() => reload()}>
+            Retry
+          </Button>
+        </p>
+      )}
       {load.phase === "ready" && (
         <>
+          {refreshError !== null && (
+            <p className={CLASS.error} role="status">
+              Could not re-read this host's launch settings. {refreshError}{" "}
+              <Button type="button" onClick={() => reload()}>
+                Retry
+              </Button>
+            </p>
+          )}
           <Diagnostics diagnostics={diagnostics} />
           <LaunchConfigForm
             options={load.options}

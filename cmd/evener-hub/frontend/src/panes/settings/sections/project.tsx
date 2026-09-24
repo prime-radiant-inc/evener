@@ -27,6 +27,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import type { LaunchFormPaths } from "./launchShared/fields";
@@ -99,6 +100,9 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
     complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
   };
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
+  // A re-read of what this pane is already showing that failed: the form (and
+  // the draft in it) stays, and this says the values on screen may be stale.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   // The effective layer of a best-effort resolve(cwd): unset fields whose
   // empty marker is generic prepend their entry here ("high (use global
   // default)"). Undefined until the resolve lands, on a resolve failure, and
@@ -115,7 +119,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   // changed) mid-load" case the legacy local `cancelled` flag did. The deps
   // include the store, so a host switch reloads, and the cwd, so another
   // project's layer is never shown for the one in the address bar.
-  useHostScopedLoad(
+  const { reload } = useHostScopedLoad(
     host,
     async (blank, isCancelled) => {
       if (!cwd) return;
@@ -125,6 +129,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       if (blank) {
         setLoad({ phase: "loading" });
         setResolvedDefaults(undefined);
+        setRefreshError(null);
       }
       try {
         const [schema, current, globalDefaults, resolved] = await Promise.all([
@@ -138,14 +143,18 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
         ]);
         if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
+        setRefreshError(null);
         if (resolved && !isCancelled()) setResolvedDefaults(resolved.effective);
       } catch (err) {
         if (isCancelled()) return;
-        // A failed read of content this pane is NOT already showing is the
-        // failure to report; a failed refresh keeps the load it has.
-        setLoad((current) =>
-          current.phase === "ready" ? current : { phase: "error", message: friendlyErrorMessage(err) },
-        );
+        if (blank) {
+          setLoad({ phase: "error", message: friendlyErrorMessage(err) });
+          return;
+        }
+        // A failed refresh keeps the form and the draft in it, and says so
+        // beside it: the host is attached and may stay attached, so a silent
+        // pane sitting on values that may be out of date would have no way out.
+        setRefreshError(friendlyErrorMessage(err));
       }
     },
     [cwd, store],
@@ -171,22 +180,39 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
         Layered on top of the global Evener launch settings. Only fields set here override the global defaults.
       </p>
       {load.phase === "loading" && <p className={CLASS.help}>Loading project launch settings…</p>}
-      {load.phase === "error" && <p className={CLASS.error}>Failed to load project launch settings. {load.message}</p>}
+      {load.phase === "error" && (
+        <p className={CLASS.error}>
+          Failed to load project launch settings. {load.message}{" "}
+          <Button type="button" onClick={() => reload()}>
+            Retry
+          </Button>
+        </p>
+      )}
       {load.phase === "ready" && (
-        <LaunchConfigForm
-          options={load.options}
-          layer="project"
-          current={load.current}
-          globalDefaults={load.globalDefaults}
-          resolvedDefaults={resolvedDefaults}
-          successToast="Project launch settings saved"
-          validatePath={(path, kind) => store.getState().validatePath(path, kind)}
-          paths={paths}
-          host={host}
-          draftOwner={store}
-          onSave={(config) => store.getState().setLayer(cwd, "project", config)}
-          onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
-        />
+        <>
+          {refreshError !== null && (
+            <p className={CLASS.error} role="status">
+              Could not re-read this host's project settings. {refreshError}{" "}
+              <Button type="button" onClick={() => reload()}>
+                Retry
+              </Button>
+            </p>
+          )}
+          <LaunchConfigForm
+            options={load.options}
+            layer="project"
+            current={load.current}
+            globalDefaults={load.globalDefaults}
+            resolvedDefaults={resolvedDefaults}
+            successToast="Project launch settings saved"
+            validatePath={(path, kind) => store.getState().validatePath(path, kind)}
+            paths={paths}
+            host={host}
+            draftOwner={store}
+            onSave={(config) => store.getState().setLayer(cwd, "project", config)}
+            onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
+          />
+        </>
       )}
     </div>
   );

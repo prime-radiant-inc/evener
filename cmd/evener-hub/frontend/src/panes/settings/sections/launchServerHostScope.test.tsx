@@ -307,3 +307,82 @@ test("a reconnect re-reads the host's data without discarding what the user type
   // ...and the draft the user typed is still theirs, not the freshly read value.
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
 });
+
+// A re-read of what this pane is already showing can fail: the host is attached
+// (that is why we re-read it) and can still refuse the read. Keeping the form is
+// right - the data on screen is this host's own and the draft in it is the
+// user's - but keeping SILENT is not: if the host stays attached there is no next
+// attach to wait for, and a pane sitting on values that may be out of date with
+// no way to ask again is a dead end. So the failure is reported BESIDE the form,
+// with a retry that re-reads that host.
+test("a failed refresh keeps the form and the draft, reports itself beside it, and a retry clears it", async () => {
+  const fake = connectFakeClient();
+  let attached = true;
+  let refuse = false;
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (refuse) throw new Error("the host refused the read");
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent: "beta-agent" } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  const user = userEvent.setup();
+  const agent = (await screen.findByLabelText("Agent")) as HTMLInputElement;
+  await user.clear(agent);
+  await user.type(agent, "typed-on-beta");
+  // A load that succeeded says nothing about failures.
+  expect(screen.queryByText(/Could not re-read/)).toBeNull();
+
+  // Away, then back: the re-read that follows fails.
+  attached = false;
+  await act(() => hostsStore.getState().refresh());
+  refuse = true;
+  attached = true;
+  await act(() => hostsStore.getState().refresh());
+
+  expect(await screen.findByText(/Could not re-read this host's launch settings/)).toBeTruthy();
+  // The form, and the draft in it, are still here.
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
+
+  refuse = false;
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  await waitFor(() => expect(screen.queryByText(/Could not re-read/)).toBeNull());
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("typed-on-beta");
+});
+
+// The other dead end: a pane left on its LOAD failure has no form to keep - and
+// until now no way to ask again either (the shape #2202 was flagged for on the
+// credentials pane). Retry re-reads that host.
+test("a pane left on its load failure offers a retry instead of a dead end", async () => {
+  const fake = connectFakeClient();
+  let refuse = true;
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { method: string };
+    if (refuse) throw new Error("the host refused the read");
+    if (forwarded.method === "evener/launch/schema") return schema("beta schema") as never;
+    if (forwarded.method === "evener/launch/getLayer") return { agent: "beta-agent" } as never;
+    if (forwarded.method === "evener/launch/resolve")
+      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+
+  setSettingsHost("beta");
+  render(<LaunchServerHostScope sectionId="launch-evener" />);
+  const user = userEvent.setup();
+  expect(await screen.findByText(/Failed to load launch settings/)).toBeTruthy();
+
+  refuse = false;
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByLabelText("Agent")).toBeTruthy();
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent");
+  expect(screen.queryByText(/Failed to load launch settings/)).toBeNull();
+});

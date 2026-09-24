@@ -89,20 +89,34 @@ export function useConnectedEffect(
  * and the marketplaces pane) ignores both parameters: the store keeps its data
  * and its draft-holding components stay mounted, so re-issuing the read is all
  * that is needed.
+ *
+ * `reload` re-issues this pane's read for the SAME content - never a blank, so
+ * nothing the user has typed is taken away - which is the retry a pane offers
+ * when a read failed while its host stays attached. A pane with nothing to
+ * retry (one that renders from its store's state) ignores it.
  */
+export interface HostScopedLoad {
+  reload: () => void;
+}
+
 export function useHostScopedLoad(
   host: string,
   load: (blank: boolean, isCancelled: () => boolean) => Promise<unknown>,
   deps: readonly unknown[],
-): void {
+): HostScopedLoad {
   const attachEpoch = useHostAttachEpoch(host);
   // The deps of the run that produced what is on screen, so the next run can
   // tell a re-read of the same content from a look at different content. Set
   // from the effect body, not during render: a render React discards must not
   // claim the content as loaded.
   const loadedDeps = useRef<readonly unknown[] | null>(null);
+  // The run currently in flight (or the last one): its own callback and its own
+  // cancellation check, which is what makes `reload` re-issue exactly the read
+  // the pane is showing. Written from the effect body, never during render.
+  const currentRun = useRef<{ load: typeof load; isCancelled: () => boolean } | null>(null);
   useConnectedEffect(
     (isCancelled) => {
+      currentRun.current = { load, isCancelled };
       const previous = loadedDeps.current;
       const blank =
         previous === null ||
@@ -114,4 +128,12 @@ export function useHostScopedLoad(
     // The epoch rides the restarted effect's deps only: it is not content.
     [...deps, attachEpoch],
   );
+  const reload = (): void => {
+    const run = currentRun.current;
+    if (run === null) return;
+    // Same content, so the pane keeps what it is showing; the caller reports the
+    // outcome itself, as it does for every other run.
+    void run.load(false, run.isCancelled).catch(() => {});
+  };
+  return { reload };
 }
