@@ -9,10 +9,11 @@ import type {
 	MobileConversation,
 	MobileTimelineItem,
 } from "../../mobile/src/conversation/project";
-import { projectConversation } from "../../mobile/src/conversation/project";
+import {
+	projectConversation,
+	systemEventProbe,
+} from "../../mobile/src/conversation/project";
 import type {
-	ItemModel,
-	ThreadModel,
 	TranscriptDisplayAdvancedV1,
 	TranscriptDisplayConfigV1,
 	TurnModel,
@@ -728,54 +729,6 @@ it("renders no rows for null usage", () => {
 // projector under every gate combination and requires the same verdict. A kind
 // native gates differently - notes-context absent from its hand-kept set, or
 // loop_detection/turn_limit forced visible by a warning tone - fails here.
-const PROBE_THREAD_BASE = {
-	ref: "probe",
-	threadId: "probe",
-	name: "probe",
-	status: { type: "idle" },
-	modelProvider: "probe",
-	model: "probe",
-	visionModel: "probe",
-	askPending: false,
-	pendingEscalations: [],
-	queue: null,
-	tasks: null,
-	jobsUpdatedAt: null,
-	jobsTreeRevision: null,
-	lastFrameAt: 0,
-	capabilities: {},
-	goal: null,
-	humanNote: "",
-	agentNote: "",
-	sessionUrls: [],
-	contextUsed: 0,
-	contextWindow: 0,
-	contextPressure: 0,
-	usage: null,
-	workMillis: 0,
-	reasoningEffortLevels: [],
-	supportsReasoning: false,
-	cwd: "",
-} as unknown as Omit<ThreadModel, "turns">;
-
-function probeThread(
-	eventKind: string | undefined,
-	exitCode: number | undefined,
-): ThreadModel {
-	const item: ItemModel = {
-		id: "probe",
-		turnId: "probe-turn",
-		type: "systemMessage",
-		text: "",
-		...(eventKind !== undefined ? { eventKind } : {}),
-		...(exitCode !== undefined ? { exitCode } : {}),
-	};
-	return {
-		...PROBE_THREAD_BASE,
-		turns: [{ id: "probe-turn", status: "completed", items: [item] }],
-	} as ThreadModel;
-}
-
 const GATE_CONFIGS: { name: string; config: TranscriptDisplayConfigV1 }[] = (
 	[
 		["all off", { systemEvents: false, promptEvents: false, roundTimings: false, hookExits: "none" }],
@@ -809,13 +762,13 @@ it.each(
 		})),
 	),
 )("gates $title the same as the shared projector", ({ eventKind, exitCode, config }) => {
-	const model = probeThread(eventKind, exitCode);
+	const model = systemEventProbe(eventKind, exitCode);
 	const nativeVisible = projectNativeTranscript(
 		projectConversation(model),
 		config,
-	).items.some((item) => item.id === "probe");
+	).items.some((item) => item.id === "system-event-probe");
 	const sharedVisible = sharedProjectThread(model, config).turns.some((turn) =>
-		turn.entries.some((entry) => entry.id === "probe"),
+		turn.entries.some((entry) => entry.id === "system-event-probe"),
 	);
 	expect(nativeVisible).toBe(sharedVisible);
 });

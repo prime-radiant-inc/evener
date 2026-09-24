@@ -2,7 +2,6 @@ import type {
   AskQuestionRef,
   ItemImage,
   ItemModel,
-  ThreadCapabilities,
   ThreadItemEventKind,
   ThreadModel,
   TranscriptDisplayConfigV1,
@@ -180,7 +179,7 @@ const WARNING_STEERING_KINDS = new Set([
 // while the visible/hidden/critical decision is the projector's own (see
 // systemEventVisible). Every kind that warrants a warning *tone* is exactly a
 // family-"warning" kind, so the tone is derived from the family below.
-const SYSTEM_NOTICE_FAMILY: Record<ThreadItemEventKind, NoticeFamily> = {
+const SYSTEM_NOTICE_FAMILY_ENTRIES: Record<ThreadItemEventKind, NoticeFamily> = {
   system_prompt: "hidden-instruction",
   prompt_loaded: "hidden-instruction",
   environment: "system-prelude",
@@ -200,13 +199,17 @@ const SYSTEM_NOTICE_FAMILY: Record<ThreadItemEventKind, NoticeFamily> = {
   "notes-context": "lifecycle",
 };
 
+// The exhaustive Record above is checked at compile time; this Map is the
+// lookup, so a name that collides with an Object.prototype member
+// ("constructor", "toString", "__proto__") misses instead of answering with a
+// prototype value.
+const SYSTEM_NOTICE_FAMILY = new Map<string, NoticeFamily>(
+  Object.entries(SYSTEM_NOTICE_FAMILY_ENTRIES),
+);
+
 function systemNoticeFamily(eventKind: string | undefined): NoticeFamily {
   if (eventKind === undefined || eventKind === "") return "unknown-system";
-  // Own-property only: a bare index would answer an inherited name like
-  // "constructor", "toString" or "__proto__" with an Object.prototype member
-  // instead of the unknown-system family.
-  if (!Object.hasOwn(SYSTEM_NOTICE_FAMILY, eventKind)) return "unknown-system";
-  return SYSTEM_NOTICE_FAMILY[eventKind as ThreadItemEventKind];
+  return SYSTEM_NOTICE_FAMILY.get(eventKind) ?? "unknown-system";
 }
 
 // The projector reads only `turns` from a ThreadModel to classify a system
@@ -259,12 +262,25 @@ const SYSTEM_EVENT_PROBE: Omit<ThreadModel, "turns"> = {
 // consumed rather than re-derived: its gate sets (transcriptProjector.ts:98-121)
 // are internal to the package, so native asks the exported projectThread instead
 // of copying them. A one-item probe thread answers "did this event survive".
-export function systemEventVisible(
+//
+// The verdict depends only on the event kind, the exit-code class, and the four
+// advanced gates (systemDecision reads nothing else), so one result per distinct
+// input is cached: a transcript's notices re-check the same handful of keys on
+// every re-projection instead of rebuilding a probe thread each time.
+const SYSTEM_EVENT_VISIBILITY = new Map<string, boolean>();
+
+function exitCodeClass(exitCode: number | undefined): string {
+  if (exitCode === undefined) return "?";
+  return exitCode === 0 ? "0" : "!";
+}
+
+// A one-item thread for classifying a single system event. projectThread reads
+// only `turns`, so the rest of the required shape is inert.
+export function systemEventProbe(
   eventKind: string | undefined,
   exitCode: number | undefined,
-  config: TranscriptDisplayConfigV1,
-): boolean {
-  const probe: ThreadModel = {
+): ThreadModel {
+  return {
     ...SYSTEM_EVENT_PROBE,
     turns: [
       {
@@ -283,7 +299,25 @@ export function systemEventVisible(
       },
     ],
   };
-  return projectThread(probe, config).turns[0]?.entries.length === 1;
+}
+
+export function systemEventVisible(
+  eventKind: string | undefined,
+  exitCode: number | undefined,
+  config: TranscriptDisplayConfigV1,
+): boolean {
+  // The projector renders a kind outside its vocabulary unconditionally, and
+  // SYSTEM_NOTICE_FAMILY is exactly that vocabulary, so answer without a probe
+  // (and keep the cache below bounded to the known kinds).
+  if (eventKind === undefined || eventKind === "" || !SYSTEM_NOTICE_FAMILY.has(eventKind))
+    return true;
+  const advanced = config.advanced;
+  const key = `${eventKind}\u0000${exitCodeClass(exitCode)}\u0000${advanced.hookExits}\u0000${advanced.promptEvents ? 1 : 0}${advanced.roundTimings ? 1 : 0}${advanced.systemEvents ? 1 : 0}`;
+  const cached = SYSTEM_EVENT_VISIBILITY.get(key);
+  if (cached !== undefined) return cached;
+  const visible = projectThread(systemEventProbe(eventKind, exitCode), config).turns[0]?.entries.length === 1;
+  SYSTEM_EVENT_VISIBILITY.set(key, visible);
+  return visible;
 }
 
 function isUserMessage(item: ItemModel): boolean {
