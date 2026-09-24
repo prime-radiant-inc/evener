@@ -50,11 +50,13 @@ import type {
   WarningParams,
 } from "@evener/appwire-client";
 import type {
+  ActivityMember,
   BoundText,
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/project";
 import {
+  activityIdentity,
   attachmentSourceId,
   attachmentSourceIdentity,
   capItems,
@@ -669,6 +671,73 @@ export function createConversationStore() {
   // read the same window the publish will show — a notice consumes a
   // cap slot, so the overflow the honest stop reads and the window the
   // retained-turn bound trims against must both count it.
+  // R38: the row a sub-run of a split cluster re-projects as — the same
+  // shape clusterActivityRun builds: a run of one is the member's own
+  // row, a longer run is that row with the run's aggregate state and the
+  // members carried for the renderer that expands them.
+  function activityRunRow(
+    run: ActivityMember[],
+  ): Extract<MobileTimelineItem, { kind: "activity" }> | null {
+    const first = run[0];
+    if (first === undefined) return null;
+    const row: Extract<MobileTimelineItem, { kind: "activity" }> = {
+      kind: "activity",
+      id: first.id,
+      label: first.label,
+      family: first.family,
+      state: first.state,
+      detail: first.detail,
+      ...(first.transcriptKey ? { transcriptKey: first.transcriptKey } : {}),
+      ...(first.position ? { position: first.position } : {}),
+    };
+    if (run.length === 1) return row;
+    return {
+      ...row,
+      state: run.some((member) => member.state === "running")
+        ? "running"
+        : "completed",
+      members: [...run],
+    };
+  }
+
+  // R38: a cluster that absorbed the row a notice anchored to AND grew
+  // past it — later same-family members arrived after the notice — splits
+  // at the anchored member, so the notice seats at the position it
+  // arrived at, above the members that arrived later. An anchor on the
+  // LAST member needs no split (the whole-row seat already sits below
+  // it), so null keeps that seat. The caller only offers a cluster with
+  // no attachment run behind it: a notice anchored through an
+  // attachment's source identity arrived after those attachments, and a
+  // split would lift it above them.
+  function splitClusterAtAnchors(
+    item: Extract<MobileTimelineItem, { kind: "activity" }>,
+    bucketsByIdentity: ReadonlyMap<string, MobileTimelineItem[]>,
+  ): MobileTimelineItem[] | null {
+    const members = item.members;
+    if (members === undefined || members.length < 2) return null;
+    const firing = members.map(
+      (member) => bucketsByIdentity.get(activityIdentity(member)) ?? null,
+    );
+    const splitsBeforeLastMember = firing
+      .slice(0, -1)
+      .some((bucket) => bucket !== null);
+    if (!splitsBeforeLastMember) return null;
+    const out: MobileTimelineItem[] = [];
+    let run: ActivityMember[] = [];
+    for (const [index, member] of members.entries()) {
+      run.push(member);
+      const bucket = firing[index] ?? null;
+      if (bucket === null) continue;
+      const row = activityRunRow(run);
+      if (row !== null) out.push(row);
+      out.push(...bucket);
+      run = [];
+    }
+    const tail = activityRunRow(run);
+    if (tail !== null) out.push(tail);
+    return out;
+  }
+
   function seatTransientWarnings(
     items: MobileTimelineItem[],
   ): MobileTimelineItem[] {
@@ -702,30 +771,51 @@ export function createConversationStore() {
       // row.
       if (noticesByAnchor.size === 0) continue;
       const identities = ownTimelineIdentities(item);
+      const bucketsByIdentity = new Map<string, MobileTimelineItem[]>();
       for (const identity of identities) {
         const bucket = noticesByAnchor.get(identity);
-        if (bucket === undefined) continue;
-        // A notice anchored through an attachment row's source identity
-        // seats after the attachments that follow the anchored row, never
-        // between them: capItems' cap cut drops a leading attachment
-        // whose source fell off the cut and only scans a LEADING RUN of
-        // attachments, so a notice seated inside that run would become
-        // the first retained row at the cut and the orphans behind it
-        // would survive — their lingering source identities then make
-        // loadOlder's F10 admission rule refuse genuine older page copies
-        // of those sources, forever. The run spans every attachment the
-        // anchored row OWNS the source of — a clustered activity carries
-        // the attachments of all its members, so a notice anchored to one
-        // member seats after them all. This is also the position the
-        // notice arrived at: the attachments row was the nearest row when
-        // it landed (RoboRev panel round 2).
-        while (index + 1 < items.length) {
-          const next = items[index + 1];
-          const source = attachmentSourceIdentity(next);
-          if (source === null || !identities.has(source)) break;
-          index += 1;
-          seated.push(next);
+        if (bucket !== undefined) bucketsByIdentity.set(identity, bucket);
+      }
+      if (bucketsByIdentity.size === 0) continue;
+      // A notice anchored through an attachment row's source identity
+      // seats after the attachments that follow the anchored row, never
+      // between them: capItems' cap cut drops a leading attachment
+      // whose source fell off the cut and only scans a LEADING RUN of
+      // attachments, so a notice seated inside that run would become
+      // the first retained row at the cut and the orphans behind it
+      // would survive — their lingering source identities then make
+      // loadOlder's F10 admission rule refuse genuine older page copies
+      // of those sources, forever. The run spans every attachment the
+      // anchored row OWNS the source of — a clustered activity carries
+      // the attachments of all its members, so a notice anchored to one
+      // member seats after them all. This is also the position the
+      // notice arrived at: the attachments row was the nearest row when
+      // it landed (RoboRev panel round 2).
+      let attachmentsEnd = index;
+      while (attachmentsEnd + 1 < items.length) {
+        const next = items[attachmentsEnd + 1];
+        const source = attachmentSourceIdentity(next);
+        if (source === null || !identities.has(source)) break;
+        attachmentsEnd += 1;
+      }
+      // R38: the cluster grew past the anchored member — split it there
+      // so the notice keeps its arrival position above the members that
+      // arrived later. Only when no attachment run follows: that notice
+      // arrived after the attachments, and the whole-row seat below them
+      // is its arrival position.
+      if (attachmentsEnd === index && item.kind === "activity") {
+        const split = splitClusterAtAnchors(item, bucketsByIdentity);
+        if (split !== null) {
+          seated.pop();
+          seated.push(...split);
+          continue;
         }
+      }
+      for (let attach = index + 1; attach <= attachmentsEnd; attach += 1) {
+        seated.push(items[attach]);
+      }
+      index = attachmentsEnd;
+      for (const bucket of bucketsByIdentity.values()) {
         seated.push(...bucket);
       }
     }
