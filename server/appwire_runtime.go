@@ -714,7 +714,6 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 			projection = &appDescendantProjection{
 				projector: appprojector.NewAppEventProjector(threadID, ref),
-				turns:     &appTurnSnapshot{threadID: threadID},
 				thread: appwire.Thread{
 					ID:        threadID,
 					SessionID: threadID,
@@ -723,20 +722,16 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				},
 			}
 			s.installCostLookup(projection.projector)
-			// Seed from the descendant's own transcript BEFORE this first event is
-			// applied, the same order PrepareAppIdentity uses for the ROOT thread:
-			// a resumed descendant's persisted history must already be in the
-			// snapshot when its first live event lands, or thread/read only ever
-			// answers from the restore point forward (ledger #110/#111).
-			if s.appDescendantTranscriptPathFunc != nil {
-				if path := strings.TrimSpace(s.appDescendantTranscriptPathFunc(threadID)); path != "" {
-					if persisted, err := appTurnProjectionFromTranscriptFile(path); err == nil {
-						projection.turns.Seed(appTurnSeed{Turns: persisted.turns, NextEntry: persisted.nextEntry})
-						projection.projector.SeedPersistedTurns(persisted.persistedEntries)
-					}
-				}
-			}
 			s.appDescendants[threadID] = projection
+		}
+		// Seed from the descendant's own transcript BEFORE this event is applied,
+		// the same order PrepareAppIdentity uses for the ROOT thread: a resumed
+		// descendant's persisted history must already be in the snapshot when
+		// its first live event lands, or thread/read only ever answers from the
+		// restore point forward (ledger #110/#111). An evicted descendant is
+		// rebuilt the same way.
+		if projection.turns == nil {
+			s.installDescendantTurnsLocked(threadID, projection)
 		}
 		projected := projection.projector.Project(event)
 		projection.activeTurnID = projection.projector.ActiveTurnID()
@@ -823,6 +818,12 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			}
 			committed = append(committed, record)
 		}
+		s.mu.Lock()
+		if projection.quiescent() {
+			s.touchDescendantLocked(projection)
+			s.evictQuiescentDescendantsLocked(appResidentQuiescentDescendants)
+		}
+		s.mu.Unlock()
 		return committed
 	})
 }
@@ -1336,6 +1337,13 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	if err := appwire.ValidateThreadReadParams(params); err != nil {
 		return appwire.ThreadReadResponse{}, err
 	}
+	if params.IncludeTurns {
+		release, err := s.pinDescendantTurns(s.appThreadIDForRead(params))
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		defer release()
+	}
 	if !params.Subscribe {
 		return s.appThreadReadSnapshotChecked(params)
 	}
@@ -1618,6 +1626,11 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	if threadID == "" {
 		return appwire.ThreadTurnsListResponse{}, appwire.SessionUnavailable("thread is unavailable")
 	}
+	release, err := s.pinDescendantTurns(threadID)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	defer release()
 	snapshot := s.appTurnSnapshotForID(threadID)
 	if snapshot == nil {
 		return appwire.ThreadTurnsListResponse{}, nil

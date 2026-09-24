@@ -315,10 +315,23 @@ type ServerConfig struct {
 // independent projector and turn snapshot so their notification streams and
 // thread/read cuts remain isolated.
 type appDescendantProjection struct {
-	projector    *appprojector.AppEventProjector
+	projector *appprojector.AppEventProjector
+	// turns is nil while the descendant is evicted: a quiescent descendant's
+	// turns are rebuilt from its transcript on its next read or event
+	// (appwire_descendant_eviction.go).
 	turns        *appTurnSnapshot
 	thread       appwire.Thread
 	activeTurnID string
+	// evictedNextEntry is the evicted snapshot's next live entry. A rebuilt
+	// snapshot allocates no entry below it, so items streamed after a resume
+	// order after everything a subscriber already holds.
+	evictedNextEntry uint64
+	// lastUsed orders eviction: the least recently read or settled descendant
+	// goes first.
+	lastUsed uint64
+	// readers counts reads holding turns resident; a pinned descendant is never
+	// evicted mid-read.
+	readers int
 }
 
 type taskPublicationCursor struct {
@@ -390,6 +403,8 @@ type Server struct {
 	// Nil is a legitimate answer: a fresh (never-persisted) descendant has
 	// nothing to seed from.
 	appDescendantTranscriptPathFunc func(threadID string) string
+	// appDescendantUseSerial stamps appDescendantProjection.lastUsed.
+	appDescendantUseSerial uint64
 	// appDescendantLiveWatchesFunc resolves the row IDs of one thread LIST page
 	// to the live watch rows that belong on each of them, when the daemon can
 	// reach the child session. The list path consults it once per page to attach
