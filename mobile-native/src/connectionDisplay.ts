@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useInsertionEffect, useRef, useState } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import { clientServesHub } from "./connectionIdentity";
 
@@ -71,29 +71,38 @@ export function useLiveReadiness(
 	// so the settling effect records the first birth, and the render before
 	// it refuses the pairing the mount arrived with (round 32).
 	const bornScope = useRef<{ client: object | null; scope: string }>({ client: null, scope });
-	const lastBumped = useRef({ scope, client, state });
+	// The observed-pairing generation is advanced by this component's
+	// insertion effect, a commit-phase write point — never a render-phase
+	// ref write. The refs it writes are frozen between commits, so every
+	// render pass, committed or abandoned, reads the same values, and an
+	// abandoned pass leaves nothing behind: its callback may capture a
+	// generation that never lands, but the pass never commits, so nothing
+	// captures it and the committed pairing's callback stays identity-stable
+	// (round 73). The insertion effect runs before the layout effects of this
+	// tree's children, so a ready-captured callback refuses from the moment
+	// a moved render commits, not one settle later (round 27). The state is
+	// part of the observed pairing for the same reason: a connection drop
+	// must refuse a ready-captured callback the moment the dropped render
+	// commits (round 30). The render reads the frozen refs only to compute
+	// the generation its own commit would land on — the insertion effect
+	// re-derives the comparison and does the writing.
 	const generation = useRef(0);
-	// Synchronous on the observed pairing move, before any effect runs: this
-	// is what closes the commit-to-effect window. The state is part of the
-	// observed pairing for the same reason: a connection drop must refuse a
-	// ready-captured callback the moment the dropped render commits, and the
-	// settled snapshot keeps reporting the previous state through the window
-	// (round 30). The comparison reads the last pairing THIS RENDER PHASE
-	// bumped for, not the effect-settled snapshot: a second render with the
-	// same pairing before the settle would otherwise bump again and
-	// invalidate the first committed render's callback for no observed move
-	// (round 59). The render-phase write persists across abandoned renders
-	// too, so the next committed render of a different pairing still bumps —
-	// the fail-closed round-27 property.
-	if (
-		lastBumped.current.scope !== scope ||
-		lastBumped.current.client !== client ||
-		lastBumped.current.state !== state
-	) {
-		lastBumped.current = { scope, client, state };
-		generation.current += 1;
-	}
-	const myGeneration = generation.current;
+	const lastObserved = useRef({ scope, client, state });
+	const moved =
+		lastObserved.current.scope !== scope ||
+		lastObserved.current.client !== client ||
+		lastObserved.current.state !== state;
+	const myGeneration = generation.current + (moved ? 1 : 0);
+	useInsertionEffect(() => {
+		if (
+			lastObserved.current.scope !== scope ||
+			lastObserved.current.client !== client ||
+			lastObserved.current.state !== state
+		) {
+			lastObserved.current = { scope, client, state };
+			generation.current += 1;
+		}
+	});
 	useEffect(() => {
 		if (client !== null && bornScope.current.client !== client) {
 			// The persistent record refuses the re-birth of a client that

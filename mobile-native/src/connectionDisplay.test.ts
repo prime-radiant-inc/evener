@@ -322,6 +322,57 @@ it("useLiveReadiness recovers when React abandons an identity-changing render", 
 	expect(current()).toBe(true);
 });
 
+it("useLiveReadiness: an abandoned identity-changing render does not rebuild the committed pairing's callback", async () => {
+	const first = {} as AppwireClient;
+	const second = {} as AppwireClient;
+	let hubId = "hub-1";
+	let client: AppwireClient | null = first;
+	const state: ConnectionState = "ready";
+	let current: LiveReadiness = () => false;
+	const gate = { suspend: false };
+	let release!: () => void;
+	const parked = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	function Owner() {
+		current = useLiveReadiness(hubId, client, state);
+		if (gate.suspend) {
+			use(parked);
+		}
+		return null;
+	}
+	const fallback = "connection-loading";
+	const boundary = () =>
+		createElement(Suspense, { fallback }, createElement(Owner));
+	const tree = render(boundary());
+	expect(current()).toBe(true);
+	const before = current;
+
+	// The identity-changing render is abandoned midway — nothing commits, no
+	// effect runs, no move is ever observed by a committed tree. A render
+	// that mutates a ref during render persists its bump across the
+	// abandonment and rebuilds the next same-identity render's callback for
+	// no observed move; a derivation that goes through React's own state
+	// leaves the abandoned pass behind with nothing committed.
+	gate.suspend = true;
+	hubId = "hub-2";
+	client = second;
+	await act(async () => {
+		tree.update(boundary());
+	});
+	expect(renderedText(tree)).toContain(fallback);
+
+	gate.suspend = false;
+	hubId = "hub-1";
+	client = first;
+	await act(async () => {
+		release();
+	});
+	expect(renderedText(tree)).not.toContain(fallback);
+	expect(current).toBe(before);
+	expect(current()).toBe(true);
+});
+
 it("useRenderClient: a retry's not-yet-ready replacement never displaces the previous client", () => {
 	// hubConnection.ts's own sequence for a manual retry: `client` clears
 	// while the fresh one dials, then a NEW client object appears while

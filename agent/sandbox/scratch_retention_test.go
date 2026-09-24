@@ -321,6 +321,59 @@ func TestSweepRemovalDoesNotHoldTheManifestLockThroughTheRemoval(t *testing.T) {
 	}
 }
 
+// TestSweepReclaimsCrashedReclaimingTombstones pins the crash-window half of
+// the tombstone design: the sweep renames a candidate to a dot-prefixed
+// tombstone before removing it, and a sweep that crashes between the rename
+// and the removal leaves that tombstone behind — a shape the sweep's own
+// prefix filter can never enumerate, so without explicit reclamation the
+// directory is orphaned forever. A later sweep must recognize and remove
+// stale tombstones, while a tombstone whose lease is still held — a live
+// remover mid-removal in another pass or process — must be left alone.
+func TestSweepReclaimsCrashedReclaimingTombstones(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	tombstoneName := func(dir string) string {
+		return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".reclaiming")
+	}
+
+	// A crashed sweeper's leftover: the candidate passed every gate, was
+	// renamed, and the process died before the removal. Its lease is free
+	// (process death closes the flock) and its mtime is the aged candidate's.
+	crashed := pinnedScratch(t, base, workspace, retentionOwner(t), ScratchKindSandbox)
+	if err := crashed.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	crashedTombstone := tombstoneName(crashed.Dir)
+	if err := os.Rename(crashed.Dir, crashedTombstone); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(crashedTombstone, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+
+	// A live remover's tombstone: the rename happened, the removal has not,
+	// and the remover still holds the directory lease.
+	live := pinnedScratch(t, base, workspace, retentionOwner(t), ScratchKindUnsandboxed)
+	liveTombstone := tombstoneName(live.Dir)
+	if err := os.Rename(live.Dir, liveTombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(liveTombstone, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	// live's lease stays held — Retain is deliberately not called.
+
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if _, statErr := os.Stat(crashedTombstone); !os.IsNotExist(statErr) {
+		t.Fatalf("the crashed sweeper's tombstone survived: stat error = %v", statErr)
+	}
+	if _, statErr := os.Stat(liveTombstone); statErr != nil {
+		t.Fatalf("a tombstone whose lease is held must be left for its live remover: %v", statErr)
+	}
+}
+
 // TestSweepRemovalSerializesWithAnotherProcessReset pins the cross-process
 // half of the round-67 serialization: the reclamation mutex is process-local,
 // so a reset in ANOTHER process sharing the state directory used to carry the

@@ -266,6 +266,26 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 	return errors.Join(failures...)
 }
 
+// crashedSessionScratchTombstoneSuffix marks the dot-prefixed tombstone a
+// sweeper renames a candidate to before removing it.
+const crashedSessionScratchTombstoneSuffix = ".reclaiming"
+
+// crashedSessionScratchTombstone names the tombstone dir is renamed to
+// before its removal. The dot prefix hides it from the sweep's candidate
+// filter — enumerated by nobody, removed exactly once — and reclaims it
+// under the same ownership, age, and lease gates.
+func crashedSessionScratchTombstone(dir string) string {
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+crashedSessionScratchTombstoneSuffix)
+}
+
+// isCrashedSessionScratchTombstone reports whether a base entry is the
+// tombstone a sweeper renames a candidate to before removing it, so a sweep
+// that crashed between the rename and the removal can be cleaned up by a
+// later one.
+func isCrashedSessionScratchTombstone(name string) bool {
+	return strings.HasPrefix(name, "."+sessionScratchPrefix) && strings.HasSuffix(name, crashedSessionScratchTombstoneSuffix)
+}
+
 // scratchSweepBeforeRemove is a nil-in-production test seam fired while the
 // sweep holds the candidate's lease, the reclamation mutex, and — when the
 // candidate carries a pin — the pin owner's manifest lock, after the retention
@@ -315,7 +335,40 @@ func sweepCrashedSessionScratch(base string) error {
 	cutoff := time.Now().Add(-crashedSessionScratchMaxAge)
 	var failures []error
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
+		if !entry.IsDir() {
+			continue
+		}
+		if isCrashedSessionScratchTombstone(entry.Name()) {
+			// A sweeper that crashed between its invalidating rename and the
+			// removal left this behind: post-validation garbage the
+			// candidate filter can never enumerate again. Reclaim it under
+			// the same age, ownership, and lease gates — the lease is what
+			// excludes a live remover mid-removal, whose held flock a
+			// crashed one released — but skip the pin and manifest checks:
+			// the rename already committed the collectibility verdict, and
+			// no reference can ever name the dead path. No second rename
+			// either: a removal that fails leaves the same tombstone for the
+			// next sweep to retry.
+			info, infoErr := entry.Info()
+			if infoErr != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			tombstone := filepath.Join(base, entry.Name())
+			owned, ownerErr := scratchEntryOwnedByProcess(tombstone)
+			if ownerErr != nil || !owned {
+				continue
+			}
+			lease, contended, leaseErr := acquireScratchLease(filepath.Join(tombstone, sessionScratchLeaseName))
+			if leaseErr != nil || contended {
+				continue
+			}
+			if removeErr := os.RemoveAll(tombstone); removeErr != nil {
+				failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch tombstone %q: %w", tombstone, removeErr))
+			}
+			_ = lease.Release()
+			continue
+		}
+		if !strings.HasPrefix(entry.Name(), sessionScratchPrefix) {
 			continue
 		}
 		info, err := entry.Info()
@@ -411,14 +464,18 @@ func sweepCrashedSessionScratch(base string) error {
 		// the directory's contents (round 71): every concurrent writer of
 		// this root contends only with the millisecond-scale checks and the
 		// rename itself.
-		tombstone := filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".reclaiming")
+		tombstone := crashedSessionScratchTombstone(dir)
 		renameErr := os.Rename(dir, tombstone)
 		scratchReclamationMu.Unlock()
 		if manifestLock != nil {
 			_ = manifestLock.Release()
 		}
-		_ = lease.Release()
+		// The directory lease is held through the removal: the tombstone
+		// reclamation above — this pass, a later one, or another process's —
+		// excludes a live remover by the lease, while a crash between the
+		// rename and the release lets the next sweep reclaim the tombstone.
 		if renameErr != nil {
+			_ = lease.Release()
 			// A candidate that vanished mid-sweep mirrors the removal's
 			// IsNotExist tolerance; anything else is a real failure and the
 			// directory stays for a later sweep to retry.
@@ -441,6 +498,7 @@ func sweepCrashedSessionScratch(base string) error {
 				failures = append(failures, fmt.Errorf("sandbox: restore unremoved crashed session scratch %q from %q: %w", dir, tombstone, backErr))
 			}
 		}
+		_ = lease.Release()
 	}
 	return errors.Join(failures...)
 }
