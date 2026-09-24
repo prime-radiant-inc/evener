@@ -353,9 +353,13 @@ export function stateWindow(tasks: TaskRow[] | null, prefer?: number): TaskWindo
   // can settle two tasks in the same batch microseconds apart, so the
   // sub-millisecond digits must survive; the second-resolution base parses
   // identically everywhere, and the fraction folds back as whole
-  // milliseconds plus a remainder. An absent or unparseable stamp reads as
-  // -Infinity: unknown settles lose to any stamped one, and ties degrade to
-  // list order through the >= below.
+  // milliseconds plus a remainder. That fold keeps fidelity down to ~0.5us
+  // (a double's ULP at epoch scale); finer distinctions collapse to a tie,
+  // which the window resolves by preferring this call's last terminal row -
+  // the batch's true latest settle, since the store stamps sequentially in
+  // batch order. An absent or unparseable stamp reads as -Infinity: unknown
+  // settles lose to any stamped one, and ties degrade to list order through
+  // the comparison below.
   const settleKey = (task: TaskRow): number => {
     const raw = task.completedAt ?? "";
     const parts = raw.match(/^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(\D.*)$/);

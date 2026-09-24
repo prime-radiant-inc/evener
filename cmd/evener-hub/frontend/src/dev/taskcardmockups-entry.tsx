@@ -190,7 +190,9 @@ const stripModel = variantModel(
 // two surfaces can be compared directly. Both theme panes mount the same
 // body against the same tasksPanelStore entry (keyed by this dev
 // sessionRef), so a single fetch serves both.
-const PANE_SESSION_REF = "dev-taskcardmockups-pane";
+// One session ref for the cards and the pane demo alike: the Open-list
+// buttons open the same session's pane the demo displays.
+const PANE_SESSION_REF = SESSION_REF;
 const PANE_CLIENT = new FakeClient("ready");
 PANE_CLIENT.on("evener/tasks/list", () => ({ data: MAIN.state }));
 connectionStore.getState().connect(PANE_CLIENT);
