@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"maps"
 	"math"
 	"os"
@@ -221,6 +222,102 @@ func TestSweepRemovalSerializesWithTheManifestReset(t *testing.T) {
 	_, statErr := os.Stat(scratch.Dir)
 	if !manifest.Released && namesDir && os.IsNotExist(statErr) {
 		t.Fatalf("the sweep removed a directory the concurrent reset had carried: the resurrected manifest names deleted scratch %s", scratch.Dir)
+	}
+}
+
+// TestSweepRemovalDoesNotHoldTheManifestLockThroughTheRemoval pins the cost of
+// holding the pin owner's manifest lock across the sweep's removal: the
+// removal's duration scales with the removed directory's contents, while
+// every other operation on the same root — here a sibling allocation's cold
+// open — retries the lock with a writer-sized budget. A large candidate's
+// removal outlasts that budget, so the open exhausts and the restore it
+// serves fails. The sweep must invalidate the candidate with an atomic rename
+// while the locks are held and remove the dead tombstone outside every lock,
+// so the open contends only with millisecond-scale checks and reaches the
+// manifest's own released verdict.
+func TestSweepRemovalDoesNotHoldTheManifestLockThroughTheRemoval(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	victim := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	sibling := pinnedScratch(t, base, workspace, owner, ScratchKindUnsandboxed)
+	// The victim's removal must outlast a writer-sized retry budget many times
+	// over, so plant enough empty files for the recursive delete to take
+	// hundreds of milliseconds. Plant before aging: creating files refreshes
+	// the directory's mtime, which is the sweep's age gate.
+	for i := range 100_000 {
+		f, err := os.Create(filepath.Join(victim.Dir, fmt.Sprintf("filler-%06d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One binding carries both slots, so both allocations answer to the same
+	// manifest and the same lock.
+	consumer := ScratchConsumerBinding{SessionID: "R", CurrentBindingID: "E0"}
+	if err := UpsertScratchBinding(owner, retentionBinding("E0", "R", workspace, map[string]ScratchSlot{
+		ScratchKindSandbox:     {Dir: victim.Dir, OwnsLease: true},
+		ScratchKindUnsandboxed: {Dir: sibling.Dir, OwnsLease: true},
+	}), consumer); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	// Tombstone while both leases are still held, so the pins survive the
+	// release (round 25); then free both leases — the sweep needs the
+	// victim's, the sibling's open needs its own.
+	if err := ReleaseScratchRetention(owner); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := victim.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sibling.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(victim.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	// The sibling stays un-aged: the sweep must never consider it.
+
+	atWindow := make(chan struct{})
+	proceed := make(chan struct{})
+	sweepDone := make(chan error, 1)
+	scratchSweepBeforeRemove = func() {
+		atWindow <- struct{}{}
+		<-proceed
+	}
+	t.Cleanup(func() { scratchSweepBeforeRemove = nil })
+
+	go func() { sweepDone <- SweepCrashedSessionScratch(workspace) }()
+	<-atWindow
+	close(proceed)
+
+	// The sibling's cold open retries the same manifest lock with the standard
+	// writer-sized budget. While the sweep held the lock across its removal
+	// this exhausted; with the invalidating rename the lock frees in
+	// milliseconds and the open reaches the manifest's released verdict.
+	openErr := RetryScratchLockContention(func() error {
+		_, err := OpenRetainedSessionScratch(owner, ScratchReference{Dir: sibling.Dir, Kind: ScratchKindUnsandboxed})
+		return err
+	})
+	if errors.Is(openErr, ErrScratchRetentionLockHeld) {
+		t.Fatalf("the sibling allocation's cold-open exhausted its lock budget while the sweep held the manifest lock through its removal: %v", openErr)
+	}
+	if !errors.Is(openErr, ErrScratchRetentionReleased) {
+		t.Fatalf("the sibling allocation's cold-open must reach the manifest's released verdict, not fail otherwise: %v", openErr)
+	}
+
+	select {
+	case err := <-sweepDone:
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("sweep did not finish")
+	}
+	if _, statErr := os.Stat(victim.Dir); !os.IsNotExist(statErr) {
+		t.Fatalf("the aged victim survived the sweep: stat error = %v", statErr)
 	}
 }
 

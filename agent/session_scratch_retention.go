@@ -888,6 +888,41 @@ func scratchUpsertCommitted(owner sandbox.ScratchOwner, binding sandbox.ScratchB
 	return ok && scratchConsumerRowsCurrent(gotConsumer, consumer)
 }
 
+// scratchAdoptionLockRetryBudget bounds how long an adoption's manifest
+// revalidation keeps retrying the retention lock. Adoptions of one root can
+// run as a fleet — every concurrently restoring consumer revalidates and
+// installs under the same lock — so the budget must absorb the fleet's
+// serialized holds (sub-millisecond each), not one writer's. Holds far beyond
+// it mean a stuck holder, which stays a reported failure.
+const scratchAdoptionLockRetryBudget = 2 * time.Second
+
+// scratchManifestTransfersSlot reports whether the live manifest still names
+// bindingID's kind slot for dir. The adoption claim is a pool-snapshot
+// verdict: a refresh fold can delete the claim — along with every row that
+// named the allocation — between the claim and the install when the manifest
+// no longer references the directory, so the install revalidates against the
+// manifest itself before transferring the lease. A Released manifest never
+// authorizes a transfer.
+func scratchManifestTransfersSlot(manifest sandbox.ScratchManifest, bindingID, kind, dir string) bool {
+	if manifest.Released {
+		return false
+	}
+	binding, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		return false
+	}
+	slot, ok := binding.Slots[kind]
+	if !ok || canonicalScratchDir(slot.Dir) != canonicalScratchDir(dir) {
+		return false
+	}
+	for _, ref := range manifest.References {
+		if ref.Kind == kind && canonicalScratchDir(ref.Dir) == canonicalScratchDir(dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // refreshRetainedScratchConsumer converges the retained pool onto sessionID's
 // CURRENT durable manifest rows before a same-process cold restore adopts.
 // The pool is an init-time snapshot — prepareRetainedScratch runs once, before
@@ -1798,7 +1833,50 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				hook()
 			}
 			ref := sandbox.ScratchReference{Dir: slot.Dir, Kind: kind}
-			if err := env.RestoreSessionScratch(bindingID, ref, handle); err != nil {
+			// The claim is a pool-snapshot verdict, and a refresh fold can
+			// delete it — with every row that named the allocation — between
+			// the claim and this install when the live manifest no longer
+			// references the directory. Revalidate the manifest and install
+			// as one step under the owner's retention lock: the fold's row
+			// install and its reconcile run under the same lock (rounds 53
+			// and 67), so a manifest that still transfers this slot cannot
+			// stop authorizing it mid-window, and one that stopped cannot
+			// authorize it back in. The lock order matches the borrow path:
+			// manifest lock first, pool state only after. The retry budget is
+			// the adoption-scale one: every concurrently restoring consumer
+			// plays the same fail-fast lottery on this lock, and the
+			// writer-sized bound would strand the fleet's late losers.
+			var declined bool
+			installErr := sandbox.RetryScratchLockContentionFor(scratchAdoptionLockRetryBudget, func() error {
+				return sandbox.WithScratchRetentionLock(pool.owner, func() error {
+					manifest, err := sandbox.LoadScratchRetention(pool.owner)
+					if err != nil {
+						return err
+					}
+					if !scratchManifestTransfersSlot(manifest, bindingID, kind, slot.Dir) {
+						declined = true
+						return nil
+					}
+					return env.RestoreSessionScratch(bindingID, ref, handle)
+				})
+			})
+			if declined {
+				// The manifest no longer authorizes this transfer. The fold's
+				// reconcile already swept the in-flight claim (the rows that
+				// named the allocation are gone), so releasing the claim
+				// reports not-ours and the Retain frees the lease — correct
+				// for dereferenced debris, which nothing will ever reacquire.
+				// The declined kind takes the dying-claim treatment: the
+				// pending mark keeps the reprovision's mint from claiming
+				// the binding row's slot (rounds 10 and 38), and the
+				// not-installed report routes the caller to fresh scratch.
+				if !pool.releaseScratchSlotClaim(key, adopterID, handle) {
+					_ = handle.Retain()
+				}
+				env.MarkRetainedSlotPending(kind)
+				return false, nil, nil
+			}
+			if installErr != nil {
 				// The transfer failed, so the pool must not keep the slot
 				// claimed: hand the handle back and leave it pooled for a
 				// later, successful adoption. A detached pool takes nothing
@@ -1807,7 +1885,7 @@ func (s *Session) adoptRetainedScratchFor(env *execenv.LocalExecutionEnvironment
 				if !pool.releaseScratchSlotClaim(key, adopterID, handle) {
 					_ = handle.Retain()
 				}
-				return false, nil, err
+				return false, nil, installErr
 			}
 			pool.finishRetainedScratchSlot(key)
 			transferred[kind] = true
@@ -1876,7 +1954,10 @@ func (s *Session) borrowRetainedScratchIfLive(pool *retainedScratchPool, env *ex
 		return false, errors.New("retained scratch: session has no scratch retention owner for the borrow")
 	}
 	var installed bool
-	err := sandbox.RetryScratchLockContention(func() error {
+	// The budget is the adoption-scale one, not the writer-sized default: a
+	// fleet of concurrently restoring consumers borrows under this same lock,
+	// and the fail-fast lottery strands late losers with a spurious decline.
+	err := sandbox.RetryScratchLockContentionFor(scratchAdoptionLockRetryBudget, func() error {
 		return sandbox.WithScratchRetentionLock(owner, func() error {
 			retained, retainedErr := sandbox.ScratchDirectoryRetained(slot.Dir)
 			if retainedErr != nil {

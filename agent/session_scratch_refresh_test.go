@@ -1181,6 +1181,104 @@ func TestScratchBorrowSerializesWithManifestReclamation(t *testing.T) {
 	}
 }
 
+// TestScratchAdoptionDeclinesATransferTheManifestDereferenced pins round 71's
+// first Medium: reconcileRetainedScratchPool deletes a pool.adopted claim for
+// any directory the live manifest does not reference — including the claim an
+// in-flight adoption just took but has not yet installed. The adopter then
+// installed the stale allocation anyway: the restore ran on scratch the
+// manifest no longer authorizes, and its failure cleanup could not requeue a
+// transfer whose claim record the fold had swept. The transfer now revalidates
+// the manifest under the pin owner's durable update lock before the install
+// commits — the same hold the fold's own reconciliation runs in, so the
+// revalidation reads exactly the manifest the reconcile acted on — and a
+// transfer the manifest no longer carries declines through the dying-claim
+// treatment: the claim is released, the kind is marked pending, and the caller
+// reprovisions fresh scratch.
+func TestScratchAdoptionDeclinesATransferTheManifestDereferenced(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01DEREFCONS1"
+	const liveBindingID = "b-deref-live"
+	const staleBindingID = "b-deref-stale"
+	const adopterID = "01DEREFADOPT1"
+	// The live world: a published binding the consumer maps onto, the only
+	// allocation the manifest references. The concurrent refresh folds onto it.
+	liveSlots, _ := mintRefreshScratchBinding(t, s, liveBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, liveBindingID)
+	t.Cleanup(func() { _ = liveSlots[sandbox.ScratchKindSandbox].Retain() })
+	// The stale world: an allocation the manifest never references, its handle
+	// pooled and its binding row installed in the pool the way a pre-reset
+	// world leaves debris (round 53's orphan shape).
+	staleHandle, err := sandbox.NewSessionScratch(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("mint the stale allocation: %v", err)
+	}
+	staleDir := staleHandle.Dir
+	t.Cleanup(func() { _ = staleHandle.Retain() })
+	staleKey := canonicalScratchDir(staleDir)
+	staleRow := sandbox.ScratchBinding{
+		BindingID:      staleBindingID,
+		OwnerSessionID: bindingOwnerForTest,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindSandbox: {Dir: staleDir, OwnsLease: true},
+		},
+	}
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{staleKey: staleHandle},
+		bindings:  map[string]sandbox.ScratchBinding{staleBindingID: staleRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{},
+		adopted:   map[string]string{},
+		contended: map[string]struct{}{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+
+	// Between the claim and the install, a concurrent refresh folds the live
+	// manifest into the pool and its reconciliation sweeps the in-flight
+	// claim — the exact mechanism the finding names: the manifest carries no
+	// reference for the stale directory, so pool.adopted loses the claim the
+	// adoption is still transferring under.
+	s.cfg.testOnly.scratchAdoptionAfterClaim = func() {
+		if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+			t.Fatalf("concurrent refresh over the live rows: %v", err)
+		}
+		pool := s.retainedScratch.Load()
+		if pool == nil {
+			t.Fatal("fixture: the refresh detached the pool")
+		}
+		pool.mu.Lock()
+		_, claimAlive := pool.adopted[staleKey]
+		pool.mu.Unlock()
+		if claimAlive {
+			t.Fatal("fixture: the reconciliation left the in-flight claim in place — the mechanism under test did not run")
+		}
+	}
+	installed, _, err := s.adoptRetainedScratchFor(env, staleBindingID, adopterID)
+	if err != nil {
+		t.Fatalf("adopt the stale binding across a concurrent fold: %v", err)
+	}
+	if installed {
+		t.Fatalf("the adoption installed a transfer over a directory the live manifest does not reference: the fold's reconciliation swept the in-flight claim and the install committed anyway")
+	}
+	if got := envScratchRefDir(env, sandbox.ScratchKindSandbox); got != "" {
+		t.Fatalf("the environment exposes the dereferenced %q: the transfer must not install", got)
+	}
+	if pending := env.RetentionPendingKinds(); len(pending) != 1 || pending[0] != sandbox.ScratchKindSandbox {
+		t.Fatalf("the declined transfer left the kinds %v unmarked: the reprovision's mint would claim the row's slot", pending)
+	}
+	if staleHandle.HasLease() {
+		t.Fatal("the declined transfer left the stale allocation's lease held: the collector can never take the dereferenced directory")
+	}
+	if _, err := os.Stat(staleDir); err != nil {
+		t.Fatalf("the stale directory itself must survive the declined transfer: %v", err)
+	}
+}
+
 // TestScratchBorrowDeclineKeepsTheKindPending pins round 48's Medium, the
 // wrapper-only half: a borrow that declines because the disk revalidation
 // read the directory collectible — with the pool still attached and unsealed

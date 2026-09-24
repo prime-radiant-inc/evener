@@ -722,6 +722,31 @@ func RetryScratchLockContention(fn func() error) error {
 	}
 }
 
+// RetryScratchLockContentionFor retries fn like RetryScratchLockContention but
+// bounds the retry by a wall-clock budget instead of the writer-sized attempt
+// count. The fixed five-attempt bound is sized for one concurrent writer's
+// fsync-scale hold; a call site that serializes a whole fleet of participants
+// on the same lock — the adoption revalidations, one per concurrent restore of
+// the same root — turns each refusal into a lottery the fleet plays together,
+// and five tickets strand everyone past the fifth loser no matter how short
+// each individual hold is. Every refusal stays a microsecond-to-millisecond
+// race, so retrying the same inputs remains always safe. The budget keeps a
+// sustained refusal a real, reported failure: its expiry returns the refusal
+// to the caller, never a silent success.
+func RetryScratchLockContentionFor(budget time.Duration, fn func() error) error {
+	var err error
+	start := time.Now()
+	for attempt := 0; ; attempt++ {
+		if err = fn(); !errors.Is(err, ErrScratchRetentionLockHeld) {
+			return err
+		}
+		if time.Since(start) >= budget {
+			return err
+		}
+		time.Sleep(ScratchLockContentionDelay(attempt))
+	}
+}
+
 // UpsertScratchBindingOnly publishes one binding record under the manifest lock
 // with the same per-slot rebasing as UpsertScratchBinding, but leaves every
 // consumer record untouched. It is the writer for an environment that minted an
