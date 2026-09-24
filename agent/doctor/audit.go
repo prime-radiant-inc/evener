@@ -918,11 +918,6 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// trueCount (not len(SessionRefs)) so it agrees with Summary.Sessions
 		// and Description when deduped bare sids shrink the ref list.
 		refCount := len(f.Evidence.SessionRefs)
-		// Save the pre-truncation ref list for Description prose so the cap
-		// marker (…and N more) is emitted (round 9 finding 3): the caller
-		// previously truncated SessionRefs before joinSessionRefs, making the
-		// marker unreachable. Description now uses the full list.
-		preCapRefs := f.Evidence.SessionRefs
 		if refCount > evidenceSessionRefCap {
 			f.Evidence.TotalSessionRefs = trueCount
 			f.Evidence.SessionRefs = f.Evidence.SessionRefs[:evidenceSessionRefCap]
@@ -935,26 +930,38 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		}
 		reproRefs := doctorRefsBySig[sig]
 		nonRepro := nonReproBySig[sig]
-		// Description prose (round 10 findings 3+4): one shared
-		// evidenceSessionRefCap budget covers all session references —
+		// Description prose (round 10 findings 3+4, round 11 finding 1): one
+		// shared evidenceSessionRefCap budget covers all session references —
 		// reproducible refs first, then non-reproducible disclosures in the
-		// remaining slots. The combined omission count is disclosed as a
-		// single marker. The command-side omission (DoctorCommand truncates
-		// reproRefs independently) is also disclosed here because the command
-		// stays a pure runnable line (round 9 finding 2: no # comments).
+		// remaining slots. Each portion emits its own omission marker when it
+		// overflows its budget. The reproducible portion uses reproRefs
+		// (doctorRefsBySig, the reproducible selectors only) — not SessionRefs,
+		// which also carries non-reproducible bare sids. Using SessionRefs for
+		// the reproducible portion would emit a spurious cap marker when all
+		// sessions are non-reproducible (reproBudget=0 but SessionRefs has
+		// entries). The command-side omission (DoctorCommand truncates reproRefs
+		// independently) is disclosed separately because the command stays a
+		// pure runnable line (round 9 finding 2: no # comments).
 		reproCount := len(reproRefs)
 		// Reproducible refs take the first portion of the budget.
 		reproBudget := min(evidenceSessionRefCap, reproCount)
 		nonReproBudget := evidenceSessionRefCap - reproBudget
 		// Build the reproducible ref portion with its cap marker.
-		reproDesc := joinSessionRefs(preCapRefs, reproBudget)
-		desc := fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
-			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, reproDesc)
+		reproDesc := joinSessionRefs(reproRefs, reproBudget)
+		desc := fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s)",
+			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount)
+		if reproDesc != "" {
+			desc += ": " + reproDesc
+		}
 		// Build the non-reproducible disclosure in the remaining budget.
 		totalOmitted := 0
 		if len(nonRepro) > 0 {
 			nonReproDesc, nonReproOmitted := formatNonReproSessions(nonRepro, nonReproBudget)
-			desc += "; not reproducible: " + nonReproDesc
+			if reproDesc != "" {
+				desc += "; not reproducible: " + nonReproDesc
+			} else {
+				desc += ": not reproducible: " + nonReproDesc
+			}
 			totalOmitted += nonReproOmitted
 		}
 		// Disclose command-side omissions: DoctorCommand truncates reproRefs
