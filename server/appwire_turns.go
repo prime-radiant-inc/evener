@@ -261,7 +261,7 @@ func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 func (s *appTurnSnapshot) ApplyCommitted(record appserver.SequencedNotification, params any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.applyLocked([]appserver.SequencedNotification{record}, []any{params})
+	s.applyLocked([]appserver.SequencedNotification{record}, params)
 }
 
 // deltaParams fills out from typed when it holds a T, and otherwise decodes
@@ -274,9 +274,9 @@ func deltaParams[T any](typed any, raw json.RawMessage, out *T) bool {
 	return json.Unmarshal(raw, out) == nil
 }
 
-// applyLocked applies committed records. typed is nil or parallel to records,
-// holding each record's params before encoding (see ApplyCommitted).
-func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification, typed []any) {
+// applyLocked applies committed records. typed is nil, or the params of the
+// single record before encoding (see ApplyCommitted).
+func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification, typed any) {
 	if len(records) == 0 {
 		return
 	}
@@ -413,11 +413,11 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification,
 		return &turn.Items[len(turn.Items)-1]
 	}
 
-	for i, record := range records {
-		var typedParams any
-		if typed != nil {
-			typedParams = typed[i]
-		}
+	var typedParams any
+	if len(records) == 1 {
+		typedParams = typed
+	}
+	for _, record := range records {
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
 			var params appwire.TurnStartedParams
