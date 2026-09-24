@@ -944,10 +944,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// stays a pure runnable line (round 9 finding 2: no # comments).
 		reproCount := len(reproRefs)
 		// Reproducible refs take the first portion of the budget.
-		reproBudget := evidenceSessionRefCap
-		if reproBudget > reproCount {
-			reproBudget = reproCount
-		}
+		reproBudget := min(evidenceSessionRefCap, reproCount)
 		nonReproBudget := evidenceSessionRefCap - reproBudget
 		// Build the reproducible ref portion with its cap marker.
 		reproDesc := joinSessionRefs(preCapRefs, reproBudget)

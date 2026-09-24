@@ -1818,7 +1818,7 @@ func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T)
 	// followSelector emits proj:hash1:<sid>, all resolve via Locate.
 	reproBucket := stateHomeBucket(base, hash1)
 	const reproCount = 150
-	for i := 0; i < reproCount; i++ {
+	for range reproCount {
 		s := newSessionsTestSID(t)
 		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
 	}
@@ -1830,7 +1830,7 @@ func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T)
 	const nonReproPairs = 50
 	nonReproBucketA := stateHomeBucket(base, "has space-a")
 	nonReproBucketB := stateHomeBucket(base, "has space-b")
-	for i := 0; i < nonReproPairs; i++ {
+	for range nonReproPairs {
 		s := newSessionsTestSID(t)
 		writeAuditSession(t, nonReproBucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
 		writeAuditSession(t, nonReproBucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
