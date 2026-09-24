@@ -1883,3 +1883,124 @@ func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T)
 		t.Errorf("Description has %d total session entries (%d repro + %d non-repro), want <= %d — a single shared budget must cover both reproducible and non-reproducible session references (round 10 finding 3)", totalEntries, reproEntries, nonReproEntries, evidenceSessionRefCap)
 	}
 }
+
+// TestRunAudit_R11F1_NoSpuriousCapMarkerForAllNonRepro is the round 11
+// finding-1 RED case: when ALL sessions are non-reproducible, reproBudget=0
+// but preCapRefs (f.Evidence.SessionRefs) carries the non-reproducible bare
+// sids. joinSessionRefs(preCapRefs, 0) emits " …and N more" for refs that
+// are already fully disclosed in the "not reproducible" portion — a
+// spurious marker that misleads consumers into thinking sessions were
+// omitted from the Description when none were. After the fix, the
+// reproducible portion uses reproRefs (empty when all non-repro) so no
+// marker fires.
+func TestRunAudit_R11F1_NoSpuriousCapMarkerForAllNonRepro(t *testing.T) {
+	base := t.TempDir()
+	// 3 distinct sids, each in 2 unsafe buckets = 6 sessions, all
+	// non-reproducible (bare sid ambiguous across the two buckets).
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	for i := range 3 {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		_ = i
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 6 {
+		t.Fatalf("SessionsChecked = %d, want 6", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The Description must NOT contain a spurious ref-portion cap marker
+	// ("…and N more") when all sessions are non-reproducible. Those refs
+	// are fully disclosed in the "not reproducible" portion, so the
+	// ref-portion marker is spurious.
+	if strings.Contains(desc, "…and") {
+		t.Errorf("Description %q contains a spurious ref-portion cap marker (…and N more) — all sessions are non-reproducible and fully disclosed in the not-reproducible portion; no reproducible refs are omitted (round 11 finding 1)", desc)
+	}
+}
+
+// TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs is the
+// round 11 finding-3 test: when >200 reproducible selectors exist but
+// duplicate SIDs across safe-but-noncanonical buckets keep SessionRefs
+// deduped and small, the command-side omission (DoctorCommand truncates
+// reproRefs at evidenceSessionRefCap independently) must be disclosed in
+// the Description with the correct count. This scenario was previously
+// untested: the R10F3 test covers the shared-budget limit but not the
+// command-side omission with deduped SessionRefs.
+func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) {
+	base := t.TempDir()
+	// 2 safe-but-noncanonical buckets: "safe_a" and "safe_b" pass
+	// safeTokenForRepro (no shell metacharacters) but fail
+	// ValidateProjectID (underscore not in [A-Za-z0-9-]). So:
+	//   agentSel = bare sid (refFor returns "" for non-canonical)
+	//   doctorSel = proj:safe_a:<sid> / proj:safe_b:<sid>
+	//   nonReproducible = false (doctorSel != bare sid)
+	// 101 distinct sids × 2 buckets = 202 sessions:
+	//   doctorRefsBySig has 202 distinct proj: selectors
+	//   SessionRefs has 101 deduped bare sids
+	//   reproCount = 202 > 200 → cmdOmitted = 2
+	bucketA := stateHomeBucket(base, "safe_a")
+	bucketB := stateHomeBucket(base, "safe_b")
+	const sids = 101
+	for range sids {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const totalSessions = sids * 2
+	if res.SessionsChecked != totalSessions {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, totalSessions)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The Description must disclose the command-side omission: 202
+	// reproducible selectors exceed the 200-entry command cap, so 2
+	// selectors are omitted from DoctorCommand.
+	if !strings.Contains(desc, "omitted from command") {
+		t.Errorf("Description %q must disclose command-side omission (round 11 finding 3): %d reproducible selectors exceed the %d-entry command cap", desc, totalSessions, evidenceSessionRefCap)
+	}
+	// The omission count must be exactly 2 (202 - 200).
+	wantOmitted := totalSessions - evidenceSessionRefCap
+	if !strings.Contains(desc, fmt.Sprintf("%d", wantOmitted)) {
+		t.Errorf("Description %q must disclose the correct command-side omission count %d (round 11 finding 3)", desc, wantOmitted)
+	}
+	// The command itself must carry at most 200 selectors.
+	dc := runTimeout.Evidence.DoctorCommand
+	if dc != "" {
+		runnablePrefix := "evener doctor audit --runbook fixture-runbook --sessions "
+		if rest, ok := strings.CutPrefix(dc, runnablePrefix); ok {
+			cmdSelectors := strings.Count(rest, ",") + 1
+			if cmdSelectors > evidenceSessionRefCap {
+				t.Errorf("DoctorCommand has %d selectors, want <= %d (round 11 finding 3)", cmdSelectors, evidenceSessionRefCap)
+			}
+		}
+	}
+}
