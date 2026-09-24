@@ -92,9 +92,17 @@ func main() {
 	flag.IntVar(&o.probes, "probes", 0, "with --serve, after the turns finish probe the idle daemon this many times the way the hub does (fresh connection, initialize, thread/list with subagents, thread/read) and report CPU and bytes per probe")
 	flag.BoolVar(&o.serve, "serve", false, "run evener serve and drive it over AppWire with a subscribed client")
 	flag.Parse()
-	if o.evener == "" || o.turns < 1 || o.rounds < 1 || (o.turns > 1 && !o.serve) {
+	if o.evener == "" || o.turns < 1 || o.rounds < 1 || (o.turns > 1 && !o.serve) ||
+		o.payloadKB < 0 || o.streamBytes < 0 || o.delegates < 0 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	// Delegates are spawned one per round of the first turn, and the last
+	// turn runs until every one has reported: with more delegates than
+	// rounds, a multi-turn run's first turn ends short of spawning them all
+	// and its last turn never ends.
+	if o.delegates > o.rounds {
+		log.Fatalf("turncpu: --delegates (%d) must not exceed --rounds (%d)", o.delegates, o.rounds)
 	}
 	if err := run(o); err != nil {
 		log.Fatalf("turncpu: %v", err)
@@ -103,7 +111,8 @@ func main() {
 
 // provider is the scripted chat-completions endpoint. Each tool-bearing
 // request is one session round; requests without tools (the session namer)
-// get a canned JSON answer.
+// get a canned JSON answer, as a non-streaming completion when not asked to
+// stream.
 type provider struct {
 	o       options
 	workDir string
@@ -112,7 +121,7 @@ type provider struct {
 	pid         int
 	turn        int
 	roundInTurn int
-	lastReply   time.Duration // child cpu when the previous round was answered
+	lastReply   time.Duration // child cpu when the previous round's answer began
 	perRound    [][]time.Duration
 	messages    [][]int
 	rootSession string         // the first session to make a tool-bearing request
@@ -142,6 +151,7 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Messages []json.RawMessage `json:"messages"`
 		Tools    []json.RawMessage `json:"tools"`
+		Stream   bool              `json:"stream"`
 	}
 	raw, err := io.ReadAll(r.Body)
 	if err == nil {
@@ -152,7 +162,12 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(body.Tools) == 0 {
-		writeStream(w, len(raw), `{"name":"CPU Harness"}`, "", 0, "", "")
+		const name = `{"name":"CPU Harness"}`
+		if !body.Stream {
+			writeCompletion(w, name)
+			return
+		}
+		writeStream(w, len(raw), name, "", 0, "", "")
 		return
 	}
 
@@ -202,6 +217,9 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		p.roundInTurn++
 	}
+	// Taken before answering, while the daemon waits on this response, so
+	// the next round's request can never be measured against a stale value.
+	p.lastReply = cpuTime(p.pid)
 	p.mu.Unlock()
 
 	name, args := p.toolRound(i)
@@ -212,10 +230,18 @@ func (p *provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		name, args = "delegate", fmt.Sprintf(`{"prompt":"CHILD-TASK-%d: work through the files"}`, i)
 	}
 	writeStream(w, len(raw), "", prose("thinking", i, p.o.streamBytes), p.o.streamBytes, name, args)
+}
 
-	p.mu.Lock()
-	p.lastReply = cpuTime(p.pid)
-	p.mu.Unlock()
+// writeCompletion answers a non-streaming request with text.
+func writeCompletion(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "application/json")
+	encoded, _ := json.Marshal(map[string]any{
+		"id":      "turncpu",
+		"model":   modelID,
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}},
+		"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+	})
+	_, _ = w.Write(encoded)
 }
 
 // writeStream answers one request as an SSE chat-completions stream: text
@@ -288,6 +314,13 @@ func run(o options) error {
 		}
 		o.outDir = d
 	}
+	// Every path below reaches the child through env vars that must be
+	// absolute (the host temp bases refuse relative entries).
+	outDir, err := filepath.Abs(o.outDir)
+	if err != nil {
+		return err
+	}
+	o.outDir = outDir
 	home := filepath.Join(o.outDir, "home")
 	workDir := filepath.Join(o.outDir, "work")
 	configDir := filepath.Join(home, "config")
