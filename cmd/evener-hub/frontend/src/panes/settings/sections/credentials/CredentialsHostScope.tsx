@@ -17,7 +17,13 @@
 import type { HostPushCredentialsResponse } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
-import { pushHostCredentials, retryHostRead, useHostInstances } from "../../../../stores/credentials";
+import {
+  connectionGeneration,
+  pushHostCredentials,
+  retryHostRead,
+  useConnectionGeneration,
+  useHostInstances,
+} from "../../../../stores/credentials";
 import { isLocalHost } from "../../../../stores/hostRouting";
 import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
 import { Button, EmptyState, Skeleton } from "../../../../widgets";
@@ -151,7 +157,11 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
           report standing under it (the same `hostInstanceIdentity` the host-scoped
           stores and the shared frame key on). The unverifiable case is the guard
           the listing above takes: this action sends this hub's keys, so offering
-          it for a name the registry cannot confirm is exactly what it prevents. */}
+          it for a name the registry cannot confirm is exactly what it prevents.
+          The host registration is one of the action's two ties; the CONNECTION
+          its request goes out on is the other, and it is held inside the action
+          rather than in this key - see PushCredentials, which must not lose an
+          in-flight mutation's outcome to a remount. */}
       {!unverifiable && <PushCredentials key={`host:${hostInstanceIdentity(host)}`} host={host} />}
     </>
   );
@@ -160,10 +170,14 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
 // PushState is the action's one lifetime: idle until fired, pending while the
 // controller's call is out, then either the RESPONSE's own report or the
 // failure's text. The report is held from the response and never assembled from
-// anything captured before the write.
+// anything captured before the write. The pending attempt carries the
+// CONNECTION GENERATION it was issued under (stores/credentials.ts's
+// connectionGeneration): a push is a mutation, so it is one connection's and
+// its settlement is only readable while that connection still is the page's -
+// see PushCredentials.
 type PushState =
   | { phase: "idle" }
-  | { phase: "pending" }
+  | { phase: "pending"; generation: number }
   | { phase: "report"; response: HostPushCredentialsResponse }
   | { phase: "failed"; message: string };
 
@@ -173,25 +187,62 @@ type PushState =
  * only rendered for a remote selection - the local hub's store IS the push's
  * source, so a push targeting it is meaningless. No key value can be read,
  * rendered, or logged here: the wire carries none, and this code touches only
- * the report's instance/action/reason. */
+ * the report's instance/action/reason.
+ *
+ * Its state belongs to the host registration above (the key) AND to the
+ * CONNECTION its request goes out on: a push is a mutation, so the answer that
+ * arrives after that connection was replaced describes a hub this page is no
+ * longer wired to. That settlement is dropped rather than rendered as the
+ * replacement connection's outcome, and the attempt reads as an outcome this
+ * connection never saw - never as a silent retry, and never as a report the
+ * user cannot tell the provenance of. */
 function PushCredentials({ host }: { host: string }) {
   const [push, setPush] = useState<PushState>({ phase: "idle" });
+  // The connection this action is on, subscribed rather than read once: a
+  // replacement is what makes an in-flight attempt's outcome unknowable, and
+  // the render that follows it is where that becomes readable.
+  const generation = useConnectionGeneration();
+  // The attempt that is still THIS connection's, and the one that outlived the
+  // connection it was issued on. A replaced connection's attempt is neither
+  // this one's success nor its failure: the notice below says so, and the
+  // button is live again so sending the keys a second time stays the user's
+  // decision - never a silent retry of a mutation.
+  const pending = push.phase === "pending" && push.generation === generation;
+  const orphaned = push.phase === "pending" && push.generation !== generation;
 
   async function handlePush(): Promise<void> {
-    setPush({ phase: "pending" });
+    // Read from the store at call time, in the same turn the call resolves its
+    // client (pushHostCredentials -> requireClient): the attempt is stamped
+    // with the connection the request actually goes out on, never with the
+    // render's own value, which a replacement that has not re-rendered yet
+    // would leave behind - and a request on the NEW client would then be
+    // compared against the OLD generation and dropped, hiding a report that is
+    // this connection's own.
+    const attempt = connectionGeneration();
+    setPush({ phase: "pending", generation: attempt });
     try {
-      setPush({ phase: "report", response: await pushHostCredentials(host) });
+      const response = await pushHostCredentials(host);
+      // The connection this push went out on is gone: its answer describes a
+      // hub this page is no longer wired to, so it is dropped rather than shown
+      // as the outcome of the connection that replaced it.
+      if (connectionGeneration() !== attempt) return;
+      setPush({ phase: "report", response });
     } catch (err) {
       // An unattached or unknown host, and a refused call, are real failures:
       // they surface here rather than as an empty report that would read like a
-      // successful push of nothing.
+      // successful push of nothing. One from a replaced connection is not this
+      // connection's failure either - it is dropped with the report above. The
+      // sharpest case is a socket drop: the transport FAILS the in-flight call
+      // (AppwireClient's handleSocketLoss), and whether the host applied the
+      // push before that is exactly what nobody here can know.
+      if (connectionGeneration() !== attempt) return;
       setPush({ phase: "failed", message: errorText(err) });
     }
   }
 
   return (
     <div className={CLASS.push}>
-      <Button size="sm" variant="secondary" disabled={push.phase === "pending"} onClick={() => void handlePush()}>
+      <Button size="sm" variant="secondary" disabled={pending} onClick={() => void handlePush()}>
         Push credentials to {host}
       </Button>
       <p className={CLASS.note}>
@@ -200,6 +251,12 @@ function PushCredentials({ host }: { host: string }) {
       {push.phase === "failed" && (
         <p className={CLASS.error} role="alert">
           Couldn't push credentials to {host}: {push.message}
+        </p>
+      )}
+      {orphaned && (
+        <p className={CLASS.error} role="alert">
+          The hub connection was replaced while the push to {host} was in flight, so its outcome is not known here: this
+          connection never saw the result. Push again only if you mean to send the keys again.
         </p>
       )}
       {push.phase === "report" && <PushReport response={push.response} />}

@@ -178,6 +178,30 @@ connectionStore.subscribe((state) => {
   }));
 });
 
+/** connectionGeneration is hostInstancesStore's own count of connection
+ * transitions (the subscription above), read as the LIVE value. It is the
+ * generation a host partition is current under, and it is also what a MUTATION
+ * issued on one connection is scoped to: a caller captures it when its call
+ * goes out and compares it when the answer lands, because an answer that
+ * arrives after that connection was replaced describes a hub this page is no
+ * longer wired to (the package's own credential writes refuse a replaced
+ * connection for the same reason - connectionStillCurrent, state/credentials/
+ * instances.ts). A transition on the SAME client counts: a reconnect ends the
+ * connection the request went out on just as a new client does, and a request
+ * still in flight across it is failed rather than answered. */
+export function connectionGeneration(): number {
+  return hostInstancesStore.getState().generation;
+}
+
+/** useConnectionGeneration subscribes a consumer to that same generation, for
+ * the one thing a raw read cannot give it: the replacement is a RENDER, and an
+ * action that is still in flight can say so - and say its outcome is no longer
+ * knowable - in the render that follows, instead of sitting on a pending state
+ * whose answer will never be accepted. */
+export function useConnectionGeneration(): number {
+  return useStore(hostInstancesStore, (state) => state.generation);
+}
+
 /** hostPartition reads one host's own partition exactly as stored, INCLUDING a
  * partition whose registryRevision is no longer current. Consumers read through
  * useHostInstances, which withholds a stale partition; this raw accessor is for
