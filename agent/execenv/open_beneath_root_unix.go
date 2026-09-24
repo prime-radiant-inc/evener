@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 		next, err := unix.Openat(cur, comps[i], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		closeCur()
 		if err != nil {
-			if err == unix.ELOOP {
+			if errors.Is(err, unix.ELOOP) {
 				return nil, fmt.Errorf("open %q: component %q is a symlink, refusing to follow it", path, comps[i])
 			}
 			return nil, &os.PathError{Op: "openat", Path: filepath.Join(root, filepath.Join(comps[:i+1]...)), Err: err}
@@ -93,7 +94,7 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 	fd, err := unix.Openat(cur, leaf, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	closeCur()
 	if err != nil {
-		if err == unix.ELOOP {
+		if errors.Is(err, unix.ELOOP) {
 			return nil, fmt.Errorf("open %q: leaf path is a symlink, refusing to follow it", path)
 		}
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
