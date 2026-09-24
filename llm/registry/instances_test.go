@@ -1409,11 +1409,13 @@ func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
 	}
 }
 
-// The listing resolves every instance's credential, so it must not expand
-// an Authorization header the credential will never use: a provider whose
-// api_key outranks the header must not mint (or stall on) its command
-// until a resolution actually reads the header for the wire.
-func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
+// The listing resolves every instance's credential at presence depth, so
+// neither side of an override may expand there: the Authorization header
+// that owns the wire slot (spec §10) counts as present without running,
+// and the api_key it overrides is never the credential and never
+// evaluates. The resolution below evaluates only the winner — a one-shot
+// command the wire never carries must not mint or stall anywhere.
+func TestCredentialListingSkipsOverriddenKeyCommands(t *testing.T) {
 	valueexpr.ResetForTest()
 	t.Cleanup(valueexpr.ResetForTest)
 	flakyRuns := 0
@@ -1437,25 +1439,28 @@ func TestCredentialListingSkipsUnusedHeaderCommands(t *testing.T) {
 		"[providers.gw.models.\"house-model\"]\n"
 	r := fixtureLoad(t, nil, config)
 	for _, inst := range r.Instances() {
-		if inst.Name == "gw" && inst.CredentialSource != "api_key" {
-			t.Fatalf("listing credential source = %q; want api_key", inst.CredentialSource)
+		if inst.Name == "gw" && inst.CredentialSource != "credential_headers" {
+			t.Fatalf("listing credential source = %q; want credential_headers: the authored header owns the wire slot a derived key would fill", inst.CredentialSource)
 		}
 	}
 	if flakyRuns != 0 {
-		t.Fatalf("the listing ran the unused Authorization command %d time(s); want 0", flakyRuns)
+		t.Fatalf("the listing ran the winning header's command %d time(s); the pane displays the credential's presence, the child alone executes it", flakyRuns)
 	}
 	if stableRuns != 0 {
-		t.Fatalf("the listing ran the api_key command %d time(s); the pane displays the credential's presence, the child alone executes it", stableRuns)
+		t.Fatalf("the listing ran the overridden api_key command %d time(s); a credential the wire never carries must not evaluate anywhere", stableRuns)
 	}
 	res, err := r.Resolve("gw/house-model")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Credential.Source != "api_key" || res.Credential.Value != "stable-token" {
-		t.Fatalf("credential = %+v; want the api_key mint", res.Credential)
+	if res.Credential.Source != "none" || res.Credential.AuthoredLayer != "credential_headers" {
+		t.Fatalf("credential = %+v; want the authored header's own failure: it owns the slot, so its failure is the launch's, not a reason to fall back to the key it overrides", res.Credential)
 	}
 	if flakyRuns != 1 {
-		t.Fatalf("the Authorization command ran %d time(s) across listing+resolution; want 1 (the resolution reads it for the wire)", flakyRuns)
+		t.Fatalf("the Authorization command ran %d time(s) across listing+resolution; want 1 (the resolution reads the winner for the wire)", flakyRuns)
+	}
+	if stableRuns != 0 {
+		t.Fatalf("the overridden api_key command ran %d time(s) in the resolution; only the credential the wire sends is evaluated", stableRuns)
 	}
 }
 

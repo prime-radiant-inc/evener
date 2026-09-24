@@ -335,20 +335,21 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	seedFields(&caps, rec.head.Protocol)
 	transport, hostDerived, warnings := r.buildTransport(rec, Model{}, rec.head.Protocol)
 	proto := rec.head.Protocol
-	if presence && rec.head.DefaultModel != "" && !isGlob(rec.head.DefaultModel) {
+	if presence {
 		// The launch a bare instance name makes signs through the
 		// default row's merged transport (ResolveInstanceListing,
 		// spec §8.1); the hub's automatic views must describe that
 		// destination, so presence resolves the row's transport and
 		// falls back to the provider's own shape when the row cannot
-		// resolve — the same stale-default judgment the listing seam
-		// makes. The row's protocol and the row transport's own
+		// resolve — or the config disabled it, which the child's
+		// Resolve refuses — the same stale-default judgment the listing
+		// seam makes. The row's protocol and the row transport's own
 		// diagnostics replace the provider's on success: the view
 		// describes the row's destination, so the row's warnings and
 		// host-rule flag are the ones that describe it. ResolveInstance,
 		// the model-less probe, keeps the provider shape: it signs its
 		// own request, not the launch's.
-		if row, err := r.resolveLayersMode(rec, Ref{Model: rec.head.DefaultModel}, nil, resolveTransport); err == nil {
+		if row, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
 			transport, hostDerived, warnings = row.Transport, row.HostDerivedByRule, row.Warnings
 			proto = row.Protocol
 		}
@@ -495,9 +496,10 @@ func (r *Registry) LaunchMintsCredentialCommand(instance string) bool {
 // identity all name one transport. A provider with no default model (or
 // a glob one) keeps ResolveInstance's model-less shape: no single row
 // names the launch, so the provider's own transport speaks for it. A
-// default row the transport cannot serve falls back to the same
-// provider shape — the judgment listingTransport already makes — so a
-// stale default does not break the listing. This is the caller's
+// default row the transport cannot serve — or one the config disabled,
+// which the child's Resolve refuses — falls back to the same provider
+// shape, the judgment listingTransport already makes, so a stale or
+// disabled default does not break the listing. This is the caller's
 // resolve: the agent and CLI paths it serves may mint a command
 // credential (the child alone runs credential commands), so the hub's
 // own prefetch refuses elsewhere, through
@@ -510,8 +512,7 @@ func (r *Registry) ResolveInstanceListing(name string) (Resolved, error) {
 	if rec.head.DefaultModel == "" || isGlob(rec.head.DefaultModel) {
 		return r.ResolveInstance(name)
 	}
-	res, err := r.resolveLayers(rec, Ref{Model: rec.head.DefaultModel}, nil)
-	if err == nil {
+	if res, ok := r.resolveDefaultRow(rec, resolveFull); ok {
 		return res, nil
 	}
 	return r.ResolveInstance(name)
@@ -856,8 +857,12 @@ func (r *Registry) resolveLayersMode(rec *record, ref Ref, warnings []string, de
 		// flag the transport build produced: the hub's presence view
 		// reads a default row through this depth, and what the row's
 		// transport says — warnings included — must survive the early
-		// return the deeper depths fold into their own Resolved.
-		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport, HostDerivedByRule: hostDerived, Warnings: warnings}, nil
+		// return the deeper depths fold into their own Resolved. The
+		// replayed row rides along for its Disabled verdict: the
+		// default-row views ask it to refuse a row the child's Resolve
+		// refuses, and reading the replay's own row (not a parallel
+		// judgment) is what keeps that answer from drifting.
+		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport, HostDerivedByRule: hostDerived, Model: row, Warnings: warnings}, nil
 	}
 	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)

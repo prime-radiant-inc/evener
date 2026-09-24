@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -442,6 +443,61 @@ func TestResolveInstancePresenceCountsCommandWithoutMinting(t *testing.T) {
 	}
 }
 
+// An authored credential header that supplies the auth slot wins over the
+// derived key on the wire (spec §10), so the api_key it overrides is never
+// the credential and must never be evaluated: only the credential the
+// launch actually sends is expanded. The registry's source names the
+// winner too — a status pane reading "api_key" while the wire carries the
+// header would misdescribe the launch.
+func TestHeaderOverriddenAPIKeyIsNeverEvaluated(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	var ran []string
+	valueexpr.RunCommand = func(cmd string) (string, error) {
+		ran = append(ran, cmd)
+		if cmd == "gw-hdr" {
+			return "header-minted", nil
+		}
+		return "api-key-minted", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.credential_headers]\n" +
+		"Authorization = \"Bearer $(gw-hdr)\"\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.ResolveInstance("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstance(gw): %v", err)
+	}
+	if res.Credential.Source != "credential_headers" {
+		t.Fatalf("source = %q, want credential_headers: the authored header owns the wire slot a derived key would fill", res.Credential.Source)
+	}
+	if res.Credential.Value != "Bearer header-minted" {
+		t.Fatalf("credential value = %q, want the header's expansion", res.Credential.Value)
+	}
+	if res.CredentialHeaders["Authorization"] != "Bearer header-minted" {
+		t.Fatalf("credential header = %q, want the header's expansion", res.CredentialHeaders["Authorization"])
+	}
+	if slices.Equal(ran, []string{"gw-hdr"}) {
+		// only the wire credential's command ran
+	} else {
+		t.Fatalf("commands ran = %v; want only the header's gw-hdr: the overridden api_key expression must not execute", ran)
+	}
+	presence, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence(gw): %v", err)
+	}
+	if presence.Credential.Source != "credential_headers" {
+		t.Fatalf("presence source = %q, want credential_headers: the header is the credential at every depth", presence.Credential.Source)
+	}
+	if len(ran) != 1 {
+		t.Fatalf("commands ran = %v; the presence resolve must not add any", ran)
+	}
+}
+
 // A stale default row must not break the listing and the endpoint view:
 // the same fallback listingTransport already makes — the provider's own
 // transport — carries them, instead of an error. A Codex-based instance
@@ -465,6 +521,71 @@ func TestResolveInstanceListingFallsBackWhenDefaultUnresolvable(t *testing.T) {
 	}
 	if transport.Transport.BaseURL != listing.Transport.BaseURL || transport.Protocol != listing.Protocol {
 		t.Fatal("the endpoint view's fallback drifted from the listing's")
+	}
+}
+
+// A default row the config disabled is not the launch the hub's views
+// describe: the child's Resolve refuses it (resolveOn, ErrModelDisabled),
+// so every row-aware view must fall back to the provider's own shape —
+// the same fallback a default that cannot resolve gets — instead of
+// describing a launch that cannot happen. The fingerprint must not carry
+// the disabled row's own headers either: the fetch that produced the
+// cached live rows never sent them.
+func TestDisabledDefaultRowFallsBackToTheProviderShape(t *testing.T) {
+	mk := func(t *testing.T, rowHeaders string) *Registry {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"none\"\n" +
+			"default_model = \"house-model\"\n" +
+			"[providers.gw.models.\"house-model\"]\n" +
+			"auth = \"header\"\n" +
+			"disabled = true\n" +
+			"[providers.gw.models.\"house-model\".headers]\n" +
+			rowHeaders
+		return fixtureLoad(t, nil, config)
+	}
+	r := mk(t, "\"X-Row\" = \"a\"\n")
+	// The premise: the child refuses the disabled row outright.
+	if _, err := r.Resolve("gw/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(gw/house-model) = %v; want ErrModelDisabled: the child refuses the disabled row", err)
+	}
+	presence, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence(gw): %v", err)
+	}
+	if presence.Transport.Auth != "none" || presence.Protocol != "openai-chat" {
+		t.Fatalf("presence = %q/%q; want the provider's none/openai-chat shape, not the disabled row's", presence.Transport.Auth, presence.Protocol)
+	}
+	instances := r.Instances()
+	var row *Instance
+	for i := range instances {
+		if instances[i].Name == "gw" {
+			row = &instances[i]
+		}
+	}
+	if row == nil {
+		t.Fatal("no gw row in the listing")
+	}
+	if row.Auth != "none" || row.Protocol != "openai-chat" {
+		t.Fatalf("listing row = %q/%q; want the provider's none/openai-chat shape", row.Auth, row.Protocol)
+	}
+	listing, err := r.ResolveInstanceListing("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstanceListing(gw): %v", err)
+	}
+	if listing.Transport.Auth != "none" {
+		t.Fatalf("listing fetch = %q; want the provider shape the fallback sends", listing.Transport.Auth)
+	}
+	plain, ok := r.AuthFingerprint("gw")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "\"X-Row\" = \"b\"\n").AuthFingerprint("gw")
+	if plain != rotated {
+		t.Fatal("fingerprint moved with a disabled row's headers; the request shape the fetch sends never included them")
 	}
 }
 
