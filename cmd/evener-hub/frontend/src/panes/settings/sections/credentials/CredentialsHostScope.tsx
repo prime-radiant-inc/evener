@@ -172,29 +172,34 @@ function RemoteHostInstances({
           <ProviderInstanceGroups instances={state.instances} availableProviders={state.availableProviders} readOnly />
         )}
       </section>
-      {/* Keyed on the host's REGISTRATION identity, and withheld while the host
-          is unverifiable. The action holds its whole lifetime in local state, so
-          the key is what stops that state outliving the host it belongs to - and
-          it must be the identity rather than the name: a host re-registered under
-          the same name is a different registration whose own push state is its
-          own, and a name-keyed component would leave the previous registration's
-          report standing under it (the same `hostInstanceIdentity` the host-scoped
-          stores and the shared frame key on). The unverifiable case is the guard
-          the listing above takes: this action sends this hub's keys, so offering
-          it for a name the registry cannot confirm is exactly what it prevents.
-          The OTHER half of that guard is `registryNamesHost`, held INSIDE the
-          action rather than here: a registry that has not answered (a deep link,
-          or the Retry that leaves it reading) names nothing yet, so the action
-          stays mounted - it must not lose a report or an in-flight attempt's
-          outcome to a remount over a registry re-read - and its button is held
-          until the registry's own listing says this host is still a host.
+      {/* Keyed on the host's REGISTRATION identity, and never withheld for a
+          registry read - not even a FAILED one. The action holds its whole
+          lifetime in local state, so the key is what stops that state outliving
+          the host it belongs to - and it must be the identity rather than the
+          name: a host re-registered under the same name is a different
+          registration whose own push state is its own, and a name-keyed
+          component would leave the previous registration's report standing under
+          it (the same `hostInstanceIdentity` the host-scoped stores and the
+          shared frame key on).
+          Whether the host can be confirmed holds the BUTTON, never the mount:
+          `registryNamesHost` (the registry's current answer names this host) and
+          the listing's own `unverifiable` (the registry's read failed with
+          nothing verified against it) travel INTO the action for exactly that. A
+          registry re-read that fails must not lose a report on screen, an
+          unknown-outcome warning, or an in-flight attempt's outcome - the blind
+          re-push over a mutation that may already have landed is the harm this
+          feature's own states exist to prevent - and the write stays prevented
+          because the button is held either way.
           The host registration is one of the action's two ties; the CONNECTION
           its request goes out on is the other, and it is held inside the action
           rather than in this key - see PushCredentials, which must not lose an
           in-flight mutation's outcome to a remount. */}
-      {!unverifiable && (
-        <PushCredentials key={`host:${hostInstanceIdentity(host)}`} host={host} registryNamesHost={registryNamesHost} />
-      )}
+      <PushCredentials
+        key={`host:${hostInstanceIdentity(host)}`}
+        host={host}
+        registryNamesHost={registryNamesHost}
+        unverifiable={unverifiable}
+      />
     </>
   );
 }
@@ -252,12 +257,27 @@ function pushOutcome(state: PushState): PushOutcome | null {
  * never saw - never as a silent retry, and never as a report the user cannot
  * tell the provenance of.
  *
- * The button is gated on `registryNamesHost` as well: this sends this hub's
- * keys, so it runs only for a host the registry's own current listing names. The
- * state is deliberately NOT keyed on that - see the call site - so a registry
- * re-read cannot remount the action out from under a pending attempt or a report
- * the user is reading. */
-function PushCredentials({ host, registryNamesHost }: { host: string; registryNamesHost: boolean }) {
+ * The button is held for anything that leaves this host unconfirmed: the
+ * registry has not answered naming it (`registryNamesHost`), or its own read
+ * FAILED with nothing verified to check the name against (`unverifiable`, the
+ * listing's own state). Either way this sends this hub's keys, so it runs only
+ * while the registry's own listing says this host is still a host. The MOUNT is
+ * deliberately keyed on neither - see the call site - so a registry re-read
+ * cannot remount the action out from under a pending attempt or a report the
+ * user is reading. */
+function PushCredentials({
+  host,
+  registryNamesHost,
+  unverifiable,
+}: {
+  host: string;
+  registryNamesHost: boolean;
+  /** The listing's own state: the registry's read FAILED and nothing here was
+   * verified against it, so no answer confirms this name is still a configured
+   * host. The button is held - the action, and whatever state it holds, stays
+   * mounted (see the call site). */
+  unverifiable: boolean;
+}) {
   const [push, setPush] = useState<PushState>({ phase: "idle" });
   // The connection this action is on, subscribed rather than read once: a
   // replacement is what makes an in-flight attempt's outcome unknowable, and
@@ -279,6 +299,12 @@ function PushCredentials({ host, registryNamesHost }: { host: string; registryNa
   const outcome = pushOutcome(push);
   const shown = outcome !== null && outcome.generation === generation ? outcome : null;
   const staleOutcome = outcome !== null && outcome.generation !== generation;
+  // The registry cannot confirm this host right now: it has not answered naming
+  // it yet (`registryNamesHost`), or its own read failed with nothing verified
+  // to check the name against (`unverifiable`). Either way this button sends
+  // this hub's keys, so the write is held - the state above, and everything it
+  // is holding, is not.
+  const held = !registryNamesHost || unverifiable;
 
   async function handlePush(): Promise<void> {
     // Read from the store at call time, in the same turn the call resolves its
@@ -328,7 +354,7 @@ function PushCredentials({ host, registryNamesHost }: { host: string; registryNa
 
   return (
     <div className={CLASS.push}>
-      <Button size="sm" variant="secondary" disabled={pending || !registryNamesHost} onClick={() => void handlePush()}>
+      <Button size="sm" variant="secondary" disabled={pending || held} onClick={() => void handlePush()}>
         {/* An unknown outcome is not re-offered as the action that produced it:
             the same click over a mutation that may already have landed is the
             blind retry this state exists to stop, and the warning beside it is
@@ -338,9 +364,17 @@ function PushCredentials({ host, registryNamesHost }: { host: string; registryNa
       <p className={CLASS.note}>
         Copies this hub's own provider-instance keys to {host}. A key {host} cannot take is reported, not forced.
       </p>
-      {/* The registry has no answer naming this host, so what this button sends
-          has no confirmed target: held until its listing says otherwise. */}
-      {!registryNamesHost && (
+      {/* The registry cannot confirm this host, so what this button sends has no
+          confirmed target: held until its listing says otherwise. The two
+          reasons are told apart because they are different states of the
+          registry - no answer yet, and a read that failed. */}
+      {unverifiable && (
+        <p className={CLASS.note}>
+          The hosts list couldn't be read, so nothing here confirms {host} is still a configured host: the push is held
+          until the hosts list answers.
+        </p>
+      )}
+      {!unverifiable && !registryNamesHost && (
         <p className={CLASS.note}>
           The hosts list has no answer for {host} yet, and this sends this hub's keys: the push is offered only while
           that listing names {host}.

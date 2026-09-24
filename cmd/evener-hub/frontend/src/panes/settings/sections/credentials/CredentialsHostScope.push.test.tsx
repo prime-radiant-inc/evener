@@ -354,10 +354,14 @@ test("a push failure that lands after a host switch is not rendered for the new 
 });
 
 // MEDIUM 2: unverifiable means the listing was withheld because the host's name
-// could not be checked against the registry, so the pane must not offer to send
-// this hub's keys to a name it has just said it cannot verify - every sibling
-// block in the section is guarded the same way.
-test("the push action is not offered while the host is unverifiable", async () => {
+// could not be checked against the registry, so the pane must not send this
+// hub's keys to a name it has just said it cannot verify. The action is HELD -
+// its button disabled, nothing reaching the wire - never unmounted: unmounting
+// it destroys a report or an in-flight attempt's state (see the two tests
+// below), and the listing's own state already says why the button waits.
+const REGISTRY_UNVERIFIABLE_PUSH_NOTICE = /hosts list couldn't be read, so nothing here confirms beta/;
+
+test("the push action is held while the host is unverifiable", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => {
@@ -372,8 +376,92 @@ test("the push action is not offered while the host is unverifiable", async () =
   render(<CredentialsHostScope sectionId="credentials" />);
 
   expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Push credentials to beta" })).toBeNull();
+  const held = screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement;
+  expect(held.disabled).toBe(true);
+  // The action names its own reason, in this state's terms.
+  expect(screen.getByText(REGISTRY_UNVERIFIABLE_PUSH_NOTICE)).toBeTruthy();
+  // A disabled control cannot be fired, so nothing reaches the wire.
+  await userEvent.setup().click(held);
   expect(fake.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
+});
+
+// MEDIUM 2 (roborev on 95603bc): `unverifiable` can turn true WHILE a report is
+// on screen, because the push never needed the host's own LISTING to have been
+// read - only the registry's answer naming the host. The parent's
+// `{!unverifiable && <PushCredentials/>}` then unmounted the action on a later
+// registry read failure, destroying the report (local state) and leaving only
+// the listing's "Couldn't check" empty state over a mutation that may already
+// have landed - and, once the registry recovered, a fresh live button inviting
+// the blind re-push this feature's unknown-outcome state exists to prevent.
+test("a push report survives a registry read that fails under it", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  // The host's own listing cannot be read - but the push does not need it: the
+  // registry names beta, so the action is live.
+  fake.on("evener/host/request", () => {
+    throw new WireError("beta listing unreachable", -32000);
+  });
+  fake.on("evener/host/pushCredentials", () => ({
+    host: "beta",
+    results: [{ instance: "on-beta", action: "added" }],
+  }));
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  expect(await screen.findByText(/beta listing unreachable/)).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(within(report).getByRole("listitem").textContent).toBe("on-betaadded");
+
+  // The registry's next read fails: beta's registration can no longer be
+  // checked, so the listing says so...
+  act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
+  expect(screen.getByText(/Couldn't check beta's registration/)).toBeTruthy();
+
+  // ...and the report is RETAINED beneath it: the action was not unmounted, so
+  // the outcome of a mutation this hub already sent stays readable.
+  const kept = screen.getByRole("status", { name: "Push report for beta" });
+  expect(within(kept).getByRole("listitem").textContent).toBe("on-betaadded");
+  // The action is held while the registry cannot confirm the name...
+  expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(true);
+  // ...and the retained report is the only push that ever went out.
+  expect(fake.calls.filter((call) => call.method === "evener/host/pushCredentials")).toHaveLength(1);
+});
+
+// The sharpest form of the same unmount: the registry re-read fails while the
+// push is still in flight. The attempt is local state, so unmounting destroyed
+// the only record that a mutation was ever sent - and a remount after the
+// registry recovered offered a fresh, live button as if nothing had happened,
+// the blind retry over a mutation that may already have landed.
+test("a push in flight when the registry read fails still lands its report", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  // The listing read hangs for the whole test, so nothing is verified against
+  // the registry when it fails - the state the unmount gate keyed on.
+  deferRequest<unknown>(fake, "evener/host/request");
+  const settle = gateSettlements(fake, "evener/host/pushCredentials");
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  await screen.findByRole("option", { name: "beta" });
+  const push = screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement;
+  expect(push.disabled).toBe(false);
+  await userEvent.setup().click(push);
+  await act(async () => {});
+  expect(settle).toHaveLength(1);
+
+  // The registry's next read fails while the push is out...
+  act(() => hostsStore.setState({ load: { phase: "error", message: "registry down" } }));
+  expect(screen.getByText(/Couldn't check beta's registration/)).toBeTruthy();
+
+  // ...and the answer already on its way is still this action's to show.
+  await act(async () => settle[0]!.resolve({ host: "beta", results: [{ instance: "on-beta", action: "added" }] }));
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(within(report).getByRole("listitem").textContent).toBe("on-betaadded");
+  // The attempt was never re-issued behind the user's back.
+  expect(fake.calls.filter((call) => call.method === "evener/host/pushCredentials")).toHaveLength(1);
 });
 
 // L1 (roborev on 81d1e20): `unverifiable` only covered a registry read that
