@@ -343,7 +343,15 @@ jobs:
         with:
           go-cache-kind: race-${{ matrix.scope }}
 
+      # Sized to the runner rather than the load-aware budget, as in
+      # race-root-parts. All eight agent shards at once kept a 4-core runner
+      # about two-thirds busy; four at a time left half of it idle. AGENT_P is
+      # the -p of the agent subpackages' go test, which runs alongside them.
       - name: Test (race detector — ${{ matrix.scope }})
+        env:
+          AGENT_P: 4
+          AGENT_SHARD_CONCURRENCY: 8
+          AGENT_SHARD_PARALLEL: 2
         run: make test-race RACE_SCOPE=${{ matrix.scope }}
 
       - uses: ./.github/actions/go-cache-save

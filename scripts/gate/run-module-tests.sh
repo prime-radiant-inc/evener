@@ -124,9 +124,23 @@ done
 # runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
 # cost ranking derived from it useless. See cmd/evener-dev/agentshards.go.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
-# the sharded split. The -race gate uses it: under -race everything is ~10x
-# slower and CPU-bound, so two shards just oversubscribe each other.
+# the sharded split. The -race gate shards too: as one binary under -race the
+# agent package kept about one of a 4-core runner's cores busy (464 CPU-seconds
+# over 456s wall), because most of its tests are serial.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
+# AGENT_SUBPACKAGES_ALONGSIDE=1 runs the agent module's subpackages while its
+# shards run instead of after them. The -race gate uses it: there the agent
+# module has a runner to itself, and its shards leave about a third of that
+# runner's CPU idle, so the subpackages' ~100s fit inside the shard phase. The
+# default stays sequential for the reason given at the shard run below.
+AGENT_SUBPACKAGES_ALONGSIDE=${AGENT_SUBPACKAGES_ALONGSIDE:-0}
+case "$AGENT_SUBPACKAGES_ALONGSIDE" in
+0 | 1) ;;
+*)
+	echo "run-module-tests.sh: AGENT_SUBPACKAGES_ALONGSIDE must be 0 or 1 (got $AGENT_SUBPACKAGES_ALONGSIDE)" >&2
+	exit 2
+	;;
+esac
 # ROOT_SHARDED, <PREFIX>_SHARDS and ROOT_REST: see scripts/lib/gate-root-shards.sh.
 # The -race gate keeps the hub and CLI sharded: their tests are mostly serial,
 # so one process uses about one core, and on a 4-core runner sharding took the
@@ -447,15 +461,8 @@ run_module() {
 		# ~8s subpackages, sequential). Overlapping the two phases was measured
 		# and made things worse: the agent module shares WAVE2 with five other
 		# modules, so the added contention stretched the shard phase by more
-		# than the overlap saved (see kata fgqh).
-		local shardStatus=0
-		# `go run` collapses its child's exit code to 1 and reports the real
-		# one as an "exit status N" line on stderr, so the runner's 129/130/143
-		# signal exits survive in the binary but not through this call. Only
-		# zero-vs-nonzero is read below, so nothing here depends on them.
-		# The shards get the gate's fuzz-owned skip like every other module;
-		# coverage-floor.sh already measures agent without those tests.
-		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		# than the overlap saved (see kata fgqh). AGENT_SUBPACKAGES_ALONGSIDE=1
+		# overlaps them where that contention is absent.
 		derive_list_flags "$m" || return $?
 		local subpkgs=()
 		local pkg agent_list
@@ -468,10 +475,27 @@ run_module() {
 			[ -n "$pkg" ] || continue
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
 		done <"$agent_list"
-		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+		local shardStatus=0 subStatus=0 subPid=""
+		if [ "$AGENT_SUBPACKAGES_ALONGSIDE" -eq 1 ] && [ "${#subpkgs[@]}" -gt 0 ]; then
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" </dev/null &
+			subPid=$!
 		fi
-		return "$shardStatus"
+		# `go run` collapses its child's exit code to 1 and reports the real
+		# one as an "exit status N" line on stderr, so the runner's 129/130/143
+		# signal exits survive in the binary but not through this call. Only
+		# zero-vs-nonzero is read below, so nothing here depends on them.
+		# The shards get the gate's fuzz-owned skip like every other module;
+		# coverage-floor.sh already measures agent without those tests. The run
+		# is timed like the subpackages' go test, so the module's reported wall
+		# time (the last "real" line) covers whichever finished last.
+		(cd .. && AGENT_SHARD_SKIP="$(gate_shard_skip "$fuzz_test_skip" "${AGENT_SHARD_SKIP:-}")" /usr/bin/time -p go run ./cmd/evener-dev/bin dev agent-shards ${test_flags[@]+"${test_flags[@]}"}) || shardStatus=$?
+		if [ -n "$subPid" ]; then
+			wait "$subPid" || subStatus=$?
+		elif [ "${#subpkgs[@]}" -gt 0 ]; then
+			/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || subStatus=$?
+		fi
+		[ "$shardStatus" -ne 0 ] && return "$shardStatus"
+		return "$subStatus"
 	fi
 	/usr/bin/time -p go test ${test_flags[@]+"${test_flags[@]}"} $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" ./...
 }
