@@ -21,7 +21,7 @@ missed note costs nothing; a spurious finding makes a human triage noise.
 | `category` | enum | yes | classification (below) — consumers key on this, never on parsing `description`. |
 | `title` | string | yes | one-line label. |
 | `description` | string | yes | what was observed + why it is a problem. |
-| `evidence` | object | yes | ≥1 sub-field populated. Always include `doctorCommand`. |
+| `evidence` | object | yes | ≥1 sub-field populated. `doctorCommand` is always present (empty when all sessions are non-reproducible — see below). |
 | `suggestedFix` | object | yes | the **routing** directive (below). |
 
 `evidence` sub-fields: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`,

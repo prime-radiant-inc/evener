@@ -48,7 +48,7 @@ type FindingEvidence struct {
 	WatchIDs         []string `json:"watchIds,omitempty"`         //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	DeliveryIDs      []string `json:"deliveryIds,omitempty"`      //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	TranscriptTurns  []int    `json:"transcriptTurns,omitempty"`  //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
-	DoctorCommand    string   `json:"doctorCommand,omitempty"`    //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
+	DoctorCommand    string   `json:"doctorCommand"`              //nolint:tagliatelle // doctor Finding wire contract is camelCase — always present per finding-contract.md (round 10 finding 2: empty when all sessions non-reproducible, not omitted)
 	LogSnippets      []string `json:"logSnippets,omitempty"`      //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 }
 
@@ -590,32 +590,33 @@ type nonReproSession struct {
 	sid    string
 }
 
-// formatNonReproSessions formats non-reproducible sessions for DoctorCommand's
-// shell comment disclosure, each named with bucket context so distinct
-// sessions sharing a SID across different unsafe buckets are distinguishable
-// (finding 2). Sorted by bucket then sid for deterministic output.
-func formatNonReproSessions(sessions map[string]nonReproSession) string {
+// formatNonReproSessions formats non-reproducible sessions for Description
+// prose, each named with bucket context so distinct sessions sharing a SID
+// across different unsafe buckets are distinguishable (finding 2). Sorted
+// by bucket then sid for deterministic output. The budget parameter is the
+// remaining slot count in the shared evidenceSessionRefCap budget after
+// reproducible refs are accounted for (round 10 finding 3: Description has
+// one 200-entry budget across all session references, not independent caps).
+// Returns the formatted disclosure and the number of non-reproducible
+// sessions omitted past the remaining budget.
+func formatNonReproSessions(sessions map[string]nonReproSession, budget int) (desc string, omitted int) {
 	keys := make([]string, 0, len(sessions))
 	for k := range sessions {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	capped := keys
-	omitted := 0
-	if len(capped) > evidenceSessionRefCap {
-		omitted = len(capped) - evidenceSessionRefCap
-		capped = capped[:evidenceSessionRefCap]
+	if len(capped) > budget {
+		omitted = len(capped) - budget
+		capped = capped[:budget]
 	}
 	parts := make([]string, 0, len(capped))
 	for _, k := range capped {
 		s := sessions[k]
 		parts = append(parts, fmt.Sprintf("%s in bucket %q", s.sid, s.bucket))
 	}
-	desc := strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
-	if omitted > 0 {
-		desc += fmt.Sprintf("; %d more non-reproducible sessions omitted (cap %d)", omitted, evidenceSessionRefCap)
-	}
-	return desc
+	desc = strings.Join(parts, ", ") + " (bucket name shell-unsafe, bare id ambiguous across buckets)"
+	return desc, omitted
 }
 
 // followSelector returns the emission selector for DoctorCommand — the
@@ -681,14 +682,15 @@ func readSelector(projectID, sessionID string) string {
 // ValidateProjectID. The predicate rejects: empty, the dot components,
 // path separators, NUL (path-escape defense, same as projectTokenOK);
 // commas (the CLI splits --sessions on ','); whitespace (shell
-// word-break); and shell metacharacters that alter command behavior
+// word-break); shell metacharacters that alter command behavior
 // including glob expansion ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ",
-// ', {, }, =, *, ?, [, ]).
+// ', {, }, =, *, ?, [, ]); and cmd.exe metacharacters: % (variable
+// expansion %VAR%) and ^ (escape character — round 10 finding 1).
 func safeTokenForRepro(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
 	}
-	return !strings.ContainsAny(name, "/\\\x00, \t\r\n$`;|&()<>=!#~\"'{}*?[]")
+	return !strings.ContainsAny(name, "/\\\x00, \t\r\n$`;|&()<>=!#~\"'{}*?[]%^")
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
@@ -933,15 +935,50 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		}
 		reproRefs := doctorRefsBySig[sig]
 		nonRepro := nonReproBySig[sig]
-		// Description prose: the tripped check, the true session count, the
-		// session refs (with cap marker from the pre-truncation list), and the
-		// non-reproducibility disclosure (round 9 finding 2: moved here from
-		// DoctorCommand's # shell comment, which cmd.exe does not treat as a
-		// comment).
+		// Description prose (round 10 findings 3+4): one shared
+		// evidenceSessionRefCap budget covers all session references —
+		// reproducible refs first, then non-reproducible disclosures in the
+		// remaining slots. The combined omission count is disclosed as a
+		// single marker. The command-side omission (DoctorCommand truncates
+		// reproRefs independently) is also disclosed here because the command
+		// stays a pure runnable line (round 9 finding 2: no # comments).
+		reproCount := len(reproRefs)
+		// Reproducible refs take the first portion of the budget.
+		reproBudget := evidenceSessionRefCap
+		if reproBudget > reproCount {
+			reproBudget = reproCount
+		}
+		nonReproBudget := evidenceSessionRefCap - reproBudget
+		// Build the reproducible ref portion with its cap marker.
+		reproDesc := joinSessionRefs(preCapRefs, reproBudget)
 		desc := fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
-			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, joinSessionRefs(preCapRefs))
+			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, reproDesc)
+		// Build the non-reproducible disclosure in the remaining budget.
+		totalOmitted := 0
 		if len(nonRepro) > 0 {
-			desc += "; not reproducible: " + formatNonReproSessions(nonRepro)
+			nonReproDesc, nonReproOmitted := formatNonReproSessions(nonRepro, nonReproBudget)
+			desc += "; not reproducible: " + nonReproDesc
+			totalOmitted += nonReproOmitted
+		}
+		// Disclose command-side omissions: DoctorCommand truncates reproRefs
+		// at evidenceSessionRefCap independently (round 10 finding 4). When
+		// reproRefs exceeds the cap, the command silently drops selectors
+		// past 200. This can differ from the SessionRefs cap when dedup
+		// shrinks SessionRefs (round 7 finding 2), so the command-side
+		// omission is disclosed separately from the Description ref marker.
+		cmdOmitted := 0
+		if reproCount > evidenceSessionRefCap {
+			cmdOmitted = reproCount - evidenceSessionRefCap
+		}
+		if cmdOmitted > 0 {
+			if totalOmitted > 0 {
+				desc += fmt.Sprintf("; %d more sessions omitted from command (cap %d)", cmdOmitted, evidenceSessionRefCap)
+			} else {
+				desc += fmt.Sprintf("; %d sessions omitted from command (cap %d)", cmdOmitted, evidenceSessionRefCap)
+			}
+		}
+		if totalOmitted > 0 {
+			desc += fmt.Sprintf("; %d more non-reproducible sessions omitted (cap %d)", totalOmitted, evidenceSessionRefCap)
 		}
 		f.Description = desc
 		// DoctorCommand is a pure runnable command or empty (round 9 finding 2):
@@ -951,7 +988,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// sessions are non-reproducible, the command is empty — the disclosure
 		// lives in Description prose above. The reproducible refs are capped at
 		// evidenceSessionRefCap (round 7 finding 1); the cap count is disclosed
-		// in Description via the …and N more marker, not in the command.
+		// in Description, not in the command.
 		var cmd string
 		if len(reproRefs) > 0 {
 			cappedRepro := reproRefs
@@ -969,25 +1006,29 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 }
 
 // evidenceSessionRefCap bounds how many session refs a Finding carries —
-// the structured SessionRefs list, the Description prose, and the
-// DoctorCommand reproduction line (round 7 finding 1 restored the cap on
-// DoctorCommand after round 6's decoupling lost it). A fleet-wide trip can
-// carry thousands of refs, which would overflow any envelope carrying the
-// Finding. The cut is disclosed: TotalSessionRefs carries the true count,
-// and the prose appends an "…and N more" marker built from the
-// pre-truncation ref list (round 9 finding 3). DoctorCommand carries only
-// the capped reproducible refs (no trailing comment — round 9 finding 2
-// removed # comments, which cmd.exe does not treat as comments).
+// the structured SessionRefs list, the DoctorCommand reproduction line
+// (round 7 finding 1), and the Description prose (round 10 finding 3:
+// one shared budget across reproducible refs and non-reproducible
+// disclosures — not independent 200-entry caps for each). A fleet-wide trip
+// can carry thousands of refs, which would overflow any envelope carrying
+// the Finding. The cut is disclosed: TotalSessionRefs carries the true
+// count, the prose appends markers for reproducible and non-reproducible
+// omissions plus command-side truncation (round 10 finding 4). DoctorCommand
+// carries only the capped reproducible refs (no trailing comment — round 9
+// finding 2 removed # comments, which cmd.exe does not treat as comments).
 const evidenceSessionRefCap = 200
 
 // joinSessionRefs joins refs comma-separated for Description prose,
 // appending an "…and N more" marker past the cap. (DoctorCommand must stay
-// runnable, so it joins the capped list plainly instead.)
-func joinSessionRefs(refs []string) string {
-	if len(refs) <= evidenceSessionRefCap {
+// runnable, so it joins the capped list plainly instead. The cap here is
+// the reproducible-ref portion of the shared Description budget — round 10
+// finding 3: non-reproducible disclosures fill the remaining slots via
+// formatNonReproSessions.)
+func joinSessionRefs(refs []string, budget int) string {
+	if len(refs) <= budget {
 		return strings.Join(refs, ", ")
 	}
-	return strings.Join(refs[:evidenceSessionRefCap], ", ") + fmt.Sprintf(" …and %d more", len(refs)-evidenceSessionRefCap)
+	return strings.Join(refs[:budget], ", ") + fmt.Sprintf(" …and %d more", len(refs)-budget)
 }
 
 func conditionsSummary(conds []auditCondition) string {
