@@ -43,6 +43,12 @@ func flushUnpairedCommunicateItems(reg *ToolCallRegistry, turnID string) []appwi
 			TurnID: turnID,
 			CallID: callID,
 			Text:   msg,
+			// Completed, not InProgress or Failed. The communicate's result
+			// never arrived, so InProgress (the live preview's status) is
+			// wrong on reload — the session ended, nothing is streaming.
+			// Failed is wrong — the call was not rejected. Completed is the
+			// honest terminal status: the message was delivered, the result
+			// simply was not persisted.
 			Status: appwire.TurnStatusCompleted,
 		})
 	}

@@ -623,3 +623,96 @@ func buildReplayEntry(turnSel, partsSel byte, text, think, query, name, cmd stri
 		`","message":{"role":"` + role + `","content":[` + strings.Join(parts, ",") +
 		`]},"timestamp":"2026-06-01T10:00:00Z"}}`)
 }
+
+// TestHubReplay_UnpairedCommunicateFlushParity is a dedicated strengthening test
+// for the unpaired-communicate flush path that FuzzHubReplayLiveVsReload cannot
+// cheaply reach. The fuzz target processes one entry in isolation: its reload
+// side calls ProjectTurn directly (no FlushUnpairedCommunicates), and its live
+// side (synthesizeLiveEvents) skips ALL communicates because a single entry
+// cannot disambiguate paired from unpaired. Making the fuzz target flush would
+// require both (a) restructuring checkLiveVsReload to build turns and track a
+// registry across the flush call, and (b) teaching synthesizeLiveEvents to emit
+// EventCommunicate for a communicate it cannot yet know is unpaired — which
+// would break the existing rejected/healed communicate seeds (11–14) that rely
+// on the skip. That is a harness redesign, not a cheap seed extension, so this
+// test exercises the flush through the server's own projection path instead.
+//
+// The fixture is one assistant turn with a valid-JSON communicate call and no
+// paired result turn — the unpaired shape. The reload side projects through
+// ProjectTurn (deferring the communicate) then calls FlushUnpairedCommunicates,
+// matching the server's appTurnProjectionFromTranscriptFile path. The live side
+// synthesizes the EventCommunicatePreviewStart + EventCommunicate stream the
+// live projector emitted for the delivered message. Both must render the same
+// agentMessage after normalizeMetamorphic strips stream-only identity.
+func TestHubReplay_UnpairedCommunicateFlushParity(t *testing.T) {
+	entryJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"call_unpaired","name":"communicate","arguments":{"message":"hello there"}}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
+
+	var e transcript.Entry
+	if err := json.Unmarshal(entryJSON, &e); err != nil {
+		t.Fatalf("decode entry: %v", err)
+	}
+	canon, canonBytes := canonicalEntry(t, e)
+
+	// Live side: synthesize the preview + commit the live projector emitted for
+	// a delivered communicate. The message is extracted from the call's
+	// arguments the same way the flush does (CommunicateMessageFromArguments).
+	msg := apptranscript.CommunicateMessageFromArguments(
+		canonicalCommunicateArguments(t, canon.Turn),
+	)
+	if msg == "" {
+		t.Fatalf("communicate message extraction returned empty for arguments")
+	}
+	liveEvents := []events.SessionEvent{
+		events.New(events.CommunicatePreviewStartData{CallID: "call_unpaired"}),
+		events.New(events.CommunicateData{CallID: "call_unpaired", Message: msg}),
+	}
+	proj := appprojector.NewAppEventProjector("thread", "local:thread")
+	var notes []appprojector.AppNotification
+	for _, ev := range liveEvents {
+		notes = append(notes, proj.Project(ev)...)
+	}
+	live := normalizeMetamorphic(foldLiveItems(notes))
+
+	// Reload side: project with a shared registry (the way the server threads
+	// it across entries), then flush — the server's appTurnProjectionFromTranscriptFile
+	// calls FlushUnpairedCommunicates after groupedAppTurnProjection.
+	reconstructed, ok := decodeTranscriptTurn(canonBytes)
+	if !ok {
+		t.Fatalf("hub decode rejected the canonical entry: %s", canonBytes)
+	}
+	reg := apptranscript.NewToolCallRegistry()
+	items := apptranscript.ProjectTurn("turn_1", 1, reconstructed, reg, nil, apptranscript.ToolResultOutputImages)
+	turns := []appwire.Turn{{ID: "turn_1", Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}}
+	apptranscript.FlushUnpairedCommunicates(&turns, reg)
+	// FlushUnpairedCommunicates positions the flushed items (Position,
+	// TranscriptKey), but ProjectTurn alone — the shape checkLiveVsReload
+	// and normalizeMetamorphic were designed for — does not. Strip the
+	// positioning metadata so the comparison is on rendered content, not
+	// on index-derived keys the live side never has.
+	for i := range turns[0].Items {
+		turns[0].Items[i].Position = nil
+		turns[0].Items[i].TranscriptKey = ""
+	}
+	reload := normalizeMetamorphic(turns[0].Items)
+
+	if eq, a, b := jsonEqItems(t, live, reload); !eq {
+		t.Fatalf("unpaired communicate flush parity diverged:\n live  =%s\n reload=%s", a, b)
+	}
+	if len(live) != 1 || live[0].Type != "agentMessage" || live[0].Text != "hello there" {
+		t.Fatalf("expected one agentMessage with text %q, got: %+v", "hello there", live)
+	}
+}
+
+// canonicalCommunicateArguments extracts the communicate tool call's arguments
+// from the assistant turn, so the test can feed the same message the flush
+// recovers to the live synthesizer.
+func canonicalCommunicateArguments(t *testing.T, turn schema.Turn) json.RawMessage {
+	t.Helper()
+	for _, p := range turn.Message.Content {
+		if p.Kind == llm.ContentToolCall && p.ToolCall != nil && p.ToolCall.Name == "communicate" {
+			return p.ToolCall.Arguments
+		}
+	}
+	t.Fatalf("no communicate tool call in turn")
+	return nil
+}
