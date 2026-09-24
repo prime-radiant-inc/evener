@@ -380,6 +380,9 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	if out == nil {
 		return nil
 	}
+	if raw, ok := msg.Response.Result.(json.RawMessage); ok {
+		return json.Unmarshal(raw, out)
+	}
 	data, err := json.Marshal(msg.Response.Result)
 	if err != nil {
 		return err

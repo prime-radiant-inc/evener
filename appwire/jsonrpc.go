@@ -175,11 +175,17 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 		m.Error = &resp
 	case len(probe.Result) > 0:
-		var resp Response
+		// The result stays the bytes the peer sent: a caller decodes it straight
+		// into its typed response, where a generic any tree would cost two more
+		// passes over the payload and round integers past 2^53.
+		var resp struct {
+			ID     ID              `json:"id"`
+			Result json.RawMessage `json:"result"`
+		}
 		if err := unmarshalMessageFrame(data, &resp); err != nil {
 			return err
 		}
-		m.Response = &resp
+		m.Response = &Response{ID: resp.ID, Result: resp.Result}
 	case probe.Method != "" && probe.ID != nil:
 		var req Request
 		if err := unmarshalMessageFrame(data, &req); err != nil {
