@@ -148,6 +148,45 @@ describe("projectedRow — item entries", () => {
 		expect(projectedRow(itemEntry(item({ type: "commandExecution" })))).toMatchObject({ label: "Tool" });
 	});
 
+	it("falls back to Tool for a blank or whitespace-only tool label", () => {
+		expect(projectedRow(itemEntry(item({ type: "commandExecution", description: "   " })))).toMatchObject({
+			label: "Tool",
+		});
+		expect(projectedRow(itemEntry(item({ type: "commandExecution", toolName: "  " })))).toMatchObject({
+			label: "Tool",
+		});
+	});
+
+	it("drops a tool duration whose timestamps do not parse", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "shell",
+					startedAt: "not-a-date",
+					completedAt: "also-not",
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity" });
+		expect((row as Extract<MobileTimelineItem, { kind: "activity" }>).detail.durationMs).toBeUndefined();
+	});
+
+	it("summarizes an ask_user activity's questions in its detail description", () => {
+		const row = projectedRow(
+			itemEntry(
+				item({
+					type: "commandExecution",
+					toolName: "ask_user",
+					argumentsJSON: JSON.stringify({
+						questions: [{ header: "Confirm", question: "Proceed?", options: [{ label: "Yes", detail: "go" }] }],
+					}),
+				}),
+			),
+		);
+		expect(row).toMatchObject({ kind: "activity", family: "tool", detail: { description: "Questions: Confirm" } });
+	});
+
 	it("marks a failed tool activity failed, regardless of its settled status", () => {
 		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", error: "boom" })));
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
@@ -258,6 +297,10 @@ describe("projectedRow — item entries", () => {
 		);
 		expect(row).toMatchObject({ transcriptKey: "tk-1", position: { entry: 2, item: 5 } });
 	});
+
+	it("returns null for a ProjectedEntry kind outside the known union", () => {
+		expect(projectedRow({ kind: "futureKind" } as unknown as ProjectedEntry)).toBeNull();
+	});
 });
 
 describe("projectedRow — thinking entries", () => {
@@ -299,6 +342,13 @@ describe("projectedRow — intent entries", () => {
 			intentEntry(item({ type: "commandExecution", toolName: "shell", error: "boom" }), { failed: true }),
 		);
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
+	});
+
+	it("carries the projector's rationale as the activity detail description", () => {
+		const row = projectedRow(
+			intentEntry(item({ type: "commandExecution", toolName: "read_file", description: "  Read a.ts  " })),
+		);
+		expect(row).toMatchObject({ kind: "activity", detail: { description: "Read a.ts" } });
 	});
 
 	it("honors the projector's failed intent classification even when the source item carries no signal", () => {

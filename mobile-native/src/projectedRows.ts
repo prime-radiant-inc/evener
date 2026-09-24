@@ -18,11 +18,18 @@
 // clustering pass, attachment rows and truncation caps all stay native-side
 // (project.ts), not this file's concern.
 //
+// Three panel-driven edge-case robustness fixes deliberately diverge from
+// project.ts's verbatim copies (shape unchanged): a blank/whitespace tool
+// label falls back to "Tool" instead of "", a duration whose timestamps do not
+// parse is dropped instead of NaN, and an intent's detail description carries
+// the projector's rationale (trimmed) when the source has a description.
+//
 // Forward-compatibility is load-bearing here exactly as it is in project.ts:
 // an unknown ItemModel.type never disappears; it becomes a neutral collapsed
 // activity row. Every string on a row is untrusted plain text.
 
 import {
+	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
 	hasItemFailure,
 	hasWarningText,
@@ -80,7 +87,16 @@ export function projectedRow(
 		case "critical":
 			if (entry.item.type === "reasoning") return criticalReasoningRow(entry);
 			return rowForItem(entry.item, context);
+		default:
+			return unhandledEntryKind(entry);
 	}
+}
+
+// Unreachable while ProjectedEntry's union is the four kinds above: a fifth
+// kind fails to compile here (never), while returning null keeps the runtime
+// contract (MobileTimelineItem | null, never undefined).
+function unhandledEntryKind(_entry: never): null {
+	return null;
 }
 
 // The projector sets intent.failed from hasItemFailure at projection time. It
@@ -93,10 +109,16 @@ function intentRow(
 	context: ProjectedRowContext,
 ): MobileTimelineItem | null {
 	const row = rowForItem(entry.item, context);
-	if (entry.failed && row !== null && row.kind === "activity") {
-		return { ...row, state: "failed" };
-	}
-	return row;
+	if (row === null || row.kind !== "activity") return row;
+	// Honor the projector's rationale as the activity's summary line. The
+	// "unavailable" placeholder means the source carried no description, so the
+	// detail's own (undefined) description is left alone and native's
+	// actionSummary derives its fallback (the write_file path included).
+	const detail =
+		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
+			? row.detail
+			: { ...row.detail, description: entry.rationale };
+	return { ...row, state: entry.failed ? "failed" : row.state, detail };
 }
 
 // --- per-item row construction (mirrors project.ts's projectItem) -----------
@@ -248,7 +270,7 @@ function reasoningText(it: ItemModel): string {
 }
 
 function toolLabel(it: ItemModel): string {
-	return it.toolName ?? it.description?.trim() ?? "Tool";
+	return it.toolName?.trim() || it.description?.trim() || "Tool";
 }
 
 function activityState(it: ItemModel, turnStatus: string | undefined): ActivityState {
@@ -268,7 +290,10 @@ function activityDescription(it: ItemModel): string | undefined {
 
 function itemDurationMs(it: ItemModel): number | undefined {
 	if (it.startedAt === undefined || it.completedAt === undefined) return undefined;
-	return Date.parse(it.completedAt) - Date.parse(it.startedAt);
+	const start = Date.parse(it.startedAt);
+	const end = Date.parse(it.completedAt);
+	if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
+	return end - start;
 }
 
 function activityDetail(it: ItemModel): ActivityDetail {
