@@ -5431,3 +5431,32 @@ test.each([
   expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
   expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 });
+
+// The whole refusal contract on Send, against real durable storage: the draft's
+// text and chip stay, the user hears why, nothing reaches the wire, and nothing
+// durable is written for the refused press - no outbox, optimistic or recovery
+// row a later reconnect could replay.
+test("a staged skill on Send to a target without skillInput keeps the draft and writes nothing durable", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:skill-gate-send";
+  writeComposerDraft(ref, { text: "aimed at a target without skills /pkg:probe", skillNames: ["pkg:probe"] });
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: false }, queue: { revision: 0 } },
+  });
+  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+
+  await user.click(submitButton());
+
+  expect(getToasts().map((toast) => toast.text)).toContain(
+    "Skill selections aren't supported on this session yet; your draft is kept",
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  expect(textarea().textContent).toContain("aimed at a target without skills");
+  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  expect(await storage.listOutbox(ref)).toEqual([]);
+  expect(await storage.listOptimistic(ref)).toEqual([]);
+  expect(await storage.listRecovery(ref)).toEqual([]);
+});
