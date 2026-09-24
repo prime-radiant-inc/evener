@@ -40,9 +40,9 @@ test("isAtBottom: accepts a custom threshold, overriding the 4px default", () =>
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 4)).toBe(false);
 });
 
-// contentGrewBelowViewport: the geometry half of the bottom-hold correction,
-// shared by the scroll listener and the no-scroll-event re-anchor paths so the
-// two cannot drift.
+// contentGrewBelowViewport: the geometry half of the scroll listener's
+// bottom-hold correction, which has to show a change was not the reader's own
+// scroll. The no-scroll-event re-anchor uses isEndBelowFold instead.
 const AT_BOTTOM_BEFORE: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
 
 test("contentGrewBelowViewport: true when content grew below a pinned offset in the same box", () => {
