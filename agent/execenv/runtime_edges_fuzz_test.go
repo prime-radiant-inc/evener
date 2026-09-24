@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/procgroup"
 )
 
 // FuzzRuntimeBoundaryEdges drives deterministic error paths at the process,
@@ -86,10 +87,10 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 		cleanupEnv := NewLocalExecutionEnvironment(t.TempDir())
 		cleanupEnv.runningPIDs.Store("not-a-pid", true)
 		cleanupEnv.Cleanup()
-		terminateProcessGroup(0)
-		killProcessGroup(0)
-		terminateProcessGroup(1 << 30)
-		killProcessGroup(1 << 30)
+		procgroup.Terminate(0)
+		procgroup.Kill(0)
+		procgroup.Terminate(1 << 30)
+		procgroup.Kill(1 << 30)
 		venvRoot := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(venvRoot, ".venv", "bin"), 0o755); err != nil {
 			t.Fatal(err)

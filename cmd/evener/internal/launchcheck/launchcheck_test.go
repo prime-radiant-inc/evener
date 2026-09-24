@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
 	"primeradiant.com/evener/llm/registry"
@@ -481,4 +482,142 @@ models_endpoint = "-"
 		return
 	}
 	t.Fatalf("models=%+v, want vtx/gemini-3.5-flash", out.Models)
+}
+
+// The launch check validates that a ref resolves — a read, not a launch:
+// a command-bearing credential is the child's first request to spend
+// (spec §10.1), and a preflight that minted would prompt the user's
+// password manager with no session launched.
+func TestLaunchCheckNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:    map[string]registry.Model{"house-model": {}},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	if err := validateLaunchCheckProfile(cmdutil.ModelRef{Provider: "gw", Model: "house-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("the launch check executed the credential command %d time(s); the child's first request owns the mint (spec §10.1)", runs)
+	}
+}
+
+// The launch contract's model list serves a command-credentialed
+// instance's registry rows — every advertised fact, no credential
+// materialized — and leaves its live listing to the child, mirroring the
+// hub picker (spec §10.1).
+func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:    map[string]registry.Model{"house-model": {}},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range models {
+		if m.Provider == "gw" && m.Model == "house-model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the launch contract's model list dropped the command-credentialed instance's registry rows: %+v", models)
+	}
+	if runs != 0 {
+		t.Fatalf("the model list executed the credential command %d time(s); skipping the live fetch must skip the mint", runs)
+	}
+}
+
+// The hub shells out `evener launch-check --model` before every spawn:
+// that preflight never mints either (spec §10.1) — the child's first
+// request owns the mint, so a command-credentialed launch validates
+// structurally and no live listing is fetched with a credential the hub
+// cannot materialize.
+func TestRunLaunchCheckModelNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			hits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = '''$(gw-mint)'''\n"+
+		"[providers.gw.models.\"gpt-live\"]\n")
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	if runs != 0 {
+		t.Fatalf("the preflight executed the credential command %d time(s); the child's first request owns the mint (spec §10.1)", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the preflight fetched a live listing with a credential it never materialized")
+	}
+}
+
+// A disabled row refuses the launch on the command-credentialed path too:
+// the structural validation the mint-free boundary substitutes must keep
+// the disabled-model refusal, not just the liveness it replaces.
+func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "token", nil
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = '''$(gw-mint)'''\n"+
+		"[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected the disabled model to refuse the launch")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("error=%v, want it to name the disablement", err)
+	}
 }

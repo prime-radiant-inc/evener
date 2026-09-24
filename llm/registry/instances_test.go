@@ -2,12 +2,16 @@ package registry
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/valueexpr"
 )
 
 type fakeCreds map[string]string
@@ -182,6 +186,28 @@ base = "openai"
 base_url = "https://gw/v1"
 [providers.anthropic]
 base_url = "https://gw/v1"
+[providers.gapempty]
+base = "openai"
+base_url = "https://gw/v1"
+api_key = "${MISSING:-}"
+[providers.gapscheme]
+base = "openai"
+base_url = "https://gw/v1"
+api_key = "${MISSING:-Bearer}"
+[providers.hdrother]
+base = "openai"
+base_url = "https://gw/v1"
+auth = "header"
+auth_header = "X-K"
+[providers.hdrother.credential_headers]
+X-K = "${MISSING:-}"
+[providers.hdrschemeword]
+base = "openai"
+base_url = "https://gw/v1"
+auth = "header"
+auth_header = "X-K"
+[providers.hdrschemeword.credential_headers]
+X-K = "${MISSING:-Bearer}"
 [providers.same]
 base = "openai"
 base_url = "https://api.openai.com/v1"
@@ -194,6 +220,18 @@ base = "amazon-bedrock"
 [providers.viaproxy]
 base = "openai"
 base_url = "https://proxy/v1"
+[providers.nonehdr]
+base = "openai-compatible"
+base_url = "https://gw/v1"
+auth = "none"
+[providers.nonehdr.credential_headers]
+X-Gateway-Key = "gk-literal"
+[providers.noneauth]
+base = "openai-compatible"
+base_url = "https://gw/v1"
+auth = "none"
+[providers.noneauth.credential_headers]
+Authorization = "Bearer $PORTKEY_KEY"
 `
 	env := map[string]string{"OPENAI_API_KEY": "sk-openai", "PORTKEY_KEY": "pk", "GW_KEY": "gw", "GW_API_KEY": "gw2", "ANTHROPIC_API_KEY": "sk-ant", "AWS_BEARER_TOKEN_BEDROCK": "bt", "OPENAI_BASE_URL": "https://proxy/v1"}
 	r := fixtureLoad(t, env, cfg, WithCredentials(fakeCreds{"stored": "from-store"}))
@@ -203,21 +241,38 @@ base_url = "https://proxy/v1"
 		// so: "none" alone would be indistinguishable from an instance that
 		// authors no credential at all, and the difference decides whether a key
 		// a writer stores under the name is ever sent (AuthoredLayer).
-		"envref":    {Value: "", Source: "none", AuthoredLayer: "api_key"},
-		"hdr":       {Value: "Bearer pk", Source: "credential_headers"},
-		"hdrgap":    {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
-		"stored":    {Value: "from-store", Source: "store"},
-		"work":      {Value: "", Source: "none"},
-		"work2":     {Value: "gw", Source: "env:GW_KEY"},
-		"gw":        {Value: "gw2", Source: "env:GW_API_KEY"},
-		"anthropic": {Value: "", Source: "none"},
-		"same":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
-		"mine":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
-		"bedrock":   {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
-		"viaproxy":  {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"envref": {Value: "", Source: "none", AuthoredLayer: "api_key"},
+		"hdr":    {Value: "Bearer pk", Source: "credential_headers"},
+		"hdrgap": {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
+		// An authored layer that expands to nothing is exactly as
+		// terminal as one whose variables are unset: the empty default
+		// and the bare scheme word both resolve "none" without ever
+		// consulting the store or the environment, so a key pushed
+		// here is one nothing sends (AuthoredLayer names the layer).
+		"gapempty":      {Value: "", Source: "none", AuthoredLayer: "api_key"},
+		"gapscheme":     {Value: "", Source: "none", AuthoredLayer: "api_key"},
+		"hdrother":      {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
+		"hdrschemeword": {Value: "", Source: "none", AuthoredLayer: "credential_headers"},
+		"stored":        {Value: "from-store", Source: "store"},
+		"work":          {Value: "", Source: "none"},
+		"work2":         {Value: "gw", Source: "env:GW_KEY"},
+		"gw":            {Value: "gw2", Source: "env:GW_API_KEY"},
+		"anthropic":     {Value: "", Source: "none"},
+		"same":          {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"mine":          {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		"bedrock":       {Value: "bt", Source: "env:AWS_BEARER_TOKEN_BEDROCK"},
+		"viaproxy":      {Value: "sk-openai", Source: "env:OPENAI_API_KEY"},
+		// The none scheme only means no Authorization slot: the wire still
+		// carries credential headers under every scheme, so the source
+		// names the layer the request really sends — the gateway key the
+		// transport adds, and an Authorization header authored on a
+		// none-scheme instance.
+		"nonehdr":  {Value: "", Source: "credential_headers"},
+		"noneauth": {Value: "", Source: "credential_headers"},
 	}
 	for name, w := range want {
-		got, warns := r.credential(r.explicit[name])
+		rec := r.explicit[name]
+		got, warns := r.credential(rec, r.listingTransport(rec))
 		if got != w {
 			t.Errorf("%s: credential = %+v, want %+v", name, got, w)
 		}
@@ -228,14 +283,17 @@ base_url = "https://proxy/v1"
 			t.Errorf("%s: unexpected warnings %v", name, warns)
 		}
 	}
-	if _, warns := r.credential(r.explicit["envref"]); !strings.Contains(strings.Join(warns, " "), "MY_KEY unset") {
+	rec := r.explicit["envref"]
+	if _, warns := r.credential(rec, r.listingTransport(rec)); !strings.Contains(strings.Join(warns, " "), "MY_KEY unset") {
 		t.Fatalf("unset $VAR must be named: %v", warns)
 	}
-	if got, warns := r.credential(r.curated["ollama"]); got.Source != "none" || len(warns) != 0 {
+	curated := r.curated["ollama"]
+	if got, warns := r.credential(curated, r.listingTransport(curated)); got.Source != "none" || len(warns) != 0 {
 		t.Fatalf("optional-bearer without a key must not warn: %+v %v", got, warns)
 	}
 	r = fixtureLoad(t, map[string]string{"OLLAMA_API_KEY": "ok"}, "")
-	if got, _ := r.credential(r.curated["ollama"]); got.Source != "env:OLLAMA_API_KEY" {
+	curated = r.curated["ollama"]
+	if got, _ := r.credential(curated, r.listingTransport(curated)); got.Source != "env:OLLAMA_API_KEY" {
 		t.Fatalf("optional-bearer with a key: %+v", got)
 	}
 }
@@ -330,11 +388,11 @@ api_key_env = ["FAKE_VERTEX_KEY"]
 	if rec.head.Transport.Auth != AuthGCPADC {
 		t.Fatalf("myvertex must inherit gcp-adc from google-vertex, got %q", rec.head.Transport.Auth)
 	}
-	cred, _ := r.credential(rec)
+	cred, _ := r.credential(rec, r.listingTransport(rec))
 	if cred.Source != "none" {
 		t.Fatalf("gcp-adc with no ADC reachable must resolve none, got %q", cred.Source)
 	}
-	if got := r.shadowedEnvVar(rec, cred); got != "" {
+	if got := r.shadowedEnvVar(rec, rec.head.Transport, cred); got != "" {
 		t.Fatalf("an unresolved gcp-adc scheme must never report a shadow, got %q", got)
 	}
 }
@@ -638,6 +696,40 @@ base_url = "https://rename-inline.example.test/v1"
 			t.Fatal("rename-inline: want false, the present api_key is terminal and its variable is unset, so the row resolves nothing")
 		}
 	})
+	t.Run("row-overridden auth re-derives", func(t *testing.T) {
+		// The default row's auth is the scheme the listing derives the
+		// instance with — the same listingTransport computeInstances
+		// reads — so a row that overrides the head's bearer scheme to
+		// none re-derives the old id after a rename with no credential
+		// at all, and the rename verdict must agree with the listing.
+		r := fixtureLoad(t, baseEnv(t), "", WithOverlay(overlayWith(`
+[providers."rename-none-row"]
+implicit = true
+protocol = "openai-chat"
+auth = "bearer"
+api_key_env = ["RENAME_NONE_ROW_ENV"]
+default_model = "house-model"
+base_url = "https://rename-none-row.example.test/v1"
+[providers."rename-none-row".models."house-model"]
+auth = "none"
+`)))
+		instances := r.Instances()
+		var listed *Instance
+		for i := range instances {
+			if instances[i].Name == "rename-none-row" {
+				listed = &instances[i]
+			}
+		}
+		if listed == nil {
+			t.Fatal("rename-none-row: the instance is not listed, so the premise of the rename verdict fails")
+		}
+		if listed.Auth != "none" {
+			t.Fatalf("rename-none-row: listed auth = %q, want the row's none scheme", listed.Auth)
+		}
+		if !r.ProviderRenameLeavesInstance("rename-none-row") {
+			t.Fatal("rename-none-row: want true, the row's none scheme re-derives the old id the same way the listing shows it")
+		}
+	})
 	t.Run("oauth record is the credential the rename moves", func(t *testing.T) {
 		r := fixtureLoad(t, baseEnv(t), "")
 		if r.ProviderRenameLeavesInstance("openai-codex") {
@@ -670,4 +762,1408 @@ base_url = "https://rename-inline.example.test/v1"
 			t.Fatal("work: want false, freeing a non-curated name recreates nothing")
 		}
 	})
+}
+
+// A credential whose api_key is a command expression resolves like any other
+// inline credential: the command mints the value, the shared evaluator caches
+// it across resolutions, and a failing command behaves like an unset variable
+// — warning plus no credential, retried on the next resolution.
+func TestCredentialFromCommandExpression(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(get-gateway-token)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Value != "minted-token" || res.Credential.Source != "api_key" {
+		t.Fatalf("credential = %+v; want minted-token from api_key", res.Credential)
+	}
+	// Resolve again: the load-time derivation and every resolution share the
+	// evaluator's cache, so one command run serves them all.
+	if _, err := r.Resolve("gw/house-model"); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (shared cache)", runs)
+	}
+
+	valueexpr.ResetForTest()
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "", errors.New("command exited with status 1: session expired")
+	}
+	failing := fixtureLoad(t, nil, config)
+	res, err = failing.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" {
+		t.Fatalf("credential source = %q; want none", res.Credential.Source)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "no credential (command expression failed: command exited with status 1: session expired)") {
+		t.Fatalf("warnings = %v; want the command failure wording", res.Warnings)
+	}
+}
+
+// The none scheme never fills the auth slot, but the wire still carries
+// credential headers: the resolution path builds the header map under every
+// scheme. So the source names the layer the request really sends, and its
+// command expression runs exactly when the wire map is built — never on the
+// presence judgment, once on the full resolution.
+func TestCredentialSourceUnderNoneAuthNamesEffectiveHeaders(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"[providers.gw.credential_headers]\n" +
+		"X-Gateway-Key = '''$(get-gateway-token)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) { runs++; return "minted-token", nil }
+	r := fixtureLoad(t, nil, config)
+
+	pres, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pres.Credential.Source != "credential_headers" {
+		t.Fatalf("presence source = %q; want credential_headers", pres.Credential.Source)
+	}
+	if runs != 0 {
+		t.Fatalf("the presence judgment ran the command %d times; want 0", runs)
+	}
+
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "credential_headers" {
+		t.Fatalf("full source = %q; want credential_headers", res.Credential.Source)
+	}
+	if res.CredentialHeaders["X-Gateway-Key"] != "minted-token" {
+		t.Fatalf("credential headers = %v; want the minted gateway key", res.CredentialHeaders)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (one run serves the resolution)", runs)
+	}
+}
+
+// The fingerprint names the wire's credential material, not the config's:
+// an api_key an effective credential header overrides never reaches a
+// request, so rotating it must not rotate the identity and prune the
+// cached live rows; an authored header that expands to nothing but a
+// scheme word is not transmitted, so its value edits are inert too.
+// Effective material still rotates — the header that owns the slot, and
+// a slot's arrival or removal.
+func TestAuthFingerprintIgnoresInertCredentialMaterial(t *testing.T) {
+	mk := func(t *testing.T, apiKey, authHeader string) (string, bool) {
+		t.Helper()
+		cfg := "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"bearer\"\n" +
+			"api_key = \"" + apiKey + "\"\n"
+		if authHeader != "" {
+			cfg += "[providers.gw.credential_headers]\n" +
+				"Authorization = \"" + authHeader + "\"\n"
+		}
+		return fixtureLoad(t, nil, cfg).AuthFingerprint("gw")
+	}
+	// An overridden api_key is inert: rotating it must not move the digest.
+	plain, ok := mk(t, "sk-inert-one", "Bearer hdr-key")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	if rotated, _ := mk(t, "sk-inert-two", "Bearer hdr-key"); plain != rotated {
+		t.Fatal("fingerprint moved with an overridden api_key rotation; the wire credential is unchanged")
+	}
+	// A header whose default fills in nothing but a scheme word is not
+	// transmitted: its inert value edits must not move the digest.
+	plain, _ = mk(t, "", "${MISSING:-Bearer}")
+	if rotated, _ := mk(t, "", "${MISSING:-Basic}"); plain != rotated {
+		t.Fatal("fingerprint moved with a scheme-word header's inert value edit; the launch transmits neither")
+	}
+	// Effective material still rotates.
+	hdrOne, _ := mk(t, "", "Bearer hdr-one")
+	if hdrTwo, _ := mk(t, "", "Bearer hdr-two"); hdrOne == hdrTwo {
+		t.Fatal("fingerprint ignored an effective header's value rotation")
+	}
+	if hdrInert, _ := mk(t, "", "${MISSING:-Bearer}"); hdrOne == hdrInert {
+		t.Fatal("fingerprint ignored a slot's inert-to-effective change")
+	}
+}
+
+// An api_key or Authorization value that expands to empty (an empty
+// ${VAR:-} default) is not a present credential: it resolves as none with a
+// warning, never as a credential whose value is the empty string.
+func TestCredentialEmptyExpansionIsNoCredential(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "api_key",
+			config: "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"bearer\"\n" +
+				"api_key = '''${MISSING:-}'''\n" +
+				"[providers.gw.models.\"house-model\"]\n",
+		},
+		{
+			name: "authorization",
+			config: "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"Authorization\"\n" +
+				"credential_headers = { \"Authorization\" = '''${MISSING:-}''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, nil, tt.config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "none" || res.Credential.Value != "" {
+				t.Fatalf("credential = %+v; want none with no value", res.Credential)
+			}
+			if !strings.Contains(strings.Join(res.Warnings, ";"), "expands to an empty value") {
+				t.Fatalf("warnings = %v; want the empty-expansion warning", res.Warnings)
+			}
+		})
+	}
+}
+
+// A command expression in a credential header behaves like an unset
+// reference: the header drops out of the resolution with a warning naming it,
+// so an auth failure has a local explanation.
+func TestCredentialHeaderCommandExpressionWarns(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "", errors.New("command timed out")
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Gateway-Key\"\n" +
+		"credential_headers = { \"X-Gateway-Key\" = '''$(get-gateway-token)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
+		t.Fatal("a failed command expression must drop the credential header")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), `credential header "X-Gateway-Key": command expression failed: command timed out`) {
+		t.Fatalf("warnings = %v; want the header failure wording", res.Warnings)
+	}
+}
+
+// A credential header that expands to empty (an empty ${VAR:-} default) is
+// not a present header: it drops out of the map with a warning naming it,
+// never sent on the wire as an empty-valued header.
+func TestCredentialHeaderEmptyExpansionWarns(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Gateway-Key\"\n" +
+		"credential_headers = { \"X-Gateway-Key\" = '''${MISSING:-}''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
+		t.Fatal("an empty expansion must drop the credential header")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), `credential header "X-Gateway-Key": expands to an empty value`) {
+		t.Fatalf("warnings = %v; want the empty-expansion warning naming the header", res.Warnings)
+	}
+}
+
+// A failing Authorization header is one condition and one warning: the
+// header loop that builds the map reports it naming the header, and the
+// credential path's parallel "no credential" reason is suppressed on the
+// resolution path. The listing path, which builds no header map, keeps the
+// credential-form warning (pinned in the test below).
+func TestResolveAuthHeaderFailureWarnsOnce(t *testing.T) {
+	for _, tt := range []struct{ name, value, want string }{
+		{"unset reference", "$MISSING", `credential header "Authorization": MISSING unset`},
+		{"empty default", "${MISSING:-}", `credential header "Authorization": expands to an empty value`},
+		{"scheme-word default", "${MISSING:-Bearer}", `credential header "Authorization": expands to nothing but an auth scheme word`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			config := "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"Authorization\"\n" +
+				"credential_headers = { \"Authorization\" = '''" + tt.value + "''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n"
+			r := fixtureLoad(t, nil, config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "none" {
+				t.Fatalf("credential = %+v; want none", res.Credential)
+			}
+			if len(res.Warnings) != 1 {
+				t.Fatalf("warnings = %v; want exactly one, naming the header", res.Warnings)
+			}
+			if res.Warnings[0] != tt.want {
+				t.Fatalf("warning = %q; want %q", res.Warnings[0], tt.want)
+			}
+		})
+	}
+}
+
+// The listing path builds no header map, so there the credential-form
+// warning is the only report of a failing Authorization header.
+func TestListingKeepsAuthHeaderCredentialWarning(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''$MISSING''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if len(inst.Warnings) != 1 || inst.Warnings[0] != "no credential (MISSING unset)" {
+			t.Fatalf("listing warnings = %v; want the single credential-form warning", inst.Warnings)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// The Authorization header's command expression runs once per resolution:
+// the one expansion feeds both the credential and the credential-header map,
+// so the two can never disagree, and a failing command is not retried (and
+// not raced) within the same resolution.
+func TestAuthorizationCommandRunsOncePerResolution(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "", errors.New("command timed out")
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''$(flaky)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	if _, err := r.Resolve("gw/house-model"); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 1 {
+		t.Fatalf("the Authorization command ran %d time(s) in one resolution; want 1", runs)
+	}
+}
+
+// Header names are case-insensitive on the wire, so an Authorization header
+// written in any case is still the Authorization: the credential and the
+// header map must read the same entry, and the one shared expansion must
+// reach both.
+func TestAuthorizationHeaderLookupCaseInsensitive(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "minted-token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"authorization\" = '''$(mint-auth)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "credential_headers" || res.Credential.Value != "minted-token" {
+		t.Fatalf("credential = %+v; want the minted value from the lowercase Authorization header", res.Credential)
+	}
+	if got := res.CredentialHeaders["authorization"]; got != "minted-token" {
+		t.Fatalf("credential header map carries %q; want the minted value under the author's case", got)
+	}
+	if runs != 1 {
+		t.Fatalf("executor ran %d times; want 1 (one shared expansion)", runs)
+	}
+}
+
+// Authored defaults that fill in nothing but scheme words carry no
+// credential: the authoring boundary admits a scheme word only standing
+// ahead of material, so an expansion whose only material is scheme words —
+// the bare "${KEY:-Bearer}", or "Bearer ${KEY:-Basic}" — resolves as no
+// credential with a warning, never as a present one.
+func TestCredentialSchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
+	for _, value := range []string{`${MISSING:-Bearer}`, `Bearer ${MISSING:-Basic}`} {
+		t.Run(value, func(t *testing.T) {
+			config := "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"Authorization\"\n" +
+				"credential_headers = { \"Authorization\" = '''" + value + "''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n"
+			r := fixtureLoad(t, nil, config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "none" || res.Credential.Value != "" {
+				t.Fatalf("credential = %+v; want none: the default is only scheme words", res.Credential)
+			}
+			if _, ok := res.CredentialHeaders["Authorization"]; ok {
+				t.Fatal("the header map carries the scheme-word-only expansion; want it dropped")
+			}
+			if !strings.Contains(strings.Join(res.Warnings, ";"), "nothing but an auth scheme word") {
+				t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
+			}
+		})
+	}
+}
+
+// The same rule holds for api_key: a default that fills in a bare scheme
+// word is authored placeholder text, not key material, so it resolves as
+// no credential with a warning. A literal api_key stays a credential —
+// hand-typed text is the author's own material, exactly like any secret.
+func TestAPIKeySchemeWordOnlyExpansionIsNoCredential(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''${MISSING:-Bearer}'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v; want none: the default is only a scheme word", res.Credential)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "api_key expands to nothing but an auth scheme word") {
+		t.Fatalf("warnings = %v; want the api_key scheme-word warning", res.Warnings)
+	}
+
+	// A literal scheme word is the author's own material and stays a
+	// credential: the guard judges authored defaults, never hand-typed text.
+	const literal = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"Bearer\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r = fixtureLoad(t, nil, literal)
+	res, err = r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "api_key" || res.Credential.Value != "Bearer" {
+		t.Fatalf("credential = %+v; want the literal api_key kept", res.Credential)
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("warnings = %v; the literal is trusted without warnings", res.Warnings)
+	}
+
+	// Multiple scheme words are still no material: a default that assembles
+	// "Bearer Basic" authors words all the way down, never a key.
+	const multiWord = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"Bearer ${MISSING:-Basic}\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r = fixtureLoad(t, nil, multiWord)
+	res, err = r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" || res.Credential.Value != "" {
+		t.Fatalf("credential = %+v; want none: the default is only scheme words", res.Credential)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "api_key expands to nothing but an auth scheme word") {
+		t.Fatalf("warnings = %v; want the api_key scheme-word warning", res.Warnings)
+	}
+}
+
+// The credential follows the scheme's own auth header: a header-auth
+// instance reads its credential from the auth_header entry — case-
+// insensitively, like every header name — and shares one expansion with
+// the header map, so the resolve, the header map, and the listing all see
+// the same source. Before this, only an Authorization entry could carry
+// the credential, so a working custom header resolved as no credential and
+// the probe path skipped the instance.
+func TestCustomAuthHeaderCarriesTheCredential(t *testing.T) {
+	for _, tt := range []struct{ name, authHeader, mapKey string }{
+		{"exact case", "X-Api-Key", "X-Api-Key"},
+		{"case-insensitive authoring", "x-api-key", "X-Api-Key"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			valueexpr.ResetForTest()
+			t.Cleanup(valueexpr.ResetForTest)
+			runs := 0
+			valueexpr.RunCommand = func(string) (string, error) {
+				runs++
+				return "minted-key", nil
+			}
+			config := "[providers.gw]\n" +
+				"base = \"openai-compatible\"\n" +
+				"base_url = \"https://gw.internal.example/v1\"\n" +
+				"protocol = \"openai-chat\"\n" +
+				"auth = \"header\"\n" +
+				"auth_header = \"" + tt.authHeader + "\"\n" +
+				"credential_headers = { \"" + tt.mapKey + "\" = '''$(get-key)''' }\n" +
+				"[providers.gw.models.\"house-model\"]\n"
+			r := fixtureLoad(t, nil, config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != "credential_headers" || res.Credential.Value != "minted-key" {
+				t.Fatalf("credential = %+v; want the minted value from the custom auth header", res.Credential)
+			}
+			if got := res.CredentialHeaders[tt.mapKey]; got != "minted-key" {
+				t.Fatalf("credential header map carries %q; want the minted value", got)
+			}
+			if runs != 1 {
+				t.Fatalf("executor ran %d times; want 1 (one shared expansion)", runs)
+			}
+			// The listing reports the same source the resolution does.
+			for _, inst := range r.Instances() {
+				if inst.Name != "gw" {
+					continue
+				}
+				if inst.CredentialSource != "credential_headers" {
+					t.Fatalf("listing credential source = %q; want credential_headers", inst.CredentialSource)
+				}
+				return
+			}
+			t.Fatal("the gw instance is missing from the listing")
+		})
+	}
+}
+
+// A custom auth header's $VAR expression consumed the variable, so the
+// listing must not report that variable as shadowed: consumedEnvVars reads
+// the entry the scheme actually sends, and the config's own header won.
+func TestCustomAuthHeaderConsumedEnvVarNotShadowed(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Api-Key\"\n" +
+		"api_key_env = [\"GW_KEY\"]\n" +
+		"credential_headers = { \"X-Api-Key\" = \"$GW_KEY\" }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, map[string]string{"GW_KEY": "k-1"}, config)
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.CredentialSource != "credential_headers" {
+			t.Fatalf("credential source = %q; want credential_headers", inst.CredentialSource)
+		}
+		if inst.ShadowedEnvVar != "" {
+			t.Fatalf("shadowed env var = %q; the header consumed GW_KEY, so nothing was shadowed", inst.ShadowedEnvVar)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// The credential follows the row-merged transport: a model row may override
+// auth_header, and the row a launch resolves decides which header carries
+// the credential. The resolve reads the same transport it returns, and the
+// listing reads the default row's — the launch a bare instance name makes.
+// With no default row the listing stays provider-level, its long-standing
+// approximation, pinned here.
+func TestRowAuthHeaderOverrideCarriesTheCredential(t *testing.T) {
+	const base = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Provider-Key\"\n" +
+		"credential_headers = { \"Authorization\" = \"$K\" }\n"
+	const overrideRow = "[providers.gw.models.\"house-model\"]\n" +
+		"auth_header = \"Authorization\"\n"
+	const plainRow = "[providers.gw.models.\"house-model\"]\n"
+	for _, tt := range []struct {
+		name        string
+		config      string
+		wantResolve string
+		wantListing string
+	}{
+		{"default row overrides", base + "default_model = \"house-model\"\n" + overrideRow, "credential_headers", "credential_headers"},
+		{"no default row", base + overrideRow, "credential_headers", "none"},
+		{"no override at all", base + plainRow, "none", "none"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := fixtureLoad(t, map[string]string{"K": "gk"}, tt.config)
+			res, err := r.Resolve("gw/house-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Credential.Source != tt.wantResolve {
+				t.Fatalf("resolve credential = %+v; want source %s", res.Credential, tt.wantResolve)
+			}
+			if tt.wantResolve == "credential_headers" {
+				if res.Credential.Value != "gk" {
+					t.Fatalf("credential value = %q; want the expanded key", res.Credential.Value)
+				}
+				if got := res.CredentialHeaders["Authorization"]; got != "gk" {
+					t.Fatalf("credential header map carries %q; want the expanded key", got)
+				}
+			}
+			for _, inst := range r.Instances() {
+				if inst.Name != "gw" {
+					continue
+				}
+				if inst.CredentialSource != tt.wantListing {
+					t.Fatalf("listing credential source = %q; want %s", inst.CredentialSource, tt.wantListing)
+				}
+				return
+			}
+			t.Fatal("the gw instance is missing from the listing")
+		})
+	}
+}
+
+// The row's auth override selects the scheme the credential resolves under:
+// a default row overriding auth to none makes the instance's no-credential
+// quiet — optional schemes warn nothing — where the provider-level header
+// scheme would have warned.
+func TestRowAuthOverrideSelectsTheScheme(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-K\"\n" +
+		"credential_headers = { \"X-K\" = \"$MISSING\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" {
+		t.Fatalf("credential = %+v; want none", res.Credential)
+	}
+	if strings.Contains(strings.Join(res.Warnings, ";"), "no credential") {
+		t.Fatalf("warnings = %v; the row's none scheme needs no credential warning", res.Warnings)
+	}
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.Auth != "none" {
+			t.Fatalf("listing auth = %q; the row's none override is the scheme the bare-name launch signs with", inst.Auth)
+		}
+		if strings.Contains(strings.Join(inst.Warnings, ";"), "no credential") {
+			t.Fatalf("listing warnings = %v; the row's none scheme is quiet about the missing credential", inst.Warnings)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// The listing's transport resolves the default model the way the child
+// does: a default matched by a glob row takes the glob row's overrides —
+// auth included — not the provider-level shape the exact-row lookup falls
+// back to. The resume gate judges this listing, so its credential verdict
+// must describe the default model's own resolution.
+func TestListingJudgesTheGlobResolvedDefaultModel(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-K\"\n" +
+		"credential_headers = { \"X-K\" = \"$MISSING\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-*\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Transport.Auth != "none" {
+		t.Fatalf("resolve auth = %q; the glob row's none override must apply to the child", res.Transport.Auth)
+	}
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.Auth != "none" {
+			t.Fatalf("listing auth = %q; the listing must judge the same glob-resolved shape the child resolves", inst.Auth)
+		}
+		if strings.Contains(strings.Join(inst.Warnings, ";"), "no credential") {
+			t.Fatalf("listing warnings = %v; the glob row's none scheme is quiet about the missing credential", inst.Warnings)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// The listing describes one launch — the bare-name one — so the endpoint
+// it prints is the one that launch contacts: a default row overriding
+// base_url moves the listing's URL with it, the same way the row's auth
+// scheme already moves the listing's Auth. Mixing the provider-level URL
+// with the row's scheme describes a launch nothing makes.
+func TestListingBaseURLFollowsTheRowOverride(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-K\"\n" +
+		"credential_headers = { \"X-K\" = \"$K\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"base_url = \"https://row.internal.example/v1\"\n"
+	r := fixtureLoad(t, map[string]string{"K": "k-1"}, config)
+	for _, inst := range r.Instances() {
+		if inst.Name != "gw" {
+			continue
+		}
+		if inst.BaseURL != "https://row.internal.example/v1" {
+			t.Fatalf("listing base URL = %q; want the default row's override, the endpoint the bare-name launch contacts", inst.BaseURL)
+		}
+		return
+	}
+	t.Fatal("the gw instance is missing from the listing")
+}
+
+// The model-less resolve reports the shadowed variable against the same
+// transport it resolved the credential with — the provider-level one — not
+// the default row's merged shape, which may name a different header.
+func TestResolveInstanceShadowedVarFollowsRowlessTransport(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-A\"\n" +
+		"api_key_env = [\"V\"]\n" +
+		"credential_headers = { \"X-A\" = \"$V\" }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"auth_header = \"X-B\"\n"
+	r := fixtureLoad(t, map[string]string{"V": "v-1"}, config)
+	res, err := r.ResolveInstance("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstance: %v", err)
+	}
+	if res.Credential.Source != "credential_headers" {
+		t.Fatalf("credential = %+v; want the header the row-less transport names", res.Credential)
+	}
+	if res.ShadowedEnvVar != "" {
+		t.Fatalf("shadowed env var = %q; X-A consumed V, so nothing was shadowed", res.ShadowedEnvVar)
+	}
+}
+
+// Multiple failing credential headers warn in a deterministic order: the
+// header loop walks the keys sorted, so the same config resolves to the
+// same warning sequence every time instead of Go's random map order.
+func TestCredentialHeaderWarningsSortedByKey(t *testing.T) {
+	pairs := make([]string, 0, 6)
+	for _, k := range []string{"X-C", "X-A", "X-D", "X-B", "X-F", "X-E"} {
+		pairs = append(pairs, fmt.Sprintf("%q = %q", k, "$"+strings.TrimPrefix(k, "X-")))
+	}
+	config := "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"k\"\n" +
+		"credential_headers = { " + strings.Join(pairs, ", ") + " }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "api_key" {
+		t.Fatalf("credential = %+v; want the api_key", res.Credential)
+	}
+	want := []string{
+		`credential header "X-A": A unset`,
+		`credential header "X-B": B unset`,
+		`credential header "X-C": C unset`,
+		`credential header "X-D": D unset`,
+		`credential header "X-E": E unset`,
+		`credential header "X-F": F unset`,
+	}
+	if !reflect.DeepEqual(res.Warnings, want) {
+		t.Fatalf("warnings out of order or wrong:\n got %v\nwant %v", res.Warnings, want)
+	}
+}
+
+// The listing resolves every instance's credential at presence depth, so
+// neither side of an override may expand there: the Authorization header
+// that owns the wire slot (spec §10) counts as present without running,
+// and the api_key it overrides is never the credential and never
+// evaluates. The resolution below evaluates only the winner — a one-shot
+// command the wire never carries must not mint or stall anywhere.
+func TestCredentialListingSkipsOverriddenKeyCommands(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	flakyRuns := 0
+	stableRuns := 0
+	valueexpr.RunCommand = func(cmd string) (string, error) {
+		if cmd == "flaky" {
+			flakyRuns++
+			return "", errors.New("command timed out")
+		}
+		stableRuns++
+		return "stable-token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(stable-mint)'''\n" +
+		"credential_headers = { \"Authorization\" = '''$(flaky)''' }\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	for _, inst := range r.Instances() {
+		if inst.Name == "gw" && inst.CredentialSource != "credential_headers" {
+			t.Fatalf("listing credential source = %q; want credential_headers: the authored header owns the wire slot a derived key would fill", inst.CredentialSource)
+		}
+	}
+	if flakyRuns != 0 {
+		t.Fatalf("the listing ran the winning header's command %d time(s); the pane displays the credential's presence, the child alone executes it", flakyRuns)
+	}
+	if stableRuns != 0 {
+		t.Fatalf("the listing ran the overridden api_key command %d time(s); a credential the wire never carries must not evaluate anywhere", stableRuns)
+	}
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" || res.Credential.AuthoredLayer != "credential_headers" {
+		t.Fatalf("credential = %+v; want the authored header's own failure: it owns the slot, so its failure is the launch's, not a reason to fall back to the key it overrides", res.Credential)
+	}
+	if flakyRuns != 1 {
+		t.Fatalf("the Authorization command ran %d time(s) across listing+resolution; want 1 (the resolution reads the winner for the wire)", flakyRuns)
+	}
+	if stableRuns != 0 {
+		t.Fatalf("the overridden api_key command ran %d time(s) in the resolution; only the credential the wire sends is evaluated", stableRuns)
+	}
+}
+
+// An alias row seeds from its target's facts and transport; the target's
+// own credential commands are not the alias row's to run — resolving the
+// alias must not execute a credential the launch it is resolving never
+// sends.
+func TestAliasResolutionSkipsTargetCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const config = "[providers.mine]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://mine.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = \"sk-mine\"\n" +
+		"[providers.mine.models.\"house-model\"]\n" +
+		"alias_of = \"tgt/tgt-model\"\n"
+	// The target rides in the curated overlay, not the user layer: an
+	// overlay provider is not an instance, so nothing but the alias replay
+	// itself can resolve its credential.
+	overlay := overlayWith("[providers.tgt]\n" +
+		"implicit = true\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://tgt.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(tgt-mint)'''\n" +
+		"[providers.tgt.models.\"tgt-model\"]\n")
+	r := fixtureLoad(t, nil, config, WithOverlay(overlay))
+	if _, err := r.Resolve("mine/house-model"); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("alias resolution ran the target's credential command %d time(s); the alias seeds facts and transport, not the target's credential", runs)
+	}
+}
+
+// The hub always wires a credentials store, so the fingerprint's store arm
+// must be terminal only on a hit: a store that holds no entry for the
+// instance falls through to the environment candidates, whose rotation the
+// identity has to follow.
+func TestAuthFingerprintRotatesEnvValuesWithStoreWired(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"api_key_env = [\"ROT_KEY\"]\n"
+	mk := func(t *testing.T, key string) *Registry {
+		t.Helper()
+		return fixtureLoad(t, map[string]string{"ROT_KEY": key}, config, WithCredentials(fakeCreds{}))
+	}
+	first, ok := mk(t, "sk-aaaa").AuthFingerprint("gw")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	second, _ := mk(t, "sk-bbbb").AuthFingerprint("gw")
+	if first == second {
+		t.Fatal("fingerprint unchanged across an env rotation with the store wired; a store miss must reach the env candidates")
+	}
+}
+
+// A mixed credential value — an environment reference and a command
+// together — is rotation-sensitive in its environment half: the command
+// piece contributes its authored text (the mint rotates with the TTL),
+// but a rotated env value changes the effective credential and must
+// change the fingerprint, or the previous credential's cached live rows
+// survive the rotation.
+func TestAuthFingerprintRotatesMixedValues(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"api_key = '''$ROT_KEY-$(gw-mint)'''\n"
+	mk := func(t *testing.T, key string) *Registry {
+		t.Helper()
+		return fixtureLoad(t, map[string]string{"ROT_KEY": key}, config, WithCredentials(fakeCreds{}))
+	}
+	first, ok := mk(t, "sk-aaaa").AuthFingerprint("gw")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	second, _ := mk(t, "sk-bbbb").AuthFingerprint("gw")
+	if first == second {
+		t.Fatal("fingerprint unchanged across an env rotation inside a mixed value; the env half must stay rotation-sensitive")
+	}
+	if runs != 0 {
+		t.Fatalf("fingerprinting executed the command %d time(s)", runs)
+	}
+}
+
+// A set-but-empty environment value is the `:-` case (spec §10.1): the
+// effective credential is the default, so the fingerprint hashes the
+// default the expansion uses. Hashing the empty value instead would hide
+// a default rotation behind an identical fingerprint and churn an
+// unset-to-empty transition that changes no credential.
+func TestAuthFingerprintRotatesEmptySetDefaults(t *testing.T) {
+	mk := func(t *testing.T, env map[string]string, def string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"api_key = '''${ROT_KEY:-" + def + "}'''\n"
+		return fixtureLoad(t, env, config).AuthFingerprint("gw")
+	}
+	setEmpty, ok := mk(t, map[string]string{"ROT_KEY": ""}, "sk-old")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, map[string]string{"ROT_KEY": ""}, "sk-new")
+	if setEmpty == rotated {
+		t.Fatal("fingerprint unchanged across a default rotation under a set-but-empty env value; the effective credential changed")
+	}
+	unset, _ := mk(t, nil, "sk-old")
+	if unset != setEmpty {
+		t.Fatal("fingerprint differs between an unset env value and a set-but-empty one with the same default; the effective credential is the same")
+	}
+}
+
+// The listing fetch resolves through the default row and sends its
+// headers with the request, so the fingerprint — the identity's
+// request-and-credential digest — must rotate when those row headers
+// do, or cached live rows survive a change to the request that fetched
+// them.
+func TestAuthFingerprintRotatesListingRowHeaders(t *testing.T) {
+	mk := func(t *testing.T, rowHeaders string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"anthropic\"\n" +
+			"api_key_env = [\"WORK_KEY\"]\n" +
+			"default_model = \"claude-opus-4-5\"\n" +
+			"[providers.gw.models.\"claude-opus-4-5\"]\n" +
+			"[providers.gw.models.\"claude-opus-4-5\".headers]\n" +
+			rowHeaders
+		return fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config).AuthFingerprint("gw")
+	}
+	plain, ok := mk(t, "\"X-Beta\" = \"false\"\n")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "\"X-Beta\" = \"true\"\n")
+	if plain == rotated {
+		t.Fatal("fingerprint unchanged across a default-row header rotation; the listing request changed")
+	}
+}
+
+// A matching glob row merges into the effective row at resolve time, so
+// the listing request carries its headers too: a glob-header rotation is
+// as much a change to what the cached live rows came through as an exact
+// row's is. The fingerprint hashes the merged request shape, not the
+// exact row alone.
+func TestAuthFingerprintRotatesGlobRowHeaders(t *testing.T) {
+	mk := func(t *testing.T, globHeaders string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"anthropic\"\n" +
+			"api_key_env = [\"WORK_KEY\"]\n" +
+			"default_model = \"claude-opus-4-5\"\n" +
+			"[providers.gw.models.\"*claude-opus*\"]\n" +
+			globHeaders +
+			"[providers.gw.models.\"claude-opus-4-5\"]\n"
+		return fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config).AuthFingerprint("gw")
+	}
+	plain, ok := mk(t, "[providers.gw.models.\"*claude-opus*\".headers]\n\"X-Beta\" = \"false\"\n")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "[providers.gw.models.\"*claude-opus*\".headers]\n\"X-Beta\" = \"true\"\n")
+	if plain == rotated {
+		t.Fatal("fingerprint unchanged across a glob-row header rotation; the listing request changed")
+	}
+}
+
+// A default row can pin its own protocol, and every resolve depth takes
+// the row's protocol for the bare-name launch — presence, transport, and
+// the listing fetch all speak it, and the entry's endpoint fingerprint
+// and revision are computed over it. The listing entry must describe
+// that same launch: a provider-level Protocol would contradict the
+// row-aware Auth and BaseURL beside it.
+func TestInstancesProtocolFollowsTheDefaultRow(t *testing.T) {
+	config := "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"default_model = \"house-model\"\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"protocol = \"openai-responses\"\n"
+	r := fixtureLoad(t, nil, config)
+	inst, ok := r.Instance("gw")
+	if !ok {
+		t.Fatal("no gw instance")
+	}
+	if inst.Protocol != "openai-responses" {
+		t.Fatalf("Instance.Protocol = %q, want the default row's openai-responses: the entry describes the bare-name launch, as its Auth and BaseURL already do", inst.Protocol)
+	}
+	res, err := r.ResolveInstancePresence("gw")
+	if err != nil {
+		t.Fatalf("ResolveInstancePresence(gw): %v", err)
+	}
+	if res.Protocol != inst.Protocol {
+		t.Fatalf("listing Protocol %q disagrees with the presence resolve's %q: one launch, one protocol", inst.Protocol, res.Protocol)
+	}
+}
+
+// When the default row cannot resolve — a disabled model, a dead alias —
+// the listing fetch falls back to the provider's own transport and sends
+// the provider-level headers (ResolveInstanceListing falls back to
+// ResolveInstance). The identity must hash exactly those bytes in that
+// state, or a provider-level header rotation carries cached live rows
+// forward under the old request shape.
+func TestAuthFingerprintCoversProviderHeadersWhenTheDefaultRowCannotResolve(t *testing.T) {
+	mk := func(t *testing.T, providerHeaders string) (string, bool) {
+		t.Helper()
+		config := "[providers.gw]\n" +
+			"base = \"anthropic\"\n" +
+			"api_key_env = [\"WORK_KEY\"]\n" +
+			"default_model = \"alias-row\"\n" +
+			"[providers.gw.models.\"alias-row\"]\n" +
+			"alias_of = \"gone-model\"\n" +
+			"[providers.gw.models.\"gone-model\"]\n" +
+			"disabled = true\n" +
+			providerHeaders
+		return fixtureLoad(t, map[string]string{"WORK_KEY": "sk-test"}, config).AuthFingerprint("gw")
+	}
+	plain, ok := mk(t, "[providers.gw.headers]\n\"X-Beta\" = \"false\"\n")
+	if !ok {
+		t.Fatal("no fingerprint for gw")
+	}
+	rotated, _ := mk(t, "[providers.gw.headers]\n\"X-Beta\" = \"true\"\n")
+	if plain == rotated {
+		t.Fatal("fingerprint unchanged across a provider-header rotation in the fallback state; the listing request changed")
+	}
+}
+
+// A row can pin its own auth scheme, and the listing resolves every row
+// at full depth through that row's own transport: the mint predicate
+// must see what the rows would execute, not only the provider-level
+// scheme, or an automatic view mints through the override.
+func TestLaunchMintsCoversRowAuthOverride(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"auth = \"bearer\"\n"
+	r := fixtureLoad(t, nil, config)
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate missed the row's auth override: the listing's full-depth row resolution executes the api_key command under the row's bearer scheme")
+	}
+}
+
+// A glob that pins a never-send scheme (auth = none, or the codex and
+// adc schemes that read no api_key) cannot make an unseen live id
+// consume the command credential: every row it shapes resolves terminal,
+// so it must not suppress the live discovery the predicate guards.
+func TestLaunchMintsIgnoresNeverSendGlobs(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"*house*\"]\n" +
+		"auth = \"none\"\n"
+	r := fixtureLoad(t, nil, config)
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate refused a provider whose every row — glob-shaped or unseen — stays terminal: a none-pinning glob consumes no credential")
+	}
+}
+
+// An authored credential header that supplies the transport's auth slot
+// overrides the api_key (spec §10, the credentialWithAuth precedence),
+// so the api_key's command never evaluates at any depth: the mint
+// predicate must not count it. Counting it suppresses the hub's live
+// discovery — the picker omits rows the fetch could have served — for a
+// command no request ever runs.
+func TestLaunchMintsIgnoresOverriddenAPIKey(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"bearer\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.credential_headers]\n" +
+		"Authorization = \"Bearer literal-key\"\n"
+	r := fixtureLoad(t, nil, config)
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate counted an overridden api_key: the authored Authorization header owns the wire slot, so no resolution ever evaluates the command")
+	}
+}
+
+// The ids the registry knows are not the only ones a live listing can
+// return: a provider whose every known row stays terminal (auth none)
+// still carries a credential-bearing provider-level transport, and an
+// unseen live id falls back to exactly that transport when the fetch
+// applies it. Client.Models then resolves the new row at full depth, so
+// the predicate must treat the provider's own scheme as reachable — the
+// known-id scan alone cannot vouch for ids that do not exist yet.
+func TestLaunchMintsCoversProviderFallbackForUnseenModels(t *testing.T) {
+	mk := func(providerAuth string) string {
+		return "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"" + providerAuth + "\"\n" +
+			"api_key = '''$(gw-mint)'''\n" +
+			"default_model = \"house-model\"\n" +
+			"[providers.gw.models.\"house-model\"]\n" +
+			"auth = \"none\"\n"
+	}
+	r := fixtureLoad(t, nil, mk("header"))
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate missed the provider-level fallback: an unseen live id resolves through the header scheme and the listing's full-depth row resolution executes the api_key command")
+	}
+	// The same shape with a provider that truly never sends api_key stays
+	// fetchable: every row — known or still unseen — resolves terminal.
+	r = fixtureLoad(t, nil, mk("none"))
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate refused a provider whose every row, seen or unseen, stays terminal")
+	}
+}
+
+// A cached live row resolves at full depth like a catalog row: the
+// listing (resolveListing) resolves every id the registry knows — exact
+// rows plus the cached live ids — and a top-level glob can pin a live
+// row's scheme onto one that sends api_key. The predicate's row scan
+// must cover the live ids too, or the hub's next prefetch spends the
+// mint the predicate just called safe.
+func TestLaunchMintsCoversLiveRowAuthOverride(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[models.\"*house*\"]\n" +
+		"auth = \"bearer\"\n"
+	r := fixtureLoad(t, nil, config)
+	r.ApplyLive("gw", []Model{{ID: "house-live-1"}})
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate missed the cached live row's glob-pinned scheme: the listing's full-depth row resolution executes the api_key command under it")
+	}
+}
+
+// A live listing can return an id the registry has never seen, and a
+// glob — top-level or provider-scoped — can pin that unseen row onto a
+// scheme that sends api_key. The predicate cannot name ids it has not
+// seen, so an auth-bearing glob means it cannot vouch for the listing's
+// rows: the command key must count as mintable.
+func TestLaunchMintsTreatsAuthBearingGlobsAsReachable(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[models.\"*future*\"]\n" +
+		"auth = \"bearer\"\n"
+	r := fixtureLoad(t, nil, config)
+	if !r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate vouched for rows it cannot name: a glob can pin an unseen live id onto a scheme that sends the api_key command")
+	}
+}
+
+// The conservative glob rule reads the auth field alone: a glob that
+// pins transport fields but no auth — or only caps — cannot flip a
+// scheme, so the none-scheme command key stays safe to skip.
+func TestLaunchMintsIgnoresAuthlessGlobs(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"http://127.0.0.1:9/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(gw-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n" +
+		"[models.\"*caps*\"]\n" +
+		"base_url = \"http://127.0.0.1:10/v1\"\n"
+	r := fixtureLoad(t, nil, config)
+	if r.LaunchMintsCredentialCommand("gw") {
+		t.Fatal("the mint predicate refused a none-scheme command key over a glob that cannot change any row's scheme")
+	}
+}
+
+// The default row's headers hash as wire material, verbatim: the
+// values are already resolved, and re-parsing them as authored
+// $-expression text shreds a value that itself contains '$' — an
+// embedded unset ref contributes nothing, so two different wire
+// values hash alike and a header rotation keeps publishing stale rows
+// under the old value's identity.
+func TestAuthFingerprintRowHeaderWireValue(t *testing.T) {
+	mk := func(t *testing.T, org string) string {
+		t.Helper()
+		const config = "[providers.gw]\n" +
+			"base = \"openai-compatible\"\n" +
+			"base_url = \"http://127.0.0.1:9/v1\"\n" +
+			"protocol = \"openai-chat\"\n" +
+			"auth = \"none\"\n" +
+			"default_model = \"house-model\"\n" +
+			"[providers.gw.headers]\n" +
+			"X-Org = \"$ORG\"\n" +
+			"[providers.gw.models.\"house-model\"]\n"
+		fp, _ := fixtureLoad(t, map[string]string{"ORG": org}, config).AuthFingerprint("gw")
+		return fp
+	}
+	if mk(t, "a $B") == mk(t, "a $C") {
+		t.Fatal("the fingerprint hashed two different wire header values alike: a header rotation would not rotate the identity")
+	}
+}
+
+// The none scheme never sends a credential, so its resolution never
+// expands the api_key slot: a command there is authored for a scheme the
+// instance does not use, and running it would spend a mint the wire never
+// carries.
+func TestAuthNoneNeverExpandsAPIKey(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"none\"\n" +
+		"api_key = '''$(none-mint)'''\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "none" {
+		t.Fatalf("credential = %+v; want none", res.Credential)
+	}
+	if runs != 0 {
+		t.Fatalf("the none scheme executed the api_key command %d time(s); it never sends a credential", runs)
+	}
+}
+
+// Credential-header names are case-insensitive on the wire, so two that
+// differ only by case would collide into one header while resolution picks
+// a single entry for the credential: the load refuses the pair.
+func TestCredentialHeaderCaseVariantsRefusedAtLoad(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"credential_headers = { \"Authorization\" = '''$A''', \"authorization\" = '''$B''' }\n"
+	if _, err := ParseConfig([]byte(config)); err == nil || !strings.Contains(err.Error(), "differ only by case") {
+		t.Fatalf("ParseConfig err = %v; want the case-variant refusal", err)
+	}
+}
+
+// Byte order sorts case variants apart when an unrelated name lands
+// between them, so adjacent-pair comparison alone cannot be the check: the
+// guard keys on the folded name, wherever sorting puts it.
+func TestCredentialHeaderCaseVariantsWithInterveningNameRefusedAtLoad(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"credential_headers = { \"Authorization\" = '''$A''', \"X-Key\" = '''$B''', \"authorization\" = '''$C''' }\n"
+	if _, err := ParseConfig([]byte(config)); err == nil || !strings.Contains(err.Error(), "differ only by case") {
+		t.Fatalf("ParseConfig err = %v; want the case-variant refusal", err)
+	}
+}
+
+// A minted token is data, never judged by its shape: an all-letters command
+// output is a credential, not a scheme word, so the no-material rule reads
+// the authored pieces (literals and reference defaults), never the
+// expanded text.
+func TestMintedLettersOnlyTokenIsACredential(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) { return "abcdeftoken", nil }
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"Authorization\"\n" +
+		"credential_headers = { \"Authorization\" = '''$(mint-auth)''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Credential.Source != "credential_headers" || res.Credential.Value != "abcdeftoken" {
+		t.Fatalf("credential = %+v; want the minted letters-only token", res.Credential)
+	}
+	if got := res.CredentialHeaders["Authorization"]; got != "abcdeftoken" {
+		t.Fatalf("credential header map carries %q; want the minted token", got)
+	}
+}
+
+// The no-material rule is the same for every credential header, not just
+// Authorization: a gateway key whose only authored material is a bare
+// scheme word carries no credential and drops with a warning.
+func TestGenericCredentialHeaderSchemeWordDefaultDrops(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Gateway-Key\"\n" +
+		"credential_headers = { \"X-Gateway-Key\" = '''${MISSING:-Bearer}''' }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.CredentialHeaders["X-Gateway-Key"]; ok {
+		t.Fatal("the scheme-word-only gateway key is on the wire; want it dropped")
+	}
+	if !strings.Contains(strings.Join(res.Warnings, ";"), "auth scheme word") {
+		t.Fatalf("warnings = %v; want the scheme-word warning", res.Warnings)
+	}
+}
+
+// A literal credential-header value is the author's own key material,
+// trusted exactly like an api_key literal: the no-material rule judges
+// only reference defaults, never literals or minted output, so an
+// all-letters literal key stays on the wire.
+func TestLiteralCredentialHeaderValueStays(t *testing.T) {
+	const config = "[providers.gw]\n" +
+		"base = \"openai-compatible\"\n" +
+		"base_url = \"https://gw.internal.example/v1\"\n" +
+		"protocol = \"openai-chat\"\n" +
+		"auth = \"header\"\n" +
+		"auth_header = \"X-Api-Key\"\n" +
+		"credential_headers = { \"X-Api-Key\" = \"abcdef\" }\n" +
+		"[providers.gw.models.\"house-model\"]\n"
+	r := fixtureLoad(t, nil, config)
+	res, err := r.Resolve("gw/house-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.CredentialHeaders["X-Api-Key"]; got != "abcdef" {
+		t.Fatalf("credential header map carries %q; want the literal key kept", got)
+	}
 }

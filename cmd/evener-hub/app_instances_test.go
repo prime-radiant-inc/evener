@@ -5214,3 +5214,82 @@ func TestInstances_EditCapturesTheListingForARename(t *testing.T) {
 		t.Fatalf("captured row = %+v, want the renamed instance", renamed)
 	}
 }
+
+// The implicit-provider fallback resolves at presence depth. A
+// command-credentialed record always has an instance of its own (the
+// config layer instantiates whatever it keys), so this fallback cannot
+// see command material today; the pin keeps its answer identical to a
+// full resolve's, so the depth swap can never lose a field.
+func TestResolvedInstanceForPresenceShape(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(tomlPath, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := newTestRegistry(t, t.TempDir(), tomlPath, store, map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "tok"})
+	r := holder.Get()
+	p, ok := r.Provider("amazon-bedrock")
+	if !ok {
+		t.Fatal("the curated implicit provider is missing")
+	}
+	inst, addressable := resolvedInstanceFor(r, "amazon-bedrock", p.Hidden)
+	if !addressable {
+		t.Fatal("the implicit-provider fallback stopped resolving")
+	}
+	// The truth a view must agree with is the launch the bare name
+	// makes — the listing resolve — not the model-less probe, which
+	// signs its own request.
+	launch, err := r.ResolveInstanceListing("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.CredentialSource != launch.Credential.Source {
+		t.Fatalf("fallback CredentialSource = %q, want the launch's %q", inst.CredentialSource, launch.Credential.Source)
+	}
+	if inst.Auth != launch.Transport.Auth || inst.Protocol != launch.Protocol {
+		t.Fatal("the fallback's auth/protocol drifted from the launch resolve")
+	}
+	if inst.ShadowedEnvVar != launch.ShadowedEnvVar {
+		t.Fatalf("fallback ShadowedEnvVar = %q, want %q", inst.ShadowedEnvVar, launch.ShadowedEnvVar)
+	}
+}
+
+// The implicit-provider fallback view must show the launch the bare
+// name makes: the default row's merged transport, the user's top-level
+// globs included. A provider-level transport here would offer setup an
+// endpoint and a scheme the bare launch never signs with.
+func TestResolvedInstanceForMatchesLaunchTransportForImplicitProvider(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(tomlPath, []byte("[models.\"*claude-opus*\"]\nauth = \"none\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder := newTestRegistry(t, t.TempDir(), tomlPath, store, map[string]string{})
+	r := holder.Get()
+	p, ok := r.Provider("amazon-bedrock")
+	if !ok {
+		t.Fatal("the curated implicit provider is missing")
+	}
+	inst, addressable := resolvedInstanceFor(r, "amazon-bedrock", p.Hidden)
+	if !addressable {
+		t.Fatal("the implicit-provider fallback stopped resolving")
+	}
+	launch, err := r.ResolveInstanceListing("amazon-bedrock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Transport.Auth != "none" {
+		t.Fatalf("fixture: the default row's launch scheme = %q; want the glob's none", launch.Transport.Auth)
+	}
+	if inst.Auth != launch.Transport.Auth {
+		t.Fatalf("fallback auth = %q, want the launch's %q: the view must show the scheme the bare launch signs with", inst.Auth, launch.Transport.Auth)
+	}
+}

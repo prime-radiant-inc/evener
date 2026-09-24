@@ -77,15 +77,15 @@ import {
   groupTasks,
   relativeTime,
   type TaskRow,
-  type TaskStatus,
   taskAggregateLabel,
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
+import { Button, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { STATUS_TOUCH, TaskCheck, TOUCH_WORD } from "../transcript/tools/taskCheck";
 import styles from "./taskspanel.module.css";
 
 export interface TasksPanelProps {
@@ -123,7 +123,6 @@ const CLASS = {
   descStruck: requireClass(styles.descStruck, "taskspanel.module.css", "descStruck"),
   time: requireClass(styles.time, "taskspanel.module.css", "time"),
   latest: requireClass(styles.latest, "taskspanel.module.css", "latest"),
-  latestLabel: requireClass(styles.latestLabel, "taskspanel.module.css", "latestLabel"),
   latestText: requireClass(styles.latestText, "taskspanel.module.css", "latestText"),
   stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
   staleMessage: requireClass(styles.staleMessage, "taskspanel.module.css", "staleMessage"),
@@ -143,42 +142,7 @@ const CLASS = {
   noNotes: requireClass(styles.noNotes, "taskspanel.module.css", "noNotes"),
   notesRail: requireClass(styles.notesRail, "taskspanel.module.css", "notesRail"),
   note: requireClass(styles.note, "taskspanel.module.css", "note"),
-};
-
-// Mirrors the legacy sidebar/inline task-row grammar (cmd/evener-hub/assets/
-// renderer-format.js: planGlyphForStatus/planStateClass) translated onto
-// this app's own widget vocabulary (Chip tones) rather than the legacy's
-// window.EvenerIcons SVG fragments, which this client has no equivalent of -
-// same semantic mapping for the GLYPH: done gets a checkmark, in_progress
-// a filled dot, cancelled an X (distinct shape from pending's hollow
-// circle) so "won't happen" reads differently from "hasn't started yet".
-//
-// The TONE, however, does NOT mirror planGlyphForStatus's own comment
-// ("a plan item that will not happen reads the same as a failure") into
-// danger - that comment governs only the glyph SHAPE choice. The legacy's
-// actual rendering chain colors it neutral: planStateClass (this same
-// file, lines 496-506) maps cancelled into the SAME CSS class family as
-// pending/done, and style.css:3324-3329 confirms it explicitly - "cancelled
-// — recedes like done, struck to read as dropped" - `.plan-item.cancelled
-// .plan-glyph` is `--ink-3` (the identical dim neutral pending's glyph
-// uses), never a danger red. In this design system's color-is-attention
-// rule (tokens.css: "a human is needed / agent working / failure - nothing
-// else may be amber/danger"), tinting a routine cancellation as danger
-// would make reprioritized work indistinguishable from a genuine failure.
-// The ✕ glyph alone carries the "won't happen" distinction; the tone stays
-// neutral like every other settled, non-attention-needing state.
-const STATUS_GLYPH: Record<TaskStatus, string> = {
-  open: "○",
-  in_progress: "●",
-  done: "✓",
-  cancelled: "✕",
-};
-
-export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
-  open: "neutral",
-  in_progress: "alive",
-  done: "neutral",
-  cancelled: "neutral",
+  srOnly: requireClass(styles.srOnly, "taskspanel.module.css", "srOnly"),
 };
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
@@ -324,9 +288,13 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
   const descClass = task.status === "cancelled" ? CLASS.descStruck : settled ? CLASS.descDim : CLASS.description;
   const summary = (
     <>
-      <Chip tone={STATUS_TONE[task.status]}>{STATUS_GLYPH[task.status]}</Chip>
+      <TaskCheck touch={STATUS_TOUCH[task.status]} />
       <span className={CLASS.summaryMain}>
         <span className={CLASS.summaryLine}>
+          {/* The glyph is aria-hidden by design; its status word rides
+              visually-hidden beside the label, the same word the card's
+              rows carry. */}
+          <span className={CLASS.srOnly}>{TOUCH_WORD[STATUS_TOUCH[task.status]]}</span>
           <span className={descClass} data-struck={task.status === "cancelled" ? "true" : undefined}>
             {task.description}
           </span>
@@ -338,7 +306,6 @@ function TaskRowView({ task, sessionRef, settled = false }: { task: TaskRow; ses
         </span>
         {latest && (
           <span className={CLASS.latest} data-testid="task-latest">
-            <span className={CLASS.latestLabel}>latest</span>
             <span className={CLASS.latestText} title={latest}>
               {latest}
             </span>

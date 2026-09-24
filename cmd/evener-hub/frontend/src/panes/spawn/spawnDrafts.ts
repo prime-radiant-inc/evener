@@ -123,6 +123,9 @@ export function applySpawnURL(onNavigation = false): void {
   const draft = selectSpawnDirectory(cwd);
   if (applyPrefill) {
     if (prefill.prompt) setDraftField(draft, "prompt", prefill.prompt);
+    // The rail's project-copy launch hands its host over as ?host=; Spawn's
+    // host picker owns the fallback when that host is unknown or offline.
+    if (prefill.host) setDraftField(draft, "source", prefill.host);
     spawnDraftsStore.setState({ lastPrefillURL: window.location.href, prefillRevision: state.prefillRevision + 1 });
   }
 }

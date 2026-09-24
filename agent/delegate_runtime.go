@@ -92,6 +92,14 @@ type delegateQuietAttentionClaim struct {
 	done        chan struct{}
 }
 
+// delegateActivityPublishInterval bounds how often activity alone publishes a
+// delegate's snapshot. A streaming child reports activity for every delta, and
+// each publication is a DELEGATE_UPDATED that the owning session re-samples its
+// diagnostics for (every job and delegate it has) and forwards to every
+// client, so publishing per delta made a parent's cost scale with its
+// children's token rate.
+const delegateActivityPublishInterval = time.Second
+
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
 	return c.ReportActivityPhase(lease, at, "")
 }
@@ -130,6 +138,13 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		live.productiveActivityAt = at
 	}
 	c.evidenceVersion++
+	// A rearm changes quiet state, so it publishes; plain activity waits out
+	// the interval and rides along with the next snapshot published.
+	if !rearm && at.Sub(live.activityPublishedAt) < delegateActivityPublishInterval {
+		c.mu.Unlock()
+		return nil
+	}
+	live.activityPublishedAt = at
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
