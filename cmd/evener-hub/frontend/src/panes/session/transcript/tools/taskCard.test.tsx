@@ -1,8 +1,8 @@
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { lazy } from "react";
+import { type ComponentType, lazy } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { registerPaneForTests } from "../../../../shell/paneRegistry";
+import { type PaneProps, registerPaneForTests } from "../../../../shell/paneRegistry";
 import { isPaneOpen, workspaceStore } from "../../../../shell/workspace";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";
@@ -1100,7 +1100,7 @@ test("the footer's Open button never closes an already-open pane", () => {
   const restorePane = registerPaneForTests({
     id: "sessionTasks",
     title: () => "Tasks",
-    component: lazy(() => new Promise(() => {})),
+    component: lazy(() => new Promise<{ default: ComponentType<PaneProps<{ ref: string }>> }>(() => {})),
   });
   const before = workspaceStore.getState();
   try {
