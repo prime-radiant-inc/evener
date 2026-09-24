@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -132,6 +133,17 @@ func TestMemHarness(t *testing.T) {
 	if *memHarnessResume != "" && *memHarnessState == "" {
 		t.Fatal("-memharness-resume needs -memharness-state naming a copy of the state that holds the session")
 	}
+	if *memHarnessResume != "" {
+		// The adapter ends every turn with communicate; a session persisted
+		// with another result tool would never see its turns complete.
+		meta, err := schema.LoadSessionMeta(*memHarnessState, *memHarnessResume)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name := meta.Config.ResultToolName; name != "" && name != "communicate" {
+			t.Fatalf("session %s uses result tool %q; the memory harness only scripts communicate", *memHarnessResume, name)
+		}
+	}
 	if *memHarnessEvery <= 0 {
 		t.Fatalf("-memharness-every=%d: want a positive number of turns between heap profiles", *memHarnessEvery)
 	}
@@ -172,7 +184,7 @@ func TestMemHarness(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runServe(args) }()
 	// Resuming a large real transcript takes far longer than a fresh start.
-	entry := waitForServeTestRendezvousWithin(t, runDir, 10*time.Minute)
+	entry := waitForServeTestRendezvousWithin(t, runDir, 10*time.Minute, done)
 
 	ctx := context.Background()
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
@@ -240,17 +252,21 @@ func TestMemHarness(t *testing.T) {
 	}
 
 	report("t000")
+	// Mutation ids are unique per run: a resumed transcript already holds
+	// the ids an earlier run sent, and reusing them changes how the resumed
+	// run's turns are admitted.
+	runID := strconv.FormatInt(time.Now().UnixNano(), 36)
 	for i := 1; i <= *memHarnessTurns; i++ {
 		input := []appwire.InputItem{{Type: "text", Text: fmt.Sprintf("turn %d: %s", i, memHarnessTurnMarker)}}
 		_, err := client.TurnStart(ctx, appwire.TurnStartParams{
-			ClientMutationID: fmt.Sprintf("memharness-start-%d", i), ExpectedInstanceID: entry.SessionID, Ref: ref, Input: input,
+			ClientMutationID: fmt.Sprintf("memharness-%s-start-%d", runID, i), ExpectedInstanceID: entry.SessionID, Ref: ref, Input: input,
 		})
 		// A turn is still running -- one the session started for itself (a
 		// delegate's result arriving) or one whose completion was already
 		// counted -- so queue the input behind it, as the web composer does.
 		if err != nil && strings.Contains(err.Error(), "already active") {
 			err = client.TurnQueue(ctx, appwire.TurnQueueParams{
-				ClientMutationID: fmt.Sprintf("memharness-queue-%d", i), ExpectedInstanceID: entry.SessionID, Ref: ref, Input: input,
+				ClientMutationID: fmt.Sprintf("memharness-%s-queue-%d", runID, i), ExpectedInstanceID: entry.SessionID, Ref: ref, Input: input,
 			})
 		}
 		if err != nil {

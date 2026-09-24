@@ -747,13 +747,15 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 // start within 5 seconds.
 func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
 	t.Helper()
-	return waitForServeTestRendezvousWithin(t, runDir, 5*time.Second)
+	return waitForServeTestRendezvousWithin(t, runDir, 5*time.Second, nil)
 }
 
 // waitForServeTestRendezvousWithin is waitForServeTestRendezvous with the
 // startup ceiling named by the caller, for a serve that resumes a large
-// transcript before it can register.
-func waitForServeTestRendezvousWithin(t *testing.T, runDir string, within time.Duration) rendezvous.Entry {
+// transcript before it can register. A non-nil exited receives runServe's
+// result; serve returning before it registers fails the wait at once instead
+// of at the ceiling.
+func waitForServeTestRendezvousWithin(t *testing.T, runDir string, within time.Duration, exited <-chan error) rendezvous.Entry {
 	t.Helper()
 
 	// Ensure the run directory exists before attaching the watcher.
@@ -800,6 +802,8 @@ func waitForServeTestRendezvousWithin(t *testing.T, runDir string, within time.D
 			}
 		case werr := <-watcher.Errors:
 			t.Fatalf("waitForServeTestRendezvousWithin: watcher error: %v", werr)
+		case err := <-exited:
+			t.Fatalf("serve exited before registering: %v", err)
 		case <-deadline:
 			t.Fatalf("no rendezvous entry in %s after %s", runDir, within)
 			return rendezvous.Entry{}
