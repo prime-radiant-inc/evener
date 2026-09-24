@@ -1098,6 +1098,12 @@ func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]ap
 	if err != nil {
 		return nil, err
 	}
+	// Flush unpaired communicates the way the server's full read does
+	// (server/appwire_turns.go): a session whose last assistant turn issues a
+	// communicate call with no paired result turn must render the trailing
+	// agentMessage. The paged read (pastEntryLatestItems) flushes internally via
+	// the item-window path; the full read must flush explicitly so both agree.
+	apptranscript.FlushUnpairedCommunicates(&turns, reg)
 	stampSessionImageURLs(entry.Meta.ID, turns)
 	// ItemTurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's instance and model, so the cost estimate
