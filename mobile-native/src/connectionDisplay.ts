@@ -248,12 +248,26 @@ export function useConnectionDisplay(
 			}
 			lastState.current = state;
 		}
+		if (state === "ready" && !pairingServesHub) {
+			// A ready render the identity record walls cannot retain
+			// content: the pairing it reports vouches for another hub, so
+			// retention armed under a previous client must not survive it —
+			// the drop that follows reports the same refused client and
+			// must wall like the ready render did, not banner a mounted
+			// surface whose store holds no client (round 75). The trust
+			// EARNED under a claimable pairing stands: the original
+			// client's same-state return re-opens the screen without
+			// waiting for a transition to re-earn anything, and the arm
+			// below re-arms retention under it.
+			everReady.current = false;
+		}
 		if (
 			state === "ready" &&
 			((transitionedIntoReady && pairingServesHub) ||
-				(trust.trusted && trust.scope === hubId))
+				(trust.trusted && trust.scope === hubId && pairingServesHub))
 		) {
-			// The retention arm keys on readiness this hub actually earned.
+			// The retention arm keys on readiness this hub actually earned,
+			// claimed through a pairing the identity record vouches for.
 			// A post-settle ready render alone is not evidence: the scope
 			// ref settles while the connection still reports the previous
 			// hub's ready state, so arming on the settled scope would retain

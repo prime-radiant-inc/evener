@@ -730,6 +730,83 @@ it("useConnectionDisplay walls a same-state replacement the record refuses", () 
 	expect(display.result.current).toBe("none");
 });
 
+// Round 75's Medium: the retention arm re-armed everReady on the trust term
+// alone, so retention armed under the FIRST client survived the walled
+// replacement render — the drop that followed showed a banner over
+// ProvidersScreen's mounted surface while the store gated the refused
+// client to null, the exact re-key retention class of round 52 left open on
+// the same-state path. A ready render the identity record walls now strips
+// retention too: the drop reports the same refused client and must wall
+// like the ready render did.
+it("useConnectionDisplay walls a refused replacement's drop instead of retaining it", () => {
+	const first = {} as AppwireClient;
+	const foreign = {} as AppwireClient;
+	recordClientReadyHub(first, "hub-1");
+	recordClientReadyHub(foreign, "hub-2");
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay("hub-1", state, false, client));
+	display.rerender();
+	expect(display.result.current).toBe("none");
+	// The same-state refused replacement walls on the ready render (round 67)
+	// — and must not keep the retention the previous client's readiness
+	// armed.
+	client = foreign;
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+	// The drop reports the same refused client: pre-fix this rendered a
+	// banner over the mounted provider surface with no client behind it —
+	// retention for content this pairing never showed.
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+	// The re-point's own dial for hub-1 closes the refused client and
+	// transitions into ready on a client this hub can claim: the screen
+	// earns its content back, and a later flap retains it again — retention
+	// re-armed under the claimable pairing, not the refused one.
+	const rePointed = {} as AppwireClient;
+	recordClientReadyHub(rePointed, "hub-1");
+	client = null;
+	state = "reconnecting";
+	display.rerender();
+	client = rePointed;
+	state = "ready";
+	display.rerender();
+	expect(display.result.current).toBe("none");
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("banner");
+});
+
+// The trust a claimable pairing earned is not forfeited by a refused
+// replacement passing through: the original client's same-state return
+// re-opens the screen without waiting for a transition to re-earn anything
+// (no transition CAN come while the state stays ready), and retention —
+// stripped on the refused render — re-arms under the claimable pairing.
+it("useConnectionDisplay keeps the earned screen for a same-state return of the original client", () => {
+	const first = {} as AppwireClient;
+	const foreign = {} as AppwireClient;
+	recordClientReadyHub(first, "hub-1");
+	recordClientReadyHub(foreign, "hub-2");
+	let client: AppwireClient | null = first;
+	let state: ConnectionState = "ready";
+	const display = renderHook(() => useConnectionDisplay("hub-1", state, false, client));
+	display.rerender();
+	expect(display.result.current).toBe("none");
+	client = foreign;
+	display.rerender();
+	expect(display.result.current).toBe("wall");
+	// The original client returns with the state never having left ready:
+	// the trust it earned still stands and the record vouches for it.
+	client = first;
+	display.rerender();
+	expect(display.result.current).toBe("none");
+	// And the retention re-armed on the return: a later flap retains.
+	state = "reconnecting";
+	display.rerender();
+	expect(display.result.current).toBe("banner");
+});
+
 // Round 49's undefined-hub Medium: useRenderClient seeds adoption.scope as
 // undefined, so a mount whose hubId is also undefined passed the ready-path
 // scope check on its very first render and served the live client prop with
