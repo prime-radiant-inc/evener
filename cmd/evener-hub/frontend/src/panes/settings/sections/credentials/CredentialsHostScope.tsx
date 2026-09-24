@@ -142,7 +142,15 @@ function RemoteHostInstances({ host, registryFailed }: { host: string; registryF
           <ProviderInstanceGroups instances={state.instances} availableProviders={state.availableProviders} readOnly />
         )}
       </section>
-      <PushCredentials host={host} />
+      {/* Keyed on the host, and withheld while the host is unverifiable: the
+          action holds its whole lifetime in local state, so without the key a
+          switch would leave the previous host's pending state, report and error
+          on screen - and the failure branch names the CURRENT host, which would
+          make a late failure read as though the new host produced it. The
+          unverifiable case is the same guard the listing above takes: this
+          action sends this hub's keys, so offering it for a name the registry
+          cannot confirm is exactly what the guard exists to prevent. */}
+      {!unverifiable && <PushCredentials key={host} host={host} />}
     </>
   );
 }

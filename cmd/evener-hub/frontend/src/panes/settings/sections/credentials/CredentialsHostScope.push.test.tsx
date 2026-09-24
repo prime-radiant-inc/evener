@@ -1,6 +1,6 @@
 import type { HostPushCredentialsResponse, HostRow, InstanceEntry } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { deferRequest, FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -49,6 +49,12 @@ const HOST_ROW = instance({ name: "on-beta", providerId: "anthropic", authModes:
 
 const CONTROLLER_LIST = { instances: [CONTROLLER_ROW], availableProviders: [] };
 const HOST_LIST = { instances: [HOST_ROW], availableProviders: [] };
+// A second remote host, so a switch moves the selection to a different host
+// (not this hub) and the push action for it is offered the same way beta's is.
+const GAMMA_LIST = {
+  instances: [instance({ name: "on-gamma", providerId: "anthropic", authModes: ["apiKey"] })],
+  availableProviders: [],
+};
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -273,4 +279,152 @@ test("a refused push surfaces a real error rather than an empty report", async (
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain("remote dispatches are refused");
   expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
+});
+
+// MEDIUM 1: the action's whole lifetime is one host's. Switching the selection
+// used to keep the previous host's report on screen, because PushCredentials was
+// rendered without a key and its useState outlived the host prop.
+test("a push report does not carry over when the selected host changes", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({
+    hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
+  }));
+  fake.on("evener/host/request", (params) => (params.host === "beta" ? HOST_LIST : GAMMA_LIST));
+  fake.on("evener/host/pushCredentials", () => ({
+    host: "beta",
+    results: [{ instance: "on-beta", action: "added" }],
+  }));
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await screen.findByRole("option", { name: "gamma" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(within(report).getByRole("listitem").textContent).toBe("on-betaadded");
+
+  // The selection moves to another remote host.
+  await user.selectOptions(select, "gamma");
+  await screen.findByRole("heading", { name: "Providers on gamma" });
+
+  // Beta's report is gone, and gamma's action is fresh: the state did not
+  // outlive the host it belongs to.
+  expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
+  expect((screen.getByRole("button", { name: "Push credentials to gamma" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+// MEDIUM 1 (the sharp edge): a push is left in flight, the selection moves on,
+// and the push then fails. The old code interpolated the CURRENT host prop into
+// the failure, so beta's failure rendered as though gamma had produced it.
+test("a push failure that lands after a host switch is not rendered for the new host", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({
+    hosts: [hostRow({ name: "beta", attached: true }), hostRow({ name: "gamma", attached: true })],
+  }));
+  fake.on("evener/host/request", (params) => (params.host === "beta" ? HOST_LIST : GAMMA_LIST));
+  const settle = gateSettlements(fake, "evener/host/pushCredentials");
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await screen.findByRole("option", { name: "gamma" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  // The push is in flight when the selection moves; its pending state must not
+  // disable the new host's action either.
+  await act(async () => {});
+  await user.selectOptions(select, "gamma");
+  await screen.findByRole("heading", { name: "Providers on gamma" });
+  expect((screen.getByRole("button", { name: "Push credentials to gamma" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(settle).toHaveLength(1);
+
+  // Beta's push now fails, after the selection moved on.
+  await act(async () => settle[0]!.reject(new WireError("beta refused the push", -32000)));
+
+  // Nothing about beta's failure is rendered, least of all naming gamma.
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.queryByText(/Couldn't push credentials to gamma/)).toBeNull();
+});
+
+// MEDIUM 2: unverifiable means the listing was withheld because the host's name
+// could not be checked against the registry, so the pane must not offer to send
+// this hub's keys to a name it has just said it cannot verify - every sibling
+// block in the section is guarded the same way.
+test("the push action is not offered while the host is unverifiable", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => {
+    throw new WireError("registry unavailable", -32000);
+  });
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => {
+    throw new Error("a host that cannot be verified must never be pushed to");
+  });
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+
+  expect(await screen.findByText(/Couldn't check beta's registration/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Push credentials to beta" })).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
+});
+
+// MEDIUM 3: a push performs many sequential remote operations over SSH, so the
+// client's 30s default deadline can fire while the remote mutation is still
+// going. It passes the longer host-mutation bound other host operations use
+// (stores/hosts.ts's HOST_GATE_TIMEOUT_MS, 35 minutes) - asserted by value, not
+// by the constant's existence.
+test("the push call passes the host-mutation timeout, not the client's 30s default", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => ({
+    host: "beta",
+    results: [{ instance: "on-beta", action: "added" }],
+  }));
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  await screen.findByRole("status", { name: "Push report for beta" });
+
+  const call = fake.calls.find((entry) => entry.method === "evener/host/pushCredentials");
+  // 35 minutes, the value stores/hosts.ts's HOST_GATE_TIMEOUT_MS carries for a
+  // host RPC that queues on or holds the per-host gate.
+  expect(call?.opts).toEqual({ timeoutMs: 35 * 60_000 });
+});
+
+// LOW: the zero-result report is reachable (app_host_credentials.go returns an
+// empty Results when this hub holds no local keys), and every other report shape
+// is pinned. It must render its own status and no rows.
+test("a zero-result report says there is nothing to push and renders no rows", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  fake.on("evener/host/pushCredentials", () => ({ host: "beta", results: [] }));
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(report.textContent).toBe("Nothing to push to beta: this hub has no provider-instance keys.");
+  expect(within(report).queryAllByRole("listitem")).toHaveLength(0);
 });

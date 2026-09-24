@@ -22,7 +22,7 @@ import {
   useConnectionStore,
 } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
-import { type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
+import { HOST_GATE_TIMEOUT_MS, type HostsLoadState, hostsStore, useHostsStore } from "./hosts";
 import { ownClientId } from "./mutationClientIdentity";
 
 export {
@@ -379,9 +379,15 @@ function startHostRead(
  * host; the selected host comes from the settings route (stores/settingsHost.ts).
  * The response carries no key value - only instance/action/reason - so nothing
  * here can read, render, or log one. A refusal (an unknown or unattached host, a
- * refused dispatch) rejects to the caller rather than returning an empty report. */
+ * refused dispatch) rejects to the caller rather than returning an empty report.
+ *
+ * The client's ordinary 30s deadline is too short here: a push copies this hub's
+ * keys one instance at a time over the host link, so the default can expire while
+ * the host is still writing - and a user who then retries is retrying a mutation
+ * whose outcome they never learned. It takes the same bound the other host
+ * mutations take (HOST_GATE_TIMEOUT_MS, stores/hosts.ts) for the same reason. */
 export async function pushHostCredentials(host: string): Promise<HostPushCredentialsResponse> {
-  return requireClient().request("evener/host/pushCredentials", { host });
+  return requireClient().request("evener/host/pushCredentials", { host }, { timeoutMs: HOST_GATE_TIMEOUT_MS });
 }
 
 // A credential change made ON a remote host reaches this browser wrapped in
