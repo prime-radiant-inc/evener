@@ -463,3 +463,148 @@ test("a host re-registered under the same name does not keep the previous regist
 
   expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
 });
+
+// MEDIUM 4 (roborev on 851b2e8): the action's state was keyed only by the host
+// registration, so it did not notice that its request had settled on a REPLACED
+// connection - the old client's report, or its failure, rendered as though it
+// belonged to the connection that replaced it. A push is a MUTATION, so the
+// attempt is scoped to the connection generation it was issued under (the same
+// notion stores/credentials.ts's host partitions are current under): a
+// settlement from a generation the action is no longer on is dropped rather
+// than shown, and the attempt reads as an outcome this connection never saw.
+const REPLACED_CONNECTION_NOTICE = /was replaced while the push to beta was in flight/;
+
+function connectReplacementClient(): FakeClient {
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => CONTROLLER_LIST);
+  replacement.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  replacement.on("evener/host/request", () => HOST_LIST);
+  connectionStore.getState().connect(replacement);
+  return replacement;
+}
+
+test("a push in flight when the connection is replaced is not reported as the new connection's outcome", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  const settle = gateSettlements(fake, "evener/host/pushCredentials");
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  await act(async () => {});
+  expect(settle).toHaveLength(1);
+
+  // The controller's client is replaced while the push is still out.
+  let replacement!: FakeClient;
+  await act(async () => {
+    replacement = connectReplacementClient();
+  });
+
+  // The replaced connection's own answer arrives now. It describes what THAT
+  // connection's push did, and nothing on this one can vouch for it.
+  await act(async () =>
+    settle[0]!.resolve({ host: "beta", results: [{ instance: "old-connection-key", action: "added" }] }),
+  );
+
+  expect(screen.queryByRole("status", { name: "Push report for beta" })).toBeNull();
+  expect(screen.queryByText("old-connection-key")).toBeNull();
+  // The attempt is readable as what it is, rather than as a success or a
+  // failure of the connection that replaced it...
+  expect(screen.getByText(REPLACED_CONNECTION_NOTICE)).toBeTruthy();
+  // ...and the mutation was not sent a second time behind the user's back.
+  expect(settle).toHaveLength(1);
+  expect(
+    fake.calls.filter((call) => call.method === "evener/host/pushCredentials"),
+    "the replaced connection's push is settled once and never re-issued",
+  ).toHaveLength(1);
+  expect(replacement.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(false);
+  // The new connection's own push is offered again: an unknown outcome is not a
+  // dead end the user is stuck behind.
+  expect((screen.getByRole("button", { name: "Push credentials to beta" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a push failure that lands on a replaced connection is not rendered as the new connection's failure", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  const settle = gateSettlements(fake, "evener/host/pushCredentials");
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  await act(async () => {});
+  expect(settle).toHaveLength(1);
+
+  await act(async () => {
+    connectReplacementClient();
+  });
+  await act(async () => settle[0]!.reject(new WireError("the replaced connection refused the push", -32000)));
+
+  // The failure belongs to the connection that is gone, so it is not rendered
+  // as this one's - the attempt reads as an unknown outcome instead.
+  expect(screen.queryByText(/Couldn't push credentials to beta/)).toBeNull();
+  expect(screen.queryByText(/the replaced connection refused the push/)).toBeNull();
+  expect(screen.getByText(REPLACED_CONNECTION_NOTICE)).toBeTruthy();
+});
+
+test("the connection that issued a push still renders that push's own report", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+  const settle = gateSettlements(fake, "evener/host/pushCredentials");
+
+  render(<CredentialsHostScope sectionId="credentials" />);
+  const user = userEvent.setup();
+  const select = await screen.findByLabelText("Host");
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  await screen.findByRole("heading", { name: "Providers on beta" });
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+  await act(async () => {});
+
+  // The first attempt is orphaned by a replacement - the guard's own case - and
+  // its answer is still out, held for the end of this test.
+  let replacement!: FakeClient;
+  await act(async () => {
+    replacement = connectReplacementClient();
+  });
+  expect(screen.getByText(REPLACED_CONNECTION_NOTICE)).toBeTruthy();
+
+  // The guard cannot pass by never showing anything: a push issued on the
+  // connection that is CURRENT renders that connection's own report.
+  replacement.on("evener/host/pushCredentials", () => ({
+    host: "beta",
+    results: [{ instance: "new-connection-key", action: "updated" }],
+  }));
+  await user.click(screen.getByRole("button", { name: "Push credentials to beta" }));
+
+  const report = await screen.findByRole("status", { name: "Push report for beta" });
+  expect(within(report).getByRole("listitem").textContent).toBe("new-connection-keyupdated");
+  expect(screen.queryByText(REPLACED_CONNECTION_NOTICE)).toBeNull();
+  expect(replacement.calls.some((call) => call.method === "evener/host/pushCredentials")).toBe(true);
+
+  // The replaced connection's answer lands only now - after the new
+  // connection's own report is on screen - and it does not displace it: it
+  // belongs to an attempt this action no longer holds, and the second push went
+  // to the current connection, not through the old one.
+  expect(settle).toHaveLength(1);
+  await act(async () =>
+    settle[0]!.resolve({ host: "beta", results: [{ instance: "old-connection-key", action: "added" }] }),
+  );
+  const rows = within(screen.getByRole("status", { name: "Push report for beta" })).getAllByRole("listitem");
+  expect(rows.map((row) => row.textContent)).toEqual(["new-connection-keyupdated"]);
+  expect(screen.queryByText("old-connection-key")).toBeNull();
+  expect(screen.queryByText(REPLACED_CONNECTION_NOTICE)).toBeNull();
+});
