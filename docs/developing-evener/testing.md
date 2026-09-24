@@ -349,6 +349,160 @@ EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_DEPLOY=1 \
   go test ./cmd/evener-hub/ -run 'TestHostDeployNoEvenerE2E' -count=1 -v
 ~~~
 
+### `EVENER_SSH_E2E_PUSH=1` — the live credential push to a disposable host
+
+The credential push's criterion (component 07c,
+`docs/superpowers/specs/2026-09-14-multi-host-07-remote-admin.md`): this hub's
+local credentials store is copied to a named host through the atomic host-side
+`evener/auth/apiKey/conditionalSet`, and the host's own store ends up holding
+the keys. It is the check that lets a push be run against a host whose real
+state matters, because it makes the host side disposable FIRST: the push writes
+a store the check owns, and the host's real install and real `credentials.toml`
+come out byte-identical.
+
+**This gate writes to the host**, which is why it is a separate opt-in from the
+read-only `EVENER_SSH_E2E` check — a developer running that one is not signed up
+for a credential write. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as
+well, and skips under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user,
+as in the sibling checks.
+
+What it writes, and where: under the host's `HOME` it creates its own
+`evener-push-e2e-<run>` directory holding a private `providers.toml`, a private
+`credentials.toml` (mode `0600` — the store refuses group/world bits), and a
+private `hub.toml` (`addr` + `hub_state_root`). It then launches that hub over
+ssh with `XDG_CONFIG_HOME` pointed into the directory, so the host hub resolves
+`<dir>/evener/providers.toml` and `<dir>/evener/credentials.toml` and never its
+own config root: the hub config schema has `hub_state_root` but no
+credential-path or config-root field, so a private `hub.toml` alone would
+redirect the host's state but not its credential file. The hub it launches is a
+cross-compiled build of this checkout, staged into that directory, rather than
+the host's own install: the push's host half is new, so a host hub built from
+older main answers the conditional set with "method not found". It removes the
+directory when it finishes and fails the check if it cannot. It never writes the
+host's real `~/.config/evener/credentials.toml` or its real install
+(`~/.local/bin/evener`); both are hashed before and after, and the check fails if
+either appeared or changed.
+
+Prerequisites: the same disposable host the other live checks need (reachable
+over non-interactive ssh, with a supported target), plus the Go toolchain and
+this checkout on the controller.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_PUSH=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostPushCredentialsDisposableHostE2E' -count=1 -v
+~~~
+
+The disposable-store guard can be seen to fail on purpose, which is how it is
+known to be a check rather than a phrase in a test name: with
+`EVENER_SSH_E2E_PUSH_GUARD_DISPOSABLE=1` the guard compares the disposable store
+instead of the host's real one, so the push's own (expected) write trips it —
+without the host's real file being touched at all.
+
+### `EVENER_SSH_E2E_UI=1` — the live remote-host settings UI acceptance
+
+Component 07b's end-to-end acceptance
+(`docs/superpowers/specs/2026-09-14-multi-host-07-remote-admin.md`): the
+PRODUCTION hub web app (the hub's embedded `frontend/dist`) is driven in real
+Chrome with a real remote host selected, each host-scoped settings pane
+(`credentials`, `agents-md`, `launch-evener`, `inrepo`, `project`,
+`plugins-manager`, `plugins`, `skills`, `mcp`) must render THAT HOST's own data,
+and the UI's writes go through: the host's `AGENTS.md` via Save, the in-repo
+pane's own **Trust**, and a credential push from the `credentials` pane's own
+button.
+
+Eight of the nine are held to a value seeded only on the host: the pane must
+render the HOST's value and must not render this hub's. `credentials`,
+`agents-md`, `launch-evener`, `project`, `plugins`, `skills` and `mcp` read a
+seeded host value; `inrepo` reads the host's own `.evener/launch.toml`, whose text
+the pane shows as a preview, and the check then drives the pane's own **Trust**
+action and requires the host to report the file trusted — so that pane proves the
+read AND exercises a host-side write. `plugins-manager` asserts structure — the
+pane rendered, with no load error, carrying the selected host — because its
+catalog is a set of marketplaces CLONED under the host rather than a file, so a
+file seed cannot produce a listing. That is the honest limit of this check.
+
+The `credentials` pane also carries the credential-push action, and the check
+drives it end to end. The controller's own store is seeded first, through the
+controller's wire `evener/auth/apiKey/conditionalSet`, with an instance whose
+name matches one of the disposable host's own provider instances — so the host's
+locked conditional set classifies the pushed key `added` rather than skipping it
+as "no matching instance on the host". The driver then presses **Push
+credentials to <host>**, waits for the `Push report for <host>` region, and
+requires it to name the seeded instance with action `added` (anything but
+`added`/`updated` — including a `failed` row, a skip, or an unrecognized value —
+fails the run and prints what it saw), and requires the failure alert to be
+absent. Because a report the browser rendered is not proof that a write landed,
+the load-bearing assertion is the Go owner's: it reads the DISPOSABLE host's own
+`credentials.toml` back off the host afterwards and requires the pushed instance
+AND the controller-seeded key. The driver's push step is part of the check's
+contract, not an optional extra: a missing button or a report that never appears
+fails the run rather than skipping quietly.
+
+**This gate writes to the host and drives a browser**, so it is its own opt-in:
+a developer signed up for the push or deploy checks is not signed up for a UI
+run. It needs `EVENER_SSH_E2E=1` and `EVENER_SSH_E2E_HOST` as well, and skips
+under `-short`. `EVENER_SSH_E2E_USER` sets the entry's ssh user, as in the
+sibling checks. Default `go test ./...` performs no ssh and starts no browser.
+
+The host side is made disposable the way the push check does: under the host's
+`HOME` it creates its own `evener-settings-ui-e2e-<run>` directory holding a
+private `providers.toml`, `credentials.toml` (mode `0600`), `AGENTS.md`, a
+global `launch.toml`, and a private `hub.toml`, stages a cross-compiled build of
+this checkout into it, and launches a hub from it with `XDG_CONFIG_HOME` pointed
+there on `127.0.0.1:19183`. The controller runs on an isolated `HOME` whose own
+`AGENTS.md`/`launch.toml` are seeded with DIFFERENT values, so a pane that
+rendered the controller's data instead of the host's fails the read assertion.
+It removes the directory when it finishes, and it never writes the host's real
+`~/.config/evener/credentials.toml` or real install (`~/.local/bin/evener`):
+both are hashed before and after, and the check fails if either appeared or
+changed. Afterwards it reads the disposable `AGENTS.md` back off the host and
+requires the UI-written value, reads the disposable `credentials.toml` back and
+requires the instance and key the pane's push wrote, and requires the
+controller's own `AGENTS.md` to be unchanged.
+
+Build prerequisite: the hub **embeds** `frontend/dist`, so the check builds the
+frontend and then the controller hub from the tree under test, in that order.
+It runs `npm run build` in `cmd/evener-hub/frontend` (which starts by reducing
+`dist` to the tracked `PLACEHOLDER`, so a stale or half-built SPA cannot be
+driven), and it needs that directory's `node_modules`: provision the lane's
+dependencies first. The check never runs `npm ci`/`npm install`. A frontend
+build that cannot run fails loudly naming the command to run. It also asserts
+the hub answers with the built SPA, not `webnext.go`'s documented 503. It needs
+`node` and a Chrome on the controller.
+
+Chrome's profile has to live somewhere SHORT: it derives its process-singleton
+socket path from the profile directory (`<user-data-dir>/com.google.Chrome.<id>/
+SingletonSocket`) and a unix socket path is capped at about 108 bytes, so a deep
+temp root — a sandboxed run whose scratch directory is nested well below `/tmp`,
+or the temp root a test harness hands its children — overflows the cap and Chrome
+aborts (`FATAL:...process_singleton_posix.cc: Socket path too long`) before
+DevTools is ready. The driver therefore creates its profile under the
+conventional short root (`/tmp`) instead of trusting `os.tmpdir()`, falling back
+to the ambient temp dir only when that root is missing or unwritable.
+
+~~~sh
+EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park EVENER_SSH_E2E_UI=1 \
+  go test ./cmd/evener-hub/ -run 'TestHostSettingsUIDisposableHostE2E' -count=1 -v
+~~~
+
+The driver writes a screenshot per pane and a machine-readable `result.json`
+into an artifact directory; it is kept on failure, and on a pass only with
+`EVENER_SSH_E2E_UI_KEEP_ARTIFACTS` set.
+
+That directory is created under the test process's own temp root, which the
+harness removes when the process exits — so a kept artifact directory there does
+not outlive the run, and the check says so rather than implying otherwise. To
+actually keep the screenshots and `result.json`, name a base outside that root
+with `EVENER_SSH_E2E_UI_ARTIFACT_DIR` (alongside
+`EVENER_SSH_E2E_UI_KEEP_ARTIFACTS`).
+
+The non-mutation guard can be seen to fail on purpose, as the push check's can:
+with `EVENER_SSH_E2E_UI_GUARD_DISPOSABLE=1` the guard compares the disposable
+store instead of the host's real one, so the run trips it without the host's
+real file being touched. Both the guard's default target and the gate's skip
+order are pinned without a host by `TestHostSettingsUIGateSkipsWithoutOptIn`,
+which runs in ordinary `go test`.
+
 ### Live service coverage and host sandbox parity
 
 ~~~sh
