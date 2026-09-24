@@ -161,8 +161,11 @@ type delegateLiveState struct {
 	recoveryRunnerPending bool
 	activityAt            time.Time
 	productiveActivityAt  time.Time
-	quietSequence         uint64
-	quietNotified         bool
+	// activityPublishedAt is the activity time ReportActivityPhase last
+	// published a snapshot for; see delegateActivityPublishInterval.
+	activityPublishedAt time.Time
+	quietSequence       uint64
+	quietNotified       bool
 	// quietNotifiedAt is when the current stretch's most recent quiet wake was
 	// admitted. It re-baselines the repeat cadence: while quietNotified holds,
 	// the next wake is due one more delegateQuietWindow after this instant, so a
