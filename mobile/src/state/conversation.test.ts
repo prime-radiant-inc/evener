@@ -17521,6 +17521,209 @@ describe("ConversationStore", () => {
       expect(rows(store).some((row) => row.id === "X")).toBe(false);
     });
 
+    // RoboRev round 4, review round 1: two items can share a bare wire id
+    // under different keys — the merge's own identity rule calls them two
+    // identities, so the model can hold both at once. The reconciliation's
+    // ownership guard read BOTH spellings, so the unowned one found the
+    // other's bare-id claim and a frame that preserved both promoted the
+    // live item to page history; an omitting rehydrate then kept live
+    // content the wire had withdrawn.
+    it("keeps a same-id different-key item from adopting the bare-id claim another item owns", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The page fragment of t1 carries a KEYED item: the claim records the
+      // key and the bare wire id.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("t1", [
+              {
+                id: "X",
+                turnId: "t1",
+                transcriptKey: "K1",
+                type: "agentMessage",
+                text: "page answer",
+                position: { entry: 10, item: 0 },
+                status: "completed",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "X")).toBeDefined();
+      // A live item takes the same bare id under a different key — a
+      // second identity the package's own rule distinguishes.
+      store.getState().applyNotification({
+        method: "turn/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t2", itemsView: "default", status: "inProgress" },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: {
+            id: "X",
+            turnId: "t2",
+            transcriptKey: "K2",
+            type: "agentMessage",
+            text: "live answer",
+            status: "completed",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      // t1's full completion preserves its own keyed item — the frame
+      // removes nothing, yet the settlement walk runs and must not
+      // promote the live copy: only the spelling an item's own identity
+      // carries decides whether it owns a claim.
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: {
+            id: "t1",
+            itemsView: "full",
+            status: "completed",
+            items: [
+              {
+                id: "X",
+                turnId: "t1",
+                transcriptKey: "K1",
+                type: "agentMessage",
+                text: "page answer",
+                status: "completed",
+              } as ThreadItem,
+            ],
+          },
+        },
+      } as AnyNotification);
+      // The authoritative snapshot omits both X items: the page-owned
+      // copy stays as page history, and the live copy — unowned content
+      // the wire withdrew — must go.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [userMessageItem("other", "kept")],
+            }),
+            makeTurn({ id: "t2", status: "completed", items: [] }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      const xRows = rows(store).filter((row) => row.id === "X");
+      expect(xRows).toHaveLength(1);
+    });
+
+    // RoboRev round 4, review round 1: the contribution replay compared
+    // the item-merge spine, but a folded call's final fields come from the
+    // tool fold's own selection — fresh results, fresh calls, then the
+    // page's — so the spine's rank-promoted status can be one the rewrite
+    // immediately overrides. A page whose every field the retained side
+    // already supplies must contribute nothing: no progress keys, and no
+    // page ownership for content the merge did not keep.
+    it("does not count a call status the tool fold's fresh-call precedence overrides", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              status: "completed",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "item_tool_1",
+                  toolName: "shell",
+                  callId: "call-1",
+                  output: "retained output",
+                  status: "inProgress",
+                } as ThreadItem,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // The page carries the same call under a completed status plus its
+      // result — but the result's output is one the retained call already
+      // holds, and the fold's fresh-call precedence restores the retained
+      // call's own inProgress status. Nothing the page names survives.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment("tp", [
+              {
+                id: "item_tool_1",
+                turnId: "tp",
+                type: "commandExecution",
+                toolName: "shell",
+                callId: "call-1",
+                status: "completed",
+              } as ThreadItem,
+              {
+                id: "item_tool_result_1",
+                turnId: "tp",
+                type: "commandExecution",
+                toolName: "shell",
+                callId: "call-1",
+                output: "retained output",
+              } as ThreadItem,
+            ]),
+          ],
+          undefined,
+        ),
+        nextCursor: undefined,
+      };
+      const loaded = await store.getState().loadOlder(service);
+      expect(loaded.status).toBe("loaded");
+      // The fold kept the retained call's precedence: the final call is
+      // still inProgress with the retained output.
+      const call = store
+        .getState()
+        .conversation?.turns.find((turn) => turn.id === "t1")
+        ?.items.find((item) => item.id === "item_tool_1");
+      expect(call).toMatchObject({
+        status: "inProgress",
+        output: "retained output",
+      });
+      // A page whose fields the fold overrode contributes nothing: no
+      // progress keys name it...
+      expect(
+        loaded.status === "loaded" ? loaded.itemKeys.length : 0,
+      ).toBe(0);
+      // ...and an omitting rehydrate drops the call: the page owns no
+      // history it never actually supplied.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(rowById(store, "item_tool_1")).toBeUndefined();
+    });
+
     // A replayed input image reaches a page with no bytes and no stamped
     // url, only its content sha. D23d: the store's own merge hydrates the
     // page against the merged MODEL's serving session — the route the hub

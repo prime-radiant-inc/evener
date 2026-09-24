@@ -1170,9 +1170,17 @@ export function createConversationStore() {
     // with a DIFFERENT key conflicts rather than continues — and both its
     // spellings retire, so the next holder of the bare id inherits
     // nothing.
+    // RoboRev round 4, review round 1: whether a before item owns a claim
+    // reads ITS OWN spelling — the key-first identity retention reads —
+    // never the bare id another item sharing the wire id may hold a claim
+    // under, and it reads the pre-walk snapshot, so the settlement's own
+    // writes cannot promote a later item. An unowned item neither gains a
+    // claim nor retires spellings another item's claim still backs.
+    const owned = new Set(pageItemIds);
     const afterItems = after.turns.flatMap((turn) => turn.items);
     for (const turn of before.turns) {
       for (const item of turn.items) {
+        if (!owned.has(item.transcriptKey ?? item.id)) continue;
         const survivor = afterItems.find((candidate) =>
           itemIdentityMatches(candidate, item),
         );
@@ -1183,7 +1191,6 @@ export function createConversationStore() {
         }
         const beforeSpellings = [item.transcriptKey ?? item.id, item.id];
         const survivorSpellings = [survivor.transcriptKey ?? survivor.id, survivor.id];
-        if (!beforeSpellings.some((id) => pageItemIds.has(id))) continue;
         for (const id of survivorSpellings) pageItemIds.add(id);
         for (const id of beforeSpellings) {
           if (!survivorSpellings.includes(id)) pageItemIds.delete(id);
