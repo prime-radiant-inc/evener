@@ -6,10 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 
@@ -366,7 +364,14 @@ func CredentialConfigRevision(key []byte, r *registry.Registry, name string) str
 	if len(key) == 0 || r == nil || strings.TrimSpace(name) == "" {
 		return ""
 	}
-	res, err := r.ResolveInstance(name)
+	// Presence depth: the revision covers the credential's source label
+	// and the credential-header names, neither of which needs the value
+	// materialized — and the status and listing paths that serve this
+	// digest render on every pane refresh, where a full resolve could
+	// execute a command expression (spec §10.1). Every path that feeds
+	// CredentialConfigRevisionResolved resolves at this same depth, so
+	// one configuration MACs to one revision wherever it is read.
+	res, err := r.ResolveInstancePresence(name)
 	if err != nil {
 		return ""
 	}
@@ -444,7 +449,7 @@ func CredentialConfigRevisionResolved(key []byte, res registry.Resolved) string 
 	// sent" and "a stored key is dead". The value is the layer's name, never its
 	// variable or a secret.
 	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "authoredLayer", res.Credential.AuthoredLayer)
-	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "credentialHeaders", strings.Join(slices.Sorted(maps.Keys(res.CredentialHeaders)), ","))
+	_, _ = fmt.Fprintf(mac, "%s\x01%s\x01", "credentialHeaders", strings.Join(res.CredentialHeaderNames, ","))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

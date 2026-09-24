@@ -413,11 +413,12 @@ func resolvedRowInstance(r *registry.Registry, inst registry.Instance) (registry
 	if r == nil {
 		return registry.Resolved{}, false
 	}
-	// The destination is transport identity only — nothing secret-bearing
-	// feeds the fingerprint — so the resolve carries no credential stage
-	// and executes no command expression (spec §10.1); the pane renders
-	// this on every refresh.
-	resolved, err := r.ResolveInstanceTransport(inst.Name)
+	// Presence depth: the row's destination and the credential's source
+	// label, with no value materialized and no command expression executed
+	// (spec §10.1) — the pane renders this on every refresh, and the
+	// revision the entry serves resolves at this same depth so one
+	// configuration MACs to one revision wherever it is read.
+	resolved, err := r.ResolveInstancePresence(inst.Name)
 	if err != nil {
 		return registry.Resolved{}, false
 	}

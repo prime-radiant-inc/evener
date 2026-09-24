@@ -366,8 +366,10 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	var cred Credential
 	var credHeaders map[string]string
 	var cw []string
+	var credHeaderNames []string
 	if presence {
 		cred, cw = r.credential(rec, transport)
+		credHeaderNames = r.credentialHeaderNames(rec, transport)
 	} else {
 		cred, credHeaders, cw = r.resolveCredentials(rec, transport)
 	}
@@ -383,7 +385,8 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	return Resolved{
 		Instance: rec.name, ProviderID: providerID, Protocol: proto, Surface: rec.head.Surface,
 		Transport: transport, HostDerivedByRule: hostDerived, Caps: caps, Headers: r.buildHeaders(rec.head.Headers, nil),
-		Credential: cred, CredentialHeaders: credHeaders, Provenance: prov, Warnings: warnings,
+		Credential: cred, CredentialHeaders: credHeaders, CredentialHeaderNames: credHeaderNames,
+		Provenance: prov, Warnings: warnings,
 		ShadowedEnvVar: r.shadowedEnvVar(rec, transport, cred),
 		DefaultModel:   rec.head.DefaultModel, CheapModel: rec.head.CheapModel,
 	}, nil
