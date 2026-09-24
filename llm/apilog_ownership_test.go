@@ -115,7 +115,8 @@ func TestSessionOwnershipAPILoggerSettlesWithoutFailureObservations(t *testing.T
 }
 
 type ownershipBindingTestAdapter struct {
-	active *bool
+	active   *bool
+	protocol *string
 }
 
 func (ownershipBindingTestAdapter) Name() string { return "binding" }
@@ -129,6 +130,9 @@ func (a ownershipBindingTestAdapter) Complete(ctx context.Context, req Request) 
 	})
 	if a.active != nil {
 		*a.active = attempt.Active()
+	}
+	if a.protocol != nil {
+		*a.protocol = apiAttemptGroupFromContext(ctx).Protocol()
 	}
 	resp := Response{
 		Provider: req.Provider, Model: req.Model, Message: Assistant("ok"),
@@ -145,13 +149,14 @@ func (ownershipBindingTestAdapter) Stream(context.Context, Request) (Stream, err
 	return nil, nil
 }
 
-// TestSessionOwnershipLoggerMiddlewareBindsAttemptSink pins the reason the
-// ownership logger stays attached as client middleware in default-off mode:
-// binding the sink is what makes transports run attempts, and attempts are what
-// stamp the group protocol the agent records as response_protocol on turns.
-// If this binding regressed, disabling durable recording would also strip turn
-// provenance (replay would fall back to instance-based resolution).
-func TestSessionOwnershipLoggerMiddlewareBindsAttemptSink(t *testing.T) {
+// TestSessionOwnershipLoggerMiddlewareStampsProtocolWithoutEvidence pins why
+// the ownership logger stays attached as client middleware in default-off
+// mode: its group binding is what stamps the protocol the agent records as
+// response_protocol on turns. It also pins that the attempt is inert: every
+// record is discarded, so retaining request and response bodies and building
+// the record would be work nobody keeps, repeated over the whole conversation
+// on every model round.
+func TestSessionOwnershipLoggerMiddlewareStampsProtocolWithoutEvidence(t *testing.T) {
 	stateDir := t.TempDir()
 	logger, err := NewSessionOwnershipAPILogger(stateDir)
 	if err != nil {
@@ -159,8 +164,9 @@ func TestSessionOwnershipLoggerMiddlewareBindsAttemptSink(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = logger.Close() })
 	client := NewClient()
-	var active bool
-	client.Register(ownershipBindingTestAdapter{active: &active})
+	active := true
+	var protocol string
+	client.Register(ownershipBindingTestAdapter{active: &active, protocol: &protocol})
 	client.Use(logger)
 
 	if _, err := client.Complete(WithAPILogContext(context.Background(), "sess-bind"), Request{
@@ -170,12 +176,44 @@ func TestSessionOwnershipLoggerMiddlewareBindsAttemptSink(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if !active {
-		t.Fatal("ownership logger did not bind the attempt sink — turns would lose response_protocol")
+	if protocol != "openai-responses" {
+		t.Fatalf("group protocol = %q, want openai-responses -- turns would lose response_protocol", protocol)
+	}
+	if active {
+		t.Fatal("ownership logger made an evidence-retaining attempt for a record it discards")
 	}
 	// The discarded append never opens the session leaf: no reserve happened
 	// and nothing reaches storage.
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-bind.api.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("discarded append reached storage: %v", err)
+	}
+}
+
+// TestAPIAttemptContextActiveFollowsGroupBoundSink pins that transports decide
+// whether to retain evidence from the sink BeginAPIAttempt will append to: the
+// one the group bound first, not whichever sink the context carries now. A
+// group bound to a persisting sink must keep recording when a later context
+// carries the discarding ownership logger, and a group bound to that logger
+// must not retain evidence a later persisting sink in the context can't get.
+func TestAPIAttemptContextActiveFollowsGroupBoundSink(t *testing.T) {
+	ownership, err := NewSessionOwnershipAPILogger(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSessionOwnershipAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = ownership.Close() })
+	persisting := &recordingAPIAttemptSink{}
+
+	persistingGroup := NewAPIAttemptGroup("ag_persisting")
+	BeginAPIAttempt(WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), persistingGroup), persisting), APIAttemptMeta{}).Complete(APIAttemptResult{})
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), persistingGroup), ownership)
+	if !APIAttemptContextActive(ctx) {
+		t.Fatal("group bound to a persisting sink reported inactive under a discarding context sink -- its attempts would go unrecorded")
+	}
+
+	discardingGroup := NewAPIAttemptGroup("ag_discarding")
+	BeginAPIAttempt(WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), discardingGroup), ownership), APIAttemptMeta{})
+	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), discardingGroup), persisting)
+	if APIAttemptContextActive(ctx) {
+		t.Fatal("group bound to the discarding logger reported active under a persisting context sink")
 	}
 }
