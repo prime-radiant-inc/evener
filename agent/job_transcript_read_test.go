@@ -507,3 +507,80 @@ func TestLocateLocalJob_RejectsSymlinkedSessionsDir(t *testing.T) {
 		t.Fatal("locateLocalJob found a job through a symlinked sessions/ dir; should reject")
 	}
 }
+
+// --- roborev fix round 7: RED test ---
+
+// TestLocateLocalJob_SymlinkedSiblingBucketSurfacesJobNotFound asserts that
+// a lookup for a nonexistent job with an UNRELATED symlinked sibling bucket
+// returns "job not found" — not the symlink rejection error from the sibling.
+// The round-6 symlink guards make findLocalJobInProject return a non-nil
+// "symlinks are not allowed" error for a symlinked sessions/ in a non-target
+// bucket; the round-3 retainedErr mechanism retains it and surfaces it
+// instead of the honest "job not found" result, masking the real outcome
+// with a misleading message.
+func TestLocateLocalJob_SymlinkedSiblingBucketSurfacesJobNotFound(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Sibling bucket with symlinked sessions/ pointing outside.
+	siblingBucket := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	outside := t.TempDir()
+	outsideSessions := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(outsideSessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSessions, filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The job does NOT exist anywhere. The lookup should return "job not
+	// found", not the symlink error from the unrelated sibling bucket.
+	_, err := locateLocalJob(current, jobID)
+	if err == nil {
+		t.Fatal("expected error for nonexistent job, got nil")
+	}
+	if !isJobNotFoundErr(err) {
+		t.Fatalf("expected job-not-found error for nonexistent job with unrelated symlinked sibling, got: %v", err)
+	}
+}
+
+// TestLocateLocalJob_SymlinkedTargetBucketStillSurfacesSymlinkError asserts
+// that when the symlinked sibling bucket DOES contain the target job, the
+// symlink error is still surfaced — the fix must only classify symlink errors
+// from non-target buckets as skip-worthy, not suppress them everywhere.
+func TestLocateLocalJob_SymlinkedTargetBucketStillSurfacesSymlinkError(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Seed the target job in an outside dir, then symlink sessions/ to it.
+	outside := t.TempDir()
+	seedLocalJob(t, outside, owner, jobID, "/decoy/outside.log", "outside\n", false)
+
+	siblingBucket := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	if err := os.RemoveAll(filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sessions"), filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The target IS in the symlinked bucket. The symlink error must be
+	// surfaced, not suppressed — the symlink guard protects against reads
+	// outside the state root.
+	_, err := locateLocalJob(current, jobID)
+	if err == nil {
+		t.Fatal("expected symlink error for target in symlinked bucket, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}

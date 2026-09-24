@@ -214,6 +214,24 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)
 	}
+	// Validate the fixed layout prefix: filepath.Glob follows symlinked
+	// path components, so a symlinked evener/ or evener/projects/ ancestor
+	// (a plausible state-dir relocation) would let glob return buckets
+	// whose refs read_transcript then REJECTS with "traverses a symlink".
+	// Lstat both prefix dirs and refuse to enumerate when either is a
+	// symlink — find must not return refs read rejects.
+	for _, prefix := range []string{
+		filepath.Join(stateHome, "evener"),
+		filepath.Join(stateHome, "evener", "projects"),
+	} {
+		info, _ := os.Lstat(prefix)
+		if info == nil {
+			return nil, nil // prefix does not exist → no buckets
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, nil // symlinked prefix → refuse to enumerate
+		}
+	}
 	// Filter to directories only. The symlink check MUST come first and
 	// MUST use Lstat (not Stat): Stat follows the symlink, clears
 	// ModeSymlink, and would let the symlink through. With Lstat, a symlink

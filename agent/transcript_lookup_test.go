@@ -1228,3 +1228,101 @@ func TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch(t *testing.T) {
 		t.Fatal("findBareIDBuckets counted a symlinked sessions/ dir as a match; should skip it")
 	}
 }
+
+// --- roborev fix round 7: RED tests ---
+
+// TestEnumerateBuckets_SymlinkedEvenerAncestorRejected asserts that
+// enumerateBuckets does not return buckets reached through a symlinked
+// stateHome/evener ancestor. filepath.Glob follows the symlinked prefix, and
+// os.Lstat checks only the final bucket component — so a symlinked evener/
+// (a plausible state-dir relocation) lets enumeration surface buckets whose
+// refs read_transcript then REJECTS with "traverses a symlink", breaking the
+// find-must-not-return-refs-read-rejects invariant. enumerateBuckets must
+// Lstat stateHome/evener and stateHome/evener/projects and refuse to enumerate
+// when either is a symlink.
+func TestEnumerateBuckets_SymlinkedEvenerAncestorRejected(t *testing.T) {
+	t.Parallel()
+	// Real state home with a normal bucket.
+	realHome := t.TempDir()
+	projectsDir := filepath.Join(realHome, "evener", "projects")
+	normalBucket := filepath.Join(projectsDir, "test-0123456789")
+	if err := os.MkdirAll(filepath.Join(normalBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink evener/ to the real evener/ dir, simulating a state-dir
+	// relocation where ~/.local/state/evener itself is a symlink.
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+
+	// enumerateBuckets through the symlinked evener/ ancestor currently
+	// returns the bucket — but resolveTranscript's symlinkErrorDeep (rooted
+	// at the state home) rejects it. Find must not return refs read rejects.
+	buckets, err := enumerateBuckets(linkHome)
+	if err != nil {
+		t.Fatalf("enumerateBuckets error: %v", err)
+	}
+	for _, b := range buckets {
+		if filepath.Base(b) == "test-0123456789" {
+			t.Fatalf("enumerateBuckets returned bucket %q through symlinked evener/ ancestor; "+
+				"find would return refs read_transcript rejects", b)
+		}
+	}
+}
+
+// TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession asserts the
+// end-to-end invariant: find_session_transcripts with scope=all_projects does
+// NOT return a session from a bucket reached through a symlinked evener/
+// ancestor. The ref for such a session would be rejected by read_transcript,
+// breaking the find-must-not-return-refs-read-rejects invariant.
+func TestFind_SymlinkedEvenerAncestorOmitsSymlinkedBucketSession(t *testing.T) {
+	t.Parallel()
+	// Real state home with a sibling bucket containing a real session.
+	realHome := t.TempDir()
+	siblingID := "test-0123456789"
+	siblingBucket := filepath.Join(realHome, "evener", "projects", siblingID)
+	if err := os.MkdirAll(filepath.Join(siblingBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentBucket := filepath.Join(realHome, "evener", "projects", "current-0123456789")
+	if err := os.MkdirAll(filepath.Join(currentBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a session in the sibling bucket.
+	now := time.Now().UTC().Truncate(time.Second)
+	writeFindSession(t, siblingBucket, findMetaSpec{
+		id:      "02wMz5Txv5aIxgf9yVdd0N",
+		name:    "symlinked ancestor session",
+		updated: now,
+	}, "content")
+
+	// Symlink evener/ to the real evener/ dir.
+	linkHome := t.TempDir()
+	if err := os.Symlink(filepath.Join(realHome, "evener"), filepath.Join(linkHome, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	linkedCurrent := filepath.Join(linkHome, "evener", "projects", "current-0123456789")
+
+	deps := &toolDeps{stateDir: linkedCurrent, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	env := decodeEnvelope(t, marshalFind(t, deps,
+		map[string]any{"scope": scopeAllProjects}))
+	// When matches is nil/empty (the correct behavior — the session is
+	// omitted), the test passes trivially. When non-empty, check that
+	// the symlinked-ancestor session is not among the results.
+	if raw, ok := env["matches"]; ok {
+		if items, ok := raw.([]any); ok {
+			for _, v := range items {
+				if m, ok := v.(map[string]any); ok {
+					title, _ := m["title"].(string)
+					if title == "symlinked ancestor session" {
+						t.Fatal("find returned a session from a bucket reached through a symlinked " +
+							"evener/ ancestor; read_transcript would reject its ref")
+					}
+				}
+			}
+		}
+	}
+}

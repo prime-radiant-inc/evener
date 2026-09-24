@@ -130,6 +130,16 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 	// Reject symlinked sessions/ dirs before reading the job journal — a
 	// symlinked sessions/ could point outside the state root.
 	if err := symlinkErrorDeep(path, stateDir); err != nil {
+		// If the journal file does not exist (even through the symlink),
+		// treat as not-found: the bucket is an unrelated symlinked dir
+		// with no target job, and the symlink error should not mask the
+		// honest "job not found" result. os.Stat follows symlinks but
+		// only reads metadata (not content), so this is safe for
+		// existence checking. Other stat errors (permissions, etc.)
+		// fall through and surface the symlink error.
+		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+			return localJobLocation{}, false, nil
+		}
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
 	}
 	events, err := jobstore.ReadEvents(path)
