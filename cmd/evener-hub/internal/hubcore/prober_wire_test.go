@@ -56,12 +56,14 @@ func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 // an identity the entry already states.
 func TestStatusProberTakesANamedRootFromTheListAlone(t *testing.T) {
 	var reads int
+	var listParams []appwire.ThreadListParams
 	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
 	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		reads++
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "root-b", SessionID: "root-b", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
 	})
-	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(_ context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		listParams = append(listParams, params)
 		return appwire.ThreadListResponse{Data: []appwire.Thread{
 			{ID: "root-a", SessionID: "root-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
 			{ID: "child-1", SessionID: "child-1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
@@ -81,6 +83,11 @@ func TestStatusProberTakesANamedRootFromTheListAlone(t *testing.T) {
 	}
 	if reads != 0 {
 		t.Fatalf("thread/read calls = %d, want 0 when the entry names its session", reads)
+	}
+	// The probe asks for the status-only answer; a daemon that predates the
+	// field ignores it and returns the full one, which reads the same.
+	if want := []appwire.ThreadListParams{{IncludeSubagents: true, StatusOnly: true}}; !reflect.DeepEqual(listParams, want) {
+		t.Fatalf("thread/list params = %+v, want %+v", listParams, want)
 	}
 	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root-c"}); got.OK {
 		t.Fatalf("a list with no row for the named session produced a live probe: %+v", got)

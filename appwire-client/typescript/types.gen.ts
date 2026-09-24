@@ -2937,6 +2937,13 @@ export interface ThreadListParams {
   statuses?: string[];
   sourceIds?: string[];
   includeSubagents?: boolean;
+  /**
+   * StatusOnly asks a daemon for the diagnostics a liveness probe reads and
+   * nothing else: each row's Diagnostics carries only Jobs, Watches, and
+   * Delegates reduced to delegateId, childSessionId and lifecycle. A daemon
+   * that predates the field, and a hub, ignore it and return the full answer.
+   */
+  statusOnly?: boolean;
 }
 
 export interface ThreadListResponse {

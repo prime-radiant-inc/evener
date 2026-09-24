@@ -68,7 +68,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		}
 		return ProbeResult{}
 	}
-	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true, StatusOnly: true})
 	if err != nil {
 		return ProbeResult{}
 	}
