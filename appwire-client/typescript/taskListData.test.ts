@@ -103,6 +103,19 @@ test("preserves the explicit task-start marker from a mutation snapshot", () => 
   ]);
 });
 
+test("preserves the explicit terminal-settle marker from a mutation snapshot", () => {
+  const rows = parseTaskListData([
+    { id: 1, type: "implement", description: "a", prompt: "", status: "done", settled: true },
+    { id: 2, type: "implement", description: "b", prompt: "", status: "done", settled: false },
+    { id: 3, type: "implement", description: "c", prompt: "", status: "cancelled", settled: "yes" },
+  ]);
+  expect(rows?.map((row) => ({ id: row.id, settled: row.settled }))).toEqual([
+    { id: 1, settled: true },
+    { id: 2, settled: false },
+    { id: 3, settled: undefined },
+  ]);
+});
+
 test("carries created_at/updated_at/completed_at onto the row", () => {
   const rows = parseTaskListData([
     {

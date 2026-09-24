@@ -120,12 +120,17 @@ function finalUpdates(updates: Record<string, unknown>[]): Record<string, unknow
     const note = annotating.get(id);
     // The ID's last notes-only touch rides the row it annotates whichever
     // order the touches arrived in, and the merged row ends at the later of
-    // the two.
-    marked.push(
-      note
-        ? { index: Math.max(entry.index, note.index), update: { ...entry.update, notes: note.update.notes } }
-        : entry,
-    );
+    // the two. Notes follow last-wins by batch position, agreeing with
+    // freshNotes' order-independent derivation on the raw path: when the
+    // status word itself carries a note and is the later touch, that note
+    // stays instead of being clobbered by an earlier notes-only touch.
+    if (!note) {
+      marked.push(entry);
+      continue;
+    }
+    const ownNote = str(entry.update, "notes");
+    const notes = ownNote && note.index < entry.index ? ownNote : str(note.update, "notes");
+    marked.push({ index: Math.max(entry.index, note.index), update: { ...entry.update, notes } });
   }
   return [...marked, ...unmarked].sort((a, b) => a.index - b.index).map(({ update }) => update);
 }
@@ -194,11 +199,15 @@ function updateRows(item: ItemModel, updates: Record<string, unknown>[]): Touche
     // A suppressed status reassertion still belongs to this call. Record it
     // before filtering so it cannot be rediscovered as an auto-start below.
     if (id !== undefined) touchedIds.add(id);
-    // The Go task tool marks every current task from this call's pre-state.
-    // A false marker is a status reassertion carrying notes, not a fresh
-    // start. Unmarked historical state keeps the existing argument-only
-    // rendering for transcripts written before this marker existed.
+    // The Go task tool marks every current task and every terminal task
+    // from this call's pre-state. A false marker is a status reassertion
+    // carrying notes - not a fresh start, and not a fresh settle: the store
+    // keeps the task's original CompletedAt on re-assertions, so a re-sent
+    // done or cancelled word is an annotation of an old settle, not news.
+    // Unmarked historical state keeps the existing argument-only rendering
+    // for transcripts written before this marker existed.
     if (touch === "started" && stateTask?.started === false) continue;
+    if ((touch === "done" || touch === "cancelled") && stateTask?.settled === false) continue;
     if (touch === "done" || touch === "cancelled") completedAny = true;
     rows.push({
       key: `update_${i}`,

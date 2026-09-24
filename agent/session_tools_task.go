@@ -98,21 +98,29 @@ func formatMutationAck(added int, updates []taskpkg.TaskUpdate) string {
 // true only when this call transitioned that task into progress (explicitly or
 // by auto-advance), letting the frontend distinguish that from an existing
 // current task or a status reassertion without changing the model-facing tool
-// schema or the persisted Task shape.
+// schema or the persisted Task shape. Settled is the terminal-status analogue:
+// present for every done or cancelled task in a mutation snapshot, true only
+// when this call transitioned that task into its terminal status (the
+// pre-call status differed), so the frontend can render a re-asserted settle
+// as an annotation rather than as fresh news.
 type taskToolState struct {
 	taskpkg.Task
 	Started *bool `json:"started,omitempty"`
+	Settled *bool `json:"settled,omitempty"`
 }
 
-func taskToolStateSnapshot(tasks []taskpkg.Task, started map[int]bool) []taskToolState {
+func taskToolStateSnapshot(tasks []taskpkg.Task, started map[int]bool, settled map[int]bool) []taskToolState {
 	snapshot := make([]taskToolState, len(tasks))
 	for i, task := range tasks {
 		snapshot[i].Task = task
-		if task.Status != taskpkg.TaskInProgress {
-			continue
+		switch task.Status {
+		case taskpkg.TaskInProgress:
+			transitioned := started[task.ID]
+			snapshot[i].Started = &transitioned
+		case taskpkg.TaskDone, taskpkg.TaskCancelled:
+			settledThisCall := settled[task.ID]
+			snapshot[i].Settled = &settledThisCall
 		}
-		transitioned := started[task.ID]
-		snapshot[i].Started = &transitioned
 	}
 	return snapshot
 }
@@ -388,6 +396,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					afterByID[t.ID] = t
 				}
 				started := make(map[int]bool)
+				settled := make(map[int]bool)
 				var completedAny bool
 				var manuallyStartedID int
 				seenIDs := make(map[int]struct{}, len(updates))
@@ -399,6 +408,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					status := afterByID[u.ID].Status
 					if status == taskpkg.TaskDone || status == taskpkg.TaskCancelled {
 						completedAny = true
+						if previous[u.ID] != status {
+							settled[u.ID] = true
+						}
 					}
 					if status == taskpkg.TaskInProgress {
 						if previous[u.ID] != taskpkg.TaskInProgress {
@@ -423,7 +435,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), "", epoch, revision))
 					return tool.StateResult{
 						Output: formatMutationAck(len(adds), updates),
-						State:  taskToolStateSnapshot(mutation.After, started),
+						State:  taskToolStateSnapshot(mutation.After, started, settled),
 					}, nil
 				}
 
@@ -481,7 +493,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
 				fmt.Fprintf(&msg, "Progress: %s.", summary.ProgressText())
-				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, started)}, nil
+				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, started, settled)}, nil
 			})
 		},
 	})

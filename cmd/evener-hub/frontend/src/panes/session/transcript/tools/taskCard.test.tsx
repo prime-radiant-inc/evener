@@ -130,6 +130,61 @@ test("an update that changes no task status renders nothing (a reopen, a notes-o
   expect(screen.queryByTestId("tool-call-item")).toBe(null);
 });
 
+test("a reasserted terminal settle renders nothing (the store kept the original stamp)", () => {
+  // The mutation snapshot's settled:false marker says this call did not
+  // transition the task - the daemon preserves its original CompletedAt on
+  // reassertions - so a re-sent done with a note is an annotation, not
+  // news: no row to name, the whole card stays suppressed. The tasks pane
+  // carries the note.
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 1, status: "done", notes: "still done" }] },
+      "Updated 1→done. Progress: 1/1 tasks complete.",
+      {
+        raw: [
+          {
+            id: 1,
+            type: "implement",
+            description: "already finished",
+            prompt: "finish",
+            status: "done",
+            settled: false,
+          },
+        ],
+      },
+    ),
+  );
+  expect(screen.queryByTestId("tool-call-item")).toBe(null);
+});
+
+test("a reasserted settle in a mixed batch yields only the real completion", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 2, status: "done" },
+          { id: 1, status: "done", notes: "still done" },
+        ],
+      },
+      "Updated 2→done, 1→done. Progress: 2/2 tasks complete.",
+      {
+        raw: [
+          { id: 1, type: "implement", description: "already finished", prompt: "", status: "done", settled: false },
+          { id: 2, type: "implement", description: "real completion", prompt: "", status: "done", settled: true },
+        ],
+      },
+    ),
+  );
+  // #1's settled:false marker suppresses its reassertion; #2's real
+  // completion is the batch's final word, alone.
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("☑ real completion");
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.textContent).toContain("real completion");
+});
+
 test("a pure notes update on an open task renders nothing (no status changed)", () => {
   renderItem(
     taskItem({ action: "update", updates: [{ id: 6, status: "open", notes: "still blocked" }] }, "Updated 6→open.", {
@@ -598,6 +653,51 @@ test("a notes-only touch arriving before the status word still carries to the ra
   const rows = screen.getAllByTestId("task-card-row");
   expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["settled"]);
   expect(within(rows[0]!).getByText("with a caveat")).toBeTruthy();
+});
+
+test("when both touches carry notes, the later note wins on the raw path", () => {
+  // freshNotes keeps last-wins by batch position: the status word's own
+  // note is the later touch here, so it is the one that renders.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, notes: "early note" },
+          { id: 1, status: "done", notes: "with a caveat" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+      { raw: [{ id: 1, type: "implement", description: "finish the thing", prompt: "", status: "done" }] },
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(within(rows[0]!).getByText("with a caveat")).toBeTruthy();
+  expect(within(rows[0]!).queryByText("early note")).toBeNull();
+});
+
+test("when both touches carry notes, the later note wins on the fallback row too", () => {
+  // Same batch without raw: the fallback must agree with freshNotes'
+  // last-wins, not let the earlier notes-only touch clobber the status
+  // update's own note.
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 1, notes: "early note" },
+          { id: 1, status: "done", notes: "with a caveat" },
+        ],
+      },
+      "Updated 1→done, 1. Progress: 1/1 tasks complete.",
+    ),
+  );
+  openRow();
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.textContent).toContain("with a caveat");
+  expect(rows[0]!.textContent).not.toContain("early note");
 });
 
 test("a trailing notes-only touch keeps the fallback row's completion and carries the note", () => {

@@ -16,6 +16,7 @@ type taskToolStateEntry struct {
 	ID      int                `json:"id"`
 	Status  taskpkg.TaskStatus `json:"status"`
 	Started *bool              `json:"started,omitempty"`
+	Settled *bool              `json:"settled,omitempty"`
 }
 
 type taskToolHarness struct {
@@ -182,6 +183,54 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 		}
 		if started := taskStateEntry(t, state, 1).Started; started != nil {
 			t.Fatalf("task 1 marker = %v, want absent for final done status", started)
+		}
+	})
+}
+
+func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
+	t.Run("terminal reassertion is not a settle", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "wrap up", Prompt: "wrap up"}})
+		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+			t.Fatalf("complete task: %v", err)
+		}
+
+		result := h.update(t, map[string]any{
+			"id": 1, "status": "done", "notes": "still done",
+		})
+		if result.IsError {
+			t.Fatalf("terminal reassertion failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || *entry.Settled {
+			t.Fatalf("reassertion marker = %v, want explicit false", entry.Settled)
+		}
+	})
+
+	t.Run("status transition into done is a settle", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}})
+		result := h.update(t, map[string]any{"id": 1, "status": "done"})
+		if result.IsError {
+			t.Fatalf("done update failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || !*entry.Settled {
+			t.Fatalf("transition marker = %v, want explicit true", entry.Settled)
+		}
+	})
+
+	t.Run("cancelled swap of a done task is a new settle", func(t *testing.T) {
+		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "swap", Prompt: "swap"}})
+		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+			t.Fatalf("complete task: %v", err)
+		}
+
+		result := h.update(t, map[string]any{"id": 1, "status": "cancelled"})
+		if result.IsError {
+			t.Fatalf("cancel update failed: %s", result.Output)
+		}
+		entry := taskStateEntry(t, decodeTaskToolState(t, result), 1)
+		if entry.Settled == nil || !*entry.Settled {
+			t.Fatalf("terminal-swap marker = %v, want explicit true", entry.Settled)
 		}
 	})
 }

@@ -45,6 +45,12 @@ export interface TaskRow {
   // into that status. Ordinary task-list responses omit this side-channel
   // field.
   started?: boolean;
+  // The terminal-status analogue of started: mutation snapshots mark
+  // whether this call transitioned the task into done or cancelled (the
+  // pre-call status differed). The store preserves the original CompletedAt
+  // on re-assertions, so this marker distinguishes a fresh settle from an
+  // annotation of an old one. Ordinary task-list responses omit it.
+  settled?: boolean;
   // Wire timestamps (agent/task/task_store.go), carried as ISO strings.
   // Optional: the parser never drops a row for lacking them, and views omit
   // time displays for absent fields. created_at/updated_at are always present
@@ -100,6 +106,7 @@ function parseRow(raw: unknown): TaskRow | null {
     notes,
     reasoning_effort,
     started,
+    settled,
     created_at,
     updated_at,
     completed_at,
@@ -120,6 +127,9 @@ function parseRow(raw: unknown): TaskRow | null {
   }
   if (typeof started === "boolean") {
     row.started = started;
+  }
+  if (typeof settled === "boolean") {
+    row.settled = settled;
   }
   if (typeof created_at === "string" && created_at !== "") row.createdAt = created_at;
   if (typeof updated_at === "string" && updated_at !== "") row.updatedAt = updated_at;
