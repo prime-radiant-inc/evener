@@ -223,6 +223,10 @@ type daemonRetirementProcessEvents struct {
 	// lastEventAt stamps the previous arrival, so every inter-event gap the
 	// daemon completes is itself an observed reaction.
 	lastEventAt time.Time
+	// waiting counts the waits currently blocked on this stream. Only a gap
+	// observed while a wait is outstanding is a daemon reaction; a gap spanning
+	// fixture-side work is not, and must not size the tripwire.
+	waiting int
 
 	// testOnlyBaseBudget lowers the hang-tripwire floor so a test can prove the
 	// tripwire's response to an injected slow reaction without stalling for the
@@ -250,7 +254,9 @@ func (e *daemonRetirementProcessEvents) add(ev daemonRetirementProcessEvent) {
 	}
 	now := time.Now()
 	e.mu.Lock()
-	e.observeReactionLocked(now.Sub(e.lastEventAt))
+	if e.waiting > 0 {
+		e.observeReactionLocked(now.Sub(e.lastEventAt))
+	}
 	e.lastEventAt = now
 	e.all = append(e.all, ev)
 	e.mu.Unlock()
@@ -335,6 +341,15 @@ func (e *daemonRetirementProcessEvents) waitFor(what string, pred func(daemonRet
 // matching a repeated kind from an earlier phase.
 func (e *daemonRetirementProcessEvents) waitForIndexed(what string, pred func(int, daemonRetirementProcessEvent) bool) (daemonRetirementProcessEvent, error) {
 	started := time.Now()
+	e.mu.Lock()
+	e.waiting++
+	e.lastEventAt = started
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.waiting--
+		e.mu.Unlock()
+	}()
 	for {
 		e.mu.Lock()
 		for i, ev := range e.all {
@@ -2090,6 +2105,7 @@ func (f *daemonRetirementProcessFixture) spawnFromStandaloneHubProcess(t *testin
 	}
 	handle.kill = func() error { return daemonRetirementKillPID(result.Entry.PID) }
 	f.mu.Lock()
+	handle.events.carriedReaction = f.observedSlowestReactionLocked()
 	f.handles = append(f.handles, handle)
 	f.entry = result.Entry
 	f.sessionID = result.Entry.SessionID
