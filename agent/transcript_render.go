@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1095,7 +1096,12 @@ func writeResultToolMessage(b *strings.Builder, tc *llm.ToolCallData, healed boo
 		// the raw bytes the model sent.
 		if healed && tc.RawArguments != "" {
 			repaired, _ := repair.RepairJSON([]byte(tc.RawArguments))
-			if err := json.Unmarshal(repaired, &m); err == nil {
+			// Replay the communicate-specific normalization (promote string
+			// output to object, copy output.message into message) so a healed
+			// call with a string-valued output renders the same message live
+			// delivered — matching the apptranscript projection path.
+			normalized := apptranscript.NormalizeCommunicateArguments(repaired)
+			if err := json.Unmarshal(normalized, &m); err == nil {
 				if msg, ok := m["message"]; ok {
 					fmt.Fprintf(b, "%v\n", msg)
 					return

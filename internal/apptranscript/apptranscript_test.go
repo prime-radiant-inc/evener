@@ -1620,3 +1620,52 @@ func TestProjectTurn_OversizedValidJSONSuppressesIntent(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectTurn_HealedCommunicateStringOutputRendersMessage (F2 round 5):
+// when the model sends a communicate call with output as a JSON-object string
+// (e.g. {"output":"{\"message\":\"hello\"}"}), the live path promotes the
+// string to an object and copies output.message into message, delivering
+// "hello". The reload path must replay the same normalization on the healed
+// bytes before extracting the message — CommunicateMessageFromArguments
+// alone only decodes output as an object, so a string-valued output yields
+// "" without the promotion.
+func TestProjectTurn_HealedCommunicateStringOutputRendersMessage(t *testing.T) {
+	// Malformed JSON (bare key) that RepairJSON heals. The healed form has
+	// output as a JSON-object string — the shape the live path promotes.
+	const rawArgs = `{output: "{\"message\":\"hello\"}"}`
+	reg := NewToolCallRegistry()
+	ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_str_out",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_str_out",
+				Name:       "communicate",
+				IsError:    false,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (agentMessage with promoted message), got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "agentMessage" {
+		t.Fatalf("Type = %q, want agentMessage", resultItems[0].Type)
+	}
+	if resultItems[0].Text != "hello" {
+		t.Errorf("Text = %q, want %q (output string promoted and message extracted)", resultItems[0].Text, "hello")
+	}
+}

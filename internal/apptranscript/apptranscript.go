@@ -156,6 +156,44 @@ func CommunicateMessageFromArguments(raw json.RawMessage) string {
 	return ""
 }
 
+// NormalizeCommunicateArguments replays the communicate-specific
+// normalization the live path applies (repairDefaultCommunicateEnvelope in
+// agent/session_tool_repair.go) on read-only healed bytes: promote a
+// JSON-object-string output to an object, then copy output.message into
+// message when message is absent. CommunicateMessageFromArguments alone
+// only decodes output as an object, so a string-valued output — the shape
+// prepareToolCall's decodeDefaultCommunicateOutputString promotes live —
+// yields "" without this promotion. This is a thin read-only adapter (the
+// agent/argrepair pattern); it does not modify the repair machinery itself.
+func NormalizeCommunicateArguments(raw json.RawMessage) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	// Promote a JSON-object-string output to an object, matching the live
+	// path's repairDefaultCommunicateEnvelope promotion.
+	if encoded, ok := m["output"].(string); ok {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(encoded), &decoded); err == nil {
+			m["output"] = decoded
+		}
+	}
+	// Copy output.message into message when message is absent, matching
+	// the live path's repairDefaultCommunicateEnvelope copy.
+	if _, present := m["message"]; !present {
+		if output, ok := m["output"].(map[string]any); ok {
+			if message, ok := output["message"].(string); ok && strings.TrimSpace(message) != "" {
+				m["message"] = message
+			}
+		}
+	}
+	normalized, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return normalized
+}
+
 // EchoesAssistantText reports whether a communicate message repeats assistant
 // text the reader has already been shown, ignoring surrounding whitespace. A
 // model that streams its answer and then communicates the same content said
@@ -697,7 +735,8 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				if !part.ToolResult.IsError {
 					if rawArgs, ok := reg.CommRawArgs[part.ToolResult.ToolCallID]; ok && rawArgs != "" {
 						repaired := argrepair.RepairJSON([]byte(rawArgs))
-						if msg := CommunicateMessageFromArguments(repaired); msg != "" && !EchoesAssistantText(reg.LastAssistantText, msg) {
+						normalized := NormalizeCommunicateArguments(repaired)
+						if msg := CommunicateMessageFromArguments(normalized); msg != "" && !EchoesAssistantText(reg.LastAssistantText, msg) {
 							items = append(items, appwire.ThreadItem{
 								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
