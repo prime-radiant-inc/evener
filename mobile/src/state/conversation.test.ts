@@ -118,6 +118,16 @@ const refusal = () =>
     evenerErrorInfo: "actionUnavailable",
   }) as Error;
 
+// The one signal makeConversation's fixture conversion catches: a row kind
+// the wire seam genuinely refuses because no wire shape this helper builds
+// expresses it (a notice's family, a bare failure row, a question). Anything
+// else — a malformed SUPPORTED fixture (an attachments row whose source key
+// does not resolve, a failed activity without detail.error, a non-inline
+// attachment src), or any error hydrateThread/projectConversation raises —
+// must fail the test loudly instead of degrading the fixture to the
+// pre-D23d literal row shape.
+class UnsupportedRowShapeError extends Error {}
+
 function makeConversation(
   over: Partial<MobileConversation> = {},
 ): MobileConversation {
@@ -168,7 +178,12 @@ function makeConversation(
       0,
     );
     return { ...projectConversation(model), ...rest };
-  } catch {
+  } catch (err) {
+    // RoboRev round 2 (panel Low): catch only the genuinely unsupported row
+    // kinds — anything else (a malformed supported fixture, a hydration or
+    // projection failure) rethrows so an unintended conversion break fails
+    // the test instead of degrading it to the literal rows.
+    if (!(err instanceof UnsupportedRowShapeError)) throw err;
     // Rows no wire shape expresses (a notice's family, a bare failure row)
     // stay literal: their tests read the opened rows without re-projecting,
     // and open()'s display bound applies to whatever rows it is handed.
@@ -424,7 +439,7 @@ function wirePageFromRows(
       });
       continue;
     }
-    throw new Error(
+    throw new UnsupportedRowShapeError(
       `wirePageFromRows: script the wire page for a ${row.kind} row fixture`,
     );
   }
@@ -587,6 +602,54 @@ class FakeConversationService implements LiveConversationService {
 }
 
 // --- store tests -------------------------------------------------------------
+
+// RoboRev round 2 (panel Low): makeConversation's row-fixture conversion
+// must fail loudly when a SUPPORTED shape breaks — the unconditional catch
+// degraded a malformed fixture (or any hydration/projection failure) to the
+// pre-D23d literal rows, so the store's open path ran against rows no
+// re-projection could reproduce and a D23d regression in the page
+// merge/projection passed unnoticed. Only the genuinely unsupported row
+// kinds — the ones wirePageFromRows refuses on shape — may fall back.
+describe("makeConversation's row-fixture conversion", () => {
+  it("fails loudly when a supported fixture's conversion breaks instead of degrading to literal rows", () => {
+    // An attachments row whose source key names no row in the same fixture
+    // is a malformed SUPPORTED shape: wirePageFromRows refuses it, and the
+    // refusal must surface rather than silently running the test on the
+    // literal rows.
+    expect(() =>
+      makeConversation({
+        items: [
+          { kind: "user", id: "u1", text: "hello" },
+          {
+            kind: "attachments",
+            id: "no-source:attachments",
+            items: [{ id: "a1", src: "data:image/png;base64,AAAA" }],
+          },
+        ],
+      }),
+    ).toThrow(/attachments row names no source row/);
+  });
+
+  it("keeps the literal fallback for rows no wire shape expresses", () => {
+    // A notice row has no wire shape this seam can build: its tests read
+    // the opened rows without re-projecting, so it must still fall back to
+    // the literal items over a model with no turns.
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "notice",
+          id: "notice-1",
+          origin: "system",
+          family: "warning",
+          tone: "warning",
+          text: "careful",
+        },
+      ],
+    });
+    expect(conv.turns).toEqual([]);
+    expect(conv.items.map((row) => row.id)).toEqual(["notice-1"]);
+  });
+});
 
 describe("ConversationStore", () => {
   describe("open", () => {
@@ -3501,14 +3564,20 @@ describe("ConversationStore", () => {
     it("leaves an attachment's data URI whole", async () => {
       const src = `data:image/png;base64,${"A".repeat(MAX_ITEM_BYTES + 5_000)}`;
       const service = new FakeConversationService();
+      // Model-backed (D23d): an attachments row converts through the wire
+      // item of the source row it follows — the fixture must script that
+      // source row, or the conversion refuses it.
       service.openConv = makeConversation({
         items: [
-          { kind: "attachments", id: "r", items: [{ id: "r:0", src }] } as unknown as MobileTimelineItem,
+          { kind: "user", id: "r", text: "source row" },
+          { kind: "attachments", id: "r:attachments", items: [{ id: "r:0", src }] },
         ],
       });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      const published = store.getState().conversation?.items.find((item) => item.id === "r");
+      const published = store
+        .getState()
+        .conversation?.items.find((item) => item.id === "r:attachments");
       expect(published?.kind === "attachments" ? published.items[0]?.src : undefined).toBe(src);
     });
   });
@@ -3552,8 +3621,12 @@ describe("ConversationStore", () => {
       // src is not display text: cutting a data URI (or a fetch URL) yields
       // something that cannot decode, so it must survive verbatim.
       const src = `data:image/png;base64,${"A".repeat(200)}`;
+      // Model-backed (D23d): the attachments row converts through the wire
+      // item of the source row it names — the fixture must script that
+      // source row, or the conversion refuses it.
       service.openConv = makeConversation({
         items: [
+          { kind: "user", id: "msg-1", text: "source row" },
           {
             kind: "attachments",
             id: "msg-1:attachments",
