@@ -27,6 +27,10 @@ type wireProbeEnvelopeSource struct {
 	detailed    server.DetailedStatus
 }
 
+// An entry that names no session yet has only the answer to go on, so the
+// probe cross-checks the listed root against a thread/read of the root: a
+// daemon that re-bound the port between the two calls answers them for
+// different sessions.
 func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
 	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -43,6 +47,43 @@ func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 	})
 	if got.OK {
 		t.Fatalf("mismatched thread/read and thread/list roots produced a live probe: %+v", got)
+	}
+}
+
+// An entry that names its session needs no thread/read: the listed row for
+// that session is the root, and a list that carries no such row is another
+// daemon's answer. The probe must not spend a second full root snapshot on
+// an identity the entry already states.
+func TestStatusProberTakesANamedRootFromTheListAlone(t *testing.T) {
+	var reads int
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads++
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "root-b", SessionID: "root-b", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{
+			{ID: "root-a", SessionID: "root-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+			{ID: "child-1", SessionID: "child-1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
+		}}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+	prober := &StatusProber{client: httpSrv.Client()}
+	endpoint := "ws" + strings.TrimPrefix(httpSrv.URL, "http")
+
+	got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root-a"})
+	if !got.OK || got.SessionID != "root-a" || got.Status != appwire.ThreadStatusActive {
+		t.Fatalf("probe of an entry naming root-a = %+v, want the listed root-a row", got)
+	}
+	if want := []string{"child-1"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
+		t.Fatalf("running subagent ids = %v, want %v: the named root must not be counted as a child", got.RunningSubagentIDs, want)
+	}
+	if reads != 0 {
+		t.Fatalf("thread/read calls = %d, want 0 when the entry names its session", reads)
+	}
+	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root-c"}); got.OK {
+		t.Fatalf("a list with no row for the named session produced a live probe: %+v", got)
 	}
 }
 
@@ -303,10 +344,13 @@ func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
 	})
 	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
 	defer httpSrv.Close()
+	prober := &StatusProber{client: httpSrv.Client()}
+	endpoint := "ws" + strings.TrimPrefix(httpSrv.URL, "http")
 
-	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
-		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
-	})
+	// An entry naming no session cross-checks the root with a thread/read,
+	// which must follow the list so a later running lifecycle cannot be
+	// mistaken for stale active work.
+	got := prober.Probe(rendezvous.Entry{Endpoint: endpoint})
 	if !got.OK {
 		t.Fatal("expected ok=true probing a real server")
 	}
@@ -315,5 +359,19 @@ func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, []string{"list", "read"}) {
 		t.Fatalf("probe snapshot calls = %v, want list before read to avoid masking a resume", calls)
+	}
+
+	// An entry naming its session takes root and children from the one list
+	// cut, so no second snapshot can disagree with it.
+	calls = nil
+	got = prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root"})
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server for a named session")
+	}
+	if got.RunningSubagentStates["child-resumed"] != appwire.ThreadStatusActive {
+		t.Fatalf("resumed child state = %q, want active from the listed child", got.RunningSubagentStates["child-resumed"])
+	}
+	if !reflect.DeepEqual(calls, []string{"list"}) {
+		t.Fatalf("probe snapshot calls = %v, want the list alone for a named session", calls)
 	}
 }
