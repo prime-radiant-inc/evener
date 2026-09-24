@@ -253,9 +253,16 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 		filepath.Join(stateHome, "evener"),
 		filepath.Join(stateHome, "evener", "projects"),
 	} {
-		info, _ := os.Lstat(prefix)
-		if info == nil {
-			return nil, nil // prefix does not exist → no buckets
+		info, lerr := os.Lstat(prefix)
+		if lerr != nil {
+			// Absent only on ErrNotExist: a permission or I/O error means
+			// the prefix may exist but is unreadable, which must propagate
+			// rather than be silently degraded to "no buckets" — matching
+			// the retained-error discipline (finding 1/4).
+			if errors.Is(lerr, os.ErrNotExist) {
+				return nil, nil // prefix does not exist → no buckets
+			}
+			return nil, fmt.Errorf("glob project buckets: stat prefix %q: %w", prefix, lerr)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil, errSymlinkedLayoutPrefix // symlinked prefix → refuse to enumerate
@@ -416,9 +423,16 @@ func validateLayoutPrefix(stateDir string) error {
 		filepath.Join(sh, "evener"),
 		filepath.Join(sh, "evener", "projects"),
 	} {
-		info, _ := os.Lstat(prefix)
-		if info == nil {
-			return nil // prefix does not exist — not our concern
+		info, lerr := os.Lstat(prefix)
+		if lerr != nil {
+			// Absent only on ErrNotExist: a permission or I/O error means
+			// the prefix may exist but is unreadable, which must propagate
+			// rather than be silently degraded to "prefix OK" — matching
+			// the retained-error discipline (finding 1/4).
+			if errors.Is(lerr, os.ErrNotExist) {
+				return nil // prefix does not exist — not our concern
+			}
+			return fmt.Errorf("state dir %q: stat layout prefix %q: %w", stateDir, prefix, lerr)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("state dir %q: layout prefix %q is a symlink: symlinks are not allowed on the transcript read path", stateDir, prefix)

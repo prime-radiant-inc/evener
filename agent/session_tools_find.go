@@ -382,6 +382,16 @@ func findBuckets(currentStateDir, scope string) (buckets []string, scopeApplied 
 
 func findBucketsWithEnumerate(currentStateDir, scope string, enumerate func(string) ([]string, error)) (buckets []string, scopeApplied string, err error) {
 	if scope != scopeAllProjects {
+		// Validate the layout prefix for the current bucket on every scope,
+		// not just all_projects. The all_projects path gets prefix validation
+		// via enumerateBuckets (which returns errSymlinkedLayoutPrefix); the
+		// current-bucket fast path previously returned the bucket unvalidated,
+		// so find reported "No matching sessions" while read_transcript and
+		// all_projects surfaced the explicit symlink refusal. Propagate the
+		// refusal so all three paths agree (finding 5).
+		if err := validateLayoutPrefix(currentStateDir); err != nil {
+			return nil, "", err
+		}
 		return []string{currentStateDir}, scopeCurrentProject, nil
 	}
 	sh := stateHomeFor(currentStateDir)
