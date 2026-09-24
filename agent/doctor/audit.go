@@ -688,13 +688,12 @@ func readSelector(projectID, sessionID string) string {
 // word-break, including vertical tab and form feed — round 13 finding 1); shell metacharacters that alter command behavior
 // including glob expansion ($, backtick, ;, |, &, (, ), <, >, !, #, ~, ",
 // ', {, }, =, *, ?, [, ]); and cmd.exe metacharacters: % (variable
-// expansion %VAR%) and ^ (escape character — round 10 finding 1);
-// the colon (the proj:<id>:<sid> grammar separator — round 14 finding 1).
+// expansion %VAR%) and ^ (escape character — round 10 finding 1).
 func safeTokenForRepro(name string) bool {
 	if name == "" || name == "." || name == ".." {
 		return false
 	}
-	return !strings.ContainsAny(name, "/\\\x00, \t\r\n\x0b\x0c$`;|&()<>=!#~\"'{}*?[]%^:")
+	return !strings.ContainsAny(name, "/\\\x00, \t\r\n\x0b\x0c$`;|&()<>=!#~\"'{}*?[]%^")
 }
 
 // RunAudit resolves opts' session set, runs runbook's mechanical checks
@@ -1081,7 +1080,11 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 // can carry thousands of refs, which would overflow any envelope carrying
 // the Finding. The cut is disclosed: TotalSessionRefs carries the true
 // count, the prose appends markers for reproducible and non-reproducible
-// omissions plus command-side truncation (round 10 finding 4). DoctorCommand
+// omissions. The reproducible-portion cap marker ("…and N more") is the sole
+// disclosure of the reproducible-over-cap omission — DoctorCommand truncates
+// reproRefs at the same cap with the same refs, so a separate command-side
+// clause would double-report the same N (round 14 finding 2 superseded round
+// 10 finding 4's separate command-side truncation disclosure). DoctorCommand
 // carries only the capped reproducible refs (no trailing comment — round 9
 // finding 2 removed # comments, which cmd.exe does not treat as comments).
 const evidenceSessionRefCap = 200
