@@ -34,7 +34,7 @@ func TestReportActivityCoalescesActivityOnlyPublications(t *testing.T) {
 		report(last)
 	}
 	if len(published) != 1 || !published[0].Equal(start.Add(time.Millisecond)) {
-		t.Fatalf("burst of 200 reports published %d times (first %v), want once, at the first activity", len(published), published[0])
+		t.Fatalf("burst of 200 reports published %v, want once, at the first activity %v", published, start.Add(time.Millisecond))
 	}
 	controller.mu.Lock()
 	recorded := controller.live[lease.delegateID].activityAt
