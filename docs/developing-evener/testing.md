@@ -725,13 +725,13 @@ separately rather than as a sixth `scripts/<guard>/run.mjs` case:
   REAL `evener serve` daemons compiled from `cmd/evener`'s own test binary —
   the only scripted piece sits at the external LLM provider adapter. The
   browser asserts the composer's chips, drafts, queue, steering, attachments,
-  capability-loss refusal, failed-activation retry, and offline outbox
-  behavior through real DOM gestures; the Go test asserts what the daemons
-  ACTUALLY received (provider request payloads, `<skill-context>` documents,
-  durable transcripts, held-turn choreography through the fixture's control
-  IPC). The five guards above test the frontend against scripted stores; this
-  one is the only place the frontend's skill contract is tested against the
-  daemons and hub that must honor it. It needs the BUILT frontend (the hub
+  failed-activation retry, and offline outbox behavior through real DOM
+  gestures; the Go test asserts what the daemons ACTUALLY received (provider
+  request payloads, `<skill-context>` documents, durable transcripts,
+  held-turn choreography through the fixture's control IPC). The five guards
+  above test the frontend against scripted stores; this one is the only place
+  the frontend's skill contract is tested against the daemons and hub that
+  must honor it. It needs the BUILT frontend (the hub
   serves the embedded dist), so `test-web-browser.sh` builds it when missing
   rather than skipping.
 

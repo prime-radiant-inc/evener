@@ -71,7 +71,6 @@ const PROSE = {
   attachment: "PROSE_ATTACH_14d inspect the attached image",
   steerTurn: "PROSE_STEER_TURN_14e open a long turn for steering",
   steer: "PROSE_STEER_14e redirect the running turn",
-  capabilityLoss: "PROSE_CAPLOSS_14f aimed at a lost capability",
   failTurn: "PROSE_FAIL_TURN_14g open a long turn for the failing claim",
   fail: "PROSE_FAIL_14h request the missing source",
   delay: "PROSE_DELAY_14i submitted then edited while held",
@@ -1021,8 +1020,8 @@ export class Driver {
   }
 
   // A composer action click is lost when a re-render lands between the mouse
-  // press and release (no click event fires) — the roster refresh after a
-  // daemon death re-renders the shell exactly then. So each attempt is
+  // press and release (no click event fires) — any store update that
+  // re-renders the shell at that moment is enough. So each attempt is
   // verified by an OBSERVABLE effect (composer state changed, the button went
   // disabled, or a toast answered) and re-clicked when nothing happened. A
   // re-click while the first landed is harmless: actionPending disables the
@@ -2043,42 +2042,9 @@ async function runScenariosPart2(driver) {
   });
   await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
-  // ---- scenario: capability loss ----
-  await driver.openSession(driver.sessionB);
-  await driver.focusComposer(driver.sessionB);
-  await driver.typeText(driver.sessionB, PROSE.capabilityLoss);
-  await driver.selectSkillChip(driver.sessionB);
-  const staged = await driver.composerState(driver.sessionB);
-  driver.milestone("caploss-staged", staged);
-  // The Go owner shuts helper B down when it sees that milestone, then
-  // refreshes the real roster. The pane re-renders the thread as ended; the
-  // composer collapses to its follow-up invitation.
-  await driver.waitPage(
-    `(() => { const state = ${driver.composerStateExpr(driver.sessionB)}; return state && state.placeholder === "Send a follow-up…" ? true : null; })()`,
-    { timeoutMs: 30000, label: "session B rendered as ended" },
-  );
-  driver.milestone("caploss-ended", await driver.composerState(driver.sessionB));
-  await driver.focusComposer(driver.sessionB);
-  await driver.clickSubmit(driver.sessionB, draft(PROSE.capabilityLoss));
-  // The refusal keeps the draft: text and chips stay, and NOTHING durable is
-  // written for this mutation.
-  const refused = await driver.composerState(driver.sessionB);
-  check(refused.text.includes(PROSE.capabilityLoss), `draft text lost on refusal: ${JSON.stringify(refused)}`);
-  check(refused.chips.some((c) => c.includes(SKILL_NAME)), `draft chip lost on refusal: ${JSON.stringify(refused)}`);
-  const toast = await evaluate(driver.send, driver.toastExpr());
-  const durableB = await evaluate(driver.send, driver.durableRecordsExpr());
-  driver.milestone("caploss-refused", { ...refused, toast, durable: durableB });
-  // Clean the staged draft so later IndexedDB reads stay unambiguous.
-  await driver.focusComposer(driver.sessionB);
-  await driver.selectAll(driver.sessionB);
-  await driver.press(driver.sessionB, "Backspace");
-  // The refusal toast renders OVER the composer card and swallows clicks
-  // aimed at its buttons; wait for it to dismiss before any later scenario
-  // drives the composer again.
-  await driver.waitPage(
-    `(() => { const toast = document.querySelector("section[aria-label='Notifications']"); return !toast || toast.textContent.trim() === "" ? true : null; })()`,
-    { timeoutMs: 20000, label: "refusal toast dismissed" },
-  );
+  // No capability-loss scenario: see skillGuardAssert in
+  // skill_composer_browser_test.go for why, and for where the composer's
+  // skillInput refusal is covered instead.
 
   // ---- scenario: failed activation + explicit retry ----
   await driver.openSession(driver.sessionA);
