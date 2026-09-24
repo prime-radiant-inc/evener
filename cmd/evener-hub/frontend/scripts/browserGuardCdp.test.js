@@ -33,7 +33,9 @@ import {
   harnessStylesheetsLoadedInPage,
   navigateTo,
   PROBE_ATTEMPT_TIMEOUT_MS,
+  STARTUP_DEADLINE_CAP_MS,
   STARTUP_DEADLINE_MS,
+  startupDeadlineMs,
   waitForFonts,
   waitForHttp,
 } from "./browserGuardCdp.mjs";
@@ -113,6 +115,20 @@ test("a loaded machine's widened deadline still fires at the ceiling", async () 
   assert.ok(reason, "the widened deadline never fired");
   assert.match(String(reason?.message), /browser startup deadline exceeded after 120000ms/);
   deadline.clear();
+});
+
+test("startupDeadlineMs interpolates from the floor to the ceiling with load per core", () => {
+  assert.equal(startupDeadlineMs({ load1: 0, cores: 16 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: 8, cores: 16 }), 75_000);
+  assert.equal(startupDeadlineMs({ load1: 16, cores: 16 }), STARTUP_DEADLINE_CAP_MS);
+  assert.equal(startupDeadlineMs({ load1: 64, cores: 16 }), STARTUP_DEADLINE_CAP_MS);
+});
+
+test("startupDeadlineMs treats an unreadable load or core count as idle", () => {
+  assert.equal(startupDeadlineMs({ load1: Number.NaN, cores: 16 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: -1, cores: 16 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: 8, cores: 0 }), STARTUP_DEADLINE_MS);
+  assert.equal(startupDeadlineMs({ load1: Number.NaN, cores: Number.NaN }), STARTUP_DEADLINE_MS);
 });
 
 /**
