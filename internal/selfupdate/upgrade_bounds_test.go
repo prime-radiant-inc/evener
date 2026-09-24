@@ -108,9 +108,18 @@ func TestUpgradeHonorsCancellationDuringInstall(t *testing.T) {
 	}
 }
 
-// TestExtractRefusesDecompressionBomb proves extraction caps total
-// uncompressed output: a highly compressible entry fails instead of
-// filling the disk. Fails today: per-entry copies are unbounded.
+// TestMaxExtractedBytesIsBounded pins the production extraction cap, which
+// the bomb tests lower to prove the refusal cheaply: it must leave headroom
+// over an installed binary (~100MB) and still be a real bound.
+func TestMaxExtractedBytesIsBounded(t *testing.T) {
+	if maxExtractedBytes <= 256<<20 {
+		t.Fatalf("maxExtractedBytes = %d, want headroom above the ~100MB installed binaries", maxExtractedBytes)
+	}
+	if maxExtractedBytes > 1<<30 {
+		t.Fatalf("maxExtractedBytes = %d, want a real bound, not ~infinity", maxExtractedBytes)
+	}
+}
+
 // lowerExtractionCap sets the extraction cap to 1MB for one test, so a bomb
 // test proves the refusal with a 2MB entry instead of compressing and
 // decompressing 600MB (about 50s apiece under -race).
@@ -121,6 +130,9 @@ func lowerExtractionCap(t *testing.T) {
 	t.Cleanup(func() { maxExtractedBytes = previous })
 }
 
+// TestExtractRefusesDecompressionBomb proves extraction caps total
+// uncompressed output: a highly compressible entry fails instead of
+// filling the disk.
 func TestExtractRefusesDecompressionBomb(t *testing.T) {
 	lowerExtractionCap(t)
 	// Twice the cap of zeros compresses to a sliver: the zip-bomb shape.
