@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1712,6 +1713,46 @@ function NavigationRail({
     "catalog:projects",
     "projects",
   );
+  // A host branch born mid-session opens itself. The rows it carries were
+  // visible a render ago - the project's flat children - so letting it
+  // appear collapsed would hide what was on screen behind a new fold,
+  // reading as data loss after a "+N older" reveal or a rehydration. Only
+  // branches born after the first render: the first render keeps the
+  // collapsed per-host shape the grouping ships with, and a branch that
+  // leaves and returns still respects an explicit collapse from its earlier
+  // life. A layout effect so the rows never paint a frame behind a closed
+  // branch.
+  const seenHostBranches = useRef<ReadonlySet<string> | null>(null);
+  const hostBranchIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const node of projectsSectionNodes) {
+      if (node.kind !== "project") continue;
+      for (const child of node.children) if (child.kind === "host") ids.add(child.id);
+    }
+    return ids;
+  }, [projectsSectionNodes]);
+  useLayoutEffect(() => {
+    const handled = seenHostBranches.current;
+    if (handled === null) {
+      // First render: the at-rest shape stands - nothing auto-opens.
+      seenHostBranches.current = new Set(hostBranchIds);
+      return;
+    }
+    // One branch per pass, the reveal idiom: setExpanded closes over this
+    // render's override map, so a second call in one pass would clobber the
+    // first. The override change re-runs this effect and opens the rest,
+    // all before paint.
+    const next = [...hostBranchIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
+    if (next) {
+      seenHostBranches.current = new Set([...handled, next]);
+      setExpanded(next, true);
+      return;
+    }
+    // Nothing pending: every current branch is handled, and ids that left
+    // the tree drop out so a branch that returns re-opens (its rows came
+    // back).
+    seenHostBranches.current = new Set(hostBranchIds);
+  }, [hostBranchIds, expandedOverrides, setExpanded]);
   const liveNodes = [
     // Live answers "which machine" the same way in either mode: rows group
     // under host subheaders exactly while they span more than one host

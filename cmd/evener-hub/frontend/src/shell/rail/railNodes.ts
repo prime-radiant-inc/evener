@@ -947,7 +947,7 @@ function orderedHosts(hostIds: Iterable<string>, sources: readonly Source[]): Ho
  * most-recent member's host, the member the cluster itself carries recency
  * from; a memberless cluster (the hub never builds one) falls back to this
  * hub so the row still renders somewhere. */
-function sessionGroupHostId(n: RailSession): string {
+export function sessionGroupHostId(n: RailSession): string {
   if (n.kind !== "cluster") return n.host_id;
   return n.children[0]?.host_id ?? LOCAL_HOST;
 }

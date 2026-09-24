@@ -1215,6 +1215,32 @@ describe("session row", () => {
     expect(screen.queryByTestId("favorite-star")).toBeNull();
   });
 
+  // A CLUSTER row's own host_id is the synthetic scope prefix of its id
+  // ("cluster", from hubcore's nodeKind fallback), which names no machine -
+  // the row names its members' host instead, the same resolver the grouping
+  // uses, so it cannot sit under a devbox group wearing a "cluster" chip.
+  test("a cluster row names its members' host, not the synthetic cluster id", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(
+          apiNode({
+            row_id: "navigation:cluster:ab",
+            ref: "cluster:ab",
+            session_id: "ab",
+            kind: "cluster",
+            host_id: "cluster",
+            children: [
+              apiNode({ row_id: "navigation:devbox:m1", ref: "devbox:m1", session_id: "m1", host_id: "devbox" }),
+            ],
+          }),
+        )}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-host").textContent).toBe("devbox");
+  });
+
   // vbh8/§2.2: a derived amber count of needs-you descendants - distinct
   // from the row's own Cadence dot (which already goes amber when the
   // SESSION ITSELF needs you - see cadenceStateFor above). A leaf session

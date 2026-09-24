@@ -2588,6 +2588,44 @@ describe("host grouping (organize by)", () => {
     expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
   });
 
+  test("a host branch born mid-session opens itself instead of hiding the rows on screen", async () => {
+    prefsStore.setState({ sidebarGrouping: "project-host" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    const local = summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" });
+    installState(
+      [
+        catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+        projectResource("p", [local], 1),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    fireEvent.click(screen.getByText("Project"));
+    await act(async () => undefined);
+    const projects = sectionRoot("Projects");
+    // The project's loaded rows sit on this hub alone, so they render flat.
+    expect(within(projects).getByText("Local row")).toBeTruthy();
+    // The reveal brings the second host's rows: the branches that appear
+    // must open themselves - rows already on screen must not vanish
+    // behind a collapsed branch.
+    const loaded = projectResource("p", [
+      local,
+      summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+    ]);
+    act(() => {
+      navigationStore.setState((state) => ({
+        resources: new Map([...state.resources, [keyID(loaded.key), loaded]]),
+      }));
+    });
+    await act(async () => undefined);
+    try {
+      expect(within(projects).getByText("Local row")).toBeTruthy();
+      expect(within(projects).getByText("Devbox row")).toBeTruthy();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
   test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
     const restoreScroll = stubScrollIntoView();
     prefsStore.setState({ sidebarGrouping: "host-project" });
