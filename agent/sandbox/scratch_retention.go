@@ -859,6 +859,27 @@ func leaseOwningBinding(manifest ScratchManifest, canonicalDir string) (string, 
 	return "", false
 }
 
+// leaseOwningBindingOfKind finds the binding that owns the directory's lease
+// under the reference's own kind. The reset's carry must not treat a slot of
+// another kind as the owner: the carry's kind gate drops such a slot from the
+// rebuilt manifest, so a kind-blind owner match would carry the reference
+// with no binding left to pair with it (round 81) — the graph the reader
+// fails closed on, committed unreleased where no later reset repairs it. The
+// upsert demotion above deliberately keeps the kind-blind lookup: it folds
+// supplied slots against every owner of the directory, whatever the kind.
+func leaseOwningBindingOfKind(manifest ScratchManifest, canonicalDir, kind string) (string, bool) {
+	for _, binding := range manifest.Bindings {
+		slot, ok := binding.Slots[kind]
+		if !ok || !slot.OwnsLease {
+			continue
+		}
+		if dir, err := canonicalScratchPath(slot.Dir); err == nil && dir == canonicalDir {
+			return binding.BindingID, true
+		}
+	}
+	return "", false
+}
+
 // consumersNamingScratchBinding returns every consumer row that names bindingID
 // in any of its roles: the rows a carried binding must travel with for the
 // graph's reader to accept an owning binding.
@@ -1293,12 +1314,15 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		}
 		// A carried reference must travel with the rows that make the graph
 		// valid for its own reader (validateRetainedScratchGraph): the binding
-		// that owns its directory and every consumer role that names it.
-		// Carrying a reference alone would commit a manifest whose restore
-		// validation fails forever — references with no binding — with no
-		// later reset to repair it, Released being false again (round 16). A
-		// reference nothing in the tombstoned manifest owns is nothing a
-		// restore could re-probe: its pair dies here instead — the reference
+		// that owns its directory under the reference's own kind (round 81: a
+		// kind-blind owner match carried the reference while the carry's kind
+		// gate dropped the only slot that could pair with it) and every
+		// consumer role that names it. Carrying a reference alone would commit
+		// a manifest whose restore validation fails forever — references with
+		// no binding — with no later reset to repair it, Released being false
+		// again (round 16). A reference nothing in the tombstoned manifest
+		// owns is nothing a restore could re-probe: its pair dies here
+		// instead — the reference
 		// drops and every pin is left in place: this owner's own pin is
 		// re-pinned by the reinstall's republish (same owner, directory, and
 		// kind — the pin write is idempotent), and when nothing republishes,
@@ -1307,7 +1331,7 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 		// directory; a foreign pin belongs to its own manifest (round 25).
 		carriedBindings := make(map[string]ScratchBinding)
 		carryReference := func(dir, kind string) error {
-			ownerID, owned := leaseOwningBinding(manifest, dir)
+			ownerID, owned := leaseOwningBindingOfKind(manifest, dir, kind)
 			_, found := scratchBindingByID(manifest.Bindings, ownerID)
 			consumers := consumersNamingScratchBinding(manifest.Consumers, ownerID)
 			if !owned || !found || len(consumers) == 0 {
@@ -1523,6 +1547,16 @@ func ResetScratchRetentionIfReleased(owner ScratchOwner) (ScratchManifest, bool,
 				fresh.Consumers = append(fresh.Consumers, narrowed)
 			}
 		}
+		// Belt-and-suspenders (round 81): the raw commit below is the only
+		// writer that publishes without update validation, and a rebuilt
+		// graph the reader fails closed on wedges every later restore of the
+		// root — Released is false again, so no later reset repairs it. The
+		// carry machinery above guarantees this graph by construction; a
+		// violation here is a regression in that machinery, and aborting
+		// keeps the tombstone intact for a later reset to retry.
+		if err := validateResetScratchGraph(fresh); err != nil {
+			return fmt.Errorf("sandbox: the reset would commit an invalid retention graph: %w", err)
+		}
 		if err := writeScratchRetention(owner, fresh); err != nil {
 			// A write whose rename already committed can still report the
 			// post-rename failure class (writeScratchRetention's probe fires
@@ -1578,6 +1612,84 @@ func verifyDyingReferencePin(dir string) error {
 		return fmt.Errorf("sandbox: read retention pin for %q: %w", dir, pinErr)
 	}
 	// A readable pin — ours or foreign — is left exactly where it is.
+	return nil
+}
+
+// validateResetScratchGraph checks the rebuilt manifest the reset is about to
+// commit against the graph invariants its own reader fails closed on: a
+// carried reference must pair with a carried binding slot of the same kind, a
+// carried slot must name a carried reference of its kind, a consumer role
+// must name a carried binding, and a lease-owning binding must keep the
+// consumer role that names it. The reset never builds the reader's sanctioned
+// shapes — a "historical" reference with no owning slot, or a binding that
+// owns nothing — so the pairing is required in both directions here. The
+// carry machinery guarantees every invariant by construction; this gate
+// exists so a future regression in that machinery aborts the reset with the
+// tombstone intact instead of committing a manifest every later restore of
+// the root refuses (round 81's ask; the round-16 wedge class has no repair
+// once Released is false again).
+func validateResetScratchGraph(manifest ScratchManifest) error {
+	refKinds := make(map[string]string, len(manifest.References))
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return err
+		}
+		if _, dup := refKinds[dir]; dup {
+			return fmt.Errorf("retention reference %q is duplicated", ref.Dir)
+		}
+		refKinds[dir] = ref.Kind
+	}
+	bindingIDs := make(map[string]struct{}, len(manifest.Bindings))
+	ownsLease := make(map[string]struct{})
+	slotDirs := make(map[string]struct{})
+	for _, binding := range manifest.Bindings {
+		if binding.BindingID == "" {
+			return errors.New("retention manifest holds a binding without an id")
+		}
+		bindingIDs[binding.BindingID] = struct{}{}
+		for kind, slot := range binding.Slots {
+			dir, err := canonicalScratchPath(slot.Dir)
+			if err != nil {
+				return err
+			}
+			if refKinds[dir] != kind {
+				return fmt.Errorf("retention binding %q slot %q names %q, which no reference of that kind pins", binding.BindingID, kind, slot.Dir)
+			}
+			slotDirs[dir] = struct{}{}
+			if slot.OwnsLease {
+				ownsLease[binding.BindingID] = struct{}{}
+			}
+		}
+	}
+	for _, ref := range manifest.References {
+		dir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return err
+		}
+		if _, paired := slotDirs[dir]; !paired {
+			return fmt.Errorf("retention reference %q of kind %q is claimed by no carried binding slot", ref.Dir, ref.Kind)
+		}
+	}
+	named := make(map[string]struct{})
+	for _, consumer := range manifest.Consumers {
+		roles := []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID}
+		roles = append(roles, consumer.AbandonedBindingIDs...)
+		for _, id := range roles {
+			if id == "" {
+				continue
+			}
+			if _, ok := bindingIDs[id]; !ok {
+				return fmt.Errorf("retention consumer %q references unknown binding %q", consumer.SessionID, id)
+			}
+			named[id] = struct{}{}
+		}
+	}
+	for id := range ownsLease {
+		if _, ok := named[id]; !ok {
+			return fmt.Errorf("retention binding %q owns a lease but no consumer role names it", id)
+		}
+	}
 	return nil
 }
 

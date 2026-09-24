@@ -2006,6 +2006,153 @@ func TestResetReleasedDropsSlotsOfAMismatchedKind(t *testing.T) {
 	}
 }
 
+// TestResetReleasedDropsAReferenceWhoseOnlyOwnerClaimsWithTheWrongKind pins
+// the round-81 inverse of the round-67 shape: there the mismatched slot sat
+// BESIDE a correct owner, here it is the ONLY owner. The carry's owning
+// lookup matched by directory alone, so a reference whose only lease-owning
+// slot claims its directory under the wrong kind counted as owned and
+// carried — while the carry's kind gate dropped that very slot, committing a
+// rebuilt manifest that held the reference with no binding at all: the graph
+// the reader fails closed on, unreleased, with no later reset left to repair
+// it. The owning lookup must require the reference's own kind, so the pair
+// dies like every other ownerless reference instead.
+func TestResetReleasedDropsAReferenceWhoseOnlyOwnerClaimsWithTheWrongKind(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	// The pin matches the sandbox reference exactly — every check the
+	// contended-carry branch makes passes — while the manifest's only owning
+	// slot claims the directory under the wrong kind. The live writer refuses
+	// that row once kinds are checked, so the released manifest is seeded the
+	// way a pre-fix or foreign-written one reads.
+	onlyOwner := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}})
+	manifest := ScratchManifest{
+		Owner:      owner,
+		References: []ScratchReference{{Dir: scratch.Dir, Kind: ScratchKindSandbox}},
+		Bindings:   []ScratchBinding{onlyOwner},
+		Consumers: []ScratchConsumerBinding{
+			{SessionID: "consumer-kind-wrong", CurrentBindingID: onlyOwner.BindingID},
+		},
+		Released: true,
+	}
+	if err := writeScratchRetention(owner, manifest); err != nil {
+		t.Fatalf("seed the released manifest: %v", err)
+	}
+	if err := writeScratchDirectoryPin(scratch.Dir, owner, ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox}); err != nil {
+		t.Fatalf("seed the retained pin: %v", err)
+	}
+	// The scratch's own lease stays held, so the reset reaches the reference
+	// through the contended-carry branch.
+	fresh, _, err := ResetScratchRetentionIfReleased(owner)
+	if err != nil {
+		t.Fatalf("reset over the held pin: %v", err)
+	}
+	for _, ref := range fresh.References {
+		if filepath.Clean(ref.Dir) == filepath.Clean(scratch.Dir) {
+			t.Fatalf("the reset carried the %q reference under an owner whose only slot claims the directory as %q: the rebuilt manifest holds the reference with no binding at all, the graph every later restore fails closed on, committed unreleased", ref.Kind, ScratchKindUnsandboxed)
+		}
+	}
+	if fresh.Released {
+		t.Fatalf("the reset did not commit: %+v", fresh)
+	}
+	// The death leaves the pin in place (round 25): the holder keeps its
+	// protection, and the next terminal release's tombstone authorizes the
+	// collector to remove the pin and its directory.
+	if _, pinErr := readScratchDirectoryPin(scratch.Dir); pinErr != nil {
+		t.Fatalf("the death disturbed the retained pin: %v", pinErr)
+	}
+}
+
+// TestValidateResetScratchGraph pins the reset's belt-and-suspenders commit
+// gate: the rebuilt manifest must pair every carried reference with a carried
+// binding slot of its kind, name only carried bindings from its consumer
+// roles, and keep a naming consumer for every lease-owning binding. The
+// carry machinery guarantees all of this by construction, so no integration
+// path can reach a violation once the kind-aware owning lookup is in — the
+// gate exists for the regression that breaks that guarantee, and this table
+// pins each failure mode it must refuse before the raw commit.
+func TestValidateResetScratchGraph(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scratch.Cleanup() })
+	ownerRow := retentionBinding("E0", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: true}})
+	wrongKindRow := retentionBinding("E1", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}})
+	wrapperRow := retentionBinding("E2", owner.RootSessionID, workspace,
+		map[string]ScratchSlot{ScratchKindSandbox: {Dir: scratch.Dir, OwnsLease: false}})
+	carriedRef := ScratchReference{Dir: scratch.Dir, Kind: ScratchKindSandbox}
+	for name, tt := range map[string]struct {
+		manifest ScratchManifest
+		wantErr  string
+	}{
+		"a carried pair is valid": {
+			manifest: ScratchManifest{References: []ScratchReference{carriedRef},
+				Bindings:  []ScratchBinding{ownerRow},
+				Consumers: []ScratchConsumerBinding{{SessionID: "consumer-graph", CurrentBindingID: ownerRow.BindingID}}},
+		},
+		"a wrapper binding beside the owner is valid": {
+			manifest: ScratchManifest{References: []ScratchReference{carriedRef},
+				Bindings: []ScratchBinding{ownerRow, wrapperRow},
+				Consumers: []ScratchConsumerBinding{
+					{SessionID: "consumer-graph", CurrentBindingID: ownerRow.BindingID},
+					{SessionID: "consumer-wrapper", CurrentBindingID: wrapperRow.BindingID},
+				}},
+		},
+		"an empty reinitialized manifest is valid": {
+			manifest: ScratchManifest{},
+		},
+		"a reference with no binding is rejected": {
+			manifest: ScratchManifest{References: []ScratchReference{carriedRef}},
+			wantErr:  "is claimed by no carried binding slot",
+		},
+		"a reference only a wrong-kind slot claims is rejected": {
+			manifest: ScratchManifest{References: []ScratchReference{carriedRef},
+				Bindings:  []ScratchBinding{wrongKindRow},
+				Consumers: []ScratchConsumerBinding{{SessionID: "consumer-graph", CurrentBindingID: wrongKindRow.BindingID}}},
+			wantErr: "no reference of that kind pins",
+		},
+		"a slot naming an unpinned directory is rejected": {
+			manifest: ScratchManifest{Bindings: []ScratchBinding{ownerRow},
+				Consumers: []ScratchConsumerBinding{{SessionID: "consumer-graph", CurrentBindingID: ownerRow.BindingID}}},
+			wantErr: "no reference of that kind pins",
+		},
+		"a consumer role naming an absent binding is rejected": {
+			manifest: ScratchManifest{References: []ScratchReference{carriedRef},
+				Bindings:  []ScratchBinding{ownerRow},
+				Consumers: []ScratchConsumerBinding{{SessionID: "consumer-graph", CurrentBindingID: "E-missing"}}},
+			wantErr: "unknown binding",
+		},
+		"an owning binding no consumer names is rejected": {
+			manifest: ScratchManifest{References: []ScratchReference{carriedRef},
+				Bindings: []ScratchBinding{ownerRow}},
+			wantErr: "no consumer role names it",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateResetScratchGraph(tt.manifest)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateResetScratchGraph rejected a valid rebuilt manifest: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateResetScratchGraph error = %v, want one containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestScratchUpsertRejectsASlotOfAMismatchedKind pins the writer's half of the
 // round-67 kind rule: validation accepted any slot whose directory was
 // pinned, without comparing the slot's kind to the reference's, so a binding
