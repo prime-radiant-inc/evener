@@ -31,11 +31,12 @@ type Finding struct {
 }
 
 // FindingEvidence is the contract's evidence object. At least one sub-field
-// is populated per Finding; doctorCommand is always set. When every affected
-// session is non-reproducible (bare sid ambiguous across unsafe buckets),
-// doctorCommand is a comment-only disclosure ("# not reproducible: ...") —
-// not a runnable command, but never empty, so a consumer can distinguish
-// "nothing to reproduce" from "field absent".
+// is populated per Finding; doctorCommand is either a runnable command or
+// empty. When every affected session is non-reproducible (bare sid
+// ambiguous across unsafe buckets), doctorCommand is empty — not runnable,
+// and the non-reproducibility disclosure lives in Description prose (round 9
+// finding 2: the previous "# not reproducible:" comment form is gone because
+// cmd.exe does not treat # as a comment).
 type FindingEvidence struct {
 	SessionRefs []string `json:"sessionRefs,omitempty"` //nolint:tagliatelle // doctor Finding wire contract is camelCase (finding-contract.md)
 	// TotalSessionRefs is the true distinct-session count when SessionRefs
@@ -617,7 +618,8 @@ func formatNonReproSessions(sessions map[string]nonReproSession) string {
 	return desc
 }
 
-// followSelector returns the selector that re-addresses one session:
+// followSelector returns the emission selector for DoctorCommand — the
+// selector that re-addresses one session in a shell reproduction line:
 // refFor's transcript ref (proj:<id>:<sid> or local:<sid>) when refFor
 // produced one, a bucket-qualified proj:<id>:<sid> selector when refFor
 // did not but the bucket name is safe for the comma-joined --sessions
@@ -631,11 +633,41 @@ func formatNonReproSessions(sessions map[string]nonReproSession) string {
 // Names that fail even the reproduction-safety check — commas, whitespace,
 // shell metacharacters, path separators, NUL — fall back to the bare
 // session id, preserving pre-FU2 behavior for them.
+// Round 9 finding 1: followSelector is the EMISSION selector (DoctorCommand
+// only). Internal reads (the --since sweep, TranscriptHealth, APILog,
+// APIHealth) use readSelector, which gates on projectTokenOK (wider than
+// safeTokenForRepro) because no shell is involved — so colliding sessions
+// in shell-unsafe buckets resolve via the bucket-qualified form instead of
+// landing as Unreadable.
 func followSelector(projectID, sessionID string) string {
 	if ref := refFor(projectID, sessionID); ref != "" {
 		return ref
 	}
 	if safeTokenForRepro(projectID) {
+		return projRef(projectID, sessionID)
+	}
+	return sessionID
+}
+
+// readSelector returns the bucket-qualified selector for internal reads
+// (Locate, TranscriptHealth, APILog, APIHealth) — the widest form that
+// resolves: proj:<project-id>:<sid> when the bucket name is
+// traversal-safe (projectTokenOK, which admits every directory name
+// globBuckets enumerates, including shell-unsafe names like "dollar$bucket"
+// or "has space"), or the bare session id as a last resort. This is wider
+// than followSelector (which gates proj: emission on safeTokenForRepro for
+// shell safety in DoctorCommand) because internal reads involve no shell —
+// the selector only needs to resolve via Locate, not round-trip a command
+// line. Round 9 finding 1: the --since sweep previously used followSelector,
+// so colliding unsafe-bucket sessions (names passing projectTokenOK but
+// failing safeTokenForRepro) fell back to the bare sid, which is ambiguous
+// across buckets, landing both as Unreadable. readSelector emits the
+// bucket-qualified form so Locate resolves each session unambiguously.
+func readSelector(projectID, sessionID string) string {
+	if projectID == "" {
+		return sessionID
+	}
+	if projectTokenOK(projectID) {
 		return projRef(projectID, sessionID)
 	}
 	return sessionID
@@ -686,7 +718,7 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			return AuditResult{}, err
 		}
 		for _, s := range sweep.Sessions {
-			refs = append(refs, followSelector(s.Bucket, s.SessionID))
+			refs = append(refs, readSelector(s.Bucket, s.SessionID))
 		}
 		res.Unreadable = append(res.Unreadable, sweep.Unreadable...)
 	}
@@ -727,20 +759,16 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			res.Unreadable = append(res.Unreadable, UnreadableSession{SessionID: ref, TranscriptRef: ref, Error: err.Error()})
 			continue
 		}
-		// sel is the selector every read and evidence entry for this session
-		// uses. For explicit --sessions inputs, ref is the user-supplied
-		// selector that already round-tripped the CLI grammar and resolved
-		// via Locate — safe for re-resolution, so preserve it for the reads
-		// (TranscriptHealth, APILog, APIHealth) to honor the user's selection.
-		// But a raw explicit selector like proj:has space:sid or
-		// proj:dollar$bucket:sid is NOT safe to emit into the evidence
-		// SessionRefs or the DoctorCommand reproduction line (it word-splits
-		// or shell-expands in a shell), so the evidence path derives its
-		// selector from paths via followSelector — yielding the same safe
-		// proj:/bare form the --since sweep emits. For the --since sweep,
-		// ref is already followSelector output, so the two are equivalent.
-		// Computed once after Locate; reused at every read site below so the
-		// grammar scan and string build run once, not five times.
+		// sel is the selector every read uses (TranscriptHealth, APILog,
+		// APIHealth — all call Locate internally). For explicit --sessions
+		// inputs, ref is the user-supplied selector that already resolved via
+		// Locate, so it is safe for re-resolution. For the --since sweep, ref
+		// is readSelector output (proj:<name>:<sid> or bare sid) — the widest
+		// form that resolves, including shell-unsafe bucket names (round 9
+		// finding 1: the sweep previously used followSelector, which falls back
+		// to the bare sid for shell-unsafe names, making colliding sessions
+		// ambiguous and Unreadable; readSelector emits the bucket-qualified
+		// form so Locate resolves each unambiguously).
 		sel := ref
 		// agentSel is the honest session identifier for SessionRefs:
 		// refFor's transcript ref (proj:<canonical>:<sid> or local:<sid>)
@@ -770,9 +798,11 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// whether the bare id resolves uniquely. If it is ambiguous across
 		// buckets, it cannot reproduce the session in DoctorCommand — track
 		// it as non-reproducible so DoctorCommand omits it and discloses
-		// the non-reproducibility honestly. This only triggers for the
-		// explicit --sessions path: the --since sweep's bare ids that fail
-		// Locate land in Unreadable before reaching here.
+		// the non-reproducibility in the Description prose (round 9 finding 2).
+		// This triggers for the explicit --sessions path with shell-unsafe
+		// bucket names; the --since sweep now resolves those via readSelector
+		// (round 9 finding 1), but the emission selector (followSelector) still
+		// falls back to the bare sid for DoctorCommand.
 		nonReproducible := false
 		if doctorSel == paths.SessionID {
 			if _, err := Locate(stateBase, doctorSel); err != nil {
@@ -886,6 +916,11 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 		// trueCount (not len(SessionRefs)) so it agrees with Summary.Sessions
 		// and Description when deduped bare sids shrink the ref list.
 		refCount := len(f.Evidence.SessionRefs)
+		// Save the pre-truncation ref list for Description prose so the cap
+		// marker (…and N more) is emitted (round 9 finding 3): the caller
+		// previously truncated SessionRefs before joinSessionRefs, making the
+		// marker unreachable. Description now uses the full list.
+		preCapRefs := f.Evidence.SessionRefs
 		if refCount > evidenceSessionRefCap {
 			f.Evidence.TotalSessionRefs = trueCount
 			f.Evidence.SessionRefs = f.Evidence.SessionRefs[:evidenceSessionRefCap]
@@ -896,50 +931,34 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 			// are not confused by the mismatch.
 			f.Evidence.TotalSessionRefs = trueCount
 		}
-		f.Description = fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
-			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, joinSessionRefs(f.Evidence.SessionRefs))
-		// DoctorCommand stays a runnable reproduction command (the Finding
-		// contract defines it as such): it spells out the doctor-CLI-safe
-		// reproducible refs plainly, comma-joined without spaces to match
-		// the CLI's --sessions list syntax. The reproducible refs are
-		// capped at evidenceSessionRefCap (round 7 finding 1): before round
-		// 6 DoctorCommand was built from SessionRefs after the cap, but the
-		// round-6 decoupling moved it to doctorRefsBySig which was never
-		// capped — a fleet-wide finding emitted thousands of selectors in a
-		// single string, the mid-JSON overflow the cap exists to prevent.
-		// The cap is disclosed with a trailing comment so the command stays
-		// runnable and bounded, never mistaken for a complete reproduction.
-		// When a session's bare id is ambiguous across buckets (the bucket
-		// name is shell-unsafe), that ref cannot reproduce the session — it
-		// is omitted from --sessions and disclosed in a shell comment with
-		// bucket context (round 6 finding 2). When ALL affected sessions are
-		// non-reproducible, reproRefs is empty and the command is
-		// comment-only (round 6 finding 1), never mistaken for runnable.
 		reproRefs := doctorRefsBySig[sig]
 		nonRepro := nonReproBySig[sig]
+		// Description prose: the tripped check, the true session count, the
+		// session refs (with cap marker from the pre-truncation list), and the
+		// non-reproducibility disclosure (round 9 finding 2: moved here from
+		// DoctorCommand's # shell comment, which cmd.exe does not treat as a
+		// comment).
+		desc := fmt.Sprintf("Runbook %q check %q tripped (%s) in %d session(s): %s",
+			runbook.Name, check.Title, conditionsSummary(check.Conditions), trueCount, joinSessionRefs(preCapRefs))
+		if len(nonRepro) > 0 {
+			desc += "; not reproducible: " + formatNonReproSessions(nonRepro)
+		}
+		f.Description = desc
+		// DoctorCommand is a pure runnable command or empty (round 9 finding 2):
+		// the # shell comment form is gone because cmd.exe does not treat # as
+		// a comment. When some sessions are reproducible, the command carries
+		// the capped reproducible refs (no # comment appended). When ALL
+		// sessions are non-reproducible, the command is empty — the disclosure
+		// lives in Description prose above. The reproducible refs are capped at
+		// evidenceSessionRefCap (round 7 finding 1); the cap count is disclosed
+		// in Description via the …and N more marker, not in the command.
 		var cmd string
 		if len(reproRefs) > 0 {
 			cappedRepro := reproRefs
-			omittedRepro := 0
 			if len(cappedRepro) > evidenceSessionRefCap {
-				omittedRepro = len(cappedRepro) - evidenceSessionRefCap
 				cappedRepro = cappedRepro[:evidenceSessionRefCap]
 			}
 			cmd = fmt.Sprintf("evener doctor audit --runbook %s --sessions %s", runbook.Name, strings.Join(cappedRepro, ","))
-			comments := []string{}
-			if omittedRepro > 0 {
-				comments = append(comments, fmt.Sprintf("%d more reproducible refs omitted (cap %d)", omittedRepro, evidenceSessionRefCap))
-			}
-			if len(nonRepro) > 0 {
-				comments = append(comments, "not reproducible: "+formatNonReproSessions(nonRepro))
-			}
-			if len(comments) > 0 {
-				cmd += " # " + strings.Join(comments, "; ")
-			}
-		} else {
-			// All sessions non-reproducible (round 6 finding 1): comment-only
-			// command. The FindingEvidence doc comment documents this state.
-			cmd = "# not reproducible: " + formatNonReproSessions(nonRepro)
 		}
 		f.Evidence.DoctorCommand = cmd
 		res.Findings = append(res.Findings, *f)
@@ -955,8 +974,10 @@ func RunAudit(stateBase string, runbook Runbook, opts AuditOpts) (AuditResult, e
 // DoctorCommand after round 6's decoupling lost it). A fleet-wide trip can
 // carry thousands of refs, which would overflow any envelope carrying the
 // Finding. The cut is disclosed: TotalSessionRefs carries the true count,
-// the prose appends an "…and N more" marker, and DoctorCommand appends a
-// trailing "# N more reproducible refs omitted" comment — never silent.
+// and the prose appends an "…and N more" marker built from the
+// pre-truncation ref list (round 9 finding 3). DoctorCommand carries only
+// the capped reproducible refs (no trailing comment — round 9 finding 2
+// removed # comments, which cmd.exe does not treat as comments).
 const evidenceSessionRefCap = 200
 
 // joinSessionRefs joins refs comma-separated for Description prose,
