@@ -2450,11 +2450,13 @@ export function createConversationStore() {
           // pre-bound window.
           let seatedRehydrateItems: MobileTimelineItem[] | null = null;
           // RoboRev review round 2: whether the retained history is
-          // CONTINUOUS with the refreshed window — the coverage merge's own
-          // transcript-overlap signal. The store's own paging cursor below
-          // reads it: page turn ownership alone must not pin the retained
-          // cursor (an atCap null included) across a refresh whose window
-          // shares no history with what the model retains.
+          // CONTINUOUS with the refreshed window — the real merge's
+          // transcript-overlap signal, so alias-consumed turns' directly
+          // matched items keep counting as continuity. The store's own
+          // paging cursor below reads it: page turn ownership alone must
+          // not pin the retained cursor (an atCap null included) across a
+          // refresh whose window shares no history with what the model
+          // retains.
           let retainedOverlapsWindow = false;
           if (preserveTurnHistory && currentConvForMerge !== null) {
             // The public merge folds accumulated page turns into the fresh
@@ -3019,8 +3021,17 @@ export function createConversationStore() {
               coverageOlderTurns.length !== retainedTurnsForMerge.length
                 ? mergeTurnHistory(coverageOlderTurns, conversation.turns)
                 : history;
-            retainedOverlapsWindow = coverage.transcriptOverlap;
-            if (coverage.olderCoverage && coverage.transcriptOverlap) {
+            // RoboRev review round 2: the overlap reads the REAL merge's
+            // signal, never the claim re-merge's. The re-merge exists to
+            // judge coverage claims without the alias-consumed turns, and
+            // its overlap would drop those turns' DIRECTLY MATCHED items
+            // with them — a refresh whose only continuity was the consumed
+            // turn's direct matches would read as disjoint and reset the
+            // store's own paging cursor to the read's. The real merge
+            // judged every retained turn; its overlap is the continuity
+            // evidence, consumed or not.
+            retainedOverlapsWindow = history.transcriptOverlap;
+            if (coverage.olderCoverage && history.transcriptOverlap) {
               wireOlderCursor = currentConvForMerge.olderCursor;
             }
             // Strip the injected skeletons the merge did not fold away —

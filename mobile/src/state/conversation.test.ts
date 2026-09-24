@@ -7216,6 +7216,206 @@ describe("ConversationStore", () => {
       });
     });
 
+    // RoboRev review round 2: the alias-consumption exclusion must not
+    // take the turn's DIRECTLY MATCHED items out of the window-overlap
+    // evidence. The re-merge that judges coverage claims runs without the
+    // consumed turn, and reading ITS overlap made a refresh whose only
+    // continuity was the consumed turn's direct matches read as disjoint,
+    // resetting the store's own paging cursor to the read's even though
+    // the windows share history. The overlap reads the REAL merge's
+    // signal, which the exclusion never touched.
+    it("still counts a consumed mixed turn's direct matches as the refresh's window overlap", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [fillerTurn(100)],
+          olderCursor: "c0",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c0",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The page's own turn lands in-window; the refresh below crowds its
+      // row out and the bound sheds it to the compact memory — the alias
+      // world, without the trimming loadOlder that would stop paging.
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "ct",
+              [
+                {
+                  id: "a",
+                  transcriptKey: "k",
+                  turnId: "ct",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c1",
+        ),
+        nextCursor: "c1",
+      };
+      await store.getState().loadOlder(service);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [fillerTurn(500)],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.find((t) => t.id === "ct")?.items).toEqual([]);
+
+      // The sparse restore lands the reissue identity beside the direct
+      // sibling, and the owning page brings the real text through the
+      // remembered alias — the mixed direct+alias turn.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            fillerTurn(100),
+            {
+              id: "f1",
+              status: "completed",
+              items: [
+                markItemTextOmitted({
+                  id: "b",
+                  transcriptKey: "k",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                }),
+                {
+                  id: "u",
+                  turnId: "f1",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+          ],
+          olderCursor: "c1",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c1",
+      };
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().conversation?.turns.some((t) => t.id === "ct")).toBe(false);
+      service.olderItems = {
+        turnsPage: turnsPage(
+          [
+            wireTurnFragment(
+              "pt2",
+              [
+                {
+                  id: "a",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "u",
+                  turnId: "pt2",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              { inputTokens: 500, outputTokens: 20 },
+            ),
+          ],
+          "c2",
+        ),
+        nextCursor: "c2",
+      };
+      await store.getState().loadOlder(service);
+      const afterPage = store
+        .getState()
+        .conversation?.turns.find((t) => t.id === "f1")
+        ?.items.find((item) => item.transcriptKey === "k");
+      expect(afterPage?.text).toBe("payload-a");
+
+      // The refresh below carries ONLY the reread turn — nothing else the
+      // model retains matches it — and its own cursor differs from the
+      // retained one. The consumed turn's direct sibling is the only
+      // window overlap; dropping it would read the refresh as disjoint
+      // and reset the store's own paging cursor to the read's.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          threadId: "thread-1",
+          instanceId: "instance-1",
+          usage: null,
+          turns: [
+            {
+              id: "f2",
+              status: "completed",
+              items: [
+                {
+                  id: "a",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload-a",
+                  position: { entry: 99, item: 0 },
+                  status: "completed",
+                },
+                {
+                  id: "u",
+                  turnId: "f2",
+                  type: "agentMessage",
+                  text: "payload-u",
+                  position: { entry: 99, item: 1 },
+                  status: "completed",
+                },
+              ],
+              usage: { inputTokens: 500, outputTokens: 20 },
+            },
+          ],
+          olderCursor: "c9",
+        }),
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "c9",
+      };
+      await store.getState().rehydrate(service, sink);
+      const conv = store.getState().conversation!;
+      expect(conv.turns.some((turn) => turn.id === "f1")).toBe(false);
+      expect(conv.turns.find((turn) => turn.id === "f2")?.items).toEqual([
+        expect.objectContaining({ id: "a", text: "payload-a" }),
+        expect.objectContaining({ id: "u", text: "payload-u" }),
+      ]);
+      // The emptied filler's usage stamp still claims (the round-31 rule),
+      // and its wire-cursor preserve needs the overlap the consumed turn's
+      // direct sibling witnesses — without that evidence the read's own
+      // cursor replaced both the wire cursor and the store's paging one.
+      expect(conv.olderCursor).toBe("c2");
+      expect(store.getState().olderCursor).toBe("c2");
+    });
+
     // RoboRev round 31, unmatched empty turns: an empty retained turn with
     // a usage stamp the fresh read does not re-serve is retained history
     // even though it has no items to match — the reducer's coverage
