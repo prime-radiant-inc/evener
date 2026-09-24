@@ -743,10 +743,11 @@ func ItemTurnProjectionFromFile(path string, maxLineBytes int, project EntryProj
 }
 
 // ItemTurnProjectionFromFilePrefix is ItemTurnProjectionFromFile over only the
-// first size bytes of path. A transcript is append-only, so that prefix is the
-// transcript as it stood when it was size bytes long.
-func ItemTurnProjectionFromFilePrefix(path string, size int64, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
-	return itemTurnProjectionFromFileContext(context.Background(), path, size, maxLineBytes, project)
+// first size bytes of path, stopping early when ctx ends. A transcript is
+// append-only, so that prefix is the transcript as it stood when it was size
+// bytes long.
+func ItemTurnProjectionFromFilePrefix(ctx context.Context, path string, size int64, maxLineBytes int, project EntryProjector) (ItemTurnProjection, error) {
+	return itemTurnProjectionFromFileContext(ctx, path, size, maxLineBytes, project)
 }
 
 // itemTurnProjectionFromFileContext reads the first size bytes of path, or the

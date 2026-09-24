@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -54,15 +55,16 @@ type appTurnProjection struct {
 }
 
 func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error) {
-	return appTurnProjectionFromTranscriptPrefix(path, 0)
+	return appTurnProjectionFromTranscriptPrefix(context.Background(), path, 0)
 }
 
 // appTurnProjectionFromTranscriptPrefix projects the first size bytes of the
-// transcript at path, or the whole file when size is zero.
-func appTurnProjectionFromTranscriptPrefix(path string, size int64) (appTurnProjection, error) {
+// transcript at path, or the whole file when size is zero, stopping early when
+// ctx ends.
+func appTurnProjectionFromTranscriptPrefix(ctx context.Context, path string, size int64) (appTurnProjection, error) {
 	toolNames := map[string]string{}
 	entries := 0
-	projection, err := apptranscript.ItemTurnProjectionFromFilePrefix(path, size, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	projection, err := apptranscript.ItemTurnProjectionFromFilePrefix(ctx, path, size, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > entries {
 			entries = entryIndex
 		}

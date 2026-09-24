@@ -2,6 +2,7 @@ package apptranscript
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"reflect"
 	"testing"
@@ -394,7 +395,7 @@ func TestItemTurnProjectionFromFilePrefixProjectsTheEarlierTranscript(t *testing
 	}
 	earlier := writeEntries(t, userEntry(1, "question"), assistantTextEntry(2, "answer"))
 
-	got, err := ItemTurnProjectionFromFilePrefix(path, int64(prefix), testMaxLineBytes, sequentialTestProjector())
+	got, err := ItemTurnProjectionFromFilePrefix(context.Background(), path, int64(prefix), testMaxLineBytes, sequentialTestProjector())
 	if err != nil {
 		t.Fatalf("ItemTurnProjectionFromFilePrefix: %v", err)
 	}

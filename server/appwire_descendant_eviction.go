@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"os"
 	"sort"
 	"strings"
@@ -156,11 +157,11 @@ type rebuiltDescendantTurns struct {
 // position names a different item after a rebuild. A new snapshot mints a new
 // cursor incarnation, so a cursor from before the eviction fails as stale and
 // the client re-reads rather than paging the wrong items.
-func rebuildDescendantTurns(threadID, path string, eviction appTurnsEviction) *rebuiltDescendantTurns {
+func rebuildDescendantTurns(ctx context.Context, threadID, path string, eviction appTurnsEviction) *rebuiltDescendantTurns {
 	if path == "" {
 		return nil
 	}
-	persisted, err := appTurnProjectionFromTranscriptPrefix(path, eviction.transcriptBytes)
+	persisted, err := appTurnProjectionFromTranscriptPrefix(ctx, path, eviction.transcriptBytes)
 	if err != nil {
 		return &rebuiltDescendantTurns{eviction: eviction, err: err}
 	}
@@ -186,7 +187,7 @@ func (s *Server) prepareDescendantTurns(ownerThreadID, threadID string) *rebuilt
 	}
 	path := s.descendantTranscriptPathLocked(threadID)
 	s.mu.RUnlock()
-	return rebuildDescendantTurns(threadID, path, eviction)
+	return rebuildDescendantTurns(context.Background(), threadID, path, eviction)
 }
 
 // installDescendantTurnsLocked gives a descendant with no resident snapshot one
@@ -199,7 +200,7 @@ func (s *Server) prepareDescendantTurns(ownerThreadID, threadID string) *rebuilt
 // rebuild fails it starts empty and marked so it is evicted as it settles.
 func (s *Server) installDescendantTurnsLocked(threadID string, projection *appDescendantProjection, rebuilt *rebuiltDescendantTurns) {
 	if rebuilt == nil || rebuilt.eviction != projection.eviction {
-		rebuilt = rebuildDescendantTurns(threadID, s.descendantTranscriptPathLocked(threadID), projection.eviction)
+		rebuilt = rebuildDescendantTurns(context.Background(), threadID, s.descendantTranscriptPathLocked(threadID), projection.eviction)
 	}
 	projection.rebuildFailed = rebuilt != nil && rebuilt.err != nil
 	if rebuilt != nil && rebuilt.err == nil {
@@ -215,8 +216,9 @@ func (s *Server) installDescendantTurnsLocked(threadID string, projection *appDe
 // pinDescendantTurns keeps threadID's turn snapshot resident until release,
 // rebuilding it first if it was evicted. It is a no-op for a thread that is not
 // a descendant. A read calls it before entering the subscription cut, which
-// must not open a file.
-func (s *Server) pinDescendantTurns(threadID string) (release func(), err error) {
+// must not open a file. The rebuild stops early, with ctx's error, when the
+// read's request ends.
+func (s *Server) pinDescendantTurns(ctx context.Context, threadID string) (release func(), err error) {
 	s.mu.Lock()
 	projection := s.appDescendants[threadID]
 	if projection == nil {
@@ -237,7 +239,7 @@ func (s *Server) pinDescendantTurns(threadID string) (release func(), err error)
 	if !evicted {
 		return release, nil
 	}
-	rebuilt := rebuildDescendantTurns(threadID, path, eviction)
+	rebuilt := rebuildDescendantTurns(ctx, threadID, path, eviction)
 	if rebuilt != nil && rebuilt.err != nil {
 		release()
 		return func() {}, rebuilt.err

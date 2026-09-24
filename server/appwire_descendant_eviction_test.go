@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -599,10 +600,29 @@ func TestEvictedDescendantReadFailsWhenItsTranscriptIsGone(t *testing.T) {
 	f.requireResident("child", false)
 }
 
+// A read whose request is gone stops rebuilding rather than parse the whole
+// transcript for nobody, and leaves the descendant evicted.
+func TestEvictedDescendantRebuildStopsWithItsRead(t *testing.T) {
+	f := newQuiescentDescendantFixture(t)
+	f.finishedDescendant("child")
+	evictQuiescentDescendantsForTest(f.srv, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := f.srv.handleAppThreadRead(ctx, appwire.ThreadReadParams{
+		Ref:          appwire.Ref{SourceID: "local", ThreadID: "child"}.String(),
+		IncludeTurns: true,
+		ItemLimit:    appwire.TranscriptItemPageLimit,
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("read with a canceled request = %v, want context.Canceled", err)
+	}
+	f.requireResident("child", false)
+}
+
 func TestPinnedDescendantTurnsSurviveEviction(t *testing.T) {
 	f := newQuiescentDescendantFixture(t)
 	f.finishedDescendant("child")
-	release, err := f.srv.pinDescendantTurns("child")
+	release, err := f.srv.pinDescendantTurns(context.Background(), "child")
 	if err != nil {
 		t.Fatal(err)
 	}

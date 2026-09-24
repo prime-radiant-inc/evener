@@ -1344,7 +1344,7 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 		return appwire.ThreadReadResponse{}, err
 	}
 	if params.IncludeTurns {
-		release, err := s.pinDescendantTurns(s.appThreadIDForRead(params))
+		release, err := s.pinDescendantTurns(ctx, s.appThreadIDForRead(params))
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -1624,7 +1624,7 @@ func (s *Server) appLatestItemTurns(threadID string, limit int) ([]appwire.Turn,
 }
 
 // handleAppThreadTurnsList pages backward (older) through bounded atomic items.
-func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+func (s *Server) handleAppThreadTurnsList(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 	if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
@@ -1632,7 +1632,7 @@ func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.Thre
 	if threadID == "" {
 		return appwire.ThreadTurnsListResponse{}, appwire.SessionUnavailable("thread is unavailable")
 	}
-	release, err := s.pinDescendantTurns(threadID)
+	release, err := s.pinDescendantTurns(ctx, threadID)
 	if err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
 	}
