@@ -322,6 +322,11 @@ func findBareIDBuckets(selector, currentStateDir, stateHome string) (currentFoun
 // file itself are both checked. A symlinked sessions/ dir containing a real
 // file must not count as a match — it points outside the state root.
 func existsNonSymlink(path, bucketDir string) bool {
+	// Reject if the bucket dir itself is a symlink — symlinkErrorDeep
+	// rooted at bucketDir does not Lstat it (it is the root).
+	if info, _ := os.Lstat(bucketDir); info != nil && info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	if err := symlinkErrorDeep(path, bucketDir); err != nil {
 		return false
 	}
@@ -388,6 +393,14 @@ func stateHomeFor(stateDir string) string {
 // inconsistency. For flat layouts (no state home), validateLayoutPrefix is a
 // no-op: there are no layout ancestors to check.
 func validateLayoutPrefix(stateDir string) error {
+	// Lstat the bucket dir itself — symlinkErrorDeep rooted at the bucket
+	// dir does not check it (it is the root), and the prefix loop below
+	// checks only ancestors above the bucket dir. A symlinked bucket dir
+	// could point outside the state root and expose transcripts from
+	// elsewhere, so the current-bucket path must validate the bucket dir.
+	if info, _ := os.Lstat(stateDir); info != nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("state dir %q is a symlink: symlinks are not allowed on the transcript read path", stateDir)
+	}
 	sh := stateHomeFor(stateDir)
 	if sh == "" {
 		return nil // flat layout — no layout prefix to validate

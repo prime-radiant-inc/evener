@@ -159,6 +159,15 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 		}
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
 	}
+	// jobstore.ReadEvents opens the journal internally (afero.NewOsFs), so
+	// there is a residual TOCTOU window between the symlinkErrorDeep check
+	// above and the internal open: a symlink swapped in at the leaf or an
+	// intermediate dir between the two calls would be followed. Changing
+	// jobstore's API to accept an fd is disproportionate (it touches the
+	// internal package and every caller). The window is narrow —
+	// symlinkErrorDeep pre-checks every component, and validateLayoutPrefix
+	// (round 10) validates the bucket dir itself — so the residual risk is
+	// an in-window swap, not a missing check.
 	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)

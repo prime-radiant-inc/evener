@@ -540,6 +540,12 @@ func contentSnippets(bucketDir, sessionID, query, needle string) (snips []snippe
 // would count as existing and surface in find results, but read_transcript
 // rejects both — find must not return refs read rejects.
 func transcriptExists(bucketDir, sessionID string) bool {
+	// Reject if the bucket dir itself is a symlink — symlinkErrorDeep
+	// rooted at bucketDir does not Lstat it (it is the root). A symlinked
+	// bucket dir could point outside the state root.
+	if info, _ := os.Lstat(bucketDir); info != nil && info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
 	path := transcriptPath(bucketDir, sessionID)
 	if err := symlinkErrorDeep(path, bucketDir); err != nil {
 		return false

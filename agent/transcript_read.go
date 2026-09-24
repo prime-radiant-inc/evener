@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
@@ -16,7 +16,17 @@ import (
 const transcriptJSONLMaxLineBytes = 128 << 20
 
 var openTranscriptFile = func(path string) (io.ReadCloser, error) {
-	return os.Open(path)
+	// OpenRegularNoFollow opens the leaf with O_NOFOLLOW (refusing a symlink
+	// at the final component) and fstats the descriptor to confirm a regular
+	// file — all in one fd, so nothing can be swapped between the check and
+	// the bytes. This closes the leaf-level TOCTOU window left by
+	// symlinkErrorDeep (which Lstats the path before the open): a symlink
+	// swapped in at the leaf between the symlinkErrorDeep check and this open
+	// is refused (ELOOP) rather than followed. Intermediate-dir TOCTOU
+	// (swapping sessions/ for a symlink) remains a narrow window, but
+	// symlinkErrorDeep pre-checks every component and the bucket dir is
+	// validated by validateLayoutPrefix (round 10).
+	return execenv.OpenRegularNoFollow(path)
 }
 
 // readTranscript reads a semantic transcript-v2 JSONL file. Only an incomplete

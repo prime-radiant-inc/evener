@@ -1024,11 +1024,12 @@ func TestResolveTranscript_SymlinkedSessionsDirEscapesProtection(t *testing.T) {
 
 // TestResolveTranscript_BareIDSymlinkedFileCausesSpuriousAmbiguity asserts
 // that a symlinked transcript file in one bucket does NOT count as a match
-// in findBareIDBuckets. findBareIDBuckets uses os.Stat (follows symlinks),
-// so a symlinked file is followed during discovery and counts as a match.
-// With a real file in another bucket, this produces totalMatches>1 and a
-// spurious "ambiguous" error for a session with exactly one legitimate
-// location. Switching to Lstat-based existence skips symlinks entirely.
+// in findBareIDBuckets. findBareIDBuckets checks existence via
+// existsNonSymlink, which uses symlinkErrorDeep (component walk with Lstat)
+// plus a final Lstat — a symlinked file is rejected and never enters the
+// match set. With a real file in another bucket, the symlinked file is
+// skipped and the bare ID resolves to the one real bucket without a
+// spurious "ambiguous" error.
 func TestResolveTranscript_BareIDSymlinkedFileCausesSpuriousAmbiguity(t *testing.T) {
 	t.Parallel()
 	sh := newStateHome(t)
@@ -1124,8 +1125,8 @@ func TestSymlinkErrorDeep_SymlinkedAncestorAboveStateRootDoesNotBreakReads(t *te
 	linkedBucket := filepath.Join(linkedHome, "evener", "projects", "test-0123456789")
 
 	// A bare-ID read through the symlinked ancestor should succeed — the
-	// symlink is above the state root, not within it. Today this fails
-	// because symlinkErrorDeep walks to / and hits the linkedHome symlink.
+	// symlink is above the state root, not within it. symlinkErrorDeep is
+	// bounded by the state home root, so it does not walk above it.
 	_, _, err := resolveTranscript(sid, linkedBucket, sid)
 	if err != nil {
 		t.Fatalf("read through symlinked ancestor above state root failed: %v", err)
@@ -1165,9 +1166,9 @@ func TestCollectCandidates_SkipsSymlinkedSessionsDir(t *testing.T) {
 }
 
 // TestTranscriptExists_RejectsSymlinkedFile asserts that transcriptExists
-// returns false for a symlinked transcript file. Today it uses os.Stat
-// which follows symlinks, so a symlinked file counts as existing and is
-// returned in find results — but read_transcript rejects it.
+// returns false for a symlinked transcript file. transcriptExists uses
+// symlinkErrorDeep + os.Lstat, so a symlinked file is rejected and never
+// surfaces in find results — read_transcript rejects it too.
 func TestTranscriptExists_RejectsSymlinkedFile(t *testing.T) {
 	t.Parallel()
 	bucket := newBucket(t)
@@ -1192,9 +1193,10 @@ func TestTranscriptExists_RejectsSymlinkedFile(t *testing.T) {
 
 // TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch asserts that
 // findBareIDBuckets does not count a bucket whose sessions/ is a symlink as
-// a match. Today existsNonSymlink Lstats only the full path (final
-// component), so a symlinked sessions/ containing the file counts as a
-// match — contradicting the helper's "never enter the match set" claim.
+// a match. existsNonSymlink uses symlinkErrorDeep with the bucket dir as
+// root, which walks every component (including sessions/) with Lstat, so a
+// symlinked sessions/ dir is detected and the file behind it never enters
+// the match set — upholding the helper's "never enter the match set" claim.
 func TestFindBareIDBuckets_SymlinkedSessionsDirDoesNotMatch(t *testing.T) {
 	t.Parallel()
 	sh := newStateHome(t)
@@ -1362,8 +1364,9 @@ func TestResolveTranscript_CurrentSessionSymlinkedEvenerAncestorNotRejected(t *t
 	linkedBucket := filepath.Join(linkHome, "evener", "projects", "test-0123456789")
 
 	// The current-session fast-path should reject because evener/ is a symlink
-	// within the state root. Today it succeeds because symlinkErrorDeep is
-	// rooted at the bucket dir, not the state home.
+	// within the state root. validateLayoutPrefix Lstats the evener/ ancestor
+	// and rejects it, so the current-bucket path is consistent with sibling
+	// reads and explicit proj: refs.
 	_, _, err := resolveTranscript("", linkedBucket, sid)
 	if err == nil {
 		t.Fatal("current-session fast-path resolved through symlinked evener/ ancestor; " +
@@ -1387,14 +1390,12 @@ func TestResolveTranscript_CurrentSessionSymlinkedEvenerAncestorNotRejected(t *t
 
 // TestTranscriptExists_SymlinkedSessionsDirReturnsTrue asserts that
 // transcriptExists returns false when the sessions/ directory is a symlink
-// pointing outside the state root. Today transcriptExists uses os.Lstat on the
-// final file only — os.Lstat follows every path element except the last, so a
-// symlinked sessions/ is followed and the file appears as a regular file.
-// collectCandidates guards sessions/ with symlinkErrorDeep before calling
-// ListSessionMetas, but transcriptExists is called independently in
-// recordsUpTo and the content-match loop; a future caller could bypass the
-// collectCandidates guard. transcriptExists must independently validate the
-// path with symlinkErrorDeep.
+// pointing outside the state root. transcriptExists uses symlinkErrorDeep
+// (rooted at the bucket dir) to walk every path component with Lstat,
+// including sessions/, then Lstats the final file. A symlinked sessions/ is
+// detected by the component walk and the file behind it is rejected —
+// transcriptExists independently validates the path, so a future caller
+// that bypasses collectCandidates' guard is still safe.
 func TestTranscriptExists_SymlinkedSessionsDirReturnsTrue(t *testing.T) {
 	t.Parallel()
 	bucket := newBucket(t)
@@ -1420,8 +1421,8 @@ func TestTranscriptExists_SymlinkedSessionsDirReturnsTrue(t *testing.T) {
 	}
 
 	// transcriptExists should return false — sessions/ is a symlink pointing
-	// outside the state root. Today it returns true because os.Lstat follows
-	// the sessions/ symlink and sees a regular file.
+	// outside the state root. The symlinkErrorDeep component walk detects the
+	// symlinked sessions/ and rejects the path.
 	if transcriptExists(bucket, sid) {
 		t.Fatal("transcriptExists returned true for a file through a symlinked sessions/; " +
 			"should return false because sessions/ is a symlink")
@@ -1475,5 +1476,177 @@ func TestSymlinkErrorDeep_SidecarGuardDirRootMissesSymlinkedSessionsDir(t *testi
 	if err := symlinkErrorDeep(sidecar, filepath.Dir(sidecar)); err != nil {
 		t.Fatalf("symlinkErrorDeep with filepath.Dir(sidecar) root should NOT catch "+
 			"the symlink (walk is empty); got unexpected error: %v", err)
+	}
+}
+
+// --- roborev fix round 10: RED tests ---
+
+// TestResolveTranscript_SymlinkedCurrentBucketDirRejected asserts that
+// resolveTranscript rejects a current-bucket path when the bucket dir itself
+// (not just an ancestor) is a symlink. symlinkErrorDeep(path, bucketDir)
+// walks components between root (exclusive) and path (inclusive), so a
+// symlinked bucket dir — the root — is never Lstat'd. validateLayoutPrefix
+// checks only the evener/ and evener/projects/ ancestors, not the bucket dir
+// itself. A symlinked bucket dir could point outside the state root and
+// expose transcripts from elsewhere; the current-bucket path must validate
+// the bucket dir itself.
+func TestResolveTranscript_SymlinkedCurrentBucketDirRejected(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	bucket := newBucketUnder(t, sh)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+	writeTranscript(t, bucket, sid)
+
+	// Move the real bucket dir to a temp location and replace it with a
+	// symlink. The symlink points within the state root, but a symlinked
+	// bucket dir is rejected regardless of target — it could point outside.
+	realDir := filepath.Join(t.TempDir(), "real-bucket")
+	if err := os.Rename(bucket, realDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, bucket); err != nil {
+		t.Fatal(err)
+	}
+
+	// The current-session fast-path should reject — the bucket dir itself
+	// is a symlink. validateLayoutPrefix now Lstats the bucket dir and
+	// symlinkErrorDeep excludes it as the root, so the bucket-dir check
+	// closes the gap.
+	_, _, err := resolveTranscript("", bucket, sid)
+	if err == nil {
+		t.Fatal("resolveTranscript current-session resolved through a " +
+			"symlinked bucket dir; the bucket dir itself is a symlink and " +
+			"must be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+
+	// The bare-ID path should not produce a match in the symlinked bucket.
+	// existsNonSymlink now Lstats the bucket dir, so a symlinked bucket
+	// is rejected before the match set is built.
+	_, _, err = resolveTranscript(sid, bucket, "02wMz5Txv9yYdSRJat13MZ")
+	if err == nil {
+		t.Fatal("resolveTranscript bare-ID resolved through a symlinked " +
+			"bucket dir; the bucket dir must not produce a match")
+	}
+}
+
+// TestLocateLocalJob_SymlinkedCurrentBucketDirRejected asserts that
+// locateLocalJob does not find a job in a bucket whose dir itself is a
+// symlink. findLocalJobInProject calls validateLayoutPrefix, which today
+// checks only ancestors above the bucket dir — a symlinked bucket dir is
+// invisible, and the job journal behind it is read through the symlink.
+// A symlinked bucket dir must not expose jobs from outside the state root.
+func TestLocateLocalJob_SymlinkedCurrentBucketDirRejected(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	bucket := newBucketUnder(t, sh)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Move the real bucket dir and replace it with a symlink.
+	realDir := filepath.Join(t.TempDir(), "real-bucket")
+	if err := os.Rename(bucket, realDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, bucket); err != nil {
+		t.Fatal(err)
+	}
+
+	// locateLocalJob should return an error — the symlinked bucket dir must
+	// not be searched.
+	_, err := locateLocalJob(bucket, jobID)
+	if err == nil {
+		t.Fatal("locateLocalJob found a job through a symlinked bucket dir; " +
+			"the bucket dir is a symlink and must not be searched")
+	}
+}
+
+// TestTranscriptExists_SymlinkedCurrentBucketDirReturnsTrue asserts that
+// transcriptExists returns false when the bucket dir itself is a symlink.
+// transcriptExists now Lstats the bucket dir before calling
+// symlinkErrorDeep(path, bucketDir), which is rooted at the bucket dir and
+// does not Lstat it. A symlinked bucket dir could point outside the state
+// root; the Lstat guard ensures transcriptExists and findBareIDBuckets
+// independently validate the bucket dir.
+func TestTranscriptExists_SymlinkedCurrentBucketDirReturnsTrue(t *testing.T) {
+	t.Parallel()
+	sh := newStateHome(t)
+	bucket := newBucketUnder(t, sh)
+	sid := "02wMz5TxvEMoJEDTDGOTil"
+	writeTranscript(t, bucket, sid)
+
+	// Move the real bucket dir and replace it with a symlink.
+	realDir := filepath.Join(t.TempDir(), "real-bucket")
+	if err := os.Rename(bucket, realDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, bucket); err != nil {
+		t.Fatal(err)
+	}
+
+	// transcriptExists should return false — the bucket dir is a symlink.
+	if transcriptExists(bucket, sid) {
+		t.Fatal("transcriptExists returned true for a transcript behind a " +
+			"symlinked bucket dir; should return false")
+	}
+
+	// findBareIDBuckets should not count the symlinked bucket as a match.
+	currentFound, _, err := findBareIDBuckets(sid, bucket, sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentFound {
+		t.Fatal("findBareIDBuckets counted a symlinked bucket dir as a " +
+			"match; should skip it")
+	}
+}
+
+// TestOpenTranscriptFile_RefusesSymlinkedLeaf asserts that the default
+// openTranscriptFile implementation (execenv.OpenRegularNoFollow) refuses a
+// symlink at the leaf: the open uses O_NOFOLLOW and fstats the descriptor to
+// confirm a regular file, so a symlink swapped in at the leaf between a
+// symlinkErrorDeep check and the open is refused (ELOOP) rather than followed.
+// This closes the leaf-level TOCTOU window that existed when openTranscriptFile
+// was os.Open (which follows symlinks at the final component).
+func TestOpenTranscriptFile_RefusesSymlinkedLeaf(t *testing.T) {
+	t.Parallel()
+	// Create a real file and a symlink to it.
+	realFile := filepath.Join(t.TempDir(), "real.transcript.jsonl")
+	if err := os.WriteFile(realFile, []byte(`{"kind":"header"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link.transcript.jsonl")
+	if err := os.Symlink(realFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	// openTranscriptFile should refuse the symlink — O_NOFOLLOW at the leaf.
+	rc, err := openTranscriptFile(link)
+	if err == nil {
+		_ = rc.Close()
+		t.Fatal("openTranscriptFile opened a symlinked leaf; should refuse with O_NOFOLLOW")
+	}
+}
+
+// TestOpenAPILogFile_RefusesSymlinkedLeaf asserts the same leaf-level O_NOFOLLOW
+// guarantee for the API-log sidecar open.
+func TestOpenAPILogFile_RefusesSymlinkedLeaf(t *testing.T) {
+	t.Parallel()
+	realFile := filepath.Join(t.TempDir(), "real.api.jsonl")
+	if err := os.WriteFile(realFile, []byte(`{"n":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link.api.jsonl")
+	if err := os.Symlink(realFile, link); err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := openAPILogFile(link)
+	if err == nil {
+		_ = rc.Close()
+		t.Fatal("openAPILogFile opened a symlinked leaf; should refuse with O_NOFOLLOW")
 	}
 }

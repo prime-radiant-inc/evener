@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm/apilog"
 )
 
@@ -32,7 +32,10 @@ const (
 )
 
 var openAPILogFile = func(path string) (io.ReadCloser, error) {
-	return os.Open(path)
+	// OpenRegularNoFollow opens the leaf with O_NOFOLLOW and fstats the
+	// descriptor to confirm a regular file — all in one fd, closing the
+	// leaf-level TOCTOU window. See openTranscriptFile for the full rationale.
+	return execenv.OpenRegularNoFollow(path)
 }
 
 type apiLogBodyEvidence struct {
