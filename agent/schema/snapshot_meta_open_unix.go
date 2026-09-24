@@ -34,6 +34,9 @@ func readFileNoFollowOS(path string) ([]byte, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("open %q: no file for descriptor", path)
 	}
-	defer file.Close()
-	return io.ReadAll(file)
+	data, readErr := io.ReadAll(file)
+	if cerr := file.Close(); readErr == nil {
+		readErr = cerr
+	}
+	return data, readErr
 }
