@@ -2523,6 +2523,34 @@ describe("host grouping (organize by)", () => {
     }
   });
 
+  test("collapsing one copy while a sibling stays expanded does not re-fire the project load", async () => {
+    const loadProject = vi.fn(
+      (_projectKey: string): Promise<ResourceState<NavigationProjectResource>> => new Promise(() => undefined),
+    );
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [catalogResource([{ key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"] }])],
+      remoteManifest(),
+    );
+    navigationStore.setState({ loadProject });
+    render(<Rail />);
+    const copies = within(sectionRoot("Hosts")).getAllByText("Project");
+    expect(copies).toHaveLength(2);
+    const [first, second] = copies;
+    if (!first || !second) throw new Error("expected both host copies to render");
+    // Expand both copies: one load fires; the in-flight guard holds the second.
+    fireEvent.click(first);
+    await act(async () => undefined);
+    fireEvent.click(second);
+    await act(async () => undefined);
+    expect(loadProject).toHaveBeenCalledTimes(1);
+    // Collapsing one copy while the other stays expanded must not clear the
+    // project-wide guard and re-fire a duplicate concurrent load.
+    fireEvent.click(first);
+    await act(async () => undefined);
+    expect(loadProject).toHaveBeenCalledTimes(1);
+  });
+
   test("host grouping holds its shape across a manifest revalidation (last-known sources)", () => {
     prefsStore.setState({ sidebarGrouping: "host-project" });
     installState([catalogResource([{ key: "p", name: "Project", session_count: 1 }])], remoteManifest());
@@ -2536,6 +2564,47 @@ describe("host grouping (organize by)", () => {
       navigationStore.setState({ manifest: { ...settled, stale: true } });
     });
     expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+  });
+
+  test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
+    const restoreScroll = stubScrollIntoView();
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    const parent = summary({
+      ref: "devbox:parent",
+      session_id: "parent",
+      title: "Parent run",
+      host_id: "devbox",
+      children: [
+        summary({
+          ref: "devbox:child",
+          session_id: "child",
+          title: "Nested target",
+          host_id: "devbox",
+          kind: "subagent",
+          state: "active",
+        }),
+      ],
+    });
+    installState(
+      [
+        catalogResource([
+          { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
+        ]),
+        projectResource("p", [parent]),
+      ],
+      remoteManifest(),
+    );
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="devbox:child" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      // The chain must open the carrier session's own row, or the nested
+      // target never renders and the reveal never consumes.
+      expect(within(sectionRoot("Hosts")).getByText("Nested target")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
   });
 
   test("the organize row sits hard right, chrome like the headings around it", () => {

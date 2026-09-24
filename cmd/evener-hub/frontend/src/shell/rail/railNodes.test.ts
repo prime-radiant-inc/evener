@@ -663,6 +663,123 @@ describe("host grouping (organize by)", () => {
     expect(revealExpansionIds([nested], [], "devbox:child", "host-project")).toEqual([
       "host:local",
       "projectnode:evener@local",
+      "root",
+      "inactive:root",
+    ]);
+  });
+
+  test("revealExpansionIds opens the carrier's own row in flat and project-first chains", () => {
+    const carrier = session({ ref: "root", row_id: "root", host_id: "local", children: [on("devbox", "child")] });
+    const nested = project({ key: "evener", sources: ["local"], sessions: [carrier] });
+    // The carrier's row is a fold too: without it in the chain the target
+    // row never renders, whatever opens above it.
+    expect(revealExpansionIds([nested], [], "devbox:child", "flat")).toEqual([
+      "projectnode:evener",
+      "root",
+      "inactive:root",
+    ]);
+    expect(revealExpansionIds([nested], [], "devbox:child", "project-host")).toEqual([
+      "projectnode:evener",
+      "root",
+      "inactive:root",
+    ]);
+    // A project whose rows span hosts adds its per-host branch first.
+    const spread = project({
+      key: "spread",
+      sources: ["local", "devbox"],
+      sessions: [on("local", "l1"), on("devbox", "d2"), carrier],
+    });
+    expect(revealExpansionIds([spread], [], "devbox:child", "project-host")).toEqual([
+      "projectnode:spread",
+      "projectnode:spread@host:local",
+      "root",
+      "inactive:root",
+    ]);
+  });
+
+  test("revealExpansionIds opens the carrier chain for archived and live nested targets", () => {
+    const archivedCarrier = session({
+      ref: "aroot",
+      row_id: "aroot",
+      host_id: "local",
+      tier: "archived",
+      children: [on("local", "achild")],
+    });
+    const archived = project({ key: "old", sessions: [archivedCarrier] });
+    expect(revealExpansionIds([archived], [], "local:achild", "host-project")).toEqual([
+      "archivedgroup:old",
+      "aroot",
+      "inactive:aroot",
+    ]);
+    expect(revealExpansionIds([archived], [], "local:achild", "flat", { rowsUnderProjectNode: true })).toEqual([
+      "projectnode:old",
+      "aroot",
+      "inactive:aroot",
+    ]);
+    const liveCarrier = session({
+      ref: "lroot",
+      row_id: "lroot",
+      host_id: "devbox",
+      children: [on("devbox", "lchild")],
+    });
+    expect(revealExpansionIds([], [liveCarrier, on("local", "l1")], "devbox:lchild", "project-host")).toEqual([
+      "livehost:devbox",
+      "lroot",
+      "inactive:lroot",
+    ]);
+    // Flat Live renders ungrouped, so the chain is only the carrier rows.
+    expect(revealExpansionIds([], [liveCarrier], "devbox:lchild", "flat")).toEqual(["lroot", "inactive:lroot"]);
+  });
+
+  test("a cluster carrier opens only its own row; deeper chains walk every ancestor", () => {
+    // Cluster members render inline (no inactive fold names them), so the
+    // cluster's row is the only fold between a member and the top.
+    const clustered = project({
+      key: "cl",
+      sources: ["local"],
+      sessions: [
+        session({
+          ref: "cluster:abc",
+          row_id: "cluster:abc",
+          host_id: "local",
+          kind: "cluster",
+          children: [on("local", "member", { state: "ended" })],
+        }),
+      ],
+    });
+    expect(revealExpansionIds([clustered], [], "local:member", "host-project")).toEqual([
+      "host:local",
+      "projectnode:cl@local",
+      "cluster:abc",
+    ]);
+    // A settled leaf names every row above it plus the inactive fold in
+    // front of each settled one; a current middle row renders inline and
+    // opens no fold of its parent's.
+    const deep = project({
+      key: "deep",
+      sources: ["local"],
+      sessions: [
+        session({
+          ref: "top",
+          row_id: "top",
+          host_id: "local",
+          children: [
+            session({
+              ref: "mid",
+              row_id: "mid",
+              host_id: "local",
+              state: "active",
+              children: [on("local", "leaf")],
+            }),
+          ],
+        }),
+      ],
+    });
+    expect(revealExpansionIds([deep], [], "local:leaf", "flat")).toEqual([
+      "projectnode:deep",
+      "top",
+      "mid",
+      "inactive:mid",
     ]);
   });
 
@@ -825,10 +942,12 @@ describe("host grouping (organize by)", () => {
     const hosts = hostProjectNodes([evener], sources, closed);
     expect(hosts.map((node) => node.id)).toEqual(["host:devbox"]);
     expect(childIds(hosts[0]?.children[0])).toContain("navigation:cluster:ab");
-    // A reveal to a member walks the cluster's home host, not "cluster".
+    // A reveal to a member walks the cluster's home host, not "cluster" -
+    // and opens the cluster's own row, the fold the member renders under.
     expect(revealExpansionIds([evener], [], "devbox:m1", "host-project")).toEqual([
       "host:devbox",
       "projectnode:evener@devbox",
+      "navigation:cluster:ab",
     ]);
   });
 

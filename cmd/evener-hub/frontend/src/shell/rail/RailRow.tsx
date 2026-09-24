@@ -389,10 +389,11 @@ const NO_PROJECT_KEY = "no-project";
 // directory. A "Host, then project" copy passes the host it nests under -
 // this hub included, since the same project's copies share one working_dir
 // and the draft's last-chosen host must not survive a launch from another
-// copy. Falls back to a bare /new when a project has no working_dir
-// (shouldn't happen for a real project, but degrades gracefully rather than
-// silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
-// ever called, same as every other project-scoped action here.
+// copy. Falls back to a bare /new only when the project has neither a
+// working_dir nor a host to name (shouldn't happen for a real project, but
+// degrades gracefully rather than silently doing nothing) - NO_PROJECT_KEY
+// itself is excluded before this is ever called, same as every other
+// project-scoped action here.
 function spawnInProject(project: RailProject, host?: string): void {
   const params = new URLSearchParams();
   if (project.working_dir) params.set("dir", project.working_dir);

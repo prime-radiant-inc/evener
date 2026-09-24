@@ -1297,7 +1297,17 @@ function NavigationRail({
     if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
     setExpanded(node.id, value);
-    if (!value && node.kind === "project") rootLoadsInFlight.current.delete(node.project.key);
+    if (!value && node.kind === "project") {
+      // The in-flight guard is project-wide but one project renders several
+      // nodes (host-first copies): clear it only when no other copy stays
+      // expanded, or the load effect re-fires a duplicate concurrent load.
+      // node.id is excluded because the memoized lookup still reads the
+      // pre-toggle map, where this copy counts as expanded.
+      const stillExpanded = projectLoadExpansionKeys(node.project, groupingMode).some(
+        (id) => id !== node.id && isExpanded(id, node.project.default_expanded ?? false),
+      );
+      if (!stillExpanded) rootLoadsInFlight.current.delete(node.project.key);
+    }
     if (
       value &&
       node.kind === "project" &&

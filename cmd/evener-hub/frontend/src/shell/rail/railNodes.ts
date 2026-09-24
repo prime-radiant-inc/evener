@@ -1122,15 +1122,39 @@ function topLevelCarrier(nodes: readonly RailSession[], ref: string): RailSessio
   return null;
 }
 
+/** The session rows and folds between a nested target and its top-level
+ * carrier: each ancestor session's row id, plus the inactive-subagents fold
+ * in front of a settled one (splitChildren folds settled children behind
+ * it). A CLUSTER carrier needs only its own row - splitChildren renders its
+ * members inline - and a top-level target has no ancestors at all, so the
+ * chain for one is empty. */
+function revealAncestorIds(session: RailSession, ref: string): string[] {
+  for (const child of session.children) {
+    if (child.ref === ref) {
+      if (session.kind === "cluster") return [session.row_id];
+      return subagentIsCurrent(child) ? [session.row_id] : [session.row_id, inactiveFoldId(session.row_id)];
+    }
+    const deeper = child.children.length > 0 ? revealAncestorIds(child, ref) : [];
+    if (deeper.length > 0) {
+      const fold = session.kind !== "cluster" && !subagentIsCurrent(child) ? [inactiveFoldId(session.row_id)] : [];
+      return [session.row_id, ...fold, ...deeper];
+    }
+  }
+  return [];
+}
+
 /** The expansion chain, outermost first, a deep-link reveal must walk to
  * expose the row `ref` renders at: the project's own node in flat mode, the
  * owning host group then the project's copy in "Host, then project", the
  * project then its per-host branch in "Project, then host", and a Live host
- * subheader for a live row whenever Live groups. An archived-tier row routes
- * to its project's archived-group fold instead - the one tier no grouping
- * mode rewrites - unless `options.rowsUnderProjectNode` says these projects
- * render every row under the project's own node (whole-archived projects
- * do; see archivedProjectNodes). Empty when nothing loaded holds the ref
+ * subheader for a live row whenever Live groups. A nested target then names
+ * every session row between it and its top-level carrier, plus the inactive
+ * fold in front of each settled one - the carrier's own row is a fold too,
+ * and a chain that skips it never renders the target. An archived-tier row
+ * routes to its project's archived-group fold instead - the one tier no
+ * grouping mode rewrites - unless `options.rowsUnderProjectNode` says these
+ * projects render every row under the project's own node (whole-archived
+ * projects do; see archivedProjectNodes). Empty when nothing loaded holds the ref
  * yet - the reveal's location-lookup path owns that case. Callers expand
  * one id per pass and re-run, so reaching the end of the chain means every
  * fold it needs is already open. */
@@ -1149,25 +1173,29 @@ export function revealExpansionIds(
     // grouped project branch, whatever mode the rail is in - unless these
     // projects render every row under their own node (whole-archived
     // projects do; see archivedProjectNodes).
-    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key)];
+    const ancestors = revealAncestorIds(carrier, ref);
+    if (!options?.rowsUnderProjectNode && isArchivedTier(carrier)) return [archivedGroupId(p.key), ...ancestors];
     const id = projectNodeExpansionKey(p.key);
     const carrierHost = sessionGroupHostId(carrier);
-    if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost)];
+    if (mode === "host-project") return [hostGroupId(carrierHost), hostProjectCopyId(id, carrierHost), ...ancestors];
     if (mode === "project-host") {
       // Branches render only while the project's loaded rows span hosts
       // (hostBranchNodes draws the same line), so a single-host chain stops
       // at the project fold instead of naming a fold that does not exist.
       const rowsHosts = new Set(p.sessions.filter((n) => !isArchivedTier(n)).map(sessionGroupHostId));
-      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost)] : [id];
+      return rowsHosts.size > 1 ? [id, hostBranchId(id, carrierHost), ...ancestors] : [id, ...ancestors];
     }
-    return [id];
+    return [id, ...ancestors];
   }
   const carrier = topLevelCarrier(live, ref);
+  if (!carrier) return [];
   // Flat mode renders Live ungrouped (Rail wraps it only while grouping),
-  // so a subheader id would name a fold that does not exist.
-  if (carrier && mode !== "flat" && new Set(live.map(sessionGroupHostId)).size > 1)
-    return [liveHostGroupId(sessionGroupHostId(carrier))];
-  return [];
+  // so a subheader id would name a fold that does not exist - the
+  // carrier rows still apply.
+  const ancestors = revealAncestorIds(carrier, ref);
+  if (mode !== "flat" && new Set(live.map(sessionGroupHostId)).size > 1)
+    return [liveHostGroupId(sessionGroupHostId(carrier)), ...ancestors];
+  return ancestors;
 }
 
 /** The expansion ids that mean "this project's rows are in view" under the

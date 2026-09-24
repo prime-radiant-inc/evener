@@ -416,8 +416,10 @@ describe("stale sidebarMode key", () => {
 
 // sidebarGrouping: how the rail's session tree groups - "host-project"
 // (hosts are the top groups) or "project-host" (today's shape, hosts nested
-// inside projects). Default "project-host" so nothing changes for anyone
-// until the rail's organize-by control is used.
+// inside projects). The default keeps single-host projects and hubs flat,
+// but a multi-host project changes shape out of the box - its rows sit
+// behind collapsed per-host branches - because the grouping is the
+// feature, not something the control must unlock first.
 describe("sidebarGrouping", () => {
   test("defaults to project-host with nothing persisted", () => {
     expect(prefsStore.getState().sidebarGrouping).toBe("project-host");
