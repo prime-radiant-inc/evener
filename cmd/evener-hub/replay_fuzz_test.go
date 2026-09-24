@@ -46,6 +46,24 @@ var replayFuzzSeeds = []string{
 	// RawArguments preserves the original bytes — the live emitter now uses
 	// the original bytes too, so live and reload agree.
 	`{"kind":"entry","seq":10,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"calling it"},{"kind":"tool_call","tool_call":{"id":"c5","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\"}"}}]},"timestamp":"2026-06-01T10:00:09Z"}}`,
+	// Assistant turn with a rejected communicate: Arguments is the replay-safe
+	// {} placeholder, RawArguments preserves the model's original malformed
+	// bytes. Live emits nothing (CommunicateMessageFromArguments({}) is ""),
+	// and reload now defers the raw fallback to the paired result, so the
+	// assistant turn alone renders nothing on both sides.
+	`{"kind":"entry","seq":11,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c6","name":"communicate","arguments":{},"raw_arguments":"{message: \"hi\"}"}}]},"timestamp":"2026-06-01T10:00:10Z"}}`,
+	// Tool-results turn for the rejected communicate: IsError=true surfaces the
+	// raw bytes deferred from the assistant turn. Used in the multi-entry
+	// metamorphic test (not the single-entry fuzz, which processes one entry).
+	`{"kind":"entry","seq":12,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c6","name":"communicate","content":"invalid","is_error":true}}]},"timestamp":"2026-06-01T10:00:11Z"}}`,
+	// Assistant turn with a healed communicate: Arguments is {} and
+	// RawArguments preserves the malformed original, but the call was repaired
+	// and executed successfully. Live delivered the healed message; reload now
+	// renders nothing from the raw bytes (the result confirms success).
+	`{"kind":"entry","seq":13,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c7","name":"communicate","arguments":{},"raw_arguments":"{message: \"hello\"}"}}]},"timestamp":"2026-06-01T10:00:12Z"}}`,
+	// Tool-results turn for the healed communicate: IsError=false, so the raw
+	// fallback does not fire — matching live, which delivered the healed message.
+	`{"kind":"entry","seq":14,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c7","name":"communicate","content":"{\"accepted\":true}","is_error":false}}]},"timestamp":"2026-06-01T10:00:13Z"}}`,
 	`{}`,
 	`null`,
 	`not json`,
@@ -117,6 +135,118 @@ func TestHubReplay_RejectedCallLiveVsReload(t *testing.T) {
 	const rawArgs = `{command: "ls", }` // malformed JSON — the rejected-call shape
 	entryJSON := `{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"running it"},{"kind":"tool_call","tool_call":{"id":"c4","name":"shell","arguments":{},"raw_arguments":` + `"` + strings.ReplaceAll(rawArgs, `"`, `\"`) + `"` + `}}]},"timestamp":"2026-06-01T10:00:00Z"}}`
 	checkLiveVsReload(t, []byte(entryJSON))
+}
+
+// checkLiveVsReloadMultiEntry runs the live-vs-reload metamorphic across TWO
+// entries (an assistant turn followed by its paired tool-results turn), sharing
+// one toolNames map on the reload side the way the hub's full read does. This is
+// where the communicate raw fallback's result-gating is exercised: the assistant
+// turn defers the raw bytes, and the result turn's IsError determines whether
+// they surface. The single-entry checkLiveVsReload cannot test this because it
+// projects one turn in isolation.
+//
+// commRawArgs threads the assistant turn's raw communicate bytes into the live
+// side: a rejected communicate surfaces them as a CommunicateData (modeled live),
+// matching the reload side's result-gated raw fallback. A healed communicate
+// (IsError=false) renders nothing on both sides.
+func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte, commRawArgs string) {
+	t.Helper()
+	var ae, re transcript.Entry
+	if json.Unmarshal(assistantJSON, &ae) != nil {
+		t.Fatalf("decode assistant entry: %s", assistantJSON)
+	}
+	if json.Unmarshal(resultJSON, &re) != nil {
+		t.Fatalf("decode result entry: %s", resultJSON)
+	}
+	acanon, acanonBytes := canonicalEntry(t, ae)
+	rcanon, rcanonBytes := canonicalEntry(t, re)
+
+	// Live side: synthesize events for both turns and drive one projector. The
+	// assistant turn emits nothing for a communicate with Arguments={} (both
+	// rejected and healed share that shape). The result turn's IsError
+	// determines whether the raw bytes surface: rejected emits a CommunicateData
+	// with the raw bytes (modeled live matching reload's result-gated fallback);
+	// healed emits nothing.
+	var liveEvents []events.SessionEvent
+	liveEvents = append(liveEvents, mustSynthesize(t, acanon.Turn)...)
+	for _, p := range rcanon.Turn.Message.Content {
+		if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
+			continue
+		}
+		if p.ToolResult.Name != "communicate" {
+			continue
+		}
+		if p.ToolResult.IsError && commRawArgs != "" {
+			liveEvents = append(liveEvents, events.New(events.CommunicateData{Message: commRawArgs}))
+		}
+		// A healed communicate (IsError=false) delivered its message live, not
+		// the raw bytes; the synthesizer models that by emitting nothing.
+	}
+	proj := appprojector.NewAppEventProjector("thread", "local:thread")
+	var notes []appprojector.AppNotification
+	for _, ev := range liveEvents {
+		notes = append(notes, proj.Project(ev)...)
+	}
+	live := normalizeMetamorphic(foldLiveItems(notes))
+
+	// Reload side: project both turns with a shared toolNames map, the way the
+	// hub's full-transcript read threads the map across entries.
+	toolNames := map[string]string{}
+	aReconstructed, ok := decodeTranscriptTurn(acanonBytes)
+	if !ok {
+		t.Fatalf("hub decode rejected assistant entry: %s", acanonBytes)
+	}
+	rReconstructed, ok := decodeTranscriptTurn(rcanonBytes)
+	if !ok {
+		t.Fatalf("hub decode rejected result entry: %s", rcanonBytes)
+	}
+	reload := normalizeMetamorphic(append(
+		apptranscript.ProjectTurn("turn_1", 1, aReconstructed, toolNames, nil, apptranscript.ToolResultOutputImages),
+		apptranscript.ProjectTurn("turn_2", 2, rReconstructed, toolNames, nil, apptranscript.ToolResultOutputImages)...,
+	))
+
+	if eq, a, b := jsonEqItems(t, live, reload); !eq {
+		t.Fatalf("live-vs-reload multi-entry metamorphic diverged:\n live  =%s\n reload=%s\n assistant=%s\n result=%s", a, b, acanonBytes, rcanonBytes)
+	}
+}
+
+// mustSynthesize returns the live event stream for a turn, failing the test if
+// the turn kind is unsupported (the multi-entry test exercises kinds that must
+// have a live path).
+func mustSynthesize(t *testing.T, turn schema.Turn) []events.SessionEvent {
+	t.Helper()
+	evs, supported := synthesizeLiveEvents(turn)
+	if !supported {
+		t.Fatalf("synthesizeLiveEvents returned unsupported for turn kind %s", turn.Kind)
+	}
+	return evs
+}
+
+// TestHubReplay_RejectedCommunicateLiveVsReload verifies that a rejected
+// communicate (Arguments={}, RawArguments=malformed, IsError result) renders the
+// raw bytes on BOTH live and reload. The assistant turn defers the raw bytes;
+// the result turn's IsError surfaces them. Live models the same rule so both
+// sides agree — the contract FuzzHubReplayLiveVsReload enforces.
+func TestHubReplay_RejectedCommunicateLiveVsReload(t *testing.T) {
+	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
+	escaped := strings.ReplaceAll(rawArgs, `"`, `\"`)
+	assistantJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c6","name":"communicate","arguments":{},"raw_arguments":"` + escaped + `"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
+	resultJSON := []byte(`{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c6","name":"communicate","content":"invalid","is_error":true}}]},"timestamp":"2026-06-01T10:00:01Z"}}`)
+	checkLiveVsReloadMultiEntry(t, assistantJSON, resultJSON, rawArgs)
+}
+
+// TestHubReplay_RepairedCommunicateLiveVsReload verifies that a healed
+// communicate (Arguments={}, RawArguments=malformed, IsError=false result)
+// renders NOTHING on both live and reload. The assistant turn defers the raw
+// bytes; the result turn's success confirms the call was healed, so no raw
+// fallback fires. Live delivered the healed message (not the raw bytes), and
+// reload now matches by rendering nothing from the raw bytes.
+func TestHubReplay_RepairedCommunicateLiveVsReload(t *testing.T) {
+	const rawArgs = `{message: "hello"}` // malformed JSON — bare key, healed
+	escaped := strings.ReplaceAll(rawArgs, `"`, `\"`)
+	assistantJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c7","name":"communicate","arguments":{},"raw_arguments":"` + escaped + `"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
+	resultJSON := []byte(`{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c7","name":"communicate","content":"{\"accepted\":true}","is_error":false}}]},"timestamp":"2026-06-01T10:00:01Z"}}`)
+	checkLiveVsReloadMultiEntry(t, assistantJSON, resultJSON, rawArgs)
 }
 
 // checkLiveVsReload runs the live-vs-reload metamorphic on one entry's JSON: a
@@ -202,7 +332,17 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 				}
 				// communicate surfaces live as EventCommunicate, not a tool item
 				// (the live ToolCallStart for communicate is suppressed). Reload
-				// maps the communicate tool_call to the same agentMessage.
+				// maps a well-formed communicate tool_call to the same
+				// agentMessage. A communicate with Arguments={} and
+				// RawArguments set is ambiguous on the assistant turn alone
+				// (rejected vs healed-and-executed share that durable shape),
+				// so both live and reload render nothing here: live emits no
+				// EventCommunicate (CommunicateMessageFromArguments({}) is
+				// ""), and reload defers the raw fallback to the paired result
+				// turn. The single-entry metamorphic compares the assistant
+				// turn alone, so both sides agree (nothing). The multi-entry
+				// test below exercises the paired result turn, which carries
+				// the error/PrevalOnly status that disambiguates.
 				if p.ToolCall.Name == "communicate" {
 					if msg := apptranscript.CommunicateMessageFromArguments(p.ToolCall.Arguments); msg != "" {
 						add(events.CommunicateData{Message: msg})
@@ -236,8 +376,14 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 			if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 				continue
 			}
-			// communicate results are suppressed live (its start was suppressed)
-			// and skipped on reload; omit to match both.
+			// communicate results are suppressed live (its start was suppressed).
+			// On reload, a communicate result is skipped here too â the raw
+			// fallback (if any) was deferred from the assistant turn and is
+			// surfaced by ProjectTurn's result-gated branch, not by this
+			// synthesizer. The single-entry metamorphic sees a lone result turn
+			// with an empty toolNames map, so neither side emits anything. The
+			// multi-entry test (checkLiveVsReloadMultiEntry) threads the raw
+			// bytes into the live side to exercise the result-gated fallback.
 			if p.ToolResult.Name == "communicate" {
 				continue
 			}
