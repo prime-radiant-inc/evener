@@ -41,7 +41,7 @@ import {
   PROMPT_DEPENDENT_WIRE_FIELDS,
   schemaPathKind,
 } from "@evener/appwire-client";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
@@ -135,8 +135,17 @@ export function LaunchConfigForm({
     setState(buildFormState(supportedOptions, current));
     setFieldErrors({});
     setStatusText("");
-    clearTimeout(clearTimerRef.current);
   }
+
+  // The draft swap above drops the status line, so the self-clear timer it armed
+  // has nothing left to clear - and this is where that teardown lives, not in
+  // the render-phase reseed. A render is not a place for a side effect: React
+  // double-invokes it under StrictMode and may discard a pass outright under
+  // concurrent rendering, so a render-phase clearTimeout can cancel a timer for
+  // a reseed no commit ever carried out. An effect's cleanup also runs on the
+  // edge a render can never reach - the form going away - which is what keeps a
+  // save's timer from outliving the form. It runs exactly once per host change.
+  useEffect(() => () => clearTimeout(clearTimerRef.current), [host]);
 
   function setStatus(text: string): void {
     clearTimeout(clearTimerRef.current);
