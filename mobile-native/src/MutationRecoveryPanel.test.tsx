@@ -85,6 +85,7 @@ it("projects only the exact target's recovery rows, in intent order", () => {
 			recovery(TARGET_B, "other", 1, "rejected"),
 			recovery(TARGET_A, "first", 1, "rejected"),
 		]),
+		() => true,
 	);
 
 	expect(rows.map((row) => row.clientMutationId)).toEqual(["first", "second"]);
@@ -92,17 +93,77 @@ it("projects only the exact target's recovery rows, in intent order", () => {
 	expect(rows.map((row) => row.status)).toEqual(["rejected", "orphaned"]);
 });
 
-it("offers restore only for a rejected row that carries restorable text, and never for an orphaned row", () => {
-	expect(nativeMutationRecoveryActions("rejected", true)).toEqual([
+it("offers restore only for an eligible rejected record and an eligible converter result", () => {
+	const eligible = recovery(TARGET_A, "eligible", 1, "rejected");
+	expect(nativeMutationRecoveryActions(eligible, true)).toEqual([
 		"restore",
 		"discard",
 	]);
-	expect(nativeMutationRecoveryActions("rejected", false)).toEqual(["discard"]);
-	expect(nativeMutationRecoveryActions("rejected", true, true)).toEqual([
-		"discard",
-	]);
-	expect(nativeMutationRecoveryActions("orphaned", true)).toEqual(["discard"]);
-	expect(nativeMutationRecoveryActions("orphaned", false)).toEqual(["discard"]);
+	// An eligible record whose converter result withholds cannot restore.
+	expect(nativeMutationRecoveryActions(eligible, false)).toEqual(["discard"]);
+	// No text a restore could write.
+	expect(
+		nativeMutationRecoveryActions(
+			recovery(TARGET_A, "no-text", 1, "rejected", {
+				composerText: undefined,
+				payload: { input: [] },
+			}),
+			true,
+		),
+	).toEqual(["discard"]);
+	// An attachment a text-only restore would silently drop.
+	expect(
+		nativeMutationRecoveryActions(
+			recovery(TARGET_A, "image", 1, "rejected", {
+				payload: {
+					input: [{ type: "image", mediaType: "image/png", data: "AQID" }],
+				},
+			}),
+			true,
+		),
+	).toEqual(["discard"]);
+	// An orphaned record has no daemon message to replay.
+	expect(
+		nativeMutationRecoveryActions(
+			recovery(TARGET_A, "orphan", 1, "orphaned"),
+			true,
+		),
+	).toEqual(["discard"]);
+});
+
+it("withholds restore from a projected row when the converter result withholds it", () => {
+	const rows = projectNativeMutationRecovery(
+		TARGET_A,
+		snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
+		() => false,
+	);
+	// The record still offers Restore, but the withholding converter leaves the
+	// row's actions discard-only: offered-but-blocked, not unoffered.
+	expect(rows[0].restoreOffered).toBe(true);
+	expect(rows[0].actions).toEqual(["discard"]);
+});
+
+it("offers an ordinary eligible rejected record restore and discard", () => {
+	const rows = projectNativeMutationRecovery(
+		TARGET_A,
+		snapshot([recovery(TARGET_A, "rejected", 1, "rejected")]),
+		() => true,
+	);
+	expect(rows[0].actions).toEqual(["restore", "discard"]);
+});
+
+it("never offers restore for a rejected interrupt, even when it somehow carries text", () => {
+	const interrupt = recovery(TARGET_A, "interrupt", 1, "rejected", {
+		method: "turn/interrupt",
+		composerText: "stop",
+	});
+	expect(nativeMutationRecoveryActions(interrupt, true)).toEqual(["discard"]);
+	const rows = projectNativeMutationRecovery(
+		TARGET_A,
+		snapshot([interrupt]),
+		() => true,
+	);
+	expect(rows[0].actions).toEqual(["discard"]);
 });
 
 it("reports the payload's text when a record carries no composer text", () => {
@@ -184,6 +245,7 @@ it("discards exactly the row's clientMutationId through the target's own project
 	const row = projectNativeMutationRecovery(
 		TARGET_A,
 		snapshot([recovery(TARGET_A, "row-1", 1, "rejected")]),
+		() => true,
 	)[0];
 
 	expect(await discardRecoveredMutation(projection, row)).toBe(true);
@@ -196,6 +258,7 @@ it("refuses to discard a row another target owns, so a discard is never blanket"
 	const foreign = projectNativeMutationRecovery(
 		TARGET_B,
 		snapshot([recovery(TARGET_B, "foreign", 1, "rejected")]),
+		() => true,
 	)[0];
 
 	expect(
@@ -425,6 +488,7 @@ it("surfaces a rejected discard instead of leaving an unhandled rejection", asyn
 	const row = projectNativeMutationRecovery(
 		result.current.targetKey,
 		result.current.snapshot,
+		() => true,
 	)[0];
 
 	act(() => {
@@ -450,6 +514,7 @@ it("leaves no failure after a successful discard", async () => {
 	const row = projectNativeMutationRecovery(
 		result.current.targetKey,
 		result.current.snapshot,
+		() => true,
 	)[0];
 
 	act(() => {
@@ -597,7 +662,7 @@ it("treats a record with attachment metadata as carrying attachments even withou
 		payload: { input: [{ type: "text", text: "look [image 1]" }] },
 	});
 	expect(recordCarriesAttachments(record)).toBe(true);
-	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]), () => true);
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 });
@@ -618,7 +683,7 @@ it("withholds restore for a rejected record that carries an image, and says why"
 		composerText: "look [image 1]",
 	});
 	expect(recordCarriesAttachments(record)).toBe(true);
-	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]), () => true);
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 
@@ -703,6 +768,7 @@ it("clears an in-scope discard failure after a later successful discard", async 
 	const row = projectNativeMutationRecovery(
 		result.current.targetKey,
 		result.current.snapshot,
+		() => true,
 	)[0];
 	act(() => {
 		result.current.discard(row);
@@ -738,6 +804,7 @@ it("scopes a discard failure to its target, so switching targets shows the new t
 	const row = projectNativeMutationRecovery(
 		result.current.targetKey,
 		result.current.snapshot,
+		() => true,
 	)[0];
 	act(() => {
 		result.current.discard(row);
@@ -766,7 +833,7 @@ it("withholds restore for an image input carried by path or metadata without inl
 		},
 	});
 	expect(recordCarriesAttachments(record)).toBe(true);
-	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]));
+	const rows = projectNativeMutationRecovery(TARGET_A, snapshot([record]), () => true);
 	expect(rows[0].carriesAttachments).toBe(true);
 	expect(rows[0].actions).toEqual(["discard"]);
 });
@@ -825,6 +892,7 @@ it("ignores a stale discard rejection that lands after a newer discard", async (
 	const row = projectNativeMutationRecovery(
 		result.current.targetKey,
 		result.current.snapshot,
+		() => true,
 	)[0];
 	act(() => {
 		result.current.discard(row);
