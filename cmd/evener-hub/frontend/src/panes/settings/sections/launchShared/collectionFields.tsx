@@ -33,11 +33,11 @@ import {
   validatePathListAdd,
 } from "@evener/appwire-client";
 import { type ReactNode, useId } from "react";
-import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
 import { Button, CollectionEditor, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
+import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 const CLASS = {
@@ -128,6 +128,9 @@ export interface PathListFieldProps {
   onChange: (items: string[]) => void;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
   inheritedItems?: readonly string[];
+  /** The path picker's helpers for the host whose layer is being edited
+   * (component 07b). Omitted = controllerLaunchFormPaths (today's behavior). */
+  paths?: LaunchFormPaths;
 }
 
 /** The pathList add field's empty-state text - the picker's closed trigger
@@ -155,9 +158,10 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
  * field-level error" / "uses valid.path if present else the raw trimmed input"
  * behaviors. The spawn pane's own Advanced-options pathList control shares that
  * same decision. */
-export function PathListField({ option, items, onChange, validatePath, inheritedItems }: PathListFieldProps) {
+export function PathListField({ option, items, onChange, validatePath, inheritedItems, paths }: PathListFieldProps) {
   const kind = pathFieldKind(option.pathKind);
   const placeholder = pathAddPlaceholder(kind);
+  const formPaths = paths ?? controllerLaunchFormPaths;
   return (
     <StringListField
       option={option}
@@ -176,6 +180,7 @@ export function PathListField({ option, items, onChange, validatePath, inherited
             placeholder={placeholder}
             ariaLabel={option.label}
             disabled={disabled}
+            paths={formPaths}
           />
         </div>
       )}
@@ -208,6 +213,7 @@ function PathAddField({
   placeholder,
   ariaLabel,
   disabled,
+  paths,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -215,16 +221,17 @@ function PathAddField({
   placeholder: string;
   ariaLabel: string;
   disabled: boolean;
+  paths: LaunchFormPaths;
 }) {
   return (
     <>
       <span className={CLASS.pathAddField}>
         <PathField
-          directory={directoryActions}
+          directory={paths.directory}
           value={value}
           onChange={onChange}
           kind={kind}
-          complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+          complete={paths.complete}
           placeholder={placeholder}
           ariaLabel={ariaLabel}
           disabled={disabled}
@@ -244,6 +251,9 @@ export interface ModelListFieldProps {
   explicitEmpty: boolean;
   onExplicitEmptyChange: (checked: boolean) => void;
   inheritedItems?: readonly string[];
+  /** The host whose own model catalog the picker offers (component 07b).
+   * Omitted = the local hub, so a direct render is today's local picker. */
+  host?: string;
 }
 
 /**
@@ -262,6 +272,7 @@ export function ModelListField({
   explicitEmpty,
   onExplicitEmptyChange,
   inheritedItems,
+  host,
 }: ModelListFieldProps) {
   return (
     <StringListField
@@ -278,7 +289,7 @@ export function ModelListField({
       inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
         <div className={CLASS.modelAddRow}>
-          <ModelAddField value={value} onChange={setDraft} disabled={disabled} />
+          <ModelAddField host={host} value={value} onChange={setDraft} disabled={disabled} />
         </div>
       )}
     />
@@ -287,19 +298,22 @@ export function ModelListField({
 
 /**
  * The modelList add row: the shared model picker plus CollectionEditor's own
- * submit button. The picker is unscoped (model/list with no harness/cwd) -
- * a launch-config fallback list isn't scoped to one live spawn - matching the
- * scalar modelPicker field in this section's sibling fields.tsx.
+ * submit button. The picker is host-scoped (component 07b): the local hub's
+ * plain model/list with no harness/cwd - a launch-config fallback list isn't
+ * scoped to one live spawn - or the selected remote host's through the proxy,
+ * matching the scalar modelPicker field in this section's sibling fields.tsx.
  *
  * The picked id lands in CollectionEditor's `draft`; the Add button submits it
  * (the picker's own panel is portaled outside this <form>, so Enter inside the
  * picker picks a model rather than submitting the row).
  */
 function ModelAddField({
+  host,
   value,
   onChange,
   disabled,
 }: {
+  host?: string;
   value: string;
   onChange: (value: string) => void;
   disabled: boolean;
@@ -307,7 +321,7 @@ function ModelAddField({
   return (
     <>
       <span className={CLASS.modelAddField}>
-        <SettingsModelCatalog value={value} onChange={onChange} />
+        <SettingsModelCatalog host={host} value={value} onChange={onChange} />
       </span>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add

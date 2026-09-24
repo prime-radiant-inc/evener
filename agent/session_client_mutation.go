@@ -710,6 +710,18 @@ const (
 // running turn is safe. It is never called with ClientMutationStartClaimed for
 // a claim that refused, so a refused claim never announces a running turn.
 func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable func(turnID string, phase ClientMutationStartPhase)) (string, bool, error) {
+	// The serve loop calls this as an idle probe after every message it
+	// processes, so most calls find nothing to run. Such a probe is not
+	// admitted work and must not take a retirement lease: beginning one
+	// restarts the idle interval, which would move the deadline from the
+	// settlement to whenever the probe happened to run. Returning without a
+	// lease is safe because a start accepted after this check wakes the loop,
+	// which probes again, and until it is claimed the pending start is itself
+	// retirement evidence (retirementInputBlockers). A start that is runnable
+	// here is re-checked under the lease below.
+	if _, runnable := s.runnableClientMutationStartTurnID(); !runnable {
+		return "", false, nil
+	}
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
 		return "", false, admissionErr

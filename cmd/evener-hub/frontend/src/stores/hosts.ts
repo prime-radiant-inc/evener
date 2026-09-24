@@ -45,6 +45,14 @@ interface HostsStoreState {
    * request is still out.
    */
   reading: number;
+  /**
+   * Per host, how many times the registry has reported it coming BACK - an
+   * `attached` answer that follows one saying the host was away (see the
+   * transition subscription below). A host-scoped pane depends on it so that a
+   * host which was away when the pane read re-reads when it returns: the same
+   * host under the same registration, so a re-read and never a remount.
+   */
+  attachEpochs: Record<string, number>;
   fetch: () => Promise<void>;
   /**
    * Quiet re-read for the section's background poll. Unlike fetch it never
@@ -209,6 +217,139 @@ export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
   return selectableHostRows(load).some((row) => row.name === host);
 }
 
+/** registrySaysHostGone answers whether the registry's own answer says `host` is
+ * not a configured host: not listed at all, or listed as removed. It is the ONE
+ * predicate the frame's refusal (hostScopedSurface.tsx) and the per-host
+ * registries' eviction (stores/launchConfig.ts, stores/extensions.ts,
+ * stores/agentsDoc.ts) share, so the two can never disagree about what "gone"
+ * means - a host refused by one and served by the other is exactly the leak this
+ * exists to close.
+ *
+ * It answers false while the registry has no answer - a read in flight, or one
+ * that failed - because an unanswered registry is no evidence: evicting on it
+ * would drop a host's caches for a host nobody has described yet. A host that is
+ * merely UNATTACHED is still a configured row (attachment is live session state,
+ * not the registration, see hostInstanceIdentity), so it is never gone either. */
+export function registrySaysHostGone(load: HostsLoadState, host: string): boolean {
+  return load.phase === "ready" && !isConfiguredHost(load, host);
+}
+
+// --- registration identity ---------------------------------------------------
+//
+// The registry's own row is the identity every per-host store instance is built
+// against (stores/launchConfig.ts, stores/extensions.ts, stores/agentsDoc.ts):
+// a host removed and re-added under the same name is a DIFFERENT registration,
+// and that registration's schema, catalogs and document are its own, not the
+// previous one's. Keying an instance by the name alone serves the previous
+// registration's cache to the new one, and lets a response the old registration
+// had in flight land in it.
+//
+// The identity is the row's REGISTRATION fields, not the whole row: the hub
+// reports live session state on the same row (attach, versions, os/arch), and
+// rebuilding an instance for one of those would throw away that host's cache
+// and re-read everything on every attach. The registry's revision (above) is
+// not usable for this either - it advances for those same live changes.
+
+/** HostRegistration is what the registry says REGISTERS a host right now:
+ *
+ *   - a HostRow, when its current snapshot lists that host;
+ *   - null, when its snapshot lists no such host (removed, or never added);
+ *   - undefined, when it has no snapshot to answer from at all - still reading,
+ *     or its read failed. That is no evidence either way, so an instance built
+ *     before the answer is kept. */
+export type HostRegistration = HostRow | null | undefined;
+
+/** currentHostRegistration reads that answer for `host` from the registry's
+ * current snapshot. */
+export function currentHostRegistration(host: string): HostRegistration {
+  const load = hostsStore.getState().load;
+  if (load.phase !== "ready") return undefined;
+  return load.hosts.find((row) => row.name === host) ?? null;
+}
+
+/** sameHostRegistration compares two rows on the fields that REGISTER a host -
+ * the configuration a per-host store instance and its caches are built against
+ * - and deliberately not on the live session fields the hub reports about a
+ * connection (attached, serverName/serverVersion/hubVersion, os/arch,
+ * lastAttachError, midAttach): those move without the registration changing, so
+ * an instance rebuilt on one would lose that host's cache for no reason. Roots
+ * compare as lists, so an absent and an empty one describe the same host (the
+ * wire omits empty optional arrays - sameRoots). */
+export function sameHostRegistration(a: HostRow, b: HostRow): boolean {
+  return (
+    a.name === b.name &&
+    a.address === b.address &&
+    a.user === b.user &&
+    a.keyPath === b.keyPath &&
+    a.evenerPath === b.evenerPath &&
+    a.configPath === b.configPath &&
+    a.addr === b.addr &&
+    sameRoots(a.roots, b.roots) &&
+    a.origin === b.origin &&
+    a.removed === b.removed
+  );
+}
+
+/** hostRegistrationChanged answers whether an instance recorded against
+ * `recorded` is invalidated by the registry's current answer `current`:
+ *
+ *   - no answer (undefined) is no evidence, so nothing changes;
+ *   - an instance built before the registry ever answered (recorded undefined)
+ *     ADOPTS the first answer rather than being rebuilt: nothing has named that
+ *     host's registration differently yet, and a name-addressed instance is the
+ *     same host wherever the row points (the deep-link case - a pane can resolve
+ *     a remote host before the picker's own list read lands);
+ *   - otherwise any change invalidates it - a different registration, the row
+ *     appearing, or the host leaving the registry.
+ *
+ * An unchanged snapshot re-publishes nothing (see publishReady) and even a
+ * changed one leaves every host whose configuration did not move with the same
+ * registration, so nothing here is rebuilt on the poll cadence or on an attach.
+ */
+export function hostRegistrationChanged(recorded: HostRegistration, current: HostRegistration): boolean {
+  if (current === undefined || recorded === undefined) return false;
+  if (recorded === null || current === null) return recorded !== current;
+  return !sameHostRegistration(recorded, current);
+}
+
+// --- the identity a pane's body is keyed on ----------------------------------
+//
+// hostScopedSurface keys a pane's BODY on this, and the launcher hands it to
+// LaunchConfigForm as the owner of its draft. A body left mounted across a
+// re-registration keeps pane-local state that belongs to the registration the
+// user left - a launch draft, an MCP add-form's draft, a pending Remove
+// confirmation - and Save then writes it to the NEW registration. The host NAME
+// cannot express that: a host removed and re-added under the same name has the
+// same one. `revision` cannot either: it advances for the live session fields an
+// attach moves, which must not remount a body whose host never moved.
+//
+// So this is the identity of the per-host store INSTANCE that answer implies,
+// derived by the SAME rule the instances themselves are built on
+// (currentHostRegistration + hostRegistrationChanged) and therefore changing
+// exactly when one of them is rebuilt: a re-registration, an appearance after a
+// removal, a removal. An instance built before the registry had an answer ADOPTS
+// the first one rather than being replaced, and so does this - a body whose host
+// came from a deep link is not remounted when the picker's own list read lands.
+const hostInstanceIdentities = new Map<string, { token: number; registration: HostRegistration }>();
+let nextHostInstanceToken = 1;
+
+/** hostInstanceIdentity is the surface identity of `host`: a token that changes
+ * exactly when the registry says that host's registration changed - and for no
+ * other reason. It is what a React key or a draft owner is built on. */
+export function hostInstanceIdentity(host: string): number {
+  const current = currentHostRegistration(host);
+  const recorded = hostInstanceIdentities.get(host);
+  if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, current)) {
+    // The first answer after a token was minted before the registry had one
+    // identifies it from here on; every other unchanged answer is the same one.
+    if (current !== undefined) recorded.registration = current;
+    return recorded.token;
+  }
+  const token = nextHostInstanceToken++;
+  hostInstanceIdentities.set(host, { token, registration: current });
+  return token;
+}
+
 // quietReRead is the shared quiet list read: publishReady's generation-guarded
 // publish with neither fetch's loading skeleton nor its error state. refresh
 // runs it behind the in-flight gate for the background poll, and the mutation
@@ -262,6 +403,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   revision: 0,
   publishedRevision: null,
   reading: 0,
+  attachEpochs: {},
 
   fetch: async () => {
     const generation = ++latestGeneration;
@@ -347,12 +489,15 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   resetForTests: () => {
+    hostInstanceIdentities.clear();
+    nextHostInstanceToken = 1;
+    lastAttached.clear();
     refreshInflight = null;
     latestGeneration = 0;
     latestPublishedGeneration = 0;
     lastClient = connectionStore.getState().client;
     lastPublished = null;
-    set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0 });
+    set({ load: { phase: "loading" }, revision: 0, publishedRevision: null, reading: 0, attachEpochs: {} });
   },
 }));
 
@@ -383,6 +528,61 @@ hostsStore.subscribe((state) => {
     publishedRevision: previous.revision + 1,
   }));
 });
+
+// --- attachment transitions --------------------------------------------------
+//
+// A remote host that is merely AWAY refuses evener/host/request (the hub has no
+// channel to forward through), so a pane that loaded in that window sits on its
+// failure. Nothing else re-issues that read: a host's attachment is live session
+// state, deliberately not part of the registration identity
+// (hostInstanceIdentity above), so the per-host store instance is the same
+// across an attach cycle and every pane's [store]-keyed load effect stays put.
+//
+// So the registry's own answer drives the retry: when a host's `attached` flips
+// from false to true, its attach epoch advances and a host-scoped pane that
+// depends on the epoch re-issues its read. There is no host lifecycle
+// notification on the wire (see HostPicker), and the 2s poll is what reports the
+// transition, so this is the only signal available.
+//
+// It is emphatically NOT an identity. A re-registration is a change of the
+// registration FIELDS, which rebuilds the instance and remounts the body
+// (hostInstanceIdentity); this advances for a live session flag on the SAME
+// registration, so nothing is remounted and nothing reseeded - a reconnect
+// refreshes the data and leaves what the user typed alone. The two cannot be
+// confused: one is compared from the row's configuration fields, the other from
+// `attached` alone, and a host that re-registers does not advance this unless it
+// also reports the away -> back sequence.
+//
+// Only false -> true advances it, and only for a host the registry has already
+// described: a host first seen attached has not come back from anywhere, and a
+// host reported away has nothing to re-read. `lastAttached` is deliberately not
+// cleared by a re-read or a failed read - a section's foreground fetch passes
+// through "loading" with no rows at all, and the flip that follows it must still
+// be seen (a memory derived from the previous snapshot alone would lose it).
+const lastAttached = new Map<string, boolean>();
+hostsStore.subscribe((state) => {
+  if (state.load.phase !== "ready") return;
+  let next: Record<string, number> | null = null;
+  for (const row of state.load.hosts) {
+    const was = lastAttached.get(row.name);
+    if (was === row.attached) continue;
+    if (row.attached && was === false) {
+      next ??= { ...state.attachEpochs };
+      next[row.name] = (next[row.name] ?? 0) + 1;
+    }
+    lastAttached.set(row.name, row.attached);
+  }
+  if (next !== null) hostsStore.setState({ attachEpochs: next });
+});
+
+/** useHostAttachEpoch is `host`'s attach epoch: it advances each time the
+ * registry reports this host coming back from away, and never otherwise. A
+ * host-scoped pane that can be left on a failure state depends on it so a host
+ * that returns re-issues the read it refused while it was gone (see the
+ * transition block above). */
+export function useHostAttachEpoch(host: string): number {
+  return useHostsStore((state) => state.attachEpochs[host] ?? 0);
+}
 
 export function useHostsStore<T>(selector: (state: HostsStoreState) => T): T {
   return useStore(hostsStore, selector);

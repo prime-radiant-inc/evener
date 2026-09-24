@@ -10,7 +10,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
-import { hostsStore } from "./hosts";
+import {
+  currentHostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+  sameHostRegistration,
+} from "./hosts";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -437,5 +443,171 @@ describe("reading", () => {
     gates[1]?.({ hosts: [] });
     await second;
     expect(hostsStore.getState().reading).toBe(0);
+  });
+});
+
+// --- host registration identity (component 07b, round 8) ---------------------
+//
+// A per-host store instance caches that host's own data (schema, catalogs,
+// document). Keying the cache by NAME alone means a host removed and re-added
+// under the same name with a different registration is served the previous
+// registration's cache, and an in-flight response from the old registration
+// can land in the new one. The registry's own row is the identity those caches
+// are built against: `currentHostRegistration` reads it, and
+// `hostRegistrationChanged` answers whether it still describes the instance.
+//
+// The live session fields (attached, the reported versions, os/arch, the
+// attach error, midAttach) move without the registration changing, so they are
+// deliberately NOT part of the identity: a store rebuilt on one of those would
+// re-read everything on every attach, which is the churn the registry's own
+// unchanged-snapshot rule exists to avoid.
+
+describe("host registration identity", () => {
+  test("currentHostRegistration reads the registry's own row for the host", () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [row("beta")] } });
+    expect(currentHostRegistration("beta")).toEqual(row("beta"));
+    expect(currentHostRegistration("gamma")).toBeNull();
+  });
+
+  test("currentHostRegistration is undefined while the registry has no answer", () => {
+    // Never fetched, still reading, or failed: no evidence either way, so
+    // nothing may be invalidated from it.
+    expect(currentHostRegistration("beta")).toBeUndefined();
+    hostsStore.setState({ load: { phase: "error", message: "nope" } });
+    expect(currentHostRegistration("beta")).toBeUndefined();
+  });
+
+  test("sameHostRegistration compares the registration, not the attach lifecycle", () => {
+    const base = row("beta");
+    const registered = { ...base, address: "beta.example:22", user: "u", roots: ["/a", "/b"] };
+    expect(sameHostRegistration(registered, { ...registered })).toBe(true);
+    // Fields the hub reports about a LIVE connection, which move without any
+    // re-registration.
+    expect(
+      sameHostRegistration(registered, {
+        ...registered,
+        attached: true,
+        serverName: "hub",
+        serverVersion: "1.2.3",
+        hubVersion: "9",
+        os: "linux",
+        arch: "arm64",
+        lastAttachError: "handshake failed",
+        midAttach: true,
+      }),
+    ).toBe(true);
+    // A different registration.
+    expect(sameHostRegistration(registered, { ...registered, address: "elsewhere:22" })).toBe(false);
+    expect(sameHostRegistration(registered, { ...registered, removed: true })).toBe(false);
+    // An absent and an empty root list describe the same host (the wire omits
+    // empty optional arrays).
+    expect(sameHostRegistration({ ...registered, roots: ["/a", "/b"] }, { ...registered, roots: undefined })).toBe(
+      false,
+    );
+    expect(sameHostRegistration({ ...registered, roots: [] }, { ...registered, roots: undefined })).toBe(true);
+  });
+
+  test("hostRegistrationChanged treats an unread registry as no evidence", () => {
+    const registered = row("beta");
+    // Built before the registry ever answered: the first answer identifies the
+    // instance rather than invalidating it.
+    expect(hostRegistrationChanged(undefined, registered)).toBe(false);
+    // No answer now.
+    expect(hostRegistrationChanged(registered, undefined)).toBe(false);
+    // The same registration, and the same absence of one.
+    expect(hostRegistrationChanged(registered, registered)).toBe(false);
+    expect(hostRegistrationChanged(null, null)).toBe(false);
+    // A registration appearing, changing, or leaving.
+    expect(hostRegistrationChanged(null, registered)).toBe(true);
+    expect(hostRegistrationChanged(registered, { ...registered, address: "elsewhere:22" })).toBe(true);
+    expect(hostRegistrationChanged(registered, null)).toBe(true);
+  });
+});
+
+describe("the attach epoch", () => {
+  // What a host-scoped pane re-reads on when a host that was away comes back
+  // (panes/settings/sections/useConnectedEffect.ts's useHostScopedLoad). It has
+  // to advance for that transition and for NOTHING else: panes re-read on it,
+  // and at the panes that blank for different content an epoch that moved for a
+  // poll or an attach-to-detach would take a form's draft with it.
+  test("advances when a host comes back, and for nothing else", () => {
+    const load = (host: HostRow) => hostsStore.setState({ load: { phase: "ready", hosts: [host] } });
+    const epoch = () => hostsStore.getState().attachEpochs.beta;
+
+    // Away, and still away (a mid-attach report included): nothing has come back.
+    load(row("beta"));
+    expect(epoch()).toBeUndefined();
+    load({ ...row("beta"), midAttach: true });
+    expect(epoch()).toBeUndefined();
+
+    // Back: the one transition this exists for.
+    load({ ...row("beta"), attached: true });
+    expect(epoch()).toBe(1);
+
+    // Still attached, however much the live state moves: no further advance.
+    load({ ...row("beta"), attached: true, serverVersion: "2.0.0", hubVersion: "9" });
+    expect(epoch()).toBe(1);
+
+    // Away again, and back again: the second reconnect.
+    load(row("beta"));
+    load({ ...row("beta"), attached: true });
+    expect(epoch()).toBe(2);
+  });
+
+  test("a section's foreground fetch does not hide the flip that follows it", () => {
+    const load = (host: HostRow) => hostsStore.setState({ load: { phase: "ready", hosts: [host] } });
+
+    load(row("beta"));
+    // fetch() passes through "loading" with NO rows at all, and the answer that
+    // follows reports the host back: the flip is measured against the last host
+    // we saw, not against the previous snapshot (which describes none).
+    hostsStore.setState({ load: { phase: "loading" } });
+    load({ ...row("beta"), attached: true });
+
+    expect(hostsStore.getState().attachEpochs.beta).toBe(1);
+  });
+
+  test("a host first seen attached has not come back from anywhere", () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [{ ...row("beta"), attached: true }] } });
+
+    expect(hostsStore.getState().attachEpochs.beta).toBeUndefined();
+  });
+
+  test("resetForTests forgets what was attached", () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [row("beta")] } });
+    hostsStore.setState({ load: { phase: "ready", hosts: [{ ...row("beta"), attached: true }] } });
+    expect(hostsStore.getState().attachEpochs.beta).toBe(1);
+
+    hostsStore.getState().resetForTests();
+
+    hostsStore.setState({ load: { phase: "ready", hosts: [{ ...row("beta"), attached: true }] } });
+    expect(hostsStore.getState().attachEpochs).toEqual({});
+  });
+});
+
+describe("registrySaysHostGone", () => {
+  // The predicate the frame's refusal and the per-host registries' eviction
+  // share (see its own doc comment). What matters most is what it does NOT call
+  // gone: an unanswered registry, and a host that is merely unattached.
+  test("answers only for an answered registry, and never for an unattached host", () => {
+    const gone = () => registrySaysHostGone(hostsStore.getState().load, "beta");
+
+    // No answer yet, and a failed read: no evidence either way.
+    expect(gone()).toBe(false);
+    hostsStore.setState({ load: { phase: "error", message: "the list read failed" } });
+    expect(gone()).toBe(false);
+
+    // Answered, and beta is in it - attached or not.
+    hostsStore.setState({ load: { phase: "ready", hosts: [row("beta")] } });
+    expect(gone()).toBe(false);
+
+    // Answered and beta is not listed: gone.
+    hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+    expect(gone()).toBe(true);
+
+    // Answered and beta is listed as removed: gone (the registry's own removal
+    // answer, which the frame's refusal has always honoured).
+    hostsStore.setState({ load: { phase: "ready", hosts: [{ ...row("beta"), removed: true }] } });
+    expect(gone()).toBe(true);
   });
 });

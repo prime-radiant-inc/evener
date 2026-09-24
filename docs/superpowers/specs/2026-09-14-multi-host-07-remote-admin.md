@@ -705,6 +705,35 @@ Decompose component 07 into four landable PRs.
   `evener/host/notification` (§"Notification envelope") and refresh only when
   the notification's `Host` matches the selected host.
 
+**Implementation status:** landed — the selected host lives in the settings
+route rather than in a per-pane selector: `useSettingsHost`
+(`cmd/evener-hub/frontend/src/panes/settings/settingsHost.ts`) reads the
+route's `host` parameter (`HOST_QUERY_PARAM`,
+`cmd/evener-hub/frontend/src/shell/routing.ts`), and the store mirrors the
+route in both directions — an app-built navigation sets the selection to the
+host its target names and drops it when the target is not a settings route, at
+the moment the history changes and before any pane renders
+(`syncSettingsHostToRoute`, registered with `navigate` in the same module) —
+so the pane and the address bar never disagree. Every host-scoped pane reaches
+the selection through the one shared frame `HostScopedSurface`
+(`cmd/evener-hub/frontend/src/panes/settings/sections/hostScopedSurface.tsx`),
+which is also what refuses an unknown or unattached host honestly: it says so
+only once the registry reports `ready`, and until then renders that host's own
+state instead of this hub's. A **remote** host's reads AND writes for each
+family go through `evener/host/request` (`hostRequest`,
+`cmd/evener-hub/frontend/src/stores/hostRouting.ts`) via one store instance
+per host — `launchConfigStoreForHost`
+(`cmd/evener-hub/frontend/src/stores/launchConfig.ts`),
+`extensionsInstanceForHost`
+(`cmd/evener-hub/frontend/src/stores/extensions.ts`) and
+`agentsDocStoreForHost` (`cmd/evener-hub/frontend/src/stores/agentsDoc.ts`) —
+rather than one store with a host-routing port, because the launch option
+schema cache is server-global and a shared instance would serve one host's
+schema for another. A `local` selection keeps today's direct path
+byte-for-byte. The stores act on an `evener/host/notification` frame only when
+its `params.host` matches the selected host.
+
+
 ### PR 07c — credential push
 
 - New file `cmd/evener-hub/app_host_credentials.go` with the push controller and
