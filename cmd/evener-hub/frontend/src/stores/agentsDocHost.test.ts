@@ -181,3 +181,47 @@ test("a host the registry reports gone keeps no instance and refuses instead of 
   } as AnyNotification);
   expect(registered.getState().doc?.content).toBe(DOC.content);
 });
+
+/** Puts the connection through a reconnect cycle, keeping the client. */
+async function reconnect(): Promise<void> {
+  connectionStore.setState({ state: "reconnecting" });
+  connectionStore.setState({ state: "ready" });
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+// A host REMOVED while a pane is mounted is the case the accessor's own lazy
+// eviction can never run for: the frame renders its "no longer configured" note
+// instead of the body (hostScopedSurface.tsx), so nothing calls the accessor for
+// that host again. Left to the accessor, the instance stays in the map for the
+// rest of the session with its `changed` subscription AND its connection
+// subscriber live - and that subscriber re-reads the document on every reconnect,
+// forwarding evener/host/request for a host the registry no longer lists.
+test("a host removed while a pane is mounted is evicted, so nothing of it survives", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/host/request", () => DOC as never);
+  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
+  // What the pane is holding: it resolved this host's instance and read it.
+  const mounted = agentsDocStoreForHost("beta");
+  await mounted.getState().fetch();
+  const dialed = fake.calls.length;
+
+  // Removed - by another client, say. The registry's next answer does not list it.
+  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+
+  // The instance the pane still holds is unwired: that host's own wrapped
+  // broadcast lands nowhere.
+  fake.emitNotification({
+    method: "evener/host/notification",
+    params: {
+      host: "beta",
+      method: "evener/settings/agentsDoc/changed",
+      params: { ...DOC, content: "changed after the removal" },
+    },
+  } as AnyNotification);
+  expect(mounted.getState().doc?.content).toBe(DOC.content);
+
+  // And a reconnect issues no request for a host the registry no longer lists.
+  await reconnect();
+  expect(fake.calls.length).toBe(dialed);
+});

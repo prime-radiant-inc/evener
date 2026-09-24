@@ -24,7 +24,7 @@
 // not remounted by its own change.
 import { Fragment, type ReactNode } from "react";
 import { isLocalHost } from "../../../stores/hostRouting";
-import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../stores/hosts";
+import { hostInstanceIdentity, registrySaysHostGone, useHostsStore } from "../../../stores/hosts";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostPicker } from "../HostPicker";
 import { useSettingsHost } from "../settingsHost";
@@ -46,8 +46,10 @@ export function HostScopedSurface({ children }: HostScopedSurfaceProps) {
   const load = useHostsStore((state) => state.load);
   // Only the registry's own answer may call a host gone: while it is still
   // being read, the body renders and shows that host's own state (or its typed
-  // refusal) instead of a premature "no longer configured".
-  const gone = !isLocalHost(host) && load.phase === "ready" && !isConfiguredHost(load, host);
+  // refusal) instead of a premature "no longer configured". The predicate is the
+  // SHARED one (stores/hosts.ts's registrySaysHostGone), so this refusal and the
+  // per-host registries' eviction can never disagree about what "gone" means.
+  const gone = !isLocalHost(host) && registrySaysHostGone(load, host);
   // The body's key is the host's INSTANCE identity, not its name: a host removed
   // and re-added under the same name is a different registration whose per-host
   // stores are new instances, and the name alone would leave the previous

@@ -43,7 +43,13 @@ import {
 } from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
-import { currentHostRegistration, type HostRegistration, hostRegistrationChanged } from "./hosts";
+import {
+  currentHostRegistration,
+  type HostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+} from "./hosts";
 import { launchConfigStore, launchConfigStoreForHost } from "./launchConfig";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
@@ -247,6 +253,27 @@ function disposeHostInstance(instance: ExtensionsInstance): void {
   instance.launchLayer.dispose();
 }
 
+// The registry's own transition evicts - never a lookup. A host that leaves the
+// registry is rendered as the frame's own refusal instead of its body
+// (hostScopedSurface.tsx), so nothing calls this accessor for it again: left to
+// the accessor, the instance would stay in this map for the rest of the session
+// with its three cores' subscriptions live, and syncHostInstances would go on
+// calling connectionChanged on them - so every reconnect would forward
+// evener/host/request for a host the registry no longer lists. Only the
+// registry's ANSWERED "gone" evicts (stores/hosts.ts's registrySaysHostGone), so
+// a host that is merely unattached, or one whose read has not answered yet, is
+// never dropped.
+hostsStore.subscribe(() => {
+  const load = hostsStore.getState().load;
+  for (const name of [...hostInstances.keys()]) {
+    if (registrySaysHostGone(load, name)) {
+      const recorded = hostInstances.get(name);
+      if (recorded !== undefined) disposeHostInstance(recorded.instance);
+      hostInstances.delete(name);
+    }
+  }
+});
+
 /** extensionsInstanceForHost returns the extensions instance for `host`: the
  * controller's own instance for the local hub (and for an absent host), and a
  * per-host instance for a remote one. Nothing here falls back to the
@@ -256,12 +283,12 @@ export function extensionsInstanceForHost(host: string | null | undefined): Exte
   const name = host as string;
   const registration = currentHostRegistration(name);
   const recorded = hostInstances.get(name);
-  // The registry does not list this host: nothing is kept for it. A
-  // null-registration placeholder would have held a live instance - three cores
-  // with three live subscriptions, each willing to read that host's catalogs -
-  // behind a host that is not registered; instead the previous registration's
-  // cores are disposed and the entry goes (so a re-add builds a fresh one).
-  if (registration === null) {
+  // The registry says this host is not configured (stores/hosts.ts's
+  // registrySaysHostGone - the same answer the eviction subscription above acts
+  // on): nothing is kept for it, so a lookup that races that subscription - or
+  // one made before this module was loaded - cannot rebuild an instance whose
+  // three cores would open subscriptions nothing would ever unwind.
+  if (registrySaysHostGone(hostsStore.getState().load, name)) {
     if (recorded !== undefined) {
       disposeHostInstance(recorded.instance);
       hostInstances.delete(name);

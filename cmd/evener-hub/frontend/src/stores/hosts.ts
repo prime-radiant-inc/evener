@@ -217,6 +217,23 @@ export function isConfiguredHost(load: HostsLoadState, host: string): boolean {
   return selectableHostRows(load).some((row) => row.name === host);
 }
 
+/** registrySaysHostGone answers whether the registry's own answer says `host` is
+ * not a configured host: not listed at all, or listed as removed. It is the ONE
+ * predicate the frame's refusal (hostScopedSurface.tsx) and the per-host
+ * registries' eviction (stores/launchConfig.ts, stores/extensions.ts,
+ * stores/agentsDoc.ts) share, so the two can never disagree about what "gone"
+ * means - a host refused by one and served by the other is exactly the leak this
+ * exists to close.
+ *
+ * It answers false while the registry has no answer - a read in flight, or one
+ * that failed - because an unanswered registry is no evidence: evicting on it
+ * would drop a host's caches for a host nobody has described yet. A host that is
+ * merely UNATTACHED is still a configured row (attachment is live session state,
+ * not the registration, see hostInstanceIdentity), so it is never gone either. */
+export function registrySaysHostGone(load: HostsLoadState, host: string): boolean {
+  return load.phase === "ready" && !isConfiguredHost(load, host);
+}
+
 // --- registration identity ---------------------------------------------------
 //
 // The registry's own row is the identity every per-host store instance is built

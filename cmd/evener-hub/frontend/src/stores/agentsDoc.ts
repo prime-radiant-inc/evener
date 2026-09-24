@@ -29,7 +29,13 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import { connectedClientPort, connectionStore, onConnectionNotification } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
-import { currentHostRegistration, type HostRegistration, hostRegistrationChanged } from "./hosts";
+import {
+  currentHostRegistration,
+  type HostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+} from "./hosts";
 
 export interface AgentsDocStoreState {
   /** The last document the hub confirmed - null until the first fetch lands. */
@@ -255,16 +261,13 @@ export function agentsDocStoreForHost(host: string | null | undefined): StoreApi
   const name = host as string;
   const registration = currentHostRegistration(name);
   const recorded = hostInstances.get(name);
-  // The registry does not list this host: nothing is kept for it. The instance
-  // this replaces belongs to a registration the registry no longer names, so its
-  // `changed` subscription (and its reconnect subscriber) is unwired before it
-  // is dropped - a null-registration placeholder would have kept that alive for
-  // a document nothing can reach, and would have dialed that host on any read.
-  if (registration === null) {
-    if (recorded !== undefined) {
-      recorded.instance.dispose();
-      hostInstances.delete(name);
-    }
+  // The registry says this host is not configured (stores/hosts.ts's
+  // registrySaysHostGone - the same answer the eviction subscription above acts
+  // on): nothing is kept for it, so a lookup that races that subscription - or
+  // one made before this module was loaded - cannot rebuild an instance whose
+  // subscriptions nothing would ever unwind.
+  if (registrySaysHostGone(hostsStore.getState().load, name)) {
+    evictHostInstance(name);
     return goneAgentsDocInstance.store;
   }
   if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
@@ -309,6 +312,32 @@ function remotePort(host: string): AgentsDocPort {
     onNotification: client.onNotification,
   };
 }
+
+/** evictHostInstance unwires `host`'s instance and drops it. dispose() is
+ * terminal, which is what keeps a removed host's `changed` subscription and its
+ * connection subscriber from outliving the registration they were built for. */
+function evictHostInstance(name: string): void {
+  const recorded = hostInstances.get(name);
+  if (recorded === undefined) return;
+  recorded.instance.dispose();
+  hostInstances.delete(name);
+}
+
+// The registry's own transition evicts - never a lookup. A host that leaves the
+// registry is rendered as the frame's own refusal instead of its body
+// (hostScopedSurface.tsx), so nothing calls this module's accessor for it again:
+// left to the accessor, the instance would stay in this map for the rest of the
+// session with its subscriptions live, and its connection subscriber would go on
+// re-reading a document for a host the registry no longer lists - forwarding
+// evener/host/request on every reconnect. Only the registry's ANSWERED "gone"
+// evicts (stores/hosts.ts's registrySaysHostGone), so a host that is merely
+// unattached, or one whose read has not answered yet, is never dropped.
+hostsStore.subscribe(() => {
+  const load = hostsStore.getState().load;
+  for (const name of [...hostInstances.keys()]) {
+    if (registrySaysHostGone(load, name)) evictHostInstance(name);
+  }
+});
 
 /** resetAgentsDocHostInstancesForTests disposes and forgets every per-host
  * instance, so a test's remote hosts do not leak subscriptions into the next

@@ -13,7 +13,13 @@ import { useStore } from "zustand";
 import { connectedClientPort } from "./connection";
 import { isLocalHost } from "./hostRouting";
 import { remoteHostStoreClient } from "./hostStoreClient";
-import { currentHostRegistration, type HostRegistration, hostRegistrationChanged } from "./hosts";
+import {
+  currentHostRegistration,
+  type HostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+} from "./hosts";
 
 // The port's `request` is async so a call before connect() rejects, as a real
 // client's would, rather than throwing at the call site.
@@ -78,14 +84,14 @@ export function launchConfigStoreForHost(host: string | null | undefined): Launc
 function hostEntry(name: string): LaunchConfigHostEntry {
   const registration = currentHostRegistration(name);
   const recorded = hostStores.get(name);
-  // The registry does not list this host: no instance is kept for it. Left as a
-  // null-registration placeholder, the entry would hold a live store - one that
-  // dials that host for every read - behind a host that is not registered, and
-  // it would hold it for as long as the host stayed gone. The entry goes (so a
-  // re-add builds a fresh one, as it always did) and the shared refusing store
-  // is handed back.
-  if (registration === null) {
-    hostStores.delete(name);
+  // The registry says this host is not configured (stores/hosts.ts's
+  // registrySaysHostGone - the same answer the eviction subscription above acts
+  // on): no instance is kept for it, so a lookup that races that subscription -
+  // or one made before this module was loaded - cannot rebuild one and hand out
+  // a store that dials a host nothing lists. The shared refusing store is handed
+  // back instead, and a re-add builds a fresh instance as it always did.
+  if (registrySaysHostGone(hostsStore.getState().load, name)) {
+    evictHostEntry(name);
     return { store: goneLaunchConfigStore, registration: null };
   }
   if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
@@ -101,6 +107,27 @@ function hostEntry(name: string): LaunchConfigHostEntry {
   hostStores.set(name, entry);
   return entry;
 }
+
+/** evictHostEntry drops `host`'s instance. createLaunchConfigStore holds no
+ * subscription (its port is used for `request` alone), so there is nothing to
+ * unwind: the cached schema goes with the entry. */
+function evictHostEntry(name: string): void {
+  hostStores.delete(name);
+}
+
+// The registry's own transition evicts - never a lookup. A host that leaves the
+// registry is rendered as the frame's own refusal instead of its body
+// (hostScopedSurface.tsx), so nothing calls this module's accessor for it again:
+// left to the accessor, its entry (and the schema it cached) would sit in this
+// map for the rest of the session. Only the registry's ANSWERED "gone" evicts
+// (stores/hosts.ts's registrySaysHostGone), so a host that is merely unattached,
+// or one whose read has not answered yet, is never dropped.
+hostsStore.subscribe(() => {
+  const load = hostsStore.getState().load;
+  for (const name of [...hostStores.keys()]) {
+    if (registrySaysHostGone(load, name)) evictHostEntry(name);
+  }
+});
 
 /** resetLaunchConfigHostStoresForTests drops every per-host instance between
  * tests. No production code should call this. */

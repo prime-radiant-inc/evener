@@ -10,7 +10,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
-import { currentHostRegistration, hostRegistrationChanged, hostsStore, sameHostRegistration } from "./hosts";
+import {
+  currentHostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+  sameHostRegistration,
+} from "./hosts";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
