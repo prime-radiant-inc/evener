@@ -80,9 +80,7 @@ type Notification struct {
 
 // Response and ErrorResponse omit an empty id (omitzero, via ID.IsZero) so an
 // id-less frame received off the wire round-trips faithfully: ID.MarshalJSON
-// would otherwise render it as `null`, which ID.UnmarshalJSON rejects. They
-// carry no MarshalJSON of their own because a result encoded by a nested
-// Marshal is copied and re-validated by every enclosing one.
+// would otherwise render it as `null`, which ID.UnmarshalJSON rejects.
 type Response struct {
 	ID     ID  `json:"id,omitzero"`
 	Result any `json:"result"`
