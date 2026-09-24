@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
+import { clientServesHub, recordClientReadyHub } from "./connectionIdentity";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
  * full-screen replacement ("wall" - there is nothing to show yet, or a
@@ -46,11 +47,7 @@ export type LiveReadiness = () => boolean;
  * land on the previous hub's still-ready client — the store's selection
  * moves before the connection re-points — and a mount cannot tell from its
  * props whether the pairing it lands on is coherent; this record is the
- * memory that can. A client the record knows proved ready under another hub
- * is refused until the connection re-points; a client the record has never
- * seen adopts normally, because the genuinely new client the connection
- * built for the new hub arrives exactly as unknown (round 56). */
-const clientReadyHub = new WeakMap<object, string | undefined>();
+ * memory that can (connectionIdentity's record, round 56). */
 
 /** Keeps a deferred request tied to the render that opened it: the current
  * state must still be ready for the same hub and client before it may run —
@@ -97,9 +94,9 @@ export function useLiveReadiness(
 			// proved ready under another hub — the remount residual round 56
 			// closes; unknown and native clients birth exactly as before,
 			// and the settle bookkeeping below still runs for every client.
-			if (!clientReadyHub.has(client) || clientReadyHub.get(client) === scope) {
+			if (clientServesHub(client, scope)) {
 				bornScope.current = { client, scope };
-				clientReadyHub.set(client, scope);
+				recordClientReadyHub(client, scope);
 			}
 		}
 		current.current = { scope, client, state };
@@ -338,9 +335,9 @@ export function useRenderClient(
 			// ready under another hub is refused here too, so a remount that
 			// lands on the previous hub's still-ready pairing cannot
 			// re-authorize it under the new hub (round 56).
-			if (!clientReadyHub.has(client) || clientReadyHub.get(client) === hubId) {
+			if (clientServesHub(client, hubId)) {
 				setAdoption({ client, scope: hubId });
-				clientReadyHub.set(client, hubId);
+				recordClientReadyHub(client, hubId);
 			}
 		}
 	}, [state, hubId, client, adoption.client]);

@@ -2057,8 +2057,26 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 			}
 		}
 	}
+	if hook := s.cfg.testOnly.scratchBeforeUnsandboxedTail; hook != nil {
+		hook()
+	}
 	unsandboxed, ok, unsandboxedContended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindUnsandboxed)
-	if !ok || unsandboxedContended || canonicalScratchDir(unsandboxed) == canonicalScratchDir(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
+	if unsandboxedContended {
+		// The contended arm declines the adoption with the binding row still
+		// naming the retained allocation in its unsandboxed slot, and the
+		// contention can land here without any earlier pass seeing it — the
+		// sandbox section's adoption leaves a kind the launcher already
+		// provisions unmarked. Without the pending marker the launcher
+		// environment's next pin rebases that slot onto its own fresh
+		// directory, permanently displacing the retained allocation — the
+		// unsandboxed flavor of the continuity loss the pending machinery
+		// exists to prevent. The mark makes the publication pin the
+		// launcher's scratch as a bare protected reference instead, and the
+		// next restore re-probes the original.
+		env.MarkRetainedSlotPending(sandbox.ScratchKindUnsandboxed)
+		return nil
+	}
+	if !ok || canonicalScratchDir(unsandboxed) == canonicalScratchDir(envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)) {
 		return nil
 	}
 	env.DisposeUnsandboxedScratch()

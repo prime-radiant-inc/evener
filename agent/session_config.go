@@ -652,6 +652,13 @@ type testConfig struct {
 	// and approved the transfer. Nil in production.
 	scratchAdoptionBeforeTransfer func()
 
+	// scratchBeforeUnsandboxedTail runs in adoptResumedRootScratch after the
+	// sandbox section and right before the unsandboxed tail's slot read —
+	// the window where a concurrent claim's refusal can record the slot's
+	// contention between the adoption pass and the tail's own lookup. Nil in
+	// production.
+	scratchBeforeUnsandboxedTail func()
+
 	// scratchAdoptionAfterClaim runs immediately after adoptRetainedScratchFor
 	// claims a pooled handle and before the environment restore installs it —
 	// the window where a terminal detach must not release the claimed lease.

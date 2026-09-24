@@ -2094,3 +2094,85 @@ func TestResumedRootUnsandboxedAdoptionSurvivesPoolDetach(t *testing.T) {
 		t.Fatalf("the replacement mint displaced the binding row's unsandboxed slot: got %+v, want the retained %q", row.Slots, retainedDir)
 	}
 }
+
+// TestResumedRootUnsandboxedContendedSlotKeepsTheBindingRow pins round 58's
+// first Medium: the unsandboxed tail's contended arm returned without the
+// pending marker every sibling decline carries. The contention mark can land
+// between the sandbox section's adoption pass — which leaves a kind the
+// launcher already provisions unmarked because it saw no contention — and the
+// tail's own slot read, and the tail then declined the contended slot with no
+// marker, so the launcher environment's next pin rebased the binding row's
+// unsandboxed slot onto its own fresh directory and permanently displaced the
+// retained allocation, ending the re-probe.
+func TestResumedRootUnsandboxedContendedSlotKeepsTheBindingRow(t *testing.T) {
+	root := t.TempDir()
+	const sessionID = "01RESUMEROOTCONTENDED"
+	const bindingID = "b-resume-contended-unsandboxed"
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	slots, bindingRow := mintRefreshScratchBinding(t, s, bindingID, sandbox.ScratchKindUnsandboxed)
+	mapRefreshScratchConsumer(t, s, sessionID, bindingID)
+	retainedDir := slots[sandbox.ScratchKindUnsandboxed].Dir
+	t.Cleanup(func() { _ = slots[sandbox.ScratchKindUnsandboxed].Retain() })
+	// The contended arm's premise: the retained allocation's handle has left
+	// the pool with another holder's claim, so the tail's slot read reports
+	// contention rather than a pooled handle. The contention mark itself is
+	// recorded in the window below, after the sandbox section's adoption
+	// pass — recording it up front would mark the kind there (the same rule
+	// this test pins at the tail).
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{},
+		bindings:  map[string]sandbox.ScratchBinding{bindingID: bindingRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{sessionID: {SessionID: sessionID, CurrentBindingID: bindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	// A launcher environment whose own command already minted its unsandboxed
+	// scratch before the restore: the sandbox section's adoption pass leaves
+	// that kind exposed and unmarked, exactly as session_worktree_resume.go
+	// describes.
+	env := execenv.NewLocalExecutionEnvironment(root)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch(); env.DisposeUnsandboxedScratch() })
+	if _, err := env.ExecCommand(context.Background(), "true", 5000, root, nil); err != nil {
+		t.Fatalf("mint launcher scratch: %v", err)
+	}
+	launchMint := envScratchRefDir(env, sandbox.ScratchKindUnsandboxed)
+	if launchMint == "" || filepath.Clean(launchMint) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture launcher scratch %q must exist apart from the retained %q", launchMint, retainedDir)
+	}
+
+	// The contention mark a refused claim would leave, landing in the
+	// window between the adoption pass and the tail's slot read.
+	s.cfg.testOnly.scratchBeforeUnsandboxedTail = func() {
+		pool := s.retainedScratch.Load()
+		pool.mu.Lock()
+		pool.contended[canonicalScratchDir(retainedDir)] = struct{}{}
+		pool.mu.Unlock()
+	}
+	if err := s.adoptResumedRootScratch(env, sessionID); err != nil {
+		t.Fatalf("resumed-root adoption over the contended slot: %v", err)
+	}
+	// The launcher environment's next pin publishes its binding: with the
+	// kind marked pending it pins the launcher's scratch as a bare protected
+	// reference and the row's slot keeps naming the retained directory.
+	if err := env.PinOwnedScratch(); err != nil {
+		t.Fatalf("the post-adoption pin: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := findScratchBinding(manifest, bindingID)
+	if !ok {
+		t.Fatalf("binding %q vanished from the manifest", bindingID)
+	}
+	slot, ok := row.Slots[sandbox.ScratchKindUnsandboxed]
+	if !ok || filepath.Clean(slot.Dir) != filepath.Clean(retainedDir) {
+		t.Fatalf("the contended tail left the kind unmarked and the pin displaced the binding row's unsandboxed slot: got %+v, want the retained %q", row.Slots, retainedDir)
+	}
+}

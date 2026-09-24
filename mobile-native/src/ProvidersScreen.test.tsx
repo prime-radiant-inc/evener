@@ -18,6 +18,7 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderSignIn } from "./providerSignIn";
+import { recordClientReadyHub } from "./connectionIdentity";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProvidersScreen } from "./ProvidersScreen";
 import {
@@ -895,4 +896,90 @@ it("treats a route re-keyed to another hub as a fresh screen", async () => {
 	});
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("from-b");
+});
+
+// Round 58's High, the provider-surface half: the sign-in resume arm handed
+// the flow the raw client on every transition (ready ? client : null), so a
+// sign-in opened during the re-key window - the store's selection already on
+// hub-2 while the connection still reports hub-1's ready client - received
+// the previous hub's client and started its exchange against it. The open
+// arm is gated through canUseConnection already (the round-56 record); this
+// pins the resume arm to the same authorization. The drive invokes the
+// screen's own onSignIn callback directly: once the credential store is
+// gated too, no listing read lands during the window, so no row exists to
+// press - the arm's contract is what this test isolates.
+it("does not resume a sign-in onto the previous hub's adopted client", async () => {
+	const oauth: InstanceListResponse = {
+		instances: [
+			{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] },
+		],
+		availableProviders: [],
+	};
+	const stale = new FakeClient("ready");
+	stale.on("evener/instance/list", () => oauth);
+	stale.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-stale",
+		userCode: "WORK-1234",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	// The record's whole content: this client proved ready under hub-1.
+	recordClientReadyHub(stale, "hub-1");
+	const setConnection = vi.spyOn(ProviderSignIn.prototype, "setConnection");
+	harness.connection = {
+		activeProfile: { id: "hub-2", name: "New hub" },
+		client: stale as unknown as ConversationClientLike,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-2" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+
+	// Open a sign-in by invoking the screen's own callback, exactly as the
+	// row's affordance does. The open arm is already gated: the flow is
+	// handed null for the foreign client.
+	const openers = tree.root.findAll(
+		(node) => typeof node.props.onSignIn === "function",
+	);
+	if (openers.length === 0) throw new Error("no onSignIn affordance mounted");
+	act(() => openers[0]!.props.onSignIn("work"));
+	await act(async () => {});
+
+	// The resume arm must not hand the flow the previous hub's client: its
+	// exchange would run against the hub the route re-keyed away from.
+	expect(setConnection).not.toHaveBeenCalledWith(stale);
+	expect(
+		stale.calls.map((call) => call.method),
+	).not.toContain("evener/auth/device/start");
+
+	// The connection re-points to hub-2's own client - a new object the
+	// record has never seen - and the flow receives it and proceeds.
+	const replacement = new FakeClient("ready");
+	replacement.on("evener/instance/list", () => oauth);
+	replacement.on("evener/auth/device/start", () => ({
+		provider: "work",
+		flowId: "flow-live",
+		userCode: "WORK-5678",
+		verificationUrl: "https://example.test/verify",
+		intervalSeconds: 5,
+	}));
+	harness.connection = {
+		...harness.connection,
+		client: replacement as unknown as ConversationClientLike,
+	};
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	await act(async () => {});
+	expect(setConnection).toHaveBeenCalledWith(replacement);
+	expect(
+		replacement.calls.map((call) => call.method),
+	).toContain("evener/auth/device/start");
+	expect(renderedText(tree)).toContain("WORK-5678");
+	setConnection.mockRestore();
 });

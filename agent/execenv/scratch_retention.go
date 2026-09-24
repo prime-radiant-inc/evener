@@ -119,7 +119,12 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 		}
 		owned[kind] = handle
 	}
-	if len(handles) > 0 && len(owned) == 0 {
+	// Nothing owned live: there is nothing to pin, and the installed binding's
+	// stale slots — naming allocations a moved allocation or a manifest reset
+	// took away — must not be submitted: their validation failure would
+	// reject the slotless republish the reinstall performs next. The
+	// inherited-identity case was always meant to no-op here (round 18).
+	if len(owned) == 0 {
 		return nil
 	}
 	// Pinning one handle at a time and publishing the binding afterwards left the
@@ -146,13 +151,14 @@ func (e *LocalExecutionEnvironment) PinOwnedScratch() error {
 		return err
 	}
 	// A pin that succeeded under the manifest that exists now proves any
-	// earlier released-manifest race healed — the reset reinitialized the
-	// tombstone this very pin raced, so keeping that failure sticky would fail
-	// preparation forever on a state that no longer holds. Only the released
-	// error clears this way: other pin failures are durability verdicts that a
-	// later success does not retroactively explain away (round 9's sticky
-	// contract, round 27's recoverable carve-out).
-	e.clearReleasedRetentionPinError()
+	// earlier released- or lock-held race healed — the reset reinitialized the
+	// tombstone this very pin raced, and the lock holder that exhausted the
+	// retry bound has since let go — so keeping either failure sticky would
+	// fail preparation forever on a state that no longer holds. Other pin
+	// failures are durability verdicts that a later success does not
+	// retroactively explain away (round 9's sticky contract, round 27's and
+	// round 58's recoverable carve-outs).
+	e.clearRecoverableRetentionPinError()
 	return nil
 }
 
@@ -175,12 +181,18 @@ func (e *LocalExecutionEnvironment) recordRetentionPinError(err error) {
 	e.scratchMu.Unlock()
 }
 
-// clearReleasedRetentionPinError drops a sticky pin failure that was the
-// released-manifest race: a pin that has since succeeded proves the race
-// healed, and preparation must not keep failing on it (round 27).
-func (e *LocalExecutionEnvironment) clearReleasedRetentionPinError() {
+// clearRecoverableRetentionPinError drops a sticky pin failure that a later
+// successful pin proves was a race, not a durability verdict: the released
+// and lock-held sentinels both describe contention against transient
+// manifest state — the tombstone a reset went on to reinitialize, the
+// fail-fast update lock a concurrent writer went on to release — so a pin
+// that has since succeeded clears them (round 27's carve-out, round 58's
+// extension to the exhausted lock race).
+func (e *LocalExecutionEnvironment) clearRecoverableRetentionPinError() {
 	e.scratchMu.Lock()
-	if e.retentionPinErr != nil && errors.Is(e.retentionPinErr, sandbox.ErrScratchRetentionReleased) {
+	if e.retentionPinErr != nil &&
+		(errors.Is(e.retentionPinErr, sandbox.ErrScratchRetentionReleased) ||
+			errors.Is(e.retentionPinErr, sandbox.ErrScratchRetentionLockHeld)) {
 		e.retentionPinErr = nil
 	}
 	e.scratchMu.Unlock()
