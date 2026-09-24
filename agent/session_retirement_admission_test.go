@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/appwire"
 )
@@ -632,5 +633,40 @@ func TestRetirementReasoningPersistenceError(t *testing.T) {
 	}
 	if root.ReasoningEffort() != "high" {
 		t.Fatal("setter must report save failure after mutation")
+	}
+}
+
+// The serve loop probes for a runnable durable start after every message it
+// processes, including right after the turn that just settled. A probe that
+// finds nothing to run is not admitted work: it must leave the settled instant,
+// and so the idle deadline, where the settlement put it. Counting it as work
+// restarted the interval at whenever the probe happened to run, which under
+// load was after virtual time had already moved on.
+func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	if err := root.ensureClientMutationStore(); err != nil {
+		t.Fatal(err)
+	}
+	clk := agenttest.NewFakeClock()
+	c, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AttachRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	// Run's evaluate records the settled instant; set it directly so the probe
+	// is the only thing that can move it.
+	settled := clk.Now()
+	c.mu.Lock()
+	c.eligibleSince = settled
+	c.mu.Unlock()
+
+	if _, processed, err := root.ProcessClientMutationStart(context.Background(), nil); err != nil || processed {
+		t.Fatalf("idle probe = processed %v, err %v; want nothing to run", processed, err)
+	}
+	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
+		t.Fatalf("idle probe moved the settled instant from %v to %v; it is not admitted work", settled, got)
 	}
 }
