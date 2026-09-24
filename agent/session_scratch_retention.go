@@ -1928,8 +1928,19 @@ func (s *Session) adoptResumedRootScratch(env *execenv.LocalExecutionEnvironment
 		// the fresh mint already disposed the resumed root would run on the
 		// retained directory it holds no lease on. Ownership is the same fact
 		// the detached-pool no-op lacks (round 17).
-		if envScratchRefDir(env, sandbox.ScratchKindSandbox) == "" {
+		owned := envScratchRefDir(env, sandbox.ScratchKindSandbox)
+		if owned == "" {
 			return reprovisionUnclaimedSandboxScratch(env)
+		}
+		// The claim reads the pool's CURRENT rows, and the same racing fold
+		// can move the consumer's binding between the snapshot above and the
+		// claim: the resumed root then owns the moved allocation while its
+		// wrapper still names the pre-move snapshot. Converge the wrapper on
+		// what the environment actually holds (round 51).
+		if canonicalScratchDir(owned) != canonicalScratchDir(dir) {
+			if err := s.rebuildSandboxWrapper(env, owned); err != nil {
+				return err
+			}
 		}
 	}
 	unsandboxed, ok, unsandboxedContended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindUnsandboxed)
@@ -2125,9 +2136,15 @@ func (s *Session) retainedConsumerScratchSlot(sessionID, kind string) (dir strin
 // environment's own fresh mint — is disposed, and the disposal respects
 // ownership: an environment this restore created dies with the failure, dirs
 // and world-usable temp container both, while a shared one belongs to the live
-// parent, so only its unreferenced scratch directories are dropped and the
-// parent's container — which the children it already spawned still use as
-// TMPDIR — stays. createdEnv is the caller's ownsFresh.
+// parent and is never this restore's to dispose at all — its container by
+// removeUnsandboxedTmpLocked's rule, and its scratch because the caller's
+// empty-snapshot record cannot attribute what stands there now: the
+// environment holds one scratch per kind, the lazy mint reuses what is
+// present, and the first minter in the window — this restore's construction
+// or another parent/child's command — leaves nothing on the environment to
+// tell them apart. What the shared environment holds it owns: the live parent
+// reuses it on its next command, and its close releases the lease for the
+// sweeper to collect. createdEnv is the caller's ownsFresh.
 func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, adopterID string, createdEnv bool) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -2180,10 +2197,14 @@ func (s *Session) settleFailedRestoreScratch(env execenv.ExecutionEnvironment, a
 		local.DisposeUnadoptedScratch()
 		return
 	}
-	// The shared parent keeps its world-usable temp container: only the
-	// scratch directories this restore's failure left behind are dropped.
-	local.DisposeSandboxScratch()
-	local.DisposeUnsandboxedScratch()
+	// A shared parent is never this restore's to dispose: the mintedScratch
+	// gate that reached here recorded only that the environment held no
+	// scratch at adoption time — an empty snapshot, not an attribution, and
+	// the first allocation minted in the window may be another parent/child's
+	// exactly as easily as this construction's. The dispose entrypoints'
+	// own contracts forbid a shared parent for this reason; whatever the
+	// environment holds, it owns, its next command reuses, and its close
+	// releases for the sweeper to collect.
 }
 
 // retainedScratchReferenceDirs returns the canonical directories this session's

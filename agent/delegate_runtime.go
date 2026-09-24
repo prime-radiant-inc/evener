@@ -2483,17 +2483,6 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 		if err != nil {
 			return false, reprovisionAfterFailedAdoption(env, err)
 		}
-		if transferred[sandbox.ScratchKindSandbox] {
-			// The SANDBOX kind's own transfer is the one durable adoption the
-			// failure path retains: the manifest references the allocation and
-			// the environment owns its lease. The report is per kind — the
-			// unsandboxed slot's claim can succeed while the sandbox slot's
-			// went contended in the same adoption, and an aggregate would mask
-			// exactly that: a successful return with the mint already disposed
-			// and the wrapper already pointing at a directory this environment
-			// holds no lease on (round 26).
-			return true, nil
-		}
 		// The heal keys on the transfer the environment actually owns, not on
 		// what adoption installed: the guard's slot read and the claim take
 		// separate pool.mu holds, and a refresh fold racing the two can flip
@@ -2506,10 +2495,32 @@ func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnviro
 		// while its adopter keeps the lease, so the failure path must treat
 		// what the environment holds as a plain borrowed ref, not a durable
 		// adoption (round 22).
-		if envScratchRefDir(env, sandbox.ScratchKindSandbox) == "" {
+		owned := envScratchRefDir(env, sandbox.ScratchKindSandbox)
+		if owned == "" {
 			return false, reprovisionUnclaimedSandboxScratch(env)
 		}
-		return false, nil
+		// The claim reads the pool's CURRENT rows, so the same racing fold can
+		// do more than flip contention: a consumer whose binding moved between
+		// the snapshot above and the claim adopts the moved allocation while
+		// the wrapper still names the pre-move snapshot's directory, and every
+		// command would run on a directory this environment owns nothing of.
+		// Converge the wrapper on the allocation the environment actually
+		// holds — the durable row the claim adopted (round 51).
+		if canonicalScratchDir(owned) != canonicalScratchDir(dir) {
+			if err := s.rebuildSandboxWrapper(env, owned); err != nil {
+				return false, err
+			}
+		}
+		// The SANDBOX kind's own transfer is the one durable adoption the
+		// failure path retains: the manifest references the allocation and
+		// the environment owns its lease. The report is per kind — the
+		// unsandboxed slot's claim can succeed while the sandbox slot's
+		// went contended in the same adoption, and an aggregate would mask
+		// exactly that: a successful return with the mint already disposed
+		// and the wrapper already pointing at a directory this environment
+		// holds no lease on (round 26). A borrow reads false here for the
+		// round-22 reason above.
+		return transferred[sandbox.ScratchKindSandbox], nil
 	}
 	_, transferred, err := s.adoptConsumerScratch(env, sessionID)
 	if err != nil {

@@ -681,6 +681,104 @@ func TestRestoreAdoptionReportsNoTransferWhenOnlyTheUnsandboxedKindTransfers(t *
 	}
 }
 
+// TestScratchRestoreAdoptionConvergesTheWrapperWhenTheSlotMovesMidClaim pins
+// the round-51 refresh/snapshot race: the replacement branch snapshots the
+// consumer's slot in one pool-lock hold, rebuilds the kernel wrapper around
+// that directory, disposes the fresh mint, and only then claims — in a second
+// hold. A concurrent refresh folding newer manifest rows into the pool in
+// between (the consumer's binding moved) replaces the rows the claim reads,
+// so the claim adopts the moved allocation while the wrapper still names the
+// pre-move snapshot: every command the restored session runs lands on a
+// directory the environment owns nothing of. The wrapper must converge on
+// the allocation the environment actually holds.
+func TestScratchRestoreAdoptionConvergesTheWrapperWhenTheSlotMovesMidClaim(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("session has no scratch retention owner")
+	}
+	const consumerID = "01SLOTMOVECONS1"
+	const siblingID = "01SLOTMOVESIBL1"
+	const firstBindingID = "b-slot-move-first"
+	const movedBindingID = "b-slot-move-moved"
+	firstSlots, firstRow := mintRefreshScratchBinding(t, s, firstBindingID, sandbox.ScratchKindSandbox)
+	movedSlots, movedRow := mintRefreshScratchBinding(t, s, movedBindingID, sandbox.ScratchKindSandbox)
+	mapRefreshScratchConsumer(t, s, consumerID, firstBindingID)
+	// The sibling keeps a role on the first binding so the mid-window move of
+	// the consumer onto the second binding leaves the manifest's graph
+	// consumer-valid on both sides.
+	mapRefreshScratchConsumer(t, s, siblingID, firstBindingID)
+	retainedDir := firstSlots[sandbox.ScratchKindSandbox].Dir
+	movedDir := movedSlots[sandbox.ScratchKindSandbox].Dir
+	// The moved allocation's lease must be free for the concurrent refresh's
+	// reacquire — the state a fold converging onto the live manifest finds.
+	_ = movedSlots[sandbox.ScratchKindSandbox].Retain()
+	t.Cleanup(func() {
+		_ = firstSlots[sandbox.ScratchKindSandbox].Retain()
+		_ = movedSlots[sandbox.ScratchKindSandbox].Retain()
+	})
+	key := canonicalScratchDir(retainedDir)
+	s.retainedScratch.Store(&retainedScratchPool{
+		owner:     owner,
+		handles:   map[string]*sandbox.SessionScratch{key: firstSlots[sandbox.ScratchKindSandbox]},
+		bindings:  map[string]sandbox.ScratchBinding{firstBindingID: firstRow, movedBindingID: movedRow},
+		consumers: map[string]sandbox.ScratchConsumerBinding{consumerID: {SessionID: consumerID, CurrentBindingID: firstBindingID}},
+		contended: map[string]struct{}{},
+		adopted:   map[string]string{},
+	})
+
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	policy := sbxResolve(t, sbxBwrapFacts(t.TempDir()), env.WorkingDirectory(), sandbox.ModeWorkspaceWrite)
+	if err := env.EnableSandbox(policy); err != nil {
+		t.Fatalf("provision fresh sandbox scratch: %v", err)
+	}
+	fresh := env.SessionScratchDir()
+	if fresh == "" || filepath.Clean(fresh) == filepath.Clean(retainedDir) {
+		t.Fatalf("fixture fresh scratch %q must exist apart from the retained %q", fresh, retainedDir)
+	}
+
+	// Between the branch's slot snapshot and its claim, the concurrent
+	// refresh folds the consumer's move onto the second binding into the pool
+	// — a real manifest update through the real refresh, exactly the install a
+	// racing fold lands under the manifest's update lock.
+	s.cfg.testOnly.scratchAdoptionBeforeClaim = func() {
+		s.cfg.testOnly.scratchAdoptionBeforeClaim = nil
+		manifest, err := sandbox.LoadScratchRetention(owner)
+		if err != nil {
+			t.Fatalf("load manifest for the mid-claim move: %v", err)
+		}
+		moved := sandbox.ScratchConsumerBinding{SessionID: consumerID, CurrentBindingID: movedBindingID}
+		if err := sandbox.UpdateScratchBindings(owner, manifest.Revision, nil, []sandbox.ScratchConsumerBinding{moved}); err != nil {
+			t.Fatalf("move the consumer onto the second binding: %v", err)
+		}
+		if err := s.refreshRetainedScratchConsumer(consumerID); err != nil {
+			t.Fatalf("concurrent refresh over the moved rows: %v", err)
+		}
+	}
+	adopted, err := s.adoptRestoredConsumerScratch(env, consumerID, true)
+	if err != nil {
+		t.Fatalf("restore adoption across the mid-claim slot move: %v", err)
+	}
+	owned := envScratchRefDir(env, sandbox.ScratchKindSandbox)
+	if owned == "" {
+		t.Fatal("the adoption installed nothing after the slot move")
+	}
+	if !adopted {
+		t.Fatal("the adoption of the moved allocation reported no transfer")
+	}
+	// The claim took the allocation the CURRENT rows name — the moved binding's
+	// directory — so that is what the environment owns...
+	if filepath.Clean(owned) != filepath.Clean(movedDir) {
+		t.Fatalf("the claim adopted %q, want the moved %q", owned, movedDir)
+	}
+	// ...and the wrapper must name it, not the directory the pre-move snapshot
+	// rebuilt it around.
+	if got := env.Wrapper.SessionTmp(); filepath.Clean(got) != filepath.Clean(owned) {
+		t.Fatalf("the wrapper %q names the superseded snapshot directory %q while the environment owns %q", got, retainedDir, owned)
+	}
+}
+
 // TestScratchRestoreAdoptionReportsNoTransferForABorrow pins the round-22
 // adoption-report lie: a replacement whose claim finds the slot already
 // adopted by a distinct consumer installs a lease-less borrow — no retained
