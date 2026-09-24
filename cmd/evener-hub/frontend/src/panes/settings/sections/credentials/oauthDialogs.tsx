@@ -232,7 +232,7 @@ export function DeviceCodeDialog({
           await fetchHost(host);
         }
         if (cancelled || !active.current) return;
-        toast.push("success", host === undefined ? `Signed in to ${name}` : `Signed in on ${host}`);
+        toast.push("success", host === undefined ? `Signed in to ${name}` : `Signed in to ${name} on ${host}`);
         onSuccess();
         return;
       }
@@ -289,12 +289,12 @@ export function DeviceCodeDialog({
         : "Waiting for you to authorize…");
 
   return (
-    <Dialog open onClose={onCancel} title={host === undefined ? `Sign in to ${name}` : `Sign in on ${host}`}>
+    <Dialog open onClose={onCancel} title={host === undefined ? `Sign in to ${name}` : `Sign in to ${name} on ${host}`}>
       <div className={CLASS.body}>
         <p className={CLASS.help}>
           {host === undefined
             ? "Copy this code, then continue to OpenAI and paste it to authorize:"
-            : `Copy this code, then open the verification URL below on any device and paste it to authorize the sign-in on ${host}:`}
+            : `Copy this code, then open the verification URL below on any device and paste it to authorize the sign-in to ${name} on ${host}:`}
         </p>
         <p className={CLASS.code}>{userCode}</p>
         {/* The URL as text, not only behind the button: the sign-in happens on a

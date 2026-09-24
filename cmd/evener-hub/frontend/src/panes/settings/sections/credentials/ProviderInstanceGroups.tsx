@@ -21,23 +21,36 @@ const CLASS = {
 /** The two variants, as a type rather than a comment - the same contract
  * InstanceRow enforces for one row: a listing that is not read-only MUST carry
  * onSelect (or its rows render as full-width buttons that do nothing), and a
- * read-only listing has nothing to select. */
+ * read-only listing has nothing to select.
+ *
+ * onHostSignIn belongs to the READ-ONLY variant alone, for the same reason: a
+ * listing that is not read-only is THIS hub's own, which has no host to sign in
+ * on - so the interactive variant does not accept the prop at all (`?: never`),
+ * rather than accepting one it could only ignore. */
 export type ProviderInstanceGroupsProps = {
   instances: InstanceEntry[];
   availableProviders: ProviderDescriptor[];
-  /** Remote scope only: begins a device-code sign-in ON the selected host for a
-   * Codex instance (component 07d's "Sign in on host"). Absent for the
-   * controller's own listing, and never offered on a provider whose sign-in
-   * needs a browser the remote host does not have. */
-  onHostSignIn?: (name: string) => void;
-} & ({ readOnly: true } | { readOnly?: false; onSelect: (name: string) => void });
+} & (
+  | {
+      readOnly: true;
+      /** Remote scope only: begins a device-code sign-in ON the selected host
+       * for a Codex instance (component 07d's "Sign in on host"). Absent for the
+       * controller's own listing, and never offered on a provider whose sign-in
+       * needs a browser the remote host does not have. */
+      onHostSignIn?: (name: string) => void;
+    }
+  | { readOnly?: false; onSelect: (name: string) => void; onHostSignIn?: never }
+);
 
 export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
-  const { instances, availableProviders, onHostSignIn } = props;
+  const { instances, availableProviders } = props;
   const groups = groupByProvider(instances);
   // The read-only variant has no onSelect to call, and the type guarantees the
   // other variant has one - so an interactive row can never render a dead button.
   const onSelect = props.readOnly === true ? null : props.onSelect;
+  // Read from the variant that has it: the type keeps an interactive listing
+  // from passing one at all (see ProviderInstanceGroupsProps).
+  const onHostSignIn = props.readOnly === true ? props.onHostSignIn : undefined;
   return (
     <div className={CLASS.groups}>
       {groups.map((group) => (

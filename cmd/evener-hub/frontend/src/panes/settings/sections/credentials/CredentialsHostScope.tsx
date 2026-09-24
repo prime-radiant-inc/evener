@@ -18,7 +18,7 @@
 // controller's listing.
 import type { HostPushCredentialsResponse } from "@evener/appwire-client";
 import { errorText, RequestTimeoutError } from "@evener/appwire-client";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import {
   connectionGeneration,
   deviceStartOnHost,
@@ -156,6 +156,14 @@ function RemoteHostInstances({
   // which is what unmounts it - and clears this state - when the host it was
   // started for is no longer the one the settings route selects.
   const active = useEditorLifetime();
+  // The start whose answer this pane is still waiting for. Every start claims a
+  // new generation and carries it into the async call, so a start the user has
+  // already superseded - the same row clicked twice, or a second Codex row
+  // picked while the first start is still out - resolves to nothing: it cannot
+  // replace the newer editor, open a dialog whose poll would run against a flow
+  // nobody asked for, or put its failure under the newer attempt. The mount
+  // check (active) cannot do this: both starts belong to the same mounted pane.
+  const startGeneration = useRef(0);
   // Stable identities, as CredentialsSection's own closeEditor is: the
   // DeviceCodeDialog's poll effect depends on the onSuccess/onCancel it is
   // given, and an unstable reference would restart that dialog's timer on every
@@ -175,19 +183,31 @@ function RemoteHostInstances({
   // call goes out and sets the new one only from a response that came back: a
   // restart that fails - or falls back - leaves the failure and no editor, never
   // the expired code and flow it was replacing, standing under the message about
-  // the attempt that replaced it.
+  // the attempt that replaced it. Which start an answer belongs to is decided by
+  // the generation it claimed, not by the order the answers come back in.
   const beginHostSignIn = useCallback(
     async (name: string): Promise<void> => {
+      // Claimed before the call goes out: an answer to a start that is no longer
+      // the newest one is stale by construction (see startGeneration above).
+      const generation = startGeneration.current + 1;
+      startGeneration.current = generation;
       setSignInError(null);
       setSignIn(null);
       try {
         const resp = await deviceStartOnHost(host, name);
-        if (!active.current) return;
+        if (!active.current || startGeneration.current !== generation) return;
         if (resp.fallback) {
-          // The host's client offered no device flow, so the only alternative is
-          // a browser redirect - and there is no browser on the host. Say so.
+          // The host's client offered no device flow, and the only alternative -
+          // a browser redirect - cannot be completed on a host with no browser.
+          // EVENER_LOGIN_HEADLESS is NOT a remedy here: the hub's DeviceStart
+          // always calls requestDeviceCode, and this refusal IS its answer
+          // (cmd/evener-hub/app_auth.go; auth/openai/device.go's issuer-404).
+          // The variable is the CLI's own override of its flow detection
+          // (cmd/evener/openai_login.go), so the sign-in has to be completed on
+          // the host itself, through that CLI, against this instance - whose
+          // paste-back browser flow (--no-device) needs no browser there.
           setSignInError(
-            `Device-code sign-in is not enabled on ${host}. Set EVENER_LOGIN_HEADLESS=1 on the host and try again.`,
+            `Device-code sign-in is not enabled on ${host}: this host's OpenAI client offers no device-code flow, and no browser on ${host} can complete the redirect one. Complete the sign-in on ${host} itself: \`evener openai login --instance ${name} --no-device\` pastes the redirect URL back without a browser.`,
           );
           return;
         }
@@ -199,7 +219,7 @@ function RemoteHostInstances({
           intervalSeconds: resp.intervalSeconds,
         });
       } catch (err) {
-        if (!active.current) return;
+        if (!active.current || startGeneration.current !== generation) return;
         setSignInError(`Couldn't start sign-in on ${host}: ${errorText(err)}`);
       }
     },
