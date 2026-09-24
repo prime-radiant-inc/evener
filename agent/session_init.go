@@ -815,7 +815,9 @@ type RestoreSessionConfig struct {
 	// file. The session itself keeps no reference to the entries: a
 	// transcript can decode to more memory than the file holds, and a
 	// restored session -- a delegate child, a one-shot run -- would otherwise
-	// carry it for its whole life.
+	// carry it for its whole life. The entries alias the slice restore goes
+	// on to fold for the delegate attention rearm right after the call, so
+	// the receiver must not mutate them.
 	OnRestoredTranscript func(header transcript.Header, entries []transcript.Entry, opened bool)
 
 	// ForceRealIO carries through to the restored Session's SessionConfig.

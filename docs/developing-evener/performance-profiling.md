@@ -82,6 +82,7 @@ go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
 
 # What a resumed session costs: resume a COPY of real state (never point
 # -memharness-state at a live state directory; resuming appends to it)
+mkdir -p /tmp/memstate
 cp -r ~/.local/state/evener/projects/<project-id>/sessions /tmp/memstate/sessions
 go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
   -memharness-out=/tmp/mem -memharness-state=/tmp/memstate \

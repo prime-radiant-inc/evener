@@ -132,6 +132,12 @@ func TestMemHarness(t *testing.T) {
 	if *memHarnessResume != "" && *memHarnessState == "" {
 		t.Fatal("-memharness-resume needs -memharness-state naming a copy of the state that holds the session")
 	}
+	if *memHarnessEvery <= 0 {
+		t.Fatalf("-memharness-every=%d: want a positive number of turns between heap profiles", *memHarnessEvery)
+	}
+	if err := os.MkdirAll(*memHarnessOut, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	runtime.MemProfileRate = 4096
 	adapter := &memHarnessAdapter{roundsPerTurn: *memHarnessRounds, delegates: *memHarnessDelegates}
 	oldLoadClient := serveLoadClient
