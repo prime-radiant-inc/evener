@@ -186,6 +186,138 @@ func TestUpdate_StatusNotesTimestampsAndCompletion(t *testing.T) {
 	}
 }
 
+func TestUpdate_StampsCompletedAtOnTerminalSettle(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "a"}})
+	id := added[0].ID
+
+	// Reaching cancelled is a terminal settle like done: the stamp is the
+	// transition moment, so the transcript card's window can order the
+	// cancellation as most-recently-settled.
+	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled}}); err != nil {
+		t.Fatal(err)
+	}
+	cancelled := s.View()[0]
+	if cancelled.CompletedAt == nil {
+		t.Fatal("CompletedAt not stamped on cancel")
+	}
+	settle := *cancelled.CompletedAt
+
+	// A later notes-only edit advances UpdatedAt but must not move the
+	// settle moment forward with it - an old cancellation must not read as
+	// the plan's most recent settle just because someone annotated it.
+	if err := s.Update([]TaskUpdate{{ID: id, Notes: "not really dropping it"}}); err != nil {
+		t.Fatal(err)
+	}
+	annotated := s.View()[0]
+	if annotated.CompletedAt == nil || !annotated.CompletedAt.Equal(settle) {
+		t.Errorf("CompletedAt moved to %v after a notes-only edit, want %v", annotated.CompletedAt, settle)
+	}
+	if !annotated.UpdatedAt.After(settle) {
+		t.Errorf("UpdatedAt %v not after the settle %v", annotated.UpdatedAt, settle)
+	}
+
+	// Re-asserting the same terminal status alongside a note is still just
+	// an annotation of an already-settled task: the settle moment is the
+	// first transition, not every repeat of the word.
+	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskCancelled, Notes: "and here is why"}}); err != nil {
+		t.Fatal(err)
+	}
+	reasserted := s.View()[0]
+	if reasserted.CompletedAt == nil || !reasserted.CompletedAt.Equal(settle) {
+		t.Errorf("CompletedAt moved to %v after re-asserting the terminal status, want %v", reasserted.CompletedAt, settle)
+	}
+	if !reasserted.UpdatedAt.After(*annotated.UpdatedAt) {
+		t.Errorf("UpdatedAt %v not after the annotation's %v", reasserted.UpdatedAt, annotated.UpdatedAt)
+	}
+	if len(reasserted.Notes) != 2 || reasserted.Notes[1] != "and here is why" {
+		t.Errorf("Notes = %v, want the annotation appended", reasserted.Notes)
+	}
+
+	// Reopening clears the stamp exactly like a reopened done task.
+	if err := s.Update([]TaskUpdate{{ID: id, Status: TaskOpen}}); err != nil {
+		t.Fatal(err)
+	}
+	if s.View()[0].CompletedAt != nil {
+		t.Error("CompletedAt not cleared on reopen")
+	}
+}
+
+func TestUpdate_SnapshotReportsSettledTransitions(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "a"}})
+	id := added[0].ID
+
+	// A fresh transition into terminal is a settle.
+	snap, err := s.UpdateWithSnapshot([]TaskUpdate{{ID: id, Status: TaskDone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Settled[id] {
+		t.Errorf("fresh done: Settled = %v, want task %d reported", snap.Settled, id)
+	}
+
+	// Re-asserting the status the task already holds is an annotation, not
+	// a settle: the store keeps the original stamp, so the marker must too.
+	snap, err = s.UpdateWithSnapshot([]TaskUpdate{{ID: id, Status: TaskDone, Notes: "annotating"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Settled[id] {
+		t.Errorf("reassertion: Settled = %v, want task %d absent", snap.Settled, id)
+	}
+
+	// A batch that touches the task away from terminal and back re-settles
+	// it: the store stamps a fresh CompletedAt, and the marker must agree
+	// with the stamp or the frontend suppresses a genuine settle.
+	snap, err = s.UpdateWithSnapshot([]TaskUpdate{
+		{ID: id, Status: TaskOpen},
+		{ID: id, Status: TaskDone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Settled[id] {
+		t.Errorf("round trip: Settled = %v, want task %d re-settled", snap.Settled, id)
+	}
+	if !snap.After[0].CompletedAt.After(*snap.Before[0].CompletedAt) {
+		t.Errorf("round trip: CompletedAt not restamped: before %v after %v", snap.Before[0].CompletedAt, snap.After[0].CompletedAt)
+	}
+
+	// The combined add+update path reports settles too.
+	added2, _ := s.Append([]TaskInput{{Description: "b"}})
+	snap, err = s.ApplyBatch(nil, []TaskUpdate{{ID: added2[0].ID, Status: TaskCancelled}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Settled[added2[0].ID] {
+		t.Errorf("apply-batch cancel: Settled = %v, want task %d reported", snap.Settled, added2[0].ID)
+	}
+}
+
+func TestUpdate_SettleThenReopenInOneBatchIsNotASettle(t *testing.T) {
+	s := newTestStore(t)
+	added, _ := s.Append([]TaskInput{{Description: "a"}})
+	id := added[0].ID
+
+	// The batch's net effect is no change: the task ends open with no
+	// stamp, so the settled map must not claim a settle the batch undid -
+	// the tool gates auto-advance on this map.
+	snap, err := s.UpdateWithSnapshot([]TaskUpdate{
+		{ID: id, Status: TaskDone},
+		{ID: id, Status: TaskOpen},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Settled[id] {
+		t.Errorf("settle-then-reopen: Settled = %v, want task %d absent", snap.Settled, id)
+	}
+	if snap.After[0].CompletedAt != nil {
+		t.Errorf("settle-then-reopen: CompletedAt = %v, want cleared", snap.After[0].CompletedAt)
+	}
+}
+
 func TestUpdateWithSnapshotReturnsAtomicPreAndPostStates(t *testing.T) {
 	s := newTestStore(t)
 	added, err := s.Append([]TaskInput{{Description: "a"}, {Description: "b"}})
