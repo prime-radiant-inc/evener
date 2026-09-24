@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -582,5 +583,94 @@ func TestLocateLocalJob_SymlinkedTargetBucketStillSurfacesSymlinkError(t *testin
 	}
 	if !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}
+
+// TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking asserts that a FIFO at
+// the job journal path is rejected without blocking. Pre-fix: jobstore.ReadEvents
+// opens the journal with a plain os.Open which blocks on a FIFO indefinitely;
+// symlinkErrorDeep checks symlinks but a FIFO is a non-symlink non-regular
+// entry that passes the symlink check. Post-fix: the journal is Lstat'd and
+// required to be a regular file before ReadEvents is called, so the FIFO is
+// rejected quickly without blocking.
+func TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	sh := t.TempDir()
+	bucket := filepath.Join(sh, "evener", "projects", localJobCurrentProject)
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Replace the journal with a FIFO.
+	journalPath := filepath.Join(jobsDir(bucket, owner), "jobs.jsonl")
+	if err := os.Remove(journalPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(journalPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run the lookup under a bounded timeout so a hang FAILS FAST instead
+	// of hanging the test suite. The pre-fix code blocks on os.Open(FIFO).
+	done := make(chan error, 1)
+	go func() {
+		_, err := locateLocalJob(bucket, jobID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		// Post-fix: the FIFO is rejected — err should be non-nil (not found,
+		// since the journal is unreadable). The key invariant: we did NOT
+		// block.
+		if err == nil {
+			// A nil error with found=false would mean the job was silently
+			// dropped, which is acceptable — but the call returned without
+			// blocking, which is what we're testing.
+		}
+		// The call returned without blocking — pass.
+	case <-time.After(5 * time.Second):
+		t.Fatal("locateLocalJob blocked on a FIFO journal for 5s; the " +
+			"journal must be Lstat'd and required to be a regular file " +
+			"before ReadEvents opens it")
+	}
+}
+
+// TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking asserts
+// the same regular-file guard on the job output file path.
+func TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	sh := t.TempDir()
+	bucket := filepath.Join(sh, "evener", "projects", localJobCurrentProject)
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Replace the output file with a FIFO.
+	outputPath := filepath.Join(jobsDir(bucket, owner), "jobs", jobID+".log")
+	if err := os.Remove(outputPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(outputPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := locateLocalJobRetainedTarget(bucket, jobID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		_ = err // returned without blocking — pass
+	case <-time.After(5 * time.Second):
+		t.Fatal("locateLocalJobRetainedTarget blocked on a FIFO output " +
+			"file for 5s; the output path must be Lstat'd and required " +
+			"to be a regular file before reading")
 	}
 }

@@ -159,15 +159,28 @@ func findLocalJobInProject(stateDir, ownerSessionID, jobID string) (localJobLoca
 		}
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
 	}
+	// Lstat the journal and require a regular file before ReadEvents opens
+	// it: a FIFO or other non-regular non-symlink entry passes the symlink
+	// check but blocks os.Open indefinitely (FIFO) or returns garbage.
+	// This also narrows the residual TOCTOU window (below): a non-regular
+	// entry swapped in between this check and ReadEvents is caught here.
+	journalInfo, journalErr := os.Lstat(path)
+	if journalErr != nil {
+		return localJobLocation{}, false, nil // journal gone → not found
+	}
+	if !journalInfo.Mode().IsRegular() {
+		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: journal is not a regular file", jobID, filepath.Base(stateDir))
+	}
 	// jobstore.ReadEvents opens the journal internally (afero.NewOsFs), so
-	// there is a residual TOCTOU window between the symlinkErrorDeep check
-	// above and the internal open: a symlink swapped in at the leaf or an
-	// intermediate dir between the two calls would be followed. Changing
-	// jobstore's API to accept an fd is disproportionate (it touches the
-	// internal package and every caller). The window is narrow —
-	// symlinkErrorDeep pre-checks every component, and validateLayoutPrefix
-	// (round 10) validates the bucket dir itself — so the residual risk is
-	// an in-window swap, not a missing check.
+	// there is a residual TOCTOU window between the checks above and the
+	// internal open: a symlink or non-regular entry swapped in between
+	// the Lstat and the open would be followed. Changing jobstore's API
+	// to accept an fd is disproportionate (it touches the internal
+	// package and every caller). The window is narrow — symlinkErrorDeep
+	// pre-checks every component, validateLayoutPrefix (round 10)
+	// validates the bucket dir, and the Lstat regular check (round 11)
+	// rejects non-regular entries — so the residual risk is an in-window
+	// swap from regular to non-regular, not a missing check.
 	events, err := jobstore.ReadEvents(path)
 	if err != nil {
 		return localJobLocation{}, false, fmt.Errorf("read local job %q in project %q: %w", jobID, filepath.Base(stateDir), err)
@@ -219,6 +232,19 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	// sessions/ dir could expose output from outside the state root.
 	if err := symlinkErrorDeep(outputPath, location.StateDir); err != nil {
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: %w", jobID, err)
+	}
+	// Require a regular file: a FIFO or other non-regular non-symlink entry
+	// passes the symlink check but blocks the downstream read (FIFO) or
+	// returns garbage.
+	outInfo, outErr := os.Lstat(outputPath)
+	if outErr != nil {
+		if errors.Is(outErr, os.ErrNotExist) {
+			return localJobRetainedTarget{}, localJobRetainedMissingError(jobID)
+		}
+		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output missing: %w", jobID, outErr)
+	}
+	if !outInfo.Mode().IsRegular() {
+		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output is not a regular file", jobID)
 	}
 	return localJobRetainedTarget{
 		JobID:      jobID,
